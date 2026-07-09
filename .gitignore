@@ -1,0 +1,42 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+build/
+dist/
+*.exe
+*.log
+
+# Virtual Environments
+venv/
+.venv/
+env/
+.env
+
+# Images and Dicom
+*.dcm
+*.jpg
+*.png
+*.jpeg
+
+# Data and logs (to protect patient data)
+*.json
+*.html
+*.har
+*.txt
+!requirements.txt
+!classes.txt
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# IDE and Editor
+*.code-workspace
+.vscode/
+.idea/
+
+# Downloaded directories
+Tai_ve_*/
+JPG_moi/
+Auto_Download_DICOM/

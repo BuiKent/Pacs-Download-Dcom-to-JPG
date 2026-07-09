@@ -1,0 +1,3 @@
+EN: A comprehensive automation tool designed to recover and extract full clinical DICOM imaging assets from web-based PACS viewers. It bypasses UI download limitations via network interception and features a built-in converter to transform raw DICOM files into high-fidelity, zero-subsampling JPEG/PNG archives for offline clinical review.
+
+VN: Công cụ tự động hóa việc trích xuất và tải toàn bộ dữ liệu ảnh y tế chuẩn DICOM từ các hệ thống PACS viewer trên nền web (bỏ qua giới hạn tải của UI). Tích hợp sẵn tính năng tự động chuyển đổi DICOM sang JPG/PNG chất lượng cao (giữ nguyên độ tương phản và không nén dải màu), phục vụ cho việc lưu trữ nội bộ và hội chẩn lâm sàng.
