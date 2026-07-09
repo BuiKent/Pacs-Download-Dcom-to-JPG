@@ -8,6 +8,8 @@ dcom_downloader_app.py
                  xoay/lật/đảo màu, chỉnh sáng–tương phản, lưu ảnh đang xem.
 
 Chạy: nhấp đúp run_app.bat, hoặc:  python dcom_downloader_app.py
+
+Author: superkent.bui@gmail.com
 """
 
 from __future__ import annotations
@@ -29,6 +31,69 @@ import dcom_pipeline as pipe
 
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff")
 
+I18N_EN = {
+    "1) Dán LINK viewer (còn hạn):": "1) Paste viewer LINK (active):",
+    "2) Thư mục lưu:": "2) Save directory:",
+    "Chọn...": "Browse...",
+    "Tùy chọn": "Options",
+    "Chất lượng JPG:": "JPG Quality:",
+    "Xuất thêm PNG": "Export PNG too",
+    "Tương phản:": "Contrast:",
+    "Chuẩn lâm sàng (khuyên dùng)": "Clinical standard (recommended)",
+    "Auto-contrast (gắt hơn)": "Auto-contrast (harsher)",
+    "Hiện trình duyệt khi tải (bỏ chọn = chạy ẩn)": "Show browser while downloading (uncheck = headless)",
+    "BẮT ĐẦU TẢI": "START DOWNLOAD",
+    "Dừng": "Stop",
+    "Mở thư mục": "Open folder",
+    "↻ Thử lại (link + folder cũ)": "↻ Retry (old link + folder)",
+    "＋ Tải link mới (folder mới)": "＋ New download (new folder)",
+    "Nhật ký:": "Log:",
+    "Sẵn sàng. Dán link viewer rồi bấm 'BẮT ĐẦU TẢI'.": "Ready. Paste viewer link and click 'START DOWNLOAD'.",
+    "Xem lại ảnh cũ: bấm 'Nạp thư mục ảnh...' bên phải.": "Review old images: click 'Load image folder...' on the right.",
+    "Xung (series):": "Pulse (series):",
+    "Nạp thư mục ảnh...": "Load image folder...",
+    "▶ Phim": "▶ Play",
+    "⏸ Dừng": "⏸ Pause",
+    "－ Thu nhỏ": "－ Zoom out",
+    "＋ Phóng to": "＋ Zoom in",
+    "Vừa khung": "Fit",
+    "Xoay 90°": "Rotate 90°",
+    "Lật ⇔": "Flip ⇔",
+    "Lật ⇕": "Flip ⇕",
+    "Đảo màu": "Invert color",
+    "Đặt lại": "Reset view",
+    "Sáng": "Brightness",
+    "Tương phản": "Contrast",
+    "Lưu ảnh...": "Save image...",
+    "Chưa có ảnh. Tải xong sẽ tự nạp, hoặc bấm 'Nạp thư mục ảnh...'.": "No images yet. Will auto-load after download, or click 'Load image folder...'.",
+    "DICOM Downloader & Viewer": "DICOM Downloader & Viewer",
+    "Người tạo: superkent.bui@gmail.com": "Created by: superkent.bui@gmail.com",
+
+    "Thiếu link": "Missing link",
+    "Hãy dán LINK viewer hợp lệ (bắt đầu bằng http).": "Please paste a valid viewer LINK (starting with http).",
+    "Thử lại": "Retry",
+    "Chưa có lần tải nào để thử lại.": "No previous download to retry.",
+    ">>> THỬ LẠI: link cũ, gộp vào {}": ">>> RETRY: old link, merging into {}",
+    ">>> Sẵn sàng cho LINK MỚI. Dán link tiếp theo rồi bấm 'BẮT ĐẦU TẢI'.": ">>> Ready for NEW LINK. Paste the next link and click 'START DOWNLOAD'.",
+    "    Folder mới: {}": "    New folder: {}",
+    ">>> Đang yêu cầu dừng... (chờ bước hiện tại kết thúc)": ">>> Requesting stop... (waiting for current step to finish)",
+    "LỖI:\n{}": "ERROR:\n{}",
+    "Tải được {} ảnh.": "Downloaded {} images.",
+    "Chọn thư mục lưu": "Select save directory",
+    "Thư mục": "Directory",
+    "Ảnh nằm ở:\n{}\n\n({})": "Images located at:\n{}\n\n({})",
+    "Chọn thư mục chứa ảnh (JPG/PNG)": "Select image folder (JPG/PNG)",
+    "Lỗi": "Error",
+    "Không đọc được thư mục:\n{}": "Cannot read directory:\n{}",
+    "Không có ảnh": "No images",
+    "Không tìm thấy ảnh JPG/PNG trong:\n{}": "No JPG/PNG images found in:\n{}",
+    "Đã nạp trình xem: {} series, {} ảnh từ {}": "Loaded viewer: {} series, {} images from {}",
+    "Lỗi mở ảnh: {} ({})": "Error opening image: {} ({})",
+    "Lưu ảnh đang xem": "Save viewing image",
+    "PNG (không mất dữ liệu)": "PNG (lossless)",
+    "Đã lưu: {}": "Saved: {}",
+    "Lỗi lưu": "Save error",
+}
 
 # --------------------------------------------------------------------------- #
 #  Tiện ích nạp ảnh theo series (dùng lại được, dễ kiểm thử)
@@ -88,7 +153,28 @@ def scan_series(base: Path) -> "dict[str, list[Path]]":
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("DICOM Downloader & Viewer")
+        self.lang = "vi"
+        self._t_widgets = []
+
+        def patch_widget(cls):
+            orig = cls
+            def wrapper(*args, **kwargs):
+                orig_text = kwargs.get("text", "")
+                if orig_text:
+                    kwargs["text"] = self._t(orig_text)
+                w = orig(*args, **kwargs)
+                if orig_text:
+                    self._t_widgets.append((w, "text", orig_text))
+                return w
+            return wrapper
+
+        ttk.Label = patch_widget(ttk.Label)
+        ttk.Button = patch_widget(ttk.Button)
+        ttk.Checkbutton = patch_widget(ttk.Checkbutton)
+        ttk.LabelFrame = patch_widget(ttk.LabelFrame)
+
+        root.title(self._t("DICOM Downloader & Viewer"))
+        self._t_widgets.append((root, "title", "DICOM Downloader & Viewer"))
         root.geometry("1360x860")
         root.minsize(1024, 640)
 
@@ -120,6 +206,41 @@ class App:
         self.root.after(100, self._poll_queue)
         self.root.after(200, lambda: self._set_sash(470))
 
+    def _t(self, vi_text):
+        if getattr(self, "lang", "vi") == "vi": return vi_text
+        return I18N_EN.get(vi_text, vi_text)
+
+    def _toggle_lang(self):
+        self.lang = "en" if self.lang == "vi" else "vi"
+        self.lang_btn.config(text="🇻🇳 VI" if self.lang == "en" else "🇬🇧 EN")
+        for w, attr, orig in self._t_widgets:
+            try:
+                if attr == "title": w.title(self._t(orig))
+                else: w.config(**{attr: self._t(orig)})
+            except: pass
+
+        vals = [self._t("Chuẩn lâm sàng (khuyên dùng)"), self._t("Auto-contrast (gắt hơn)")]
+        self.contrast_cbo.config(values=vals)
+        cur = self.contrast_mode_var.get().lower()
+        if "auto" in cur or "gắt" in cur or "harsher" in cur:
+            self.contrast_mode_var.set(self._t("Auto-contrast (gắt hơn)"))
+        else:
+            self.contrast_mode_var.set(self._t("Chuẩn lâm sàng (khuyên dùng)"))
+
+        if self.cine_playing:
+            self.play_btn.config(text=self._t("⏸ Dừng"))
+        else:
+            self.play_btn.config(text=self._t("▶ Phim"))
+
+        current_log = self.log_text.get("1.0", "end").strip()
+        vi_logs = "Sẵn sàng. Dán link viewer rồi bấm 'BẮT ĐẦU TẢI'.\nXem lại ảnh cũ: bấm 'Nạp thư mục ảnh...' bên phải."
+        en_logs = "Ready. Paste viewer link and click 'START DOWNLOAD'.\nReview old images: click 'Load image folder...' on the right."
+        if current_log == vi_logs or current_log == en_logs:
+            self.log_text.config(state="normal")
+            self.log_text.delete("1.0", "end")
+            self.log_text.insert("end", self._t("Sẵn sàng. Dán link viewer rồi bấm 'BẮT ĐẦU TẢI'.") + "\n" + self._t("Xem lại ảnh cũ: bấm 'Nạp thư mục ảnh...' bên phải.") + "\n")
+            self.log_text.config(state="disabled")
+
     # ================================================================= UI
     def _build_ui(self):
         self.paned = ttk.PanedWindow(self.root, orient="horizontal")
@@ -142,6 +263,12 @@ class App:
     # -------------------------------------------------- CỘT TRÁI (tải ảnh)
     def _build_left(self, frm):
         pad = dict(padx=10, pady=5)
+
+        lang_frm = ttk.Frame(frm)
+        lang_frm.pack(fill="x", padx=10, pady=(5, 0))
+        self.lang_btn = ttk.Button(lang_frm, command=self._toggle_lang, width=5)
+        self.lang_btn.config(text="🇬🇧 EN")
+        self.lang_btn.pack(side="right")
 
         ttk.Label(frm, text="1) Dán LINK viewer (còn hạn):",
                   font=("Segoe UI", 10, "bold")).pack(anchor="w", **pad)
@@ -166,9 +293,10 @@ class App:
 
         r2 = ttk.Frame(opt); r2.pack(fill="x", padx=8, pady=(0, 5))
         ttk.Label(r2, text="Tương phản:").pack(side="left")
-        self.contrast_mode_var = tk.StringVar(value="Chuẩn lâm sàng (khuyên dùng)")
-        ttk.Combobox(r2, textvariable=self.contrast_mode_var, width=26, state="readonly",
-                     values=["Chuẩn lâm sàng (khuyên dùng)", "Auto-contrast (gắt hơn)"]).pack(side="left")
+        self.contrast_mode_var = tk.StringVar(value=self._t("Chuẩn lâm sàng (khuyên dùng)"))
+        self.contrast_cbo = ttk.Combobox(r2, textvariable=self.contrast_mode_var, width=28, state="readonly",
+                     values=[self._t("Chuẩn lâm sàng (khuyên dùng)"), self._t("Auto-contrast (gắt hơn)")])
+        self.contrast_cbo.pack(side="left")
 
         r3 = ttk.Frame(opt); r3.pack(fill="x", padx=8, pady=(0, 5))
         self.show_var = tk.BooleanVar(value=False)
@@ -203,8 +331,13 @@ class App:
         sb.pack(side="right", fill="y")
         self.log_text.config(yscrollcommand=sb.set, state="disabled")
 
-        self._log("Sẵn sàng. Dán link viewer rồi bấm 'BẮT ĐẦU TẢI'.")
-        self._log("Xem lại ảnh cũ: bấm 'Nạp thư mục ảnh...' bên phải.")
+        footer = ttk.Frame(frm)
+        footer.pack(fill="x", padx=10, pady=(0, 5))
+        ttk.Label(footer, text="Người tạo: superkent.bui@gmail.com",
+                  font=("Segoe UI", 9, "italic"), foreground="gray").pack(side="right")
+
+        self._log(self._t("Sẵn sàng. Dán link viewer rồi bấm 'BẮT ĐẦU TẢI'."))
+        self._log(self._t("Xem lại ảnh cũ: bấm 'Nạp thư mục ảnh...' bên phải."))
 
     # ------------------------------------------------ CỘT PHẢI (trình xem)
     def _build_right(self, frm):
@@ -271,7 +404,7 @@ class App:
 
     # ============================================================ TẢI ẢNH
     def _pick_folder(self):
-        d = filedialog.askdirectory(title="Chọn thư mục lưu")
+        d = filedialog.askdirectory(title=self._t("Chọn thư mục lưu"))
         if d:
             self.out_var.set(d)
 
@@ -280,12 +413,12 @@ class App:
         try:
             os.startfile(str(target))
         except Exception as e:
-            messagebox.showinfo("Thư mục", f"Ảnh nằm ở:\n{target}\n\n({e})")
+            messagebox.showinfo(self._t("Thư mục"), self._t("Ảnh nằm ở:\n{}\n\n({})").format(target, e))
 
     def _start(self):
         url = self.url_var.get().strip()
         if not url.lower().startswith("http"):
-            messagebox.showwarning("Thiếu link", "Hãy dán LINK viewer hợp lệ (bắt đầu bằng http).")
+            messagebox.showwarning(self._t("Thiếu link"), self._t("Hãy dán LINK viewer hợp lệ (bắt đầu bằng http)."))
             return
         out_base = Path(self.out_var.get().strip() or
                         (Path.cwd() / f"Tai_ve_{datetime.now():%Y%m%d_%H%M%S}"))
@@ -294,11 +427,11 @@ class App:
     def _retry(self):
         """Tải lại chính link cũ vào folder cũ, GỘP thêm ảnh (bỏ trùng)."""
         if not self.last_url or not self.last_out_base:
-            messagebox.showinfo("Thử lại", "Chưa có lần tải nào để thử lại.")
+            messagebox.showinfo(self._t("Thử lại"), self._t("Chưa có lần tải nào để thử lại."))
             return
         self.url_var.set(self.last_url)
         self.out_var.set(str(self.last_out_base))
-        self._log(f">>> THỬ LẠI: link cũ, gộp vào {self.last_out_base}")
+        self._log(self._t(">>> THỬ LẠI: link cũ, gộp vào {}").format(self.last_out_base))
         self._launch(self.last_url, self.last_out_base, resume=True)
 
     def _new_download(self):
@@ -307,8 +440,8 @@ class App:
         new_out = Path.cwd() / f"Tai_ve_{datetime.now():%Y%m%d_%H%M%S}"
         self.out_var.set(str(new_out))
         self.retry_btn.config(state="disabled")
-        self._log(">>> Sẵn sàng cho LINK MỚI. Dán link tiếp theo rồi bấm 'BẮT ĐẦU TẢI'.")
-        self._log(f"    Folder mới: {new_out}")
+        self._log(self._t(">>> Sẵn sàng cho LINK MỚI. Dán link tiếp theo rồi bấm 'BẮT ĐẦU TẢI'."))
+        self._log(self._t("    Folder mới: {}").format(new_out))
 
     def _launch(self, url, out_base, resume):
         self.last_url = url
@@ -335,7 +468,7 @@ class App:
 
     def _stop(self):
         self.stop_flag.set()
-        self._log(">>> Đang yêu cầu dừng... (chờ bước hiện tại kết thúc)")
+        self._log(self._t(">>> Đang yêu cầu dừng... (chờ bước hiện tại kết thúc)"))
         self.stop_btn.config(state="disabled")
 
     def _run(self, url, out_base, headless, quality, save_png, contrast_mode, resume):
@@ -349,10 +482,10 @@ class App:
             )
             self.msg_q.put(("jpgdir", str(jpg_dir)))
             if dl and dl.total():
-                self.msg_q.put(("log", f"Tải được {dl.total()} ảnh."))
+                self.msg_q.put(("log", self._t("Tải được {} ảnh.").format(dl.total())))
             self.msg_q.put(("done", True))
         except Exception:
-            self.msg_q.put(("log", "LỖI:\n" + traceback.format_exc()))
+            self.msg_q.put(("log", self._t("LỖI:\n{}").format(traceback.format_exc())))
             self.msg_q.put(("done", False))
 
     def _poll_queue(self):
@@ -380,7 +513,57 @@ class App:
         if self.last_jpg_dir and self.last_jpg_dir.exists():
             self._load_dir(self.last_jpg_dir)
 
+    def _translate_log_pattern(self, msg: str) -> str:
+        if getattr(self, "lang", "vi") == "vi": return msg
+        if msg in I18N_EN: return I18N_EN[msg]
+        
+        reps = [
+            (r"Lần đầu chạy trên máy này: đang tải nhân trình duyệt Chromium \(~150MB, chỉ 1 lần\)\.\.\.", r"First run on this machine: downloading Chromium browser engine (~150MB, one time)..."),
+            (r"Đã tải xong Chromium\.", r"Chromium downloaded successfully."),
+            (r"Không tự tải được Chromium \((.+)\)\. Hãy chạy thủ công: python -m playwright install chromium", r"Could not auto-download Chromium (\1). Please run manually: python -m playwright install chromium"),
+            (r"Thử lại: đã có sẵn (\d+) ảnh trong folder — sẽ bổ sung ảnh mới, bỏ trùng\.", r"Retry: found \1 existing images in folder — will append new images and skip duplicates."),
+            (r"  \.\.\.đã tải (\d+) ảnh \(DICOM: (\d+)\)", r"  ...downloaded \1 images (DICOM: \2)"),
+            (r"Đang mở trình duyệt ảo \(Chromium\)\.\.\.", r"Opening virtual browser (Chromium)..."),
+            (r"Đang tải trang viewer \(không chỉnh sửa link\)\.\.\.", r"Loading viewer page (not modifying link)..."),
+            (r"  Cảnh báo khi tải trang: (.+)", r"  Warning while loading page: \1"),
+            (r"!!! Link đã HẾT HẠN \(urlExpired\)\. Hãy lấy link mới từ trang xem rồi thử lại\.", r"!!! Link has EXPIRED (urlExpired). Please get a new link from the viewer page and try again."),
+            (r"Đang dò manifest của viewer\.\.\.", r"Scanning for viewer manifest..."),
+            (r"✓ Có manifest → tải TRỰC TIẾP theo API \(không cần click/cuộn\)\.", r"✓ Manifest found → downloading DIRECTLY via API (no click/scroll needed)."),
+            (r"Không thấy manifest → chế độ MÔ PHỎNG \(cuộn/click\), chỉ xử lý xung ĐANG HIỂN THỊ\.", r"No manifest found → SIMULATION mode (scroll/click), processing only VISIBLE series."),
+            (r"Chờ (\d+)s để bắt nốt ảnh còn lại\.\.\.", r"Waiting \1s to capture remaining images..."),
+            (r"Tải xong\. Tổng ảnh: (\d+) \(DICOM (\d+), JPG (\d+), PNG (\d+), trùng bỏ (\d+)\)\.", r"Download complete. Total images: \1 (DICOM \2, JPG \3, PNG \4, skipped \5 duplicates)."),
+            (r"Manifest: (\d+) series, ~(\d+) ảnh\. Đang tải trực tiếp (\d+) ảnh \(6 luồng song song\)\.\.\.", r"Manifest: \1 series, ~\2 images. Downloading \3 images directly (6 parallel threads)..."),
+            (r"  ✓ Đã đủ theo manifest: (\d+)/(\d+) ảnh\.", r"  ✓ Complete per manifest: \1/\2 images."),
+            (r"  ⚠ Tải được (\d+)/(\d+) ảnh — thiếu (\d+) \(có thể do mạng/timeout; chạy lại sẽ bù, ảnh trùng tự bỏ\)\.", r"  ⚠ Downloaded \1/\2 images — missing \3 (possibly network/timeout; retry will fill gaps, duplicates skipped)."),
+            (r"Chuyển đổi: tìm thấy (\d+) file DICOM\. Chất lượng JPG=(\d+)(.*), tương phản=(.+)\.", r"Conversion: found \1 DICOM files. JPG Quality=\2\3, contrast=\4."),
+            (r"  \.\.\.đã chuyển (\d+) ảnh", r"  ...converted \1 images"),
+            (r"Chuyển đổi xong: (\d+) ảnh JPG(.*), bỏ qua (\d+), lỗi (\d+)\.", r"Conversion complete: \1 JPG images\2, skipped \3, errors \4."),
+            (r"Tóm tắt theo series:", r"Summary by series:"),
+            (r"   • (.+): (\d+) ảnh", r"   • \1: \2 images"),
+            (r"   Tổng: (\d+) ảnh, (\d+) series\.", r"   Total: \1 images, \2 series."),
+            (r"BƯỚC 1/2: Tải ảnh từ viewer( \(THỬ LẠI — gộp vào folder cũ\))?", r"STEP 1/2: Download images from viewer\1"),
+            (r" \(THỬ LẠI — gộp vào folder cũ\)", r" (RETRY — merging into old folder)"),
+            (r"Không tải được ảnh nào\. Kiểm tra lại link \(còn hạn không\) và thử tắt chế độ ẩn trình duyệt\.", r"No images downloaded. Check if the link has expired and try disabling headless mode."),
+            (r"BƯỚC 2/2: Chuyển DICOM -> JPG chất lượng cao", r"STEP 2/2: Convert DICOM -> High-quality JPG"),
+            (r"HOÀN TẤT\. Ảnh JPG nằm ở: (.+)", r"COMPLETE. JPG images located at: \1"),
+            (r"Không thấy danh sách series \(có thể giao diện khác\)\. Vẫn thử cuộn ảnh hiện tại\.", r"No series list found (possible different UI). Will still try to scroll current images."),
+            (r"Phát hiện (\d+) series \(xung\) đang hiển thị để duyệt\.", r"Detected \1 visible series to browse."),
+            (r"Không tìm thấy thumbnail series theo class chuẩn; sẽ cuộn ảnh đang hiển thị\.", r"Could not find standard series thumbnails; will scroll currently visible images."),
+            (r"\[Series (\d+)/(\d+)\] (.*)  \(~(\d+) ảnh\) — đang nạp\.\.\.", r"[Series \1/\2] \3  (~\4 images) — loading..."),
+            (r"   \(không bấm được thumbnail này, bỏ qua\)", r"   (could not click this thumbnail, skipping)"),
+            (r"   -> series này thêm (\d+) ảnh \(tổng (\d+)\)\.", r"   -> this series added \1 images (total \2)."),
+            (r"  Lỗi file (.+): (.+)", r"  File error \1: \2"),
+            (r"chuẩn lâm sàng \(VOI LUT\)", r"clinical standard (VOI LUT)"),
+            (r"Đã nạp trình xem: (\d+) series, (\d+) ảnh từ (.+)", r"Loaded viewer: \1 series, \2 images from \3"),
+        ]
+        
+        import re
+        for p_vi, p_en in reps:
+            msg = re.sub(p_vi, p_en, msg)
+        return msg
+
     def _log(self, msg: str):
+        msg = self._translate_log_pattern(msg)
         self.log_text.config(state="normal")
         self.log_text.insert("end", msg + "\n")
         self.log_text.see("end")
@@ -389,7 +572,7 @@ class App:
     # ========================================================== TRÌNH XEM
     def _load_folder_dialog(self):
         start = str(self.last_jpg_dir or Path.cwd())
-        d = filedialog.askdirectory(title="Chọn thư mục chứa ảnh (JPG/PNG)", initialdir=start)
+        d = filedialog.askdirectory(title=self._t("Chọn thư mục chứa ảnh (JPG/PNG)"), initialdir=start)
         if d:
             self._load_dir(Path(d))
 
@@ -397,17 +580,17 @@ class App:
         try:
             series = scan_series(base)
         except Exception as e:
-            messagebox.showerror("Lỗi", f"Không đọc được thư mục:\n{e}")
+            messagebox.showerror(self._t("Lỗi"), self._t("Không đọc được thư mục:\n{}").format(e))
             return
         if not series:
-            messagebox.showinfo("Không có ảnh", f"Không tìm thấy ảnh JPG/PNG trong:\n{base}")
+            messagebox.showinfo(self._t("Không có ảnh"), self._t("Không tìm thấy ảnh JPG/PNG trong:\n{}").format(base))
             return
         self.series_map = series
         names = list(series.keys())
         self.series_cbo.config(values=names)
         self.series_var.set(names[0])
         total = sum(len(v) for v in series.values())
-        self._log(f"Đã nạp trình xem: {len(names)} series, {total} ảnh từ {base}")
+        self._log(self._t("Đã nạp trình xem: {} series, {} ảnh từ {}").format(len(names), total, base))
         self._on_series_change()
 
     def _on_series_change(self):
@@ -427,7 +610,7 @@ class App:
             self.base_img = Image.open(path).convert("RGB")
         except Exception as e:
             self.base_img = None
-            self.status_lbl.config(text=f"Lỗi mở ảnh: {path.name} ({e})")
+            self.status_lbl.config(text=self._t("Lỗi mở ảnh: {} ({})").format(path.name, e))
             return
         self._syncing_slider = True
         try:
@@ -461,13 +644,13 @@ class App:
     def _toggle_cine(self):
         if self.cine_playing:
             self.cine_playing = False
-            self.play_btn.config(text="▶ Phim")
+            self.play_btn.config(text=self._t("▶ Phim"))
             if self.cine_job:
                 self.root.after_cancel(self.cine_job)
                 self.cine_job = None
         elif self.cur_files:
             self.cine_playing = True
-            self.play_btn.config(text="⏸ Dừng")
+            self.play_btn.config(text=self._t("⏸ Dừng"))
             self._cine_step()
 
     def _cine_step(self):
@@ -564,10 +747,10 @@ class App:
             return
         src = self.cur_files[self.cur_index]
         out = filedialog.asksaveasfilename(
-            title="Lưu ảnh đang xem",
+            title=self._t("Lưu ảnh đang xem"),
             initialfile=src.stem + "_edited.png",
             defaultextension=".png",
-            filetypes=[("PNG (không mất dữ liệu)", "*.png"), ("JPEG", "*.jpg")],
+            filetypes=[(self._t("PNG (không mất dữ liệu)"), "*.png"), ("JPEG", "*.jpg")],
         )
         if not out:
             return
@@ -576,9 +759,9 @@ class App:
                 img.save(out, "JPEG", quality=95, optimize=True, subsampling=0)
             else:
                 img.save(out, "PNG", optimize=True)
-            self.status_lbl.config(text=f"Đã lưu: {out}")
+            self.status_lbl.config(text=self._t("Đã lưu: {}").format(out))
         except Exception as e:
-            messagebox.showerror("Lỗi lưu", str(e))
+            messagebox.showerror(self._t("Lỗi lưu"), str(e))
 
 
 def main():
