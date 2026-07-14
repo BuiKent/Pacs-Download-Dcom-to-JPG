@@ -77,6 +77,121 @@ def _maybe_base64_decode(body: bytes) -> bytes:
     return body
 
 
+def _multipart_parts(body: bytes, content_type: str = "") -> "list[tuple[str, bytes]]":
+    """
+    Tách response multipart/related (chuẩn WADO-RS) thành [(content-type phần, dữ liệu)].
+    Trả [] nếu không phải multipart. Boundary lấy từ header Content-Type; nếu
+    thiếu thì dò từ dòng đầu của thân ("--boundary\\r\\n").
+    """
+    m = re.search(r'boundary="?([^";,\s]+)"?', content_type or "", re.I)
+    if m:
+        boundary = m.group(1)
+    else:
+        if not body.startswith(b"--"):
+            return []
+        eol = body.find(b"\r\n")
+        if eol <= 2:
+            return []
+        boundary = body[2:eol].decode("latin-1", "replace").strip()
+        if not boundary:
+            return []
+    sep = b"--" + boundary.encode("latin-1", "replace")
+    parts = []
+    for chunk in body.split(sep)[1:]:
+        if chunk[:2] == b"--":
+            break  # dấu kết thúc multipart
+        head, brk, payload = chunk.partition(b"\r\n\r\n")
+        if not brk:
+            continue
+        mt = re.search(rb"(?i)content-type:\s*([^\r\n]+)", head)
+        pct = mt.group(1).decode("latin-1", "replace").strip() if mt else ""
+        parts.append((pct, payload.rstrip(b"\r\n")))
+    return parts
+
+
+# Content-type của frame WADO-RS -> Transfer Syntax UID tương ứng
+_FRAME_TS_BY_MIME = {
+    "image/jpeg": "1.2.840.10008.1.2.4.50",
+    "image/jls": "1.2.840.10008.1.2.4.80",
+    "image/x-jls": "1.2.840.10008.1.2.4.80",
+    "image/jp2": "1.2.840.10008.1.2.4.90",
+    "image/j2c": "1.2.840.10008.1.2.4.90",
+    "image/x-j2c": "1.2.840.10008.1.2.4.90",
+    "image/jphc": "1.2.840.10008.1.2.4.201",
+}
+
+
+def _dicom_from_meta_frames(meta: dict, frames: "list[bytes]",
+                            frame_ct: str) -> Optional[bytes]:
+    """
+    Dựng lại file DICOM Part-10 hoàn chỉnh từ metadata (DICOM+JSON của WADO-RS
+    /metadata) + dữ liệu điểm ảnh lấy từ /frames/N. Cần cho viewer chỉ phát ảnh
+    theo frame (vd PACS OHIF của BV Đa khoa Hà Tĩnh) — không có endpoint nào
+    trả file DICOM trọn vẹn.
+    """
+    try:
+        import io
+        import json as _json
+        from pydicom import dcmwrite
+        from pydicom.dataset import Dataset, FileMetaDataset
+        from pydicom.encaps import encapsulate
+        from pydicom.uid import (UID, ExplicitVRLittleEndian,
+                                 ImplicitVRLittleEndian, generate_uid)
+
+        ds = Dataset.from_json(_json.dumps(meta),
+                               bulk_data_uri_handler=lambda *a: None)
+        for k in list(ds.keys()):
+            if k.group == 0x0002:
+                del ds[k]
+
+        ct = (frame_ct or "").lower()
+        ts = None
+        m = re.search(r'transfer-syntax="?([0-9][0-9.]+)"?', ct)
+        if m:
+            ts = m.group(1)
+        else:
+            for mime, uid in _FRAME_TS_BY_MIME.items():
+                if mime in ct:
+                    ts = uid
+                    break
+
+        if ts is None or ts in ("1.2.840.10008.1.2", "1.2.840.10008.1.2.1"):
+            # octet-stream: điểm ảnh thô không nén — ghép các frame lại
+            pix = b"".join(frames)
+            if len(pix) % 2:
+                pix += b"\x00"
+            vr = "OB" if str(getattr(ds, "BitsAllocated", 16)) == "8" else "OW"
+            ds.add_new(0x7FE00010, vr, pix)
+            ts_uid = ImplicitVRLittleEndian if ts == "1.2.840.10008.1.2" else ExplicitVRLittleEndian
+        else:
+            # frame đã nén (JPEG/JLS/J2K/HTJ2K) -> đóng gói encapsulated
+            ds.add_new(0x7FE00010, "OB", encapsulate(list(frames)))
+            ds["PixelData"].is_undefined_length = True
+            ts_uid = UID(ts)
+
+        fm = FileMetaDataset()
+        fm.MediaStorageSOPClassUID = (getattr(ds, "SOPClassUID", None)
+                                      or UID("1.2.840.10008.5.1.4.1.1.7"))
+        fm.MediaStorageSOPInstanceUID = (getattr(ds, "SOPInstanceUID", None)
+                                         or generate_uid())
+        fm.TransferSyntaxUID = ts_uid
+        ds.file_meta = fm
+        try:  # pydicom 2.x cần 2 cờ này; pydicom 3 tự suy từ file_meta
+            ds.is_little_endian = ts_uid.is_little_endian
+            ds.is_implicit_VR = ts_uid.is_implicit_VR
+        except Exception:
+            pass
+
+        buf = io.BytesIO()
+        try:
+            dcmwrite(buf, ds, enforce_file_format=True)
+        except TypeError:  # pydicom < 3.0
+            dcmwrite(buf, ds, write_like_original=False)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
 def ensure_browser(log: LogFn = _default_log) -> None:
     """
     Tự tải nhân Chromium nếu máy chưa có (~150MB, chỉ 1 lần).
@@ -185,7 +300,7 @@ def download_all(
     def stop() -> bool:
         return bool(should_stop and should_stop())
 
-    def save_body(body: bytes) -> None:
+    def save_body(body: bytes, _depth: int = 0) -> None:
         """Lưu 1 ảnh (nhận diện theo NỘI DUNG, không phụ thuộc endpoint), tự loại
         trùng theo SHA-1. An toàn khi gọi từ nhiều luồng."""
         if not body:
@@ -193,6 +308,10 @@ def download_all(
         data = _maybe_base64_decode(body)
         ext = _guess_ext(data)
         if ext is None:
+            # WADO-RS thường gói DICOM trong multipart/related — bóc rồi thử lại
+            if _depth == 0:
+                for _pct, part in _multipart_parts(data):
+                    save_body(part, 1)
             return
         h = hashlib.sha1(data).hexdigest()
         with save_lock:
@@ -220,7 +339,8 @@ def download_all(
     #   • VradViewer  -> StudyData/GetStudies (+ 1 URL ảnh thật làm khuôn)
     #   • vrpacs/telerad -> vrpacs-file/get-share-patient-image
     captured = {"getstudies": None, "template_url": None, "vrpacs": None,
-                "qido_series": None, "wado_tmpl": None, "host": None, "cookies": None}
+                "qido_series": None, "wado_tmpl": None, "host": None, "cookies": None,
+                "api_headers": None, "session_error": None}
 
     def _want_capture(resp) -> bool:
         u = resp.url
@@ -234,6 +354,11 @@ def download_all(
         try:
             u = response.url
             ct = response.headers.get("content-type", "").lower()
+            # Session/share bị server từ chối (vd PACS BV Hà Tĩnh trả 400 khi
+            # link hết hạn: /ws/rest/v1/session/<uuid>)
+            if (captured["session_error"] is None and response.status >= 400
+                    and re.search(r"/(session|share)s?/[0-9a-fA-F\-]{8,}", u)):
+                captured["session_error"] = str(response.status)
             if "StudyData/GetStudies" in u and captured["getstudies"] is None:
                 captured["getstudies"] = response.body()
                 return
@@ -241,9 +366,18 @@ def download_all(
                 captured["vrpacs"] = response.body()
                 return
             # DICOMweb QIDO: danh sách series (…/studies/<uid>/series)
-            if (captured["qido_series"] is None and "dicom+json" in ct
+            if (captured["qido_series"] is None 
                     and u.split("?")[0].rstrip("/").endswith("/series")):
                 captured["qido_series"] = u
+                # giữ lại "giấy thông hành" viewer dùng (Authorization, X-...)
+                # để tải trực tiếp ngoài trình duyệt bằng đúng quyền đó
+                try:
+                    captured["api_headers"] = response.request.all_headers()
+                except Exception:
+                    try:
+                        captured["api_headers"] = dict(response.request.headers)
+                    except Exception:
+                        pass
                 return
             if _want_capture(response):
                 if (captured["template_url"] is None
@@ -257,9 +391,11 @@ def download_all(
             pass  # không để lỗi 1 response làm hỏng cả phiên
 
     def _have_manifest() -> bool:
+        # QIDO series một mình là đủ: phần tải sẽ tự dò WADO-URI / WADO-RS /
+        # dựng lại từ frames (PACS BV Hà Tĩnh không phát URL chứa chữ "wado").
         return bool((captured["getstudies"] and captured["template_url"])
                     or captured["vrpacs"]
-                    or (captured["qido_series"] and captured["wado_tmpl"]))
+                    or captured["qido_series"])
 
     used_manifest = False
     with sync_playwright() as p:
@@ -295,9 +431,27 @@ def download_all(
         # Chờ manifest (hoặc 1 ảnh mẫu) xuất hiện (tối đa ~12s)
         log("Đang dò manifest của viewer...")
         for _ in range(24):
-            if stop() or _have_manifest():
+            if stop() or _have_manifest() or captured["session_error"]:
                 break
             page.wait_for_timeout(500)
+
+        # Session chết (server trả 4xx cho API session, hoặc viewer hiện
+        # "Cannot view images") -> báo rõ HẾT HẠN thay vì lặng lẽ ra 0 ảnh.
+        if not _have_manifest():
+            expired = bool(captured["session_error"])
+            if not expired:
+                try:
+                    txt = (page.evaluate(
+                        "() => document.body ? document.body.innerText : ''") or "").lower()
+                    expired = ("cannot view images" in txt) or ("urlexpired" in txt)
+                except Exception:
+                    pass
+            if expired:
+                code = captured["session_error"] or "?"
+                log(f"!!! Link đã HẾT HẠN / SESSION không còn hiệu lực (server trả {code}). "
+                    f"Hãy lấy LINK MỚI từ trang xem rồi tải lại NGAY (loại link này sống rất ngắn).")
+                browser.close()
+                return stats
 
         if _have_manifest():
             used_manifest = True
@@ -327,7 +481,7 @@ def download_all(
             _download_via_manifest(captured, save_body, stats, log, stop)      # VradViewer
         elif captured["vrpacs"]:
             _download_via_vrpacs(captured, save_body, stats, log, stop)        # vrpacs/telerad
-        elif captured["qido_series"] and captured["wado_tmpl"]:
+        elif captured["qido_series"]:
             _download_via_dicomweb(captured, save_body, stats, log, stop)      # OHIF/DICOMweb
 
     log(f"Tải xong. Tổng ảnh: {stats.total()} "
@@ -498,9 +652,13 @@ def _download_via_vrpacs(captured, save_body, stats,
 def _download_via_dicomweb(captured, save_body, stats,
                            log: LogFn, stop: Callable[[], bool]) -> None:
     """
-    Tải trực tiếp mọi ảnh từ viewer chuẩn DICOMweb (OHIF / dcm4chee / Orthanc...).
-    Dùng QIDO-RS để liệt kê series + instances, rồi WADO-URI để lấy DICOM gốc.
-    Khuôn WADO lấy từ 1 URL ảnh thật; nếu thiếu thì suy ra theo dcm4chee.
+    Tải trực tiếp mọi ảnh từ viewer chuẩn DICOMweb (OHIF / dcm4chee / Orthanc /
+    static-wado như PACS BV Đa khoa Hà Tĩnh...). QIDO-RS liệt kê series +
+    instances, rồi lấy DICOM theo thứ tự ưu tiên TỰ DÒ (nhớ cách thành công):
+      • wadouri: WADO-URI ?requestType=WADO (khuôn bắt từ URL thật / dcm4chee)
+      • wadors : GET .../instances/<uid>  (multipart, file Part-10 trọn vẹn)
+      • frames : GET .../metadata + .../frames/N rồi DỰNG LẠI file DICOM —
+                 cách duy nhất với viewer chỉ phát theo frame như BV Hà Tĩnh.
     """
     import json
     import ssl
@@ -519,20 +677,38 @@ def _download_via_dicomweb(captured, save_body, stats,
         wp = urlparse(captured["wado_tmpl"])
         wado_base = f"{wp.scheme}://{wp.netloc}{wp.path}"
         wtmpl = {k: v[0] for k, v in parse_qs(wp.query).items()}
-    else:  # suy ra theo quy ước dcm4chee: .../aets/XXX/rs -> .../aets/XXX/wado
+        order = ["wadouri", "wadors", "frames"]
+    else:  # không có khuôn WADO-URI thật -> ưu tiên WADO-RS, dcm4chee để chót
         wado_base = rs_base.rsplit("/rs", 1)[0] + "/wado"
         wtmpl = {"requestType": "WADO", "contentType": "application/dicom", "transferSyntax": "*"}
+        order = ["wadors", "frames", "wadouri"]
 
+    # Gửi lại đúng "giấy thông hành" viewer đã dùng: cookie + header phiên
+    # (Authorization, X-...) bắt từ request QIDO thật.
+    hdr = {}
+    for k, v in (captured.get("api_headers") or {}).items():
+        lk = k.lower()
+        if lk.startswith("x-") or lk in ("authorization", "token", "session", "session-id"):
+            hdr[k] = v
     cj = "; ".join(f'{c.get("name")}={c.get("value")}' for c in (captured.get("cookies") or []))
+    if cj:
+        hdr["Cookie"] = cj
+
     sslctx = ssl.create_default_context()
     sslctx.check_hostname = False
     sslctx.verify_mode = ssl.CERT_NONE
-    hdr = {"Cookie": cj} if cj else {}
+
+    def get_raw(u, accept=None):
+        h = dict(hdr)
+        if accept:
+            h["Accept"] = accept
+        req = urllib.request.Request(u, headers=h)
+        with urllib.request.urlopen(req, timeout=60, context=sslctx) as r:
+            return r.read(), (r.headers.get("Content-Type") or "")
 
     def get_json(u):
-        req = urllib.request.Request(u, headers={"Accept": "application/dicom+json", **hdr})
-        with urllib.request.urlopen(req, timeout=40, context=sslctx) as r:
-            return json.loads(r.read().decode("utf-8", "replace"))
+        body, _ = get_raw(u, accept="application/dicom+json, application/json")
+        return json.loads(body.decode("utf-8", "replace"))
 
     def V(el, tag):
         v = (el.get(tag, {}) or {}).get("Value", [None])
@@ -544,7 +720,7 @@ def _download_via_dicomweb(captured, save_body, stats,
         log(f"  Lỗi QIDO series ({e}) — bỏ qua."); return
 
     log(f"DICOMweb: {len(series)} series. Đang liệt kê ảnh...")
-    tasks = []
+    tasks = []  # (seriesUID, sopInstanceUID, số frame theo QIDO)
     for s in series:
         if stop():
             break
@@ -555,32 +731,91 @@ def _download_via_dicomweb(captured, save_body, stats,
             insts = get_json(f"{rs_base}/studies/{study}/series/{suid}/instances")
         except Exception:
             insts = []
+        if not insts:
+            try:
+                insts = get_json(f"{rs_base}/studies/{study}/series/{suid}/metadata")
+            except Exception:
+                insts = []
         for i in insts:
-            ou = V(i, "00080018")
-            if not ou:
-                continue
-            params = {k: v for k, v in wtmpl.items()
-                      if k.lower() not in ("studyuid", "seriesuid", "objectuid")}
-            params["studyUID"] = study
-            params["seriesUID"] = suid
-            params["objectUID"] = ou
-            params.setdefault("requestType", "WADO")
-            params.setdefault("contentType", "application/dicom")
-            params.setdefault("transferSyntax", "*")
-            tasks.append(wado_base + "?" + urlencode(params))
+            iuid = V(i, "00080018")
+            if iuid:
+                try:
+                    nf = int(str(V(i, "00280008") or 1))
+                except Exception:
+                    nf = 1
+                tasks.append((suid, iuid, max(1, nf), i))
 
     total = len(tasks)
     log(f"DICOMweb: {len(series)} series, {total} ảnh. Đang tải trực tiếp (6 luồng song song)...")
 
-    def fetch_one(u):
-        if stop():
-            return
+    def try_wadouri(suid, iuid, nf, meta_in):
+        params = {k: v for k, v in wtmpl.items()
+                  if k.lower() not in ("studyuid", "seriesuid", "objectuid")}
+        params["studyUID"] = study
+        params["seriesUID"] = suid
+        params["objectUID"] = iuid
+        params.setdefault("requestType", "WADO")
+        params.setdefault("contentType", "application/dicom")
+        params.setdefault("transferSyntax", "*")
+        body, _ct = get_raw(wado_base + "?" + urlencode(params))
+        if _guess_ext(_maybe_base64_decode(body)) is None and not _multipart_parts(body):
+            return False
+        save_body(body)
+        return True
+
+    def try_wadors(suid, iuid, nf, meta_in):
+        u = f"{rs_base}/studies/{study}/series/{suid}/instances/{iuid}"
+        body, ct = get_raw(u, accept='multipart/related; type="application/dicom", application/dicom')
+        ok = False
+        for _pct, d in (_multipart_parts(body, ct) or [("", body)]):
+            if _guess_ext(d) == "dcm":
+                save_body(d)
+                ok = True
+        return ok
+
+    def try_frames(suid, iuid, nf, meta_in):
+        base = f"{rs_base}/studies/{study}/series/{suid}/instances/{iuid}"
+        meta = meta_in if meta_in else {}
+        if isinstance(meta, list):
+            meta = meta[0] if meta else {}
         try:
-            req = urllib.request.Request(u, headers=hdr)
-            with urllib.request.urlopen(req, timeout=60, context=sslctx) as r:
-                save_body(r.read())
+            nf = max(nf, int(str(V(meta, "00280008") or nf)))
         except Exception:
             pass
+        frames, fct = [], ""
+        for fi in range(1, nf + 1):
+            body, ct = get_raw(f"{base}/frames/{fi}",
+                               accept='multipart/related; type="application/octet-stream", */*')
+            parts = _multipart_parts(body, ct)
+            if parts:
+                fct = fct or parts[0][0]
+                frames.extend(d for _pct, d in parts)
+            else:
+                fct = fct or ct
+                frames.append(body)
+        if not any(frames):
+            return False
+        blob = _dicom_from_meta_frames(meta, frames, fct)
+        if not blob:
+            return False
+        save_body(blob)
+        return True
+
+    fetchers = {"wadouri": try_wadouri, "wadors": try_wadors, "frames": try_frames}
+
+    def fetch_one(task):
+        if stop():
+            return
+        suid, iuid, nf, meta_in = task
+        for name in list(order):
+            try:
+                if fetchers[name](suid, iuid, nf, meta_in):
+                    if order[0] != name:  # nhớ cách vừa thành công cho các ảnh sau
+                        order.remove(name)
+                        order.insert(0, name)
+                    return
+            except Exception:
+                continue
 
     with ThreadPoolExecutor(max_workers=6) as ex:
         list(ex.map(fetch_one, tasks))
