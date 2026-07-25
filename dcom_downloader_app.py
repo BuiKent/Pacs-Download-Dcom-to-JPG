@@ -299,6 +299,20 @@ class App:
     def _on_window_focus(self, event=None):
         if event and event.widget == self.root:
             self._auto_paste_url()
+            self._auto_paste_pid()
+
+    def _auto_paste_pid(self, event=None):
+        """Tự động dán Mã Bệnh Nhân từ bộ nhớ tạm (clipboard) nếu là chuỗi số hoặc mã BN."""
+        try:
+            clip = self.root.clipboard_get().strip()
+        except Exception:
+            return
+        if clip and (clip.isdigit() or (len(clip) >= 4 and not clip.startswith("http"))):
+            current = self.pid_var.get().strip()
+            if current != clip:
+                self.pid_var.set(clip)
+                self.pid_ent.select_range(0, tk.END)
+                self.pid_ent.icursor(tk.END)
 
     def _toggle_lang(self):
         self.lang = "en" if self.lang == "vi" else "vi"
@@ -360,7 +374,28 @@ class App:
         self.lang_btn.config(text="🇬🇧 EN")
         self.lang_btn.pack(side="right")
 
-        ttk.Label(frm, text="1) Dán LINK viewer (còn hạn):",
+        # Frame Tải tự động theo Mã Bệnh Nhân (RIS)
+        ris_frame = ttk.LabelFrame(frm, text="🏥 TẢI TOÀN BỘ MRI THEO MÃ BỆNH NHÂN (RIS)")
+        ris_frame.pack(fill="x", padx=10, pady=(6, 4))
+
+        rf1 = ttk.Frame(ris_frame); rf1.pack(fill="x", padx=6, pady=3)
+        ttk.Label(rf1, text="Chọn viện:", font=("Segoe UI", 9, "bold")).pack(side="left")
+        self.hosp_var = tk.StringVar(value="dhy")
+        ttk.Radiobutton(rf1, text="🏥 BV Đại học Y", variable=self.hosp_var, value="dhy").pack(side="left", padx=(8, 4))
+        ttk.Radiobutton(rf1, text="🏥 BV Việt Đức", variable=self.hosp_var, value="vduh").pack(side="left", padx=4)
+
+        rf2 = ttk.Frame(ris_frame); rf2.pack(fill="x", padx=6, pady=4)
+        ttk.Label(rf2, text="Mã BN:").pack(side="left")
+        self.pid_var = tk.StringVar()
+        self.pid_ent = ttk.Entry(rf2, textvariable=self.pid_var, width=14)
+        self.pid_ent.pack(side="left", padx=(4, 6))
+        self.pid_ent.bind("<FocusIn>", self._auto_paste_pid)
+        self.pid_ent.bind("<Button-1>", self._auto_paste_pid)
+
+        self.start_mri_btn = ttk.Button(rf2, text="🔍 TÌM & TẢI TẤT CẢ MRI", command=self._start_mri_patient)
+        self.start_mri_btn.pack(side="left", fill="x", expand=True)
+
+        ttk.Label(frm, text="🔗 HOẶC DÁN LINK VIEWER TRỰC TIẾP:",
                   font=("Segoe UI", 10, "bold")).pack(anchor="w", **pad)
         self.url_var = tk.StringVar()
         self.url_ent = ttk.Entry(frm, textvariable=self.url_var)
@@ -532,6 +567,58 @@ class App:
                         (Path.cwd() / f"Tai_ve_{datetime.now():%Y%m%d_%H%M%S}"))
         self._launch(url, out_base, resume=False)
 
+    def _start_mri_patient(self):
+        pid = self.pid_var.get().strip()
+        if not pid:
+            messagebox.showwarning(self._t("Thiếu mã bệnh nhân"),
+                                   self._t("Vui lòng nhập MÃ BỆNH NHÂN (vd: 2605032022)."))
+            return
+
+        hosp = self.hosp_var.get()
+        info = pipe.HOSPITALS.get(hosp, {})
+        hosp_name = info.get("name", hosp)
+        out_base = Path(self.out_var.get().strip() or Path.cwd()) / f"{hosp.upper()}_BN_{pid}"
+
+        self._clear_log()
+        self.last_url = None
+        self.last_out_base = out_base
+        self._add_history(out_base, f"{hosp_name} - BN: {pid}")
+
+        self.stop_flag.clear()
+        self.start_btn.config(state="disabled")
+        if hasattr(self, "start_mri_btn"):
+            self.start_mri_btn.config(state="disabled")
+        self.stop_btn.config(state="normal")
+        self.open_btn.config(state="disabled")
+        self.retry_btn.config(state="disabled")
+        self.new_btn.config(state="disabled")
+        self.progress.start(12)
+
+        def log(msg):
+            self.msg_q.put(("log", msg))
+
+        def work():
+            try:
+                contrast_mode = ("auto" if self.contrast_mode_var.get().startswith("Auto") else "clinical")
+                pipe.download_patient_mri_all(
+                    hospital_key=hosp,
+                    patient_id=pid,
+                    out_base=out_base,
+                    log=log,
+                    headless=not self.show_var.get(),
+                    quality=int(self.quality_var.get()),
+                    save_png=bool(self.png_var.get()),
+                    contrast_mode=contrast_mode,
+                    should_stop=self.stop_flag.is_set,
+                )
+                self.msg_q.put(("done", True))
+            except Exception:
+                self.msg_q.put(("log", self._t("LỖI:\n{}").format(traceback.format_exc())))
+                self.msg_q.put(("done", False))
+
+        self.worker = threading.Thread(target=work, daemon=True)
+        self.worker.start()
+
     def _retry(self):
         """Tải lại chính link cũ vào folder cũ, GỘP thêm ảnh (bỏ trùng)."""
         if not self.last_url or not self.last_out_base:
@@ -616,6 +703,8 @@ class App:
     def _finish(self):
         self.progress.stop()
         self.start_btn.config(state="normal")
+        if hasattr(self, "start_mri_btn"):
+            self.start_mri_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.open_btn.config(state="normal")
         self.retry_btn.config(state="normal")   # cho phép thử lại link/folder vừa rồi

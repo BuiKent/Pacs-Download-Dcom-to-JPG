@@ -1257,6 +1257,264 @@ def run_pipeline(
     return dl, cv, jpg_dir
 
 
+# --------------------------------------------------------------------------- #
+#  BƯỚC 3: TỰ ĐỘNG TÌM KIẾM THEO MÃ BỆNH NHÂN TRÊN RIS (VIỆT ĐỨC & ĐẠI HỌC Y)
+# --------------------------------------------------------------------------- #
+
+HOSPITALS = {
+    "vduh": {
+        "name": "BV Việt Đức",
+        "base_url": "https://rad.vduh.org",
+        "login_url": "https://rad.vduh.org/ris/account/login",
+        "username": "bsls",
+        "password": "Bvvietduc@24",
+    },
+    "dhy": {
+        "name": "BV Đại học Y Hà Nội",
+        "base_url": "https://dhy.cdhaviet.vn",
+        "login_url": "https://dhy.cdhaviet.vn/ris/account/login",
+        "username": "bslsdhy",
+        "password": "Dhy@12345",
+    },
+}
+
+
+def search_patient_studies(
+    hospital_key: str,
+    patient_id: str,
+    modality: str = "MR",
+    log: LogFn = _default_log,
+    headless: bool = True,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> list[dict]:
+    """
+    Đăng nhập cổng RIS bệnh viện (Việt Đức / ĐH Y), tìm kiếm theo Mã Bệnh Nhân,
+    lấy danh sách các study (ca chụp) và bóc tách link viewer trực tiếp (iframe src).
+
+    Trả về danh sách dict:
+      [{"study_uid": ..., "name": ..., "date": ..., "modality": ..., "direct_url": ...}, ...]
+    """
+    from playwright.sync_api import sync_playwright
+
+    info = HOSPITALS.get(hospital_key.lower())
+    if not info:
+        log(f"❌ Không hỗ trợ bệnh viện '{hospital_key}'. Chỉ hỗ trợ: vduh, dhy")
+        return []
+
+    base_url = info["base_url"]
+    login_url = info["login_url"]
+    username = info["username"]
+    password = info["password"]
+
+    log(f"Đang đăng nhập hệ thống RIS {info['name']} ({base_url})...")
+    studies_found = []
+
+    with sync_playwright() as p:
+        browser = _launch_chromium(p, headless, log)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            viewport={"width": 1600, "height": 1000},
+            ignore_https_errors=True
+        )
+        page = context.new_page()
+
+        try:
+            # 1. Đăng nhập RIS
+            page.goto(login_url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(1000)
+
+            # Điền tài khoản + mật khẩu
+            acc_inp = (page.query_selector("input[name='account']") or
+                       page.query_selector("input[name='username']") or
+                       page.query_selector("input[type='text']"))
+            if acc_inp:
+                acc_inp.fill(username)
+            pwd_inp = (page.query_selector("input[name='password']") or
+                       page.query_selector("input[type='password']"))
+            if pwd_inp:
+                pwd_inp.fill(password)
+
+            btn = page.query_selector("button[type='submit']") or page.query_selector("button:has-text('Đăng nhập')")
+            if btn and btn.is_visible():
+                btn.click()
+            else:
+                page.keyboard.press("Enter")
+
+            page.wait_for_timeout(2000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
+            page.wait_for_timeout(1000)
+
+            log(f"✓ Đăng nhập thành công vào RIS {info['name']}!")
+
+            # 2. Tìm kiếm bệnh nhân theo mã qua REST API của RIS (không bị lỗi input ẩn / timeout)
+            log(f"Đang tìm kiếm bệnh nhân mã '{patient_id}' trên hệ thống...")
+
+            api_data = page.evaluate("""
+                (patientId) => {
+                    var urls = [
+                        '/ris/rest/study?pid=' + patientId + '&dateFrom=2019-1-1&dateTo=2030-12-31&status=all&limit=200',
+                        '/ris/rest/study?keyword=' + patientId + '&fromDate=2019-01-01&toDate=2030-12-31&limit=200',
+                        '/ris/rest/study?patientId=' + patientId + '&limit=200',
+                    ];
+                    for (var i = 0; i < urls.length; i++) {
+                        try {
+                            var xhr = new XMLHttpRequest();
+                            xhr.open('GET', urls[i], false);
+                            xhr.send();
+                            if (xhr.status === 200) {
+                                var data = JSON.parse(xhr.responseText);
+                                if (data && data.results && data.results.length > 0) {
+                                    return data.results;
+                                }
+                            }
+                        } catch(e) {}
+                    }
+                    return [];
+                }
+            """, patient_id)
+
+            studies_to_process = []
+            if api_data:
+                target_mod = (modality or "MR").strip().upper()
+                for s in api_data:
+                    m_dicom = str(s.get("modalityDicom") or s.get("modality") or "").strip().upper()
+                    desc = str(s.get("studyDescription") or "").strip().upper()
+                    
+                    # Phân loại MR/MRI (chấp nhận "MR", "MRI", hoặc có "MR " trong mô tả)
+                    is_mr = (m_dicom in ("MR", "MRI")) or ("MR" in m_dicom) or (target_mod in ("MR", "MRI") and desc.startswith("MR"))
+                    
+                    if target_mod in ("ALL", "*") or is_mr or m_dicom == target_mod:
+                        uid = s.get("studyIUID")
+                        if uid:
+                            studies_to_process.append({
+                                "uid": uid,
+                                "date": s.get("date", ""),
+                                "modality": m_dicom or "MR",
+                                "desc": s.get("studyDescription", "") or ""
+                            })
+
+            # Fallback nếu REST API không trả về: thử tìm trong DOM và URL
+            if not studies_to_process:
+                content = page.content()
+                uids = list(set(re.findall(r"studyUID=([a-zA-Z0-9\.\_\-]+)", content)))
+                for u in uids:
+                    studies_to_process.append({"uid": u, "date": "", "modality": modality, "desc": ""})
+
+            log(f"-> Tìm thấy {len(studies_to_process)} ca chụp ({modality}) cho bệnh nhân {patient_id}.")
+
+            for idx, st in enumerate(studies_to_process, 1):
+                if should_stop and should_stop():
+                    log(">>> Đã nhận lệnh dừng!")
+                    break
+
+                uid = st["uid"]
+                wrapper_url = f"{base_url}/ris/vrViewer?studyUID={uid}&viewType=VIEWERV2"
+                vpage = context.new_page()
+                direct_url = wrapper_url
+                try:
+                    vpage.goto(wrapper_url, timeout=20000, wait_until="domcontentloaded")
+                    vpage.wait_for_timeout(3000)
+                    iframes = vpage.evaluate("() => Array.from(document.querySelectorAll('iframe')).map(f => f.src)")
+                    if iframes and iframes[0]:
+                        direct_url = iframes[0]
+                except Exception as e:
+                    log(f"  ⚠️ Lỗi lấy link trực tiếp cho ca {idx}: {e}")
+                finally:
+                    vpage.close()
+
+                studies_found.append({
+                    "study_uid": uid,
+                    "name": f"Ca_{idx}_{st['date'].replace(':', '-').replace(' ', '_')}" if st['date'] else f"Study_{idx}",
+                    "date": st['date'],
+                    "modality": st['modality'],
+                    "desc": st['desc'],
+                    "direct_url": direct_url,
+                })
+
+        except Exception as e:
+            log(f"❌ Lỗi trong quá trình kết nối/tìm kiếm trên RIS: {e}")
+        finally:
+            browser.close()
+
+    return studies_found
+
+
+def download_patient_mri_all(
+    hospital_key: str,
+    patient_id: str,
+    out_base: Path,
+    log: LogFn = _default_log,
+    headless: bool = True,
+    quality: int = 100,
+    save_png: bool = False,
+    contrast_mode: str = CLINICAL,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> int:
+    """
+    Tự động đăng nhập RIS, tìm tất cả ca MRI của Mã Bệnh Nhân,
+    và tải trọn bộ tất cả các ca đó vào thư mục `out_base`.
+    """
+    info = HOSPITALS.get(hospital_key.lower())
+    hosp_name = info["name"] if info else hospital_key
+
+    log("=" * 70)
+    log(f"BẮT ĐẦU TỰ ĐỘNG TÌM & TẢI PHIM BỆNH NHÂN: {patient_id} - {hosp_name}")
+    log(f"Thư mục chính: {out_base}")
+    log("=" * 70)
+
+    studies = search_patient_studies(
+        hospital_key=hospital_key,
+        patient_id=patient_id,
+        modality="MR",
+        log=log,
+        headless=headless,
+        should_stop=should_stop,
+    )
+
+    if not studies:
+        log(f"⚠️ Không tìm thấy ca MRI nào cho mã bệnh nhân '{patient_id}' tại {hosp_name}.")
+        return 0
+
+    total_downloaded = 0
+    for idx, st in enumerate(studies, 1):
+        if should_stop and should_stop():
+            log(">>> Đã nhận lệnh dừng tải hàng loạt!")
+            break
+
+        st_out_dir = out_base / f"Ca_{idx}_{st['study_uid'][:12]}"
+        log("\n" + "-" * 60)
+        log(f"[{idx}/{len(studies)}] BẮT ĐẦU TẢI CA {idx}: StudyUID={st['study_uid']}")
+        log(f"      Link Viewer: {st['direct_url']}")
+        log(f"      Lưu tại: {st_out_dir}")
+        log("-" * 60)
+
+        try:
+            dl, cv, jpg_dir = run_pipeline(
+                url=st["direct_url"],
+                out_base=st_out_dir,
+                log=log,
+                headless=headless,
+                quality=quality,
+                save_png=save_png,
+                contrast_mode=contrast_mode,
+                should_stop=should_stop,
+            )
+            if dl:
+                total_downloaded += dl.total()
+            log(f"✓ ĐÃ TẢI XONG CA {idx}: {jpg_dir}")
+        except Exception as e:
+            log(f"❌ Lỗi khi tải ca {idx}: {e}")
+
+    log("\n" + "=" * 70)
+    log(f"HOÀN TẤT TẢI BỆNH NHÂN {patient_id}! Tổng số ca: {len(studies)}")
+    log(f"Thư mục lưu: {out_base}")
+    log("=" * 70)
+    return total_downloaded
+
+
 if __name__ == "__main__":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
