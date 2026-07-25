@@ -109,6 +109,8 @@ I18N_EN = {
     "Chưa có ảnh. Tải xong sẽ tự nạp, hoặc bấm nút 📂.": "No images yet. Will auto-load after download, or click the 📂 button.",
     "DICOM Downloader & Viewer": "DICOM Downloader & Viewer",
     "Superkent.bui@gmail.com": "Superkent.bui@gmail.com",
+    "Xác nhận thoát": "Confirm Exit",
+    "Đang có tiến trình tải / chuyển đổi ảnh đang chạy.\nBạn có chắc chắn muốn hủy và thoát ứng dụng không?": "A download/conversion process is currently running.\nAre you sure you want to cancel and exit the application?",
 
     "Thiếu link": "Missing link",
     "Hãy dán LINK viewer hợp lệ (bắt đầu bằng http).": "Please paste a valid viewer LINK (starting with http).",
@@ -251,6 +253,7 @@ class App:
         self._load_history()
         self._refresh_history_combo()
         self.root.bind("<FocusIn>", self._on_window_focus)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._poll_queue)
         self.root.after(200, lambda: self._set_sash(470))
 
@@ -300,6 +303,27 @@ class App:
         if event and event.widget == self.root:
             self._auto_paste_url()
             self._auto_paste_pid()
+
+    def _is_busy(self) -> bool:
+        """Kiểm tra xem ứng dụng có đang chạy tác vụ tải hoặc chuyển đổi ảnh hay không."""
+        return self.worker is not None and self.worker.is_alive()
+
+    def _on_close(self):
+        """Hỏi xác nhận khi thoát ứng dụng nếu có tác vụ đang chạy; thoát trực tiếp nếu rảnh."""
+        if self._is_busy():
+            ans = messagebox.askyesno(
+                self._t("Xác nhận thoát"),
+                self._t("Đang có tiến trình tải / chuyển đổi ảnh đang chạy.\nBạn có chắc chắn muốn hủy và thoát ứng dụng không?"),
+                icon="warning"
+            )
+            if not ans:
+                return
+            self._stop()
+
+        if self.cine_playing:
+            self.cine_playing = False
+
+        self.root.destroy()
 
     def _auto_paste_pid(self, event=None):
         """Tự động dán Mã Bệnh Nhân từ bộ nhớ tạm (clipboard) chỉ khi là dãy ký tự chữ/số không có khoảng trắng hoặc ký tự đặc biệt."""
