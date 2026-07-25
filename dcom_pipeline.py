@@ -221,6 +221,31 @@ def ensure_browser(log: LogFn = _default_log) -> None:
         log(f"  Không tự tải được Chromium ({e}). Hãy chạy thủ công: python -m playwright install chromium")
 
 
+# --dns-over-https-mode=off: buộc Chromium dùng DNS của HỆ ĐIỀU HÀNH. Nếu
+# không, với DNS nội bộ/split-horizon (vd PACS bệnh viện), Chromium tự hỏi
+# resolver công khai -> ra IP công khai bị chặn -> ERR_CONNECTION_TIMED_OUT
+# dù trình duyệt thường vẫn vào được.
+_BROWSER_ARGS = ["--dns-over-https-mode=off", "--disable-features=DnsOverHttps,AsyncDns"]
+
+
+def _launch_chromium(p, headless: bool, log: LogFn):
+    """
+    Ưu tiên Chrome/Edge CÓ SẴN trên máy (đỡ tải Chromium ~150MB — quan trọng
+    khi đem file .exe sang máy mới). Máy nào không có thì mới dùng Chromium
+    của Playwright (tự tải 1 lần rồi dùng mãi).
+    """
+    for channel, name in (("chrome", "Google Chrome"), ("msedge", "Microsoft Edge")):
+        try:
+            b = p.chromium.launch(headless=headless, channel=channel, args=_BROWSER_ARGS)
+            log(f"Dùng trình duyệt có sẵn trên máy: {name} (chạy ngầm).")
+            return b
+        except Exception:
+            continue
+    ensure_browser(log)
+    log("Đang mở trình duyệt ảo (Chromium)...")
+    return p.chromium.launch(headless=headless, args=_BROWSER_ARGS)
+
+
 # --------------------------------------------------------------------------- #
 #  BƯỚC 1: Tải ảnh từ viewer
 # --------------------------------------------------------------------------- #
@@ -266,8 +291,6 @@ def download_all(
     dicom_dir.mkdir(parents=True, exist_ok=True)
     raw_jpg_dir = dicom_dir.parent / "RAW_JPG"
     raw_jpg_dir.mkdir(parents=True, exist_ok=True)
-
-    ensure_browser(log)
 
     stats = DownloadStats()
     seen_hashes: set[str] = set()
@@ -399,15 +422,7 @@ def download_all(
 
     used_manifest = False
     with sync_playwright() as p:
-        log("Đang mở trình duyệt ảo (Chromium)...")
-        # --dns-over-https-mode=off: buộc Chromium dùng DNS của HỆ ĐIỀU HÀNH. Nếu
-        # không, với DNS nội bộ/split-horizon (vd PACS bệnh viện), Chromium tự hỏi
-        # resolver công khai -> ra IP công khai bị chặn -> ERR_CONNECTION_TIMED_OUT
-        # dù trình duyệt thường vẫn vào được.
-        browser = p.chromium.launch(
-            headless=headless,
-            args=["--dns-over-https-mode=off", "--disable-features=DnsOverHttps,AsyncDns"],
-        )
+        browser = _launch_chromium(p, headless, log)
         # ignore_https_errors: chấp nhận chứng chỉ tự ký của PACS (HTTPS cổng lạ).
         context = browser.new_context(viewport={"width": 1600, "height": 1000},
                                       ignore_https_errors=True)

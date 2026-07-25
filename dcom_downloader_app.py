@@ -9,7 +9,7 @@ dcom_downloader_app.py
 
 Chạy: nhấp đúp run_app.bat, hoặc:  python dcom_downloader_app.py
 
-Author: superkent.bui@gmail.com
+Superkent.bui@gmail.com
 """
 
 from __future__ import annotations
@@ -25,11 +25,48 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from PIL import Image, ImageTk, ImageOps, ImageEnhance
+from PIL import Image, ImageTk, ImageOps, ImageEnhance, ImageDraw
 
 import dcom_pipeline as pipe
 
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff")
+
+# Lịch sử tải/xem: lưu ở thư mục người dùng để file .exe đem đi đâu cũng nhớ
+HIST_FILE = Path.home() / ".dcom_downloader_history.json"
+HIST_MAX = 30
+
+
+def _make_icon(kind: str, size: int = 22) -> "ImageTk.PhotoImage":
+    """Vẽ icon màu cho nút toolbar (tkinter không hiển thị được emoji màu).
+    Vẽ ở 4x rồi thu nhỏ để nét mượt. Gọi sau khi đã có cửa sổ Tk."""
+    import math
+    s = size * 4
+    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    if kind == "folder":
+        lw = max(2, int(s * 0.02))
+        # tab + thân sau (đậm), mặt trước sáng hơn cho có chiều sâu
+        d.rounded_rectangle([s * 0.05, s * 0.13, s * 0.45, s * 0.40],
+                            radius=s * 0.06, fill="#E8A33D", outline="#C07F1F", width=lw)
+        d.rounded_rectangle([s * 0.05, s * 0.24, s * 0.95, s * 0.90],
+                            radius=s * 0.08, fill="#E8A33D", outline="#C07F1F", width=lw)
+        d.rounded_rectangle([s * 0.05, s * 0.36, s * 0.95, s * 0.90],
+                            radius=s * 0.08, fill="#FFC94D", outline="#D89A2B", width=lw)
+    else:  # refresh
+        col = "#1E88E5"
+        cx = cy = s / 2
+        r = s * 0.32
+        d.arc([cx - r, cy - r, cx + r, cy + r], start=20, end=290,
+              fill=col, width=int(s * 0.12))
+        th = math.radians(290)                      # đầu cung -> gắn mũi tên
+        ex, ey = cx + r * math.cos(th), cy + r * math.sin(th)
+        tx, ty = -math.sin(th), math.cos(th)        # hướng đi của cung
+        nx, ny = math.cos(th), math.sin(th)         # pháp tuyến
+        L = s * 0.17
+        d.polygon([(ex + tx * L, ey + ty * L),
+                   (ex + nx * L * 0.85, ey + ny * L * 0.85),
+                   (ex - nx * L * 0.85, ey - ny * L * 0.85)], fill=col)
+    return ImageTk.PhotoImage(img.resize((size, size), Image.LANCZOS))
 
 I18N_EN = {
     "1) Dán LINK viewer (còn hạn):": "1) Paste viewer LINK (active):",
@@ -47,11 +84,15 @@ I18N_EN = {
     "Mở thư mục": "Open folder",
     "↻ Thử lại (link + folder cũ)": "↻ Retry (old link + folder)",
     "＋ Tải link mới (folder mới)": "＋ New download (new folder)",
+    "Lịch sử:": "History:",
+    ">>> LỊCH SỬ: mở lại {}": ">>> HISTORY: reopened {}",
+    "Thư mục không còn tồn tại:\n{}": "Folder no longer exists:\n{}",
     "Nhật ký:": "Log:",
     "Sẵn sàng. Dán link viewer rồi bấm 'BẮT ĐẦU TẢI'.": "Ready. Paste viewer link and click 'START DOWNLOAD'.",
-    "Xem lại ảnh cũ: bấm 'Nạp thư mục ảnh...' bên phải.": "Review old images: click 'Load image folder...' on the right.",
+    "Xem lại ảnh cũ: bấm nút 📂 bên phải.": "Review old images: click the 📂 button on the right.",
     "Xung (series):": "Pulse (series):",
     "Nạp thư mục ảnh...": "Load image folder...",
+    "Nạp lại thư mục đang mở": "Reload current folder",
     "▶ Phim": "▶ Play",
     "⏸ Dừng": "⏸ Pause",
     "－ Thu nhỏ": "－ Zoom out",
@@ -65,9 +106,9 @@ I18N_EN = {
     "Sáng": "Brightness",
     "Tương phản": "Contrast",
     "Lưu ảnh...": "Save image...",
-    "Chưa có ảnh. Tải xong sẽ tự nạp, hoặc bấm 'Nạp thư mục ảnh...'.": "No images yet. Will auto-load after download, or click 'Load image folder...'.",
+    "Chưa có ảnh. Tải xong sẽ tự nạp, hoặc bấm nút 📂.": "No images yet. Will auto-load after download, or click the 📂 button.",
     "DICOM Downloader & Viewer": "DICOM Downloader & Viewer",
-    "Người tạo: superkent.bui@gmail.com": "Created by: superkent.bui@gmail.com",
+    "Superkent.bui@gmail.com": "Superkent.bui@gmail.com",
 
     "Thiếu link": "Missing link",
     "Hãy dán LINK viewer hợp lệ (bắt đầu bằng http).": "Please paste a valid viewer LINK (starting with http).",
@@ -88,6 +129,8 @@ I18N_EN = {
     "Không có ảnh": "No images",
     "Không tìm thấy ảnh JPG/PNG trong:\n{}": "No JPG/PNG images found in:\n{}",
     "Đã nạp trình xem: {} series, {} ảnh từ {}": "Loaded viewer: {} series, {} images from {}",
+    "Đã nạp lại: {} series, {} ảnh từ {}": "Reloaded: {} series, {} images from {}",
+    "Chưa có thư mục ảnh nào đang mở để nạp lại.": "No image folder is currently open to reload.",
     "Lỗi mở ảnh: {} ({})": "Error opening image: {} ({})",
     "Lưu ảnh đang xem": "Save viewing image",
     "PNG (không mất dữ liệu)": "PNG (lossless)",
@@ -185,6 +228,8 @@ class App:
         self.last_jpg_dir: "Path | None" = None
         self.last_url: "str | None" = None
         self.last_out_base: "Path | None" = None
+        self.viewer_dir: "Path | None" = None  # thư mục ảnh đang mở ở trình xem
+        self.history: "list[dict]" = []
 
         # --- trạng thái trình xem ---
         self.series_map: "dict[str, list[Path]]" = {}
@@ -203,12 +248,39 @@ class App:
         self._syncing_slider = False
 
         self._build_ui()
+        self._load_history()
+        self._refresh_history_combo()
         self.root.after(100, self._poll_queue)
         self.root.after(200, lambda: self._set_sash(470))
 
     def _t(self, vi_text):
         if getattr(self, "lang", "vi") == "vi": return vi_text
         return I18N_EN.get(vi_text, vi_text)
+
+    def _add_tooltip(self, widget, vi_text):
+        """Chú thích nhỏ khi rê chuột lên nút dạng icon (dịch lúc hiện)."""
+        tip = {"win": None}
+
+        def show(_e=None):
+            if tip["win"] is not None:
+                return
+            x = widget.winfo_rootx() + 10
+            y = widget.winfo_rooty() + widget.winfo_height() + 4
+            win = tk.Toplevel(widget)
+            win.wm_overrideredirect(True)
+            win.wm_geometry(f"+{x}+{y}")
+            tk.Label(win, text=self._t(vi_text), background="#ffffe0",
+                     relief="solid", borderwidth=1, padx=6, pady=2).pack()
+            tip["win"] = win
+
+        def hide(_e=None):
+            if tip["win"] is not None:
+                tip["win"].destroy()
+                tip["win"] = None
+
+        widget.bind("<Enter>", show)
+        widget.bind("<Leave>", hide)
+        widget.bind("<ButtonPress>", hide)
 
     def _toggle_lang(self):
         self.lang = "en" if self.lang == "vi" else "vi"
@@ -233,12 +305,12 @@ class App:
             self.play_btn.config(text=self._t("▶ Phim"))
 
         current_log = self.log_text.get("1.0", "end").strip()
-        vi_logs = "Sẵn sàng. Dán link viewer rồi bấm 'BẮT ĐẦU TẢI'.\nXem lại ảnh cũ: bấm 'Nạp thư mục ảnh...' bên phải."
-        en_logs = "Ready. Paste viewer link and click 'START DOWNLOAD'.\nReview old images: click 'Load image folder...' on the right."
+        vi_logs = "Sẵn sàng. Dán link viewer rồi bấm 'BẮT ĐẦU TẢI'.\nXem lại ảnh cũ: bấm nút 📂 bên phải."
+        en_logs = "Ready. Paste viewer link and click 'START DOWNLOAD'.\nReview old images: click the 📂 button on the right."
         if current_log == vi_logs or current_log == en_logs:
             self.log_text.config(state="normal")
             self.log_text.delete("1.0", "end")
-            self.log_text.insert("end", self._t("Sẵn sàng. Dán link viewer rồi bấm 'BẮT ĐẦU TẢI'.") + "\n" + self._t("Xem lại ảnh cũ: bấm 'Nạp thư mục ảnh...' bên phải.") + "\n")
+            self.log_text.insert("end", self._t("Sẵn sàng. Dán link viewer rồi bấm 'BẮT ĐẦU TẢI'.") + "\n" + self._t("Xem lại ảnh cũ: bấm nút 📂 bên phải.") + "\n")
             self.log_text.config(state="disabled")
 
     # ================================================================= UI
@@ -319,6 +391,14 @@ class App:
                                   command=self._new_download)
         self.new_btn.pack(side="left", padx=6)
 
+        hist_row = ttk.Frame(frm); hist_row.pack(fill="x", padx=10, pady=(0, 6))
+        ttk.Label(hist_row, text="Lịch sử:").pack(side="left")
+        self.history_var = tk.StringVar()
+        self.history_cbo = ttk.Combobox(hist_row, textvariable=self.history_var,
+                                        state="readonly")
+        self.history_cbo.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        self.history_cbo.bind("<<ComboboxSelected>>", lambda e: self._on_history_select())
+
         self.progress = ttk.Progressbar(frm, mode="indeterminate")
         self.progress.pack(fill="x", padx=10, pady=(0, 6))
 
@@ -333,11 +413,11 @@ class App:
 
         footer = ttk.Frame(frm)
         footer.pack(fill="x", padx=10, pady=(0, 5))
-        ttk.Label(footer, text="Người tạo: superkent.bui@gmail.com",
+        ttk.Label(footer, text="Superkent.bui@gmail.com",
                   font=("Segoe UI", 9, "italic"), foreground="gray").pack(side="right")
 
         self._log(self._t("Sẵn sàng. Dán link viewer rồi bấm 'BẮT ĐẦU TẢI'."))
-        self._log(self._t("Xem lại ảnh cũ: bấm 'Nạp thư mục ảnh...' bên phải."))
+        self._log(self._t("Xem lại ảnh cũ: bấm nút 📂 bên phải."))
 
     # ------------------------------------------------ CỘT PHẢI (trình xem)
     def _build_right(self, frm):
@@ -348,7 +428,14 @@ class App:
         self.series_cbo = ttk.Combobox(tb1, textvariable=self.series_var, state="readonly", width=36)
         self.series_cbo.pack(side="left", padx=4)
         self.series_cbo.bind("<<ComboboxSelected>>", lambda e: self._on_series_change())
-        ttk.Button(tb1, text="Nạp thư mục ảnh...", command=self._load_folder_dialog).pack(side="left", padx=4)
+        self._icon_folder = _make_icon("folder")    # giữ tham chiếu kẻo bị GC
+        self._icon_refresh = _make_icon("refresh")
+        load_btn = ttk.Button(tb1, image=self._icon_folder, command=self._load_folder_dialog)
+        load_btn.pack(side="left", padx=(4, 2))
+        self._add_tooltip(load_btn, "Nạp thư mục ảnh...")
+        refresh_btn = ttk.Button(tb1, image=self._icon_refresh, command=self._reload_dir)
+        refresh_btn.pack(side="left", padx=2)
+        self._add_tooltip(refresh_btn, "Nạp lại thư mục đang mở")
 
         # Thanh 2: điều hướng lát cắt + phim
         tb2 = ttk.Frame(frm); tb2.pack(fill="x", padx=6, pady=2)
@@ -394,7 +481,7 @@ class App:
         self.canvas.bind("<Configure>", lambda e: self._render())
         self.canvas.bind("<MouseWheel>", self._on_wheel)
 
-        self.status_lbl = ttk.Label(frm, text="Chưa có ảnh. Tải xong sẽ tự nạp, hoặc bấm 'Nạp thư mục ảnh...'.")
+        self.status_lbl = ttk.Label(frm, text="Chưa có ảnh. Tải xong sẽ tự nạp, hoặc bấm nút 📂.")
         self.status_lbl.pack(anchor="w", padx=8, pady=(0, 6))
 
         # phím tắt
@@ -444,8 +531,11 @@ class App:
         self._log(self._t("    Folder mới: {}").format(new_out))
 
     def _launch(self, url, out_base, resume):
+        if not resume:
+            self._clear_log()  # link + folder mới -> nhật ký cũ không còn liên quan
         self.last_url = url
         self.last_out_base = Path(out_base)
+        self._add_history(out_base, url)
         self.stop_flag.clear()
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
@@ -524,6 +614,8 @@ class App:
             (r"Thử lại: đã có sẵn (\d+) ảnh trong folder — sẽ bổ sung ảnh mới, bỏ trùng\.", r"Retry: found \1 existing images in folder — will append new images and skip duplicates."),
             (r"  \.\.\.đã tải (\d+) ảnh \(DICOM: (\d+)\)", r"  ...downloaded \1 images (DICOM: \2)"),
             (r"Đang mở trình duyệt ảo \(Chromium\)\.\.\.", r"Opening virtual browser (Chromium)..."),
+            (r"Dùng trình duyệt có sẵn trên máy: (.+) \(chạy ngầm\)\.", r"Using browser already on this machine: \1 (headless)."),
+            (r">>> LỊCH SỬ: mở lại (.+)", r">>> HISTORY: reopened \1"),
             (r"Đang tải trang viewer \(không chỉnh sửa link\)\.\.\.", r"Loading viewer page (not modifying link)..."),
             (r"  Cảnh báo khi tải trang: (.+)", r"  Warning while loading page: \1"),
             (r"!!! Link đã HẾT HẠN \(urlExpired\)\. Hãy lấy link mới từ trang xem rồi thử lại\.", r"!!! Link has EXPIRED (urlExpired). Please get a new link from the viewer page and try again."),
@@ -574,11 +666,75 @@ class App:
         self.log_text.see("end")
         self.log_text.config(state="disabled")
 
+    def _clear_log(self):
+        self.log_text.config(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.config(state="disabled")
+
+    # ========================================================== LỊCH SỬ
+    def _load_history(self):
+        try:
+            import json
+            data = json.loads(HIST_FILE.read_text(encoding="utf-8"))
+            self.history = [h for h in data if isinstance(h, dict) and h.get("folder")]
+        except Exception:
+            self.history = []
+
+    def _save_history(self):
+        try:
+            import json
+            HIST_FILE.write_text(json.dumps(self.history, ensure_ascii=False, indent=1),
+                                 encoding="utf-8")
+        except Exception:
+            pass  # không để lỗi ghi lịch sử làm hỏng việc chính
+
+    def _add_history(self, folder, url=None):
+        """Thêm/đưa lên đầu 1 mục lịch sử. Cùng folder thì CẬP NHẬT link mới."""
+        folder = str(folder)
+        key = folder.lower()
+        old = next((h for h in self.history
+                    if str(h.get("folder", "")).lower() == key), None)
+        if old:
+            self.history.remove(old)
+            if not url:
+                url = old.get("url") or ""
+        self.history.insert(0, {"folder": folder, "url": url or "",
+                                "time": datetime.now().strftime("%d/%m %H:%M")})
+        del self.history[HIST_MAX:]
+        self._save_history()
+        self._refresh_history_combo()
+
+    def _refresh_history_combo(self):
+        vals = [f'{h.get("time", "")}  •  {Path(str(h.get("folder", "?"))).name}'
+                for h in self.history]
+        self.history_cbo.config(values=vals)
+
+    def _on_history_select(self):
+        i = self.history_cbo.current()
+        if i < 0 or i >= len(self.history):
+            return
+        h = self.history[i]
+        folder = Path(str(h.get("folder", "")))
+        url = h.get("url") or ""
+        self.out_var.set(str(folder))
+        if url:  # nạp lại link cũ để có thể sửa/tải lại
+            self.url_var.set(url)
+            self.last_url = url
+            self.last_out_base = folder
+            self.retry_btn.config(state="normal")
+        self._log(self._t(">>> LỊCH SỬ: mở lại {}").format(folder))
+        if folder.exists():
+            self._load_dir(folder)
+        else:
+            messagebox.showinfo(self._t("Thư mục"),
+                                self._t("Thư mục không còn tồn tại:\n{}").format(folder))
+
     # ========================================================== TRÌNH XEM
     def _load_folder_dialog(self):
         start = str(self.last_jpg_dir or Path.cwd())
         d = filedialog.askdirectory(title=self._t("Chọn thư mục chứa ảnh (JPG/PNG)"), initialdir=start)
         if d:
+            self._add_history(d)  # nhớ cả folder chỉ mở xem, không tải
             self._load_dir(Path(d))
 
     def _load_dir(self, base: Path):
@@ -590,6 +746,7 @@ class App:
         if not series:
             messagebox.showinfo(self._t("Không có ảnh"), self._t("Không tìm thấy ảnh JPG/PNG trong:\n{}").format(base))
             return
+        self.viewer_dir = Path(base)
         self.series_map = series
         names = list(series.keys())
         self.series_cbo.config(values=names)
@@ -597,6 +754,40 @@ class App:
         total = sum(len(v) for v in series.values())
         self._log(self._t("Đã nạp trình xem: {} series, {} ảnh từ {}").format(len(names), total, base))
         self._on_series_change()
+
+    def _reload_dir(self):
+        """Nạp lại thư mục ảnh đang mở: quét thêm series/ảnh mới xuất hiện
+        (vd đang tải dở), giữ nguyên series và lát cắt đang xem."""
+        base = self.viewer_dir or self.last_jpg_dir
+        if not base or not Path(base).exists():
+            messagebox.showinfo(self._t("Không có ảnh"),
+                                self._t("Chưa có thư mục ảnh nào đang mở để nạp lại."))
+            return
+        cur_name = self.series_var.get()
+        cur_idx = getattr(self, "cur_index", 0)
+        try:
+            series = scan_series(Path(base))
+        except Exception as e:
+            messagebox.showerror(self._t("Lỗi"), self._t("Không đọc được thư mục:\n{}").format(e))
+            return
+        if not series:
+            messagebox.showinfo(self._t("Không có ảnh"), self._t("Không tìm thấy ảnh JPG/PNG trong:\n{}").format(base))
+            return
+        self.viewer_dir = Path(base)
+        self.series_map = series
+        names = list(series.keys())
+        self.series_cbo.config(values=names)
+        total = sum(len(v) for v in series.values())
+        self._log(self._t("Đã nạp lại: {} series, {} ảnh từ {}").format(len(names), total, base))
+        if cur_name in series:  # giữ nguyên chỗ đang xem
+            self.series_var.set(cur_name)
+            self.cur_files = series[cur_name]
+            n = len(self.cur_files)
+            self.slice_scale.config(from_=0, to=max(0, n - 1))
+            self._show_index(min(cur_idx, n - 1))
+        else:
+            self.series_var.set(names[0])
+            self._on_series_change()
 
     def _on_series_change(self):
         name = self.series_var.get()
