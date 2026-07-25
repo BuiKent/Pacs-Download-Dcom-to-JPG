@@ -250,6 +250,7 @@ class App:
         self._build_ui()
         self._load_history()
         self._refresh_history_combo()
+        self.root.bind("<FocusIn>", self._on_window_focus)
         self.root.after(100, self._poll_queue)
         self.root.after(200, lambda: self._set_sash(470))
 
@@ -281,6 +282,23 @@ class App:
         widget.bind("<Enter>", show)
         widget.bind("<Leave>", hide)
         widget.bind("<ButtonPress>", hide)
+
+    def _auto_paste_url(self, event=None):
+        """Tự động dán link mới từ bộ nhớ tạm (clipboard) vào ô link khi nhấp chuột/focus."""
+        try:
+            clip = self.root.clipboard_get().strip()
+        except Exception:
+            return
+        if clip and clip.lower().startswith(("http://", "https://", "www.")):
+            current = self.url_var.get().strip()
+            if current != clip:
+                self.url_var.set(clip)
+                self.url_ent.select_range(0, tk.END)
+                self.url_ent.icursor(tk.END)
+
+    def _on_window_focus(self, event=None):
+        if event and event.widget == self.root:
+            self._auto_paste_url()
 
     def _toggle_lang(self):
         self.lang = "en" if self.lang == "vi" else "vi"
@@ -345,7 +363,10 @@ class App:
         ttk.Label(frm, text="1) Dán LINK viewer (còn hạn):",
                   font=("Segoe UI", 10, "bold")).pack(anchor="w", **pad)
         self.url_var = tk.StringVar()
-        ttk.Entry(frm, textvariable=self.url_var).pack(fill="x", padx=10)
+        self.url_ent = ttk.Entry(frm, textvariable=self.url_var)
+        self.url_ent.pack(fill="x", padx=10)
+        self.url_ent.bind("<FocusIn>", self._auto_paste_url)
+        self.url_ent.bind("<Button-1>", self._auto_paste_url)
 
         ttk.Label(frm, text="2) Thư mục lưu:",
                   font=("Segoe UI", 10, "bold")).pack(anchor="w", **pad)
