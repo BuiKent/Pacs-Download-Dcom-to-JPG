@@ -302,12 +302,12 @@ class App:
             self._auto_paste_pid()
 
     def _auto_paste_pid(self, event=None):
-        """Tự động dán Mã Bệnh Nhân từ bộ nhớ tạm (clipboard) nếu là chuỗi số hoặc mã BN."""
+        """Tự động dán Mã Bệnh Nhân từ bộ nhớ tạm (clipboard) chỉ khi là dãy ký tự chữ/số không có khoảng trắng hoặc ký tự đặc biệt."""
         try:
             clip = self.root.clipboard_get().strip()
         except Exception:
             return
-        if clip and (clip.isdigit() or (len(clip) >= 4 and not clip.startswith("http"))):
+        if clip and re.fullmatch(r"[A-Za-z0-9]+", clip):
             current = self.pid_var.get().strip()
             if current != clip:
                 self.pid_var.set(clip)
@@ -572,6 +572,10 @@ class App:
         if not pid:
             messagebox.showwarning(self._t("Thiếu mã bệnh nhân"),
                                    self._t("Vui lòng nhập MÃ BỆNH NHÂN (vd: 2605032022)."))
+            return
+        if not re.fullmatch(r"[A-Za-z0-9]+", pid):
+            messagebox.showwarning(self._t("Mã bệnh nhân không hợp lệ"),
+                                   self._t("Mã bệnh nhân chỉ bao gồm chữ cái và chữ số, không chứa khoảng trắng hoặc ký tự đặc biệt."))
             return
 
         hosp = self.hosp_var.get()
