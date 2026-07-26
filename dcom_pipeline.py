@@ -1464,6 +1464,60 @@ def search_patient_studies(
     return studies_found
 
 
+def download_studies_list(
+    studies: list[dict],
+    out_base: Path,
+    log: LogFn = _default_log,
+    headless: bool = True,
+    quality: int = 100,
+    save_png: bool = False,
+    contrast_mode: str = CLINICAL,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> int:
+    """
+    Tải trực tiếp danh sách các ca phim đã có sẵn `direct_url` (không cần đăng nhập RIS lại lần 2).
+    """
+    if not studies:
+        log("⚠️ Danh sách ca phim rỗng.")
+        return 0
+
+    total_downloaded = 0
+    for idx, st in enumerate(studies, 1):
+        if should_stop and should_stop():
+            log(">>> Đã nhận lệnh dừng tải hàng loạt!")
+            break
+
+        st_out_dir = out_base / f"Ca_{idx}_{st['study_uid'][:12]}"
+        log("\n" + "-" * 60)
+        log(f"[{idx}/{len(studies)}] BẮT ĐẦU TẢI CA {idx}: StudyUID={st['study_uid']}")
+        log(f"      Link Viewer: {st['direct_url']}")
+        log(f"      Lưu tại: {st_out_dir}")
+        log("-" * 60)
+
+        try:
+            dl, cv, jpg_dir = run_pipeline(
+                url=st["direct_url"],
+                out_base=st_out_dir,
+                log=log,
+                headless=headless,
+                quality=quality,
+                save_png=save_png,
+                contrast_mode=contrast_mode,
+                should_stop=should_stop,
+            )
+            if dl:
+                total_downloaded += dl.total()
+            log(f"✓ ĐÃ TẢI XONG CA {idx}: {jpg_dir}")
+        except Exception as e:
+            log(f"❌ Lỗi khi tải ca {idx}: {e}")
+
+    log("\n" + "=" * 70)
+    log(f"HOÀN TẤT TẢI PHIM BỆNH NHÂN! Tổng số ca đã tải: {len(studies)}")
+    log(f"Thư mục lưu: {out_base}")
+    log("=" * 70)
+    return total_downloaded
+
+
 def download_patient_mri_all(
     hospital_key: str,
     patient_id: str,
@@ -1505,41 +1559,16 @@ def download_patient_mri_all(
         log(f"⚠️ Không tìm thấy ca phim MRI/CT nào cho mã bệnh nhân '{patient_id}' tại {hosp_name}.")
         return 0
 
-    total_downloaded = 0
-    for idx, st in enumerate(studies, 1):
-        if should_stop and should_stop():
-            log(">>> Đã nhận lệnh dừng tải hàng loạt!")
-            break
-
-        st_out_dir = out_base / f"Ca_{idx}_{st['study_uid'][:12]}"
-        log("\n" + "-" * 60)
-        log(f"[{idx}/{len(studies)}] BẮT ĐẦU TẢI CA {idx}: StudyUID={st['study_uid']}")
-        log(f"      Link Viewer: {st['direct_url']}")
-        log(f"      Lưu tại: {st_out_dir}")
-        log("-" * 60)
-
-        try:
-            dl, cv, jpg_dir = run_pipeline(
-                url=st["direct_url"],
-                out_base=st_out_dir,
-                log=log,
-                headless=headless,
-                quality=quality,
-                save_png=save_png,
-                contrast_mode=contrast_mode,
-                should_stop=should_stop,
-            )
-            if dl:
-                total_downloaded += dl.total()
-            log(f"✓ ĐÃ TẢI XONG CA {idx}: {jpg_dir}")
-        except Exception as e:
-            log(f"❌ Lỗi khi tải ca {idx}: {e}")
-
-    log("\n" + "=" * 70)
-    log(f"HOÀN TẤT TẢI BỆNH NHÂN {patient_id}! Tổng số ca: {len(studies)}")
-    log(f"Thư mục lưu: {out_base}")
-    log("=" * 70)
-    return total_downloaded
+    return download_studies_list(
+        studies=studies,
+        out_base=out_base,
+        log=log,
+        headless=headless,
+        quality=quality,
+        save_png=save_png,
+        contrast_mode=contrast_mode,
+        should_stop=should_stop,
+    )
 
 
 if __name__ == "__main__":

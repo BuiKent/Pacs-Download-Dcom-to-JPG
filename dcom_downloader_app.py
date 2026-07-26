@@ -793,19 +793,16 @@ class App:
         self.worker = threading.Thread(target=work_search, daemon=True)
         self.worker.start()
 
-    def _start_downloading_patient_studies(self, hosp: str, pid: str, out_base: Path, selected_uids: Optional[list[str]] = None):
+    def _start_downloading_patient_studies(self, hosp: str, pid: str, out_base: Path, selected_studies: list[dict]):
         def log(msg):
             self.msg_q.put(("log", msg))
 
         def work_download():
             try:
                 contrast_mode = ("auto" if self.contrast_mode_var.get().startswith("Auto") else "clinical")
-                pipe.download_patient_mri_all(
-                    hospital_key=hosp,
-                    patient_id=pid,
+                pipe.download_studies_list(
+                    studies=selected_studies,
                     out_base=out_base,
-                    modality="MR_CT",
-                    selected_uids=selected_uids,
                     log=log,
                     headless=not self.show_var.get(),
                     quality=int(self.quality_var.get()),
@@ -901,14 +898,15 @@ class App:
                     if not studies:
                         self._finish()
                     elif len(studies) == 1:
-                        self._start_downloading_patient_studies(hosp, pid, out_base, selected_uids=None)
+                        self._start_downloading_patient_studies(hosp, pid, out_base, selected_studies=studies)
                     else:
                         self.progress.stop()
                         dlg = StudySelectionDialog(self.root, studies, pid, hosp_name, self)
                         self.root.wait_window(dlg)
                         if dlg.result_uids:
+                            selected_studies = [st for st in studies if st["study_uid"] in dlg.result_uids]
                             self.progress.start(12)
-                            self._start_downloading_patient_studies(hosp, pid, out_base, selected_uids=dlg.result_uids)
+                            self._start_downloading_patient_studies(hosp, pid, out_base, selected_studies=selected_studies)
                         else:
                             self._log(self._t(">>> Đã hủy chọn ca chụp."))
                             self._finish()
