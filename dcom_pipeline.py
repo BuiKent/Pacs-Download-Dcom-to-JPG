@@ -230,19 +230,40 @@ _BROWSER_ARGS = ["--dns-over-https-mode=off", "--disable-features=DnsOverHttps,A
 
 def _launch_chromium(p, headless: bool, log: LogFn):
     """
-    Ưu tiên Chrome/Edge CÓ SẴN trên máy (đỡ tải Chromium ~150MB — quan trọng
-    khi đem file .exe sang máy mới). Máy nào không có thì mới dùng Chromium
-    của Playwright (tự tải 1 lần rồi dùng mãi).
+    Tự động ưu tiên trình duyệt theo thứ tự:
+    1. Google Chrome (nếu máy có sẵn)
+    2. Safari / WebKit (nếu chạy trên macOS)
+    3. Microsoft Edge (nếu máy có sẵn mặc định trên Windows)
+    4. Tải ngầm Chromium của Playwright (~150MB, phương án dự phòng cuối cùng)
     """
-    for channel, name in (("chrome", "Google Chrome"), ("msedge", "Microsoft Edge")):
-        try:
-            b = p.chromium.launch(headless=headless, channel=channel, args=_BROWSER_ARGS)
-            log(f"Dùng trình duyệt có sẵn trên máy: {name} (chạy ngầm).")
+    # 1. Ưu tiên Google Chrome
+    try:
+        b = p.chromium.launch(headless=headless, channel="chrome", args=_BROWSER_ARGS)
+        log("Dùng trình duyệt có sẵn trên máy: Google Chrome (chạy ngầm).")
+        return b
+    except Exception:
+        pass
+
+    # 2. Thử Safari / WebKit (nếu chạy trên macOS)
+    try:
+        if hasattr(p, "webkit"):
+            b = p.webkit.launch(headless=headless)
+            log("Dùng trình duyệt có sẵn trên máy: Safari / WebKit (chạy ngầm).")
             return b
-        except Exception:
-            continue
+    except Exception:
+        pass
+
+    # 3. Thử Microsoft Edge (có sẵn mặc định trên Windows)
+    try:
+        b = p.chromium.launch(headless=headless, channel="msedge", args=_BROWSER_ARGS)
+        log("Dùng trình duyệt có sẵn trên máy: Microsoft Edge (chạy ngầm).")
+        return b
+    except Exception:
+        pass
+
+    # 4. Phương án cuối: Tự động tải & dùng Chromium ảo của Playwright
     ensure_browser(log)
-    log("Đang mở trình duyệt ảo (Chromium)...")
+    log("Đang mở trình duyệt dự phòng (Chromium)...")
     return p.chromium.launch(headless=headless, args=_BROWSER_ARGS)
 
 
