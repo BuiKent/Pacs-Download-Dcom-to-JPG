@@ -111,10 +111,10 @@ I18N_EN = {
     "Superkent.bui@gmail.com": "Superkent.bui@gmail.com",
     "Xác nhận thoát": "Confirm Exit",
     "Đang có tiến trình tải / chuyển đổi ảnh đang chạy.\nBạn có chắc chắn muốn hủy và thoát ứng dụng không?": "A download/conversion process is currently running.\nAre you sure you want to cancel and exit the application?",
-    "🏥 TẢI TOÀN BỘ MRI THEO MÃ BỆNH NHÂN (RIS)": "🏥 DOWNLOAD ALL MRIs BY PATIENT ID (RIS)",
+    "🏥 TẢI TOÀN BỘ MRI / CT THEO MÃ BỆNH NHÂN (RIS)": "🏥 DOWNLOAD ALL MRI & CT BY PATIENT ID (RIS)",
     "Chọn viện:": "Select hospital:",
     "Mã BN:": "Patient ID:",
-    "🔍 TÌM & TẢI TẤT CẢ MRI": "🔍 SEARCH & DOWNLOAD ALL MRIs",
+    "🔍 TÌM & TẢI MRI / CT SỌ NÃO": "🔍 SEARCH & DOWNLOAD MRI & CT SCANS",
     "🔗 HOẶC DÁN LINK VIEWER TRỰC TIẾP:": "🔗 OR PASTE DIRECT VIEWER LINK:",
     "Thiếu mã bệnh nhân": "Missing Patient ID",
     "Vui lòng nhập MÃ BỆNH NHÂN (vd: 2605032022).": "Please enter PATIENT ID (e.g., 2605032022).",
@@ -408,7 +408,7 @@ class App:
         self.lang_btn.pack(side="right")
 
         # Frame Tải tự động theo Mã Bệnh Nhân (RIS)
-        ris_frame = ttk.LabelFrame(frm, text="🏥 TẢI TOÀN BỘ MRI THEO MÃ BỆNH NHÂN (RIS)")
+        ris_frame = ttk.LabelFrame(frm, text="🏥 TẢI TOÀN BỘ MRI / CT THEO MÃ BỆNH NHÂN (RIS)")
         ris_frame.pack(fill="x", padx=10, pady=(6, 4))
 
         rf1 = ttk.Frame(ris_frame); rf1.pack(fill="x", padx=6, pady=3)
@@ -425,7 +425,7 @@ class App:
         self.pid_ent.bind("<FocusIn>", self._auto_paste_pid)
         self.pid_ent.bind("<Button-1>", self._auto_paste_pid)
 
-        self.start_mri_btn = ttk.Button(rf2, text="🔍 TÌM & TẢI TẤT CẢ MRI", command=self._start_mri_patient)
+        self.start_mri_btn = ttk.Button(rf2, text="🔍 TÌM & TẢI MRI / CT SỌ NÃO", command=self._start_mri_patient)
         self.start_mri_btn.pack(side="left", fill="x", expand=True)
 
         ttk.Label(frm, text="🔗 HOẶC DÁN LINK VIEWER TRỰC TIẾP:",

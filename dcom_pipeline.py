@@ -1287,17 +1287,14 @@ HOSPITALS = {
 def search_patient_studies(
     hospital_key: str,
     patient_id: str,
-    modality: str = "MR",
+    modality: str = "MR_CT",
     log: LogFn = _default_log,
     headless: bool = True,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> list[dict]:
     """
     Đăng nhập cổng RIS bệnh viện (Việt Đức / ĐH Y), tìm kiếm theo Mã Bệnh Nhân,
-    lấy danh sách các study (ca chụp) và bóc tách link viewer trực tiếp (iframe src).
-
-    Trả về danh sách dict:
-      [{"study_uid": ..., "name": ..., "date": ..., "modality": ..., "direct_url": ...}, ...]
+    lấy danh sách các study (ca chụp MRI / CT sọ não) và bóc tách link viewer trực tiếp.
     """
     from playwright.sync_api import sync_playwright
 
@@ -1339,7 +1336,8 @@ def search_patient_studies(
             if pwd_inp:
                 pwd_inp.fill(password)
 
-            btn = page.query_selector("button[type='submit']") or page.query_selector("button:has-text('Đăng nhập')")
+            btn = (page.query_selector("button[type='submit']:not(.bv-hidden-submit)") or
+                   page.query_selector("button:has-text('Đăng nhập')"))
             if btn and btn.is_visible():
                 btn.click()
             else:
@@ -1350,7 +1348,12 @@ def search_patient_studies(
                 page.wait_for_load_state("networkidle", timeout=15000)
             except Exception:
                 pass
-            page.wait_for_timeout(1000)
+
+            try:
+                page.goto(f"{base_url}/ris/study/reading", wait_until="domcontentloaded", timeout=10000)
+                page.wait_for_timeout(1000)
+            except Exception:
+                pass
 
             log(f"✓ Đăng nhập thành công vào RIS {info['name']}!")
 
@@ -1383,21 +1386,35 @@ def search_patient_studies(
 
             studies_to_process = []
             if api_data:
-                target_mod = (modality or "MR").strip().upper()
+                target_mod = (modality or "MR_CT").strip().upper()
                 for s in api_data:
                     m_dicom = str(s.get("modalityDicom") or s.get("modality") or "").strip().upper()
                     desc = str(s.get("studyDescription") or "").strip().upper()
                     
-                    # Phân loại MR/MRI (chấp nhận "MR", "MRI", hoặc có "MR " trong mô tả)
-                    is_mr = (m_dicom in ("MR", "MRI")) or ("MR" in m_dicom) or (target_mod in ("MR", "MRI") and desc.startswith("MR"))
+                    # Phân loại MR/MRI (Cộng hưởng từ)
+                    is_mr = (m_dicom in ("MR", "MRI")) or ("MR" in m_dicom) or desc.startswith("MR") or ("CONG HUONG TU" in desc) or ("CỘNG HƯỞNG TỪ" in desc)
                     
-                    if target_mod in ("ALL", "*") or is_mr or m_dicom == target_mod:
+                    # Phân loại CT/CLVT (Cắt lớp vi tính)
+                    is_ct = (m_dicom in ("CT", "CLVT", "CAT")) or ("CT" in m_dicom) or desc.startswith("CT") or desc.startswith("CLVT") or ("CAT LOP" in desc) or ("CẮT LỚP" in desc)
+                    
+                    if target_mod in ("ALL", "*"):
+                        match = True
+                    elif target_mod in ("MR_CT", "NEURO", "BRAIN", "MR/CT", "CT/MR"):
+                        match = is_mr or is_ct
+                    elif target_mod in ("MR", "MRI"):
+                        match = is_mr
+                    elif target_mod in ("CT", "CLVT"):
+                        match = is_ct
+                    else:
+                        match = (m_dicom == target_mod) or (target_mod in m_dicom) or (target_mod in desc)
+
+                    if match:
                         uid = s.get("studyIUID")
                         if uid:
                             studies_to_process.append({
                                 "uid": uid,
                                 "date": s.get("date", ""),
-                                "modality": m_dicom or "MR",
+                                "modality": m_dicom or ("CT" if is_ct else "MR"),
                                 "desc": s.get("studyDescription", "") or ""
                             })
 
@@ -1408,7 +1425,7 @@ def search_patient_studies(
                 for u in uids:
                     studies_to_process.append({"uid": u, "date": "", "modality": modality, "desc": ""})
 
-            log(f"-> Tìm thấy {len(studies_to_process)} ca chụp ({modality}) cho bệnh nhân {patient_id}.")
+            log(f"-> Tìm thấy {len(studies_to_process)} ca chụp (MRI / CT) cho bệnh nhân {patient_id}.")
 
             for idx, st in enumerate(studies_to_process, 1):
                 if should_stop and should_stop():
@@ -1451,6 +1468,7 @@ def download_patient_mri_all(
     hospital_key: str,
     patient_id: str,
     out_base: Path,
+    modality: str = "MR_CT",
     log: LogFn = _default_log,
     headless: bool = True,
     quality: int = 100,
@@ -1459,28 +1477,28 @@ def download_patient_mri_all(
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> int:
     """
-    Tự động đăng nhập RIS, tìm tất cả ca MRI của Mã Bệnh Nhân,
+    Tự động đăng nhập RIS, tìm tất cả ca MRI & CT (Cắt lớp vi tính) sọ não của Mã Bệnh Nhân,
     và tải trọn bộ tất cả các ca đó vào thư mục `out_base`.
     """
     info = HOSPITALS.get(hospital_key.lower())
     hosp_name = info["name"] if info else hospital_key
 
     log("=" * 70)
-    log(f"BẮT ĐẦU TỰ ĐỘNG TÌM & TẢI PHIM BỆNH NHÂN: {patient_id} - {hosp_name}")
+    log(f"BẮT ĐẦU TỰ ĐỘNG TÌM & TẢI PHIM BỆNH NHÂN (MRI / CT): {patient_id} - {hosp_name}")
     log(f"Thư mục chính: {out_base}")
     log("=" * 70)
 
     studies = search_patient_studies(
         hospital_key=hospital_key,
         patient_id=patient_id,
-        modality="MR",
+        modality=modality,
         log=log,
         headless=headless,
         should_stop=should_stop,
     )
 
     if not studies:
-        log(f"⚠️ Không tìm thấy ca MRI nào cho mã bệnh nhân '{patient_id}' tại {hosp_name}.")
+        log(f"⚠️ Không tìm thấy ca phim MRI/CT nào cho mã bệnh nhân '{patient_id}' tại {hosp_name}.")
         return 0
 
     total_downloaded = 0
