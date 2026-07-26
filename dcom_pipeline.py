@@ -1469,6 +1469,7 @@ def download_patient_mri_all(
     patient_id: str,
     out_base: Path,
     modality: str = "MR_CT",
+    selected_uids: Optional[list[str]] = None,
     log: LogFn = _default_log,
     headless: bool = True,
     quality: int = 100,
@@ -1496,6 +1497,9 @@ def download_patient_mri_all(
         headless=headless,
         should_stop=should_stop,
     )
+
+    if selected_uids is not None:
+        studies = [s for s in studies if s["study_uid"] in selected_uids]
 
     if not studies:
         log(f"⚠️ Không tìm thấy ca phim MRI/CT nào cho mã bệnh nhân '{patient_id}' tại {hosp_name}.")

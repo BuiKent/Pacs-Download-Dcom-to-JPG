@@ -120,6 +120,19 @@ I18N_EN = {
     "Vui lòng nhập MÃ BỆNH NHÂN (vd: 2605032022).": "Please enter PATIENT ID (e.g., 2605032022).",
     "Mã bệnh nhân không hợp lệ": "Invalid Patient ID",
     "Mã bệnh nhân chỉ bao gồm chữ cái và chữ số, không chứa khoảng trắng hoặc ký tự đặc biệt.": "Patient ID must contain letters and numbers only, with no spaces or special characters.",
+    "Chọn ca chụp cần tải - BN: ": "Select studies to download - Patient: ",
+    "Tích chọn các ca chụp bạn muốn tải về, hoặc bấm 'TẢI TẤT CẢ':": "Check the studies you want to download, or click 'DOWNLOAD ALL':",
+    "Chọn": "Select",
+    "Ngày chụp": "Study Date",
+    "Loại phim": "Modality",
+    "Mô tả ca chụp": "Study Description",
+    "☑ Chọn tất cả": "☑ Select All",
+    "☐ Bỏ chọn tất cả": "☐ Deselect All",
+    "❌ Hủy": "❌ Cancel",
+    "⚡ TẢI TẤT CẢ": "⚡ DOWNLOAD ALL",
+    "Chưa chọn ca nào": "No study selected",
+    "Vui lòng tích chọn ít nhất 1 ca chụp để tải về!": "Please check at least 1 study to download!",
+    ">>> Đã hủy chọn ca chụp.": ">>> Canceled study selection.",
 
     "Thiếu link": "Missing link",
     "Hãy dán LINK viewer hợp lệ (bắt đầu bằng http).": "Please paste a valid viewer LINK (starting with http).",
@@ -198,6 +211,133 @@ def scan_series(base: Path) -> "dict[str, list[Path]]":
             series[sub.name] = ims
 
     return series
+
+
+# --------------------------------------------------------------------------- #
+#  BẢNG TÍCH CHỌN CA CHỤP (STUDY SELECTION DIALOG)
+# --------------------------------------------------------------------------- #
+
+class StudySelectionDialog(tk.Toplevel):
+    def __init__(self, parent, studies: list[dict], patient_id: str, hosp_name: str, app_instance):
+        super().__init__(parent)
+        self.studies = studies
+        self.patient_id = patient_id
+        self.hosp_name = hosp_name
+        self.app = app_instance
+        self.result_uids = None  # None = Canceled, list = selected UIDs
+
+        self.title(self.app._t("Chọn ca chụp cần tải - BN: ") + patient_id)
+        self.geometry("780x480")
+        self.minsize(640, 360)
+        self.transient(parent)
+        self.grab_set()
+
+        # Header
+        top_frame = ttk.Frame(self, padding=10)
+        top_frame.pack(fill="x")
+        header_lbl = f"🏥 TÌM THẤY {len(studies)} CA CHỤP CHO BỆNH NHÂN: {patient_id} ({hosp_name})"
+        ttk.Label(top_frame, text=header_lbl, font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(top_frame, text=self.app._t("Tích chọn các ca chụp bạn muốn tải về, hoặc bấm 'TẢI TẤT CẢ':"),
+                  foreground="gray").pack(anchor="w", pady=(2, 0))
+
+        # Table area
+        tree_frame = ttk.Frame(self, padding=(10, 0, 10, 5))
+        tree_frame.pack(fill="both", expand=True)
+
+        cols = ("check", "date", "modality", "desc")
+        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="none")
+        self.tree.heading("check", text=self.app._t("Chọn"), anchor="center")
+        self.tree.heading("date", text=self.app._t("Ngày chụp"), anchor="w")
+        self.tree.heading("modality", text=self.app._t("Loại phim"), anchor="center")
+        self.tree.heading("desc", text=self.app._t("Mô tả ca chụp"), anchor="w")
+
+        self.tree.column("check", width=70, anchor="center")
+        self.tree.column("date", width=160, anchor="w")
+        self.tree.column("modality", width=90, anchor="center")
+        self.tree.column("desc", width=380, anchor="w")
+
+        vbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vbar.set)
+
+        self.tree.pack(side="left", fill="both", expand=True)
+        vbar.pack(side="right", fill="y")
+
+        self.checked_state = {}
+        for st in self.studies:
+            uid = st["study_uid"]
+            self.checked_state[uid] = True  # default all checked
+            item_id = self.tree.insert("", "end", iid=uid, values=(
+                "☑",
+                st.get("date", "—"),
+                st.get("modality", "MR/CT"),
+                st.get("desc", "—")
+            ))
+
+        self.tree.bind("<Button-1>", self._on_click)
+
+        # Toolbar & Buttons
+        btn_frame = ttk.Frame(self, padding=10)
+        btn_frame.pack(fill="x")
+
+        ttk.Button(btn_frame, text=self.app._t("☑ Chọn tất cả"), command=self._select_all).pack(side="left", padx=(0, 4))
+        ttk.Button(btn_frame, text=self.app._t("☐ Bỏ chọn tất cả"), command=self._deselect_all).pack(side="left")
+
+        ttk.Button(btn_frame, text=self.app._t("❌ Hủy"), command=self._on_cancel).pack(side="right", padx=(6, 0))
+        self.download_btn = ttk.Button(btn_frame, text="", command=self._on_download_selected)
+        self.download_btn.pack(side="right", padx=(6, 0))
+        ttk.Button(btn_frame, text=self.app._t("⚡ TẢI TẤT CẢ"), command=self._on_download_all).pack(side="right")
+
+        self._update_button_text()
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+    def _on_click(self, event):
+        region = self.tree.identify_region(event.x, event.y)
+        if region == "cell":
+            item_id = self.tree.identify_row(event.y)
+            if item_id in self.checked_state:
+                self.checked_state[item_id] = not self.checked_state[item_id]
+                new_icon = "☑" if self.checked_state[item_id] else "☐"
+                vals = list(self.tree.item(item_id, "values"))
+                vals[0] = new_icon
+                self.tree.item(item_id, values=vals)
+                self._update_button_text()
+
+    def _select_all(self):
+        for uid in self.checked_state:
+            self.checked_state[uid] = True
+            vals = list(self.tree.item(uid, "values"))
+            vals[0] = "☑"
+            self.tree.item(uid, values=vals)
+        self._update_button_text()
+
+    def _deselect_all(self):
+        for uid in self.checked_state:
+            self.checked_state[uid] = False
+            vals = list(self.tree.item(uid, "values"))
+            vals[0] = "☐"
+            self.tree.item(uid, values=vals)
+        self._update_button_text()
+
+    def _update_button_text(self):
+        selected_count = sum(1 for v in self.checked_state.values() if v)
+        self.download_btn.config(text=f"⬇️ TẢI CA ĐÃ CHỌN ({selected_count}/{len(self.studies)})")
+
+    def _on_download_selected(self):
+        selected = [uid for uid, checked in self.checked_state.items() if checked]
+        if not selected:
+            messagebox.showwarning(self.app._t("Chưa chọn ca nào"),
+                                   self.app._t("Vui lòng tích chọn ít nhất 1 ca chụp để tải về!"))
+            return
+        self.result_uids = selected
+        self.destroy()
+
+    def _on_download_all(self):
+        self.result_uids = [st["study_uid"] for st in self.studies]
+        self.destroy()
+
+    def _on_cancel(self):
+        self.result_uids = None
+        self.destroy()
 
 
 # --------------------------------------------------------------------------- #
@@ -634,13 +774,38 @@ class App:
         def log(msg):
             self.msg_q.put(("log", msg))
 
-        def work():
+        def work_search():
+            try:
+                log(self._t("Đang đăng nhập RIS và tìm kiếm danh sách ca chụp..."))
+                studies = pipe.search_patient_studies(
+                    hospital_key=hosp,
+                    patient_id=pid,
+                    modality="MR_CT",
+                    log=log,
+                    headless=not self.show_var.get(),
+                    should_stop=self.stop_flag.is_set,
+                )
+                self.msg_q.put(("studies_found", (hosp, pid, hosp_name, out_base, studies)))
+            except Exception:
+                self.msg_q.put(("log", self._t("LỖI:\n{}").format(traceback.format_exc())))
+                self.msg_q.put(("done", False))
+
+        self.worker = threading.Thread(target=work_search, daemon=True)
+        self.worker.start()
+
+    def _start_downloading_patient_studies(self, hosp: str, pid: str, out_base: Path, selected_uids: Optional[list[str]] = None):
+        def log(msg):
+            self.msg_q.put(("log", msg))
+
+        def work_download():
             try:
                 contrast_mode = ("auto" if self.contrast_mode_var.get().startswith("Auto") else "clinical")
                 pipe.download_patient_mri_all(
                     hospital_key=hosp,
                     patient_id=pid,
                     out_base=out_base,
+                    modality="MR_CT",
+                    selected_uids=selected_uids,
                     log=log,
                     headless=not self.show_var.get(),
                     quality=int(self.quality_var.get()),
@@ -653,7 +818,7 @@ class App:
                 self.msg_q.put(("log", self._t("LỖI:\n{}").format(traceback.format_exc())))
                 self.msg_q.put(("done", False))
 
-        self.worker = threading.Thread(target=work, daemon=True)
+        self.worker = threading.Thread(target=work_download, daemon=True)
         self.worker.start()
 
     def _retry(self):
@@ -731,6 +896,22 @@ class App:
                     self._log(str(payload))
                 elif kind == "jpgdir":
                     self.last_jpg_dir = Path(str(payload))
+                elif kind == "studies_found":
+                    hosp, pid, hosp_name, out_base, studies = payload
+                    if not studies:
+                        self._finish()
+                    elif len(studies) == 1:
+                        self._start_downloading_patient_studies(hosp, pid, out_base, selected_uids=None)
+                    else:
+                        self.progress.stop()
+                        dlg = StudySelectionDialog(self.root, studies, pid, hosp_name, self)
+                        self.root.wait_window(dlg)
+                        if dlg.result_uids:
+                            self.progress.start(12)
+                            self._start_downloading_patient_studies(hosp, pid, out_base, selected_uids=dlg.result_uids)
+                        else:
+                            self._log(self._t(">>> Đã hủy chọn ca chụp."))
+                            self._finish()
                 elif kind == "done":
                     self._finish()
         except queue.Empty:
