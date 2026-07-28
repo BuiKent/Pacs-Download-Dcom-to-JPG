@@ -29,7 +29,7 @@ from PIL import Image, ImageTk, ImageOps, ImageEnhance, ImageDraw
 
 import dcom_pipeline as pipe
 import mpr_engine
-from mpr_viewer import MprViewerWindow
+from mpr_viewer import MprWorkspace
 
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff")
 
@@ -379,7 +379,11 @@ class App:
 
         root.title(self._t("DICOM Downloader & Viewer"))
         self._t_widgets.append((root, "title", "DICOM Downloader & Viewer"))
-        root.geometry("1360x860")
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+        initial_w = min(1360, max(1024, screen_w - 24))
+        initial_h = min(860, max(640, screen_h - 72))
+        root.geometry(f"{initial_w}x{initial_h}")
         root.minsize(1024, 640)
 
         # --- trạng thái tải ---
@@ -407,6 +411,10 @@ class App:
         self.cine_playing = False
         self.cine_job = None
         self._syncing_slider = False
+        self.viewer_mode = "2d"
+        self.download_panel_collapsed = False
+        self._saved_sash = 470
+        self._mpr_auto_collapsed = False
 
         self._build_ui()
         self._load_history()
@@ -533,19 +541,127 @@ class App:
         self.paned = ttk.PanedWindow(self.root, orient="horizontal")
         self.paned.pack(fill="both", expand=True)
 
-        left = ttk.Frame(self.paned)
-        right = ttk.Frame(self.paned)
-        self.paned.add(left, weight=0)
-        self.paned.add(right, weight=1)
+        self.left_panel = ttk.Frame(self.paned)
+        self.right_panel = ttk.Frame(self.paned)
+        self.paned.add(self.left_panel, weight=0)
+        self.paned.add(self.right_panel, weight=1)
 
-        self._build_left(left)
-        self._build_right(right)
+        self._build_left(self.left_panel)
+        self._build_right(self.right_panel)
 
     def _set_sash(self, x):
         try:
             self.paned.sashpos(0, x)
         except Exception:
             pass
+
+    def _toggle_download_panel(self, collapse=None, manual=True):
+        """Hide/show the downloader pane without destroying its form state."""
+        if manual:
+            self._mpr_auto_collapsed = False
+        target = (not self.download_panel_collapsed) if collapse is None else bool(collapse)
+        if target == self.download_panel_collapsed:
+            return
+        if target:
+            try:
+                self._saved_sash = max(360, int(self.paned.sashpos(0)))
+            except Exception:
+                pass
+            self.paned.forget(self.left_panel)
+            self.download_panel_collapsed = True
+            self.panel_toggle_btn.config(text="Hiện tải")
+        else:
+            self.paned.insert(0, self.left_panel, weight=0)
+            self.download_panel_collapsed = False
+            self.panel_toggle_btn.config(text="Ẩn tải")
+            self.root.after_idle(lambda: self._set_sash(self._saved_sash))
+
+    def _current_series_has_mpr(self) -> bool:
+        return bool(
+            self.cur_files
+            and mpr_engine.read_manifest(self.cur_files[0].parent)
+        )
+
+    def _sync_mode_buttons(self) -> None:
+        if not hasattr(self, "mode_2d_btn"):
+            return
+        self.mode_2d_btn.config(text="● 2D" if self.viewer_mode == "2d" else "2D")
+        has_mpr = self._current_series_has_mpr()
+        self.mpr_btn.config(
+            text="● MPR + ROI 3D" if self.viewer_mode == "mpr" else "MPR + ROI 3D",
+            state="normal" if has_mpr else "disabled",
+        )
+
+    def _set_viewer_mode(self, mode: str) -> bool:
+        """Switch the embedded workspace while preserving the loaded MPR volume."""
+        if mode not in ("2d", "mpr"):
+            raise ValueError(f"Viewer mode không hợp lệ: {mode}")
+        if mode == self.viewer_mode:
+            self._sync_mode_buttons()
+            return True
+        if mode == "mpr":
+            if not self._current_series_has_mpr():
+                messagebox.showinfo(
+                    "Không có dữ liệu MPR",
+                    "Series này không có mpr-volume.json. MPR chỉ được tạo cho "
+                    "T1 sau tiêm đủ trên 100 lát, hoặc T1 không tiêm khi không "
+                    "có series sau tiêm.",
+                )
+                return False
+            if self.cine_playing:
+                self._toggle_cine()
+            try:
+                self.mpr_workspace.load_series(self.cur_files[0].parent)
+            except Exception as exc:
+                messagebox.showerror("Không mở được MPR", str(exc))
+                return False
+            self.viewer_2d.pack_forget()
+            self.mpr_workspace.pack(fill="both", expand=True)
+            self.viewer_mode = "mpr"
+            self._mpr_auto_collapsed = not self.download_panel_collapsed
+            if self._mpr_auto_collapsed:
+                self._toggle_download_panel(collapse=True, manual=False)
+        else:
+            self.mpr_workspace.pack_forget()
+            self.viewer_2d.pack(fill="both", expand=True)
+            self.viewer_mode = "2d"
+            if self._mpr_auto_collapsed and self.download_panel_collapsed:
+                self._toggle_download_panel(collapse=False, manual=False)
+            self._mpr_auto_collapsed = False
+            self.root.after_idle(self._render)
+        self._sync_mode_buttons()
+        return True
+
+    def _viewer_prev(self, _event=None):
+        if self.viewer_mode == "mpr":
+            self.mpr_workspace.step_plane(self.mpr_workspace.active_plane, -1)
+        else:
+            self._prev()
+        return "break"
+
+    def _viewer_next(self, _event=None):
+        if self.viewer_mode == "mpr":
+            self.mpr_workspace.step_plane(self.mpr_workspace.active_plane, 1)
+        else:
+            self._next()
+        return "break"
+
+    def _viewer_space(self, _event=None):
+        if self.viewer_mode == "2d":
+            self._toggle_cine()
+        return "break"
+
+    def _viewer_escape(self, _event=None):
+        if self.viewer_mode == "mpr":
+            self.mpr_workspace.cancel_draft()
+            return "break"
+        return None
+
+    def _viewer_return(self, _event=None):
+        if self.viewer_mode == "mpr":
+            self.mpr_workspace.finish_polygon()
+            return "break"
+        return None
 
     # -------------------------------------------------- CỘT TRÁI (tải ảnh)
     def _build_left(self, frm):
@@ -660,26 +776,58 @@ class App:
 
     # ------------------------------------------------ CỘT PHẢI (trình xem)
     def _build_right(self, frm):
-        # Thanh 1: chọn series + nạp thư mục
-        tb1 = ttk.Frame(frm); tb1.pack(fill="x", padx=6, pady=(6, 2))
-        ttk.Label(tb1, text="Xung (series):").pack(side="left")
+        # Thanh chung: chọn series, layout và panel tải. MPR dùng lại chính vùng
+        # workspace bên dưới, không mở thêm cửa sổ.
+        tb1 = ttk.Frame(frm)
+        tb1.pack(fill="x", padx=6, pady=(6, 2))
+        tb1.columnconfigure(1, weight=1)
+        ttk.Label(tb1, text="Series:").grid(row=0, column=0, sticky="w")
         self.series_var = tk.StringVar()
-        self.series_cbo = ttk.Combobox(tb1, textvariable=self.series_var, state="readonly", width=36)
-        self.series_cbo.pack(side="left", padx=4)
+        self.series_cbo = ttk.Combobox(
+            tb1, textvariable=self.series_var, state="readonly", width=34
+        )
+        self.series_cbo.grid(row=0, column=1, sticky="ew", padx=4)
         self.series_cbo.bind("<<ComboboxSelected>>", lambda e: self._on_series_change())
         self._icon_folder = _make_icon("folder")    # giữ tham chiếu kẻo bị GC
         self._icon_refresh = _make_icon("refresh")
         load_btn = ttk.Button(tb1, image=self._icon_folder, command=self._load_folder_dialog)
-        load_btn.pack(side="left", padx=(4, 2))
+        load_btn.grid(row=0, column=2, padx=2)
         self._add_tooltip(load_btn, "Nạp thư mục ảnh...")
         refresh_btn = ttk.Button(tb1, image=self._icon_refresh, command=self._reload_dir)
-        refresh_btn.pack(side="left", padx=2)
+        refresh_btn.grid(row=0, column=3, padx=2)
         self._add_tooltip(refresh_btn, "Nạp lại thư mục đang mở")
-        self.mpr_btn = ttk.Button(tb1, text="MPR & u não", command=self._open_mpr, state="disabled")
-        self.mpr_btn.pack(side="left", padx=(8, 2))
+        self.panel_toggle_btn = ttk.Button(
+            tb1, text="Ẩn tải", width=8, command=self._toggle_download_panel
+        )
+        self.panel_toggle_btn.grid(row=0, column=4, padx=(8, 0))
 
-        # Thanh 2: điều hướng lát cắt + phim
-        tb2 = ttk.Frame(frm); tb2.pack(fill="x", padx=6, pady=2)
+        layout_bar = ttk.Frame(frm)
+        layout_bar.pack(fill="x", padx=6, pady=(0, 3))
+        ttk.Label(layout_bar, text="Bố cục xem:").pack(side="left", padx=(0, 2))
+        self.mode_2d_btn = ttk.Button(
+            layout_bar, text="2D", width=5, command=lambda: self._set_viewer_mode("2d")
+        )
+        self.mode_2d_btn.pack(side="left", padx=1)
+        self.mpr_btn = ttk.Button(
+            layout_bar,
+            text="MPR + ROI 3D",
+            command=lambda: self._set_viewer_mode("mpr"),
+            state="disabled",
+        )
+        self.mpr_btn.pack(side="left", padx=1)
+        ttk.Label(
+            layout_bar,
+            text="MPR chỉ bật cho gói T1 3D đủ điều kiện",
+            foreground="#657786",
+        ).pack(side="left", padx=8)
+
+        self.workspace_host = ttk.Frame(frm)
+        self.workspace_host.pack(fill="both", expand=True)
+        self.viewer_2d = ttk.Frame(self.workspace_host)
+        self.mpr_workspace = MprWorkspace(self.workspace_host)
+
+        # Thanh 2D: điều hướng lát cắt + phim.
+        tb2 = ttk.Frame(self.viewer_2d); tb2.pack(fill="x", padx=6, pady=2)
         ttk.Button(tb2, text="◀", width=3, command=self._prev).pack(side="left")
         self.slice_scale = ttk.Scale(tb2, from_=0, to=0, orient="horizontal", command=self._on_slider)
         self.slice_scale.pack(side="left", fill="x", expand=True, padx=6)
@@ -689,16 +837,16 @@ class App:
         self.idx_lbl = ttk.Label(tb2, text="—", width=20)
         self.idx_lbl.pack(side="left")
 
-        # Thanh 3: biến đổi ảnh
-        tb3 = ttk.Frame(frm); tb3.pack(fill="x", padx=6, pady=2)
+        # Công cụ 2D được nhóm riêng để tránh lẫn với ROI/MPR.
+        tb3 = ttk.LabelFrame(self.viewer_2d, text="Hiển thị 2D")
+        tb3.pack(fill="x", padx=6, pady=2)
         for txt, cmd in [("－ Thu nhỏ", self._zoom_out), ("＋ Phóng to", self._zoom_in),
                          ("Vừa khung", self._fit), ("Xoay 90°", self._rotate90),
                          ("Lật ⇔", self._toggle_flip_h), ("Lật ⇕", self._toggle_flip_v),
                          ("Đảo màu", self._toggle_invert), ("Đặt lại", self._reset_view)]:
             ttk.Button(tb3, text=txt, command=cmd).pack(side="left", padx=2)
 
-        # Thanh 4: sáng / tương phản / lưu
-        tb4 = ttk.Frame(frm); tb4.pack(fill="x", padx=6, pady=2)
+        tb4 = ttk.Frame(self.viewer_2d); tb4.pack(fill="x", padx=6, pady=2)
         ttk.Label(tb4, text="Sáng").pack(side="left")
         self.bright_scale = ttk.Scale(tb4, from_=0.2, to=3.0, orient="horizontal", command=lambda v: self._render())
         self.bright_scale.set(1.0)
@@ -709,8 +857,8 @@ class App:
         self.contrast_scale.pack(side="left", fill="x", expand=True, padx=4)
         ttk.Button(tb4, text="Lưu ảnh...", command=self._save_current).pack(side="left", padx=4)
 
-        # Vùng ảnh
-        cv = ttk.Frame(frm); cv.pack(fill="both", expand=True, padx=6, pady=(2, 4))
+        # Vùng ảnh 2D.
+        cv = ttk.Frame(self.viewer_2d); cv.pack(fill="both", expand=True, padx=6, pady=(2, 4))
         self.canvas = tk.Canvas(cv, bg="#0b0b0b", highlightthickness=0)
         vbar = ttk.Scrollbar(cv, orient="vertical", command=self.canvas.yview)
         hbar = ttk.Scrollbar(cv, orient="horizontal", command=self.canvas.xview)
@@ -722,13 +870,20 @@ class App:
         self.canvas.bind("<Configure>", lambda e: self._render())
         self.canvas.bind("<MouseWheel>", self._on_wheel)
 
-        self.status_lbl = ttk.Label(frm, text="Chưa có ảnh. Tải xong sẽ tự nạp, hoặc bấm nút 📂.")
+        self.status_lbl = ttk.Label(
+            self.viewer_2d,
+            text="Chưa có ảnh. Tải xong sẽ tự nạp, hoặc bấm nút 📂.",
+        )
         self.status_lbl.pack(anchor="w", padx=8, pady=(0, 6))
+        self.viewer_2d.pack(fill="both", expand=True)
+        self._sync_mode_buttons()
 
-        # phím tắt
-        self.root.bind("<Left>", lambda e: self._prev())
-        self.root.bind("<Right>", lambda e: self._next())
-        self.root.bind("<space>", lambda e: self._toggle_cine())
+        # Phím tắt được định tuyến theo layout hiện hành.
+        self.root.bind("<Left>", self._viewer_prev)
+        self.root.bind("<Right>", self._viewer_next)
+        self.root.bind("<space>", self._viewer_space)
+        self.root.bind("<Escape>", self._viewer_escape)
+        self.root.bind("<Return>", self._viewer_return)
 
     # ============================================================ TẢI ẢNH
     def _pick_folder(self):
@@ -1127,15 +1282,19 @@ class App:
         if cur_name in series:  # giữ nguyên chỗ đang xem
             self.series_var.set(cur_name)
             self.cur_files = series[cur_name]
-            has_mpr = bool(
-                self.cur_files
-                and mpr_engine.read_manifest(self.cur_files[0].parent)
-            )
-            if hasattr(self, "mpr_btn"):
-                self.mpr_btn.config(state="normal" if has_mpr else "disabled")
             n = len(self.cur_files)
             self.slice_scale.config(from_=0, to=max(0, n - 1))
             self._show_index(min(cur_idx, n - 1))
+            if self.viewer_mode == "mpr":
+                if self._current_series_has_mpr():
+                    try:
+                        self.mpr_workspace.load_series(self.cur_files[0].parent)
+                    except Exception as exc:
+                        self._set_viewer_mode("2d")
+                        messagebox.showerror("Không nạp lại được MPR", str(exc))
+                else:
+                    self._set_viewer_mode("2d")
+            self._sync_mode_buttons()
         else:
             self.series_var.set(names[0])
             self._on_series_change()
@@ -1143,33 +1302,24 @@ class App:
     def _on_series_change(self):
         name = self.series_var.get()
         self.cur_files = self.series_map.get(name, [])
-        has_mpr = bool(
-            self.cur_files
-            and mpr_engine.read_manifest(self.cur_files[0].parent)
-        )
-        if hasattr(self, "mpr_btn"):
-            self.mpr_btn.config(state="normal" if has_mpr else "disabled")
         n = len(self.cur_files)
         self.slice_scale.config(from_=0, to=max(0, n - 1))
         self.cur_index = 0
         self._show_index(0)
+        if self.viewer_mode == "mpr":
+            if self._current_series_has_mpr():
+                try:
+                    self.mpr_workspace.load_series(self.cur_files[0].parent)
+                except Exception as exc:
+                    self._set_viewer_mode("2d")
+                    messagebox.showerror("Không mở được MPR", str(exc))
+            else:
+                self._set_viewer_mode("2d")
+        self._sync_mode_buttons()
 
     def _open_mpr(self):
-        if not self.cur_files:
-            return
-        series_folder = self.cur_files[0].parent
-        if not mpr_engine.read_manifest(series_folder):
-            messagebox.showinfo(
-                "Không có dữ liệu MPR",
-                "Series này không có mpr-volume.json. "
-                "MPR chỉ được tạo cho T1 sau tiêm đủ trên 100 lát, "
-                "hoặc T1 không tiêm khi không có series sau tiêm.",
-            )
-            return
-        try:
-            MprViewerWindow(self.root, series_folder)
-        except Exception as e:
-            messagebox.showerror("Không mở được MPR", str(e))
+        """Backward-compatible command target: MPR is now embedded."""
+        self._set_viewer_mode("mpr")
 
     def _show_index(self, i):
         if not self.cur_files:

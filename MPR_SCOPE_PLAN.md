@@ -119,9 +119,26 @@ không đủ đầu vào, không suy diễn rằng T1 thường tương đương
 - Kiểm tra trực quan mọi kết quả trước khi ghi là đã xác nhận.
 - Không tự động dùng mask AI để quyết định lâm sàng.
 
-## Kế hoạch UI hợp nhất kiểu PACS
+## UI hợp nhất kiểu PACS
 
-### Vấn đề hiện tại
+### Trạng thái triển khai
+
+Đã triển khai trong workspace chính:
+
+- Không còn mở `Toplevel` khi vào MPR.
+- Có chuyển bố cục `2D / MPR + ROI 3D` trên thanh chung.
+- MPR gồm axial, coronal, sagittal và mô hình 3D ROI trong cùng màn hình.
+- Panel tải có thể thu/hiện mà không mất dữ liệu biểu mẫu.
+- Khi vào MPR panel tải tự thu để tăng diện tích quan sát.
+- Volume được cache khi đổi qua lại 2D/MPR của cùng series.
+- Chuyển series khi đang ở MPR sẽ nạp đúng volume mới; series không có manifest
+  tự trở về 2D.
+- Phím tắt được định tuyến theo layout, không còn điều khiển nhầm canvas 2D đang ẩn.
+
+Phần `3D volume rendering` toàn volume, brush/eraser, góc đo, MIP/MinIP và AI
+segmentation vẫn thuộc các giai đoạn sau, không được gắn nhãn như đã có.
+
+### Vấn đề của bản cũ
 
 Nút `MPR & u não` mở một cửa sổ `Toplevel` riêng. Cách này hoạt động về mặt
 kỹ thuật nhưng có các nhược điểm:

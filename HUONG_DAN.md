@@ -41,13 +41,23 @@ Các series còn lại vẫn chuyển JPG theo luồng cũ. Series MPR được 
 lần với JPG quality 100, một cửa sổ cường độ chung cho toàn volume và file
 `mpr-volume.json`. Ứng dụng không tự xóa DICOM.
 
-Khi chọn đúng series có MPR, nút **MPR & u não** sẽ sáng:
+Khi chọn đúng series, nút **MPR + ROI 3D** sẽ sáng. Bấm nút này để đổi ngay
+vùng xem chính từ **2D** sang **MPR**; ứng dụng không mở cửa sổ phụ:
 
 - Ba mặt phẳng **AXIAL / CORONAL / SAGITTAL** liên kết bằng crosshair.
+- Coronal và sagittal hiển thị theo quy ước PACS: phía trên là **S** (superior),
+  phía dưới là **I** (inferior). Các nhãn **R/L/A/P/S/I** màu vàng ở mép ảnh
+  giúp kiểm tra hướng bệnh nhân, kể cả series chụp hơi xiên.
+- Panel tải bên trái tự thu gọn để dành chỗ cho ảnh; bấm **Hiện tải** nếu cần
+  mở lại mà không mất link, thư mục hoặc nhật ký.
+- Bấm **2D** để quay về trình xem một mặt phẳng. Khi trở lại MPR của cùng
+  series, volume và các ROI đang có được giữ nguyên, không phải đọc lại JPG.
 - Lăn chuột để đổi lát; **Ctrl + lăn chuột** để zoom.
 - Giữ **chuột phải** và kéo để pan.
 - Thanh **Sáng / Tương phản** áp dụng đồng thời cho ba mặt phẳng.
 - **Đo dài:** kéo từ điểm đầu đến điểm cuối; kết quả hiển thị theo mm.
+- **Đo góc:** bấm ba điểm theo thứ tự cạnh thứ nhất → đỉnh → cạnh thứ hai;
+  kết quả hiển thị theo độ.
 - **ROI ellipse:** kéo hình ellipse bao quanh tổn thương.
 - **ROI đa giác:** bấm lần lượt quanh bờ u, nhấp đúp hoặc bấm
   **Kết thúc ROI** để khép vùng.
@@ -57,6 +67,8 @@ Khi chọn đúng series có MPR, nút **MPR & u não** sẽ sáng:
   Xoay/Nghiêng để quan sát.
 - Đường đo và ROI tự lưu vào `mpr-roi.json` trong folder series và được nạp lại
   ở lần mở sau.
+- Phím **←/→** đổi lát axial trong layout MPR; **Enter** khép ROI đa giác;
+  **Escape** hủy đường ROI đang vẽ.
 
 Mô hình 3D u cần ROI trên nhiều lát axial. Nút này không tự nhận diện u và
 không thay thế việc kiểm tra đường viền của người dùng.
@@ -146,3 +158,15 @@ python -c "import dcom_pipeline as p, pathlib; p.convert_all(pathlib.Path('Auto_
 pip install -r requirements.txt
 python -m playwright install chromium
 ```
+
+## Cập nhật orientation và thao tác MPR
+
+- Coronal/sagittal hiển thị superior ở trên, inferior ở dưới; nhãn vàng
+  `R/L/A/P/S/I` lấy từ DICOM orientation giúp kiểm tra chiều bệnh nhân.
+- Bấm vào một viewport để chọn; viền xanh cho biết axial/coronal/sagittal
+  đang hoạt động. Phím `←/→` đổi lát trên chính mặt phẳng đó.
+- `Đo góc` dùng ba điểm theo thứ tự cạnh thứ nhất, đỉnh, cạnh thứ hai.
+- `Xóa ở lát đang chọn` chỉ xóa annotation ở viewport có viền xanh.
+- `Hoàn tác` khôi phục thay đổi annotation cuối; có thể ẩn/hiện số đo và ROI
+  mà không xóa dữ liệu.
+- `Enter` khép ROI đa giác; `Escape` hủy ROI hoặc góc đang vẽ.

@@ -534,17 +534,67 @@ def load_mpr_volume(series_folder: Path) -> tuple[np.ndarray, dict]:
     return np.stack(images, axis=0), manifest
 
 
+def _patient_axis_label(direction: np.ndarray) -> str:
+    """Return the dominant DICOM LPS patient direction for a display edge."""
+    direction = np.asarray(direction, dtype=np.float64)
+    axis = int(np.argmax(np.abs(direction)))
+    positive = float(direction[axis]) >= 0
+    if axis == 0:
+        return "L" if positive else "R"
+    if axis == 1:
+        return "P" if positive else "A"
+    return "S" if positive else "I"
+
+
+def _opposite_patient_label(label: str) -> str:
+    return {
+        "L": "R", "R": "L",
+        "P": "A", "A": "P",
+        "S": "I", "I": "S",
+    }[label]
+
+
 def plane_array(volume: np.ndarray, plane: str, index: int) -> np.ndarray:
-    """Return axial/coronal/sagittal pixels without display interpolation."""
+    """Return PACS-style display pixels for each acquisition-orthogonal plane.
+
+    Source slices are sorted along the DICOM slice normal from low to high.
+    Coronal and sagittal displays therefore need a vertical reversal so the
+    superior side is shown at the top rather than the inferior side.
+    """
     if volume.ndim != 3:
         raise ValueError("Volume phải có dạng [z, y, x]")
     if plane == "axial":
         return volume[max(0, min(index, volume.shape[0] - 1)), :, :]
     if plane == "coronal":
-        return volume[:, max(0, min(index, volume.shape[1] - 1)), :]
+        return volume[::-1, max(0, min(index, volume.shape[1] - 1)), :]
     if plane == "sagittal":
-        return volume[:, :, max(0, min(index, volume.shape[2] - 1))]
+        return volume[::-1, :, max(0, min(index, volume.shape[2] - 1))]
     raise ValueError(f"Mặt phẳng không hợp lệ: {plane}")
+
+
+def plane_orientation_labels(manifest: dict, plane: str) -> tuple[str, str, str, str]:
+    """Return (left, right, top, bottom) patient labels for a displayed plane."""
+    orientation = np.asarray(manifest["image_orientation_patient"], dtype=np.float64)
+    horizontal = orientation[:3]
+    vertical = orientation[3:]
+    normal = np.cross(horizontal, vertical)
+    norm = float(np.linalg.norm(normal))
+    if norm <= 1e-9:
+        raise ValueError("ImageOrientationPatient không hợp lệ")
+    normal /= norm
+
+    if plane == "axial":
+        right_vector, bottom_vector = horizontal, vertical
+    elif plane == "coronal":
+        right_vector, bottom_vector = horizontal, -normal
+    elif plane == "sagittal":
+        right_vector, bottom_vector = vertical, -normal
+    else:
+        raise ValueError(f"Mặt phẳng không hợp lệ: {plane}")
+
+    right = _patient_axis_label(right_vector)
+    bottom = _patient_axis_label(bottom_vector)
+    return _opposite_patient_label(right), right, _opposite_patient_label(bottom), bottom
 
 
 def plane_spacing(manifest: dict, plane: str) -> tuple[float, float]:

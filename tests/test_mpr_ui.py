@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import tkinter as tk
+import unittest
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+import mpr_engine
+from dcom_downloader_app import App
+
+
+def _write_mpr_package(folder: Path, count: int = 8) -> None:
+    folder.mkdir(parents=True)
+    ordered = []
+    for index in range(count):
+        filename = f"MPR_{index + 1:04d}.jpg"
+        pixels = np.full((24, 32), index * 20, dtype=np.uint8)
+        Image.fromarray(pixels, mode="L").save(folder / filename, quality=100)
+        ordered.append({
+            "file": filename,
+            "position": [0.0, 0.0, float(index)],
+            "distance": float(index),
+            "sop_instance_uid": str(index),
+        })
+    manifest = {
+        "format": mpr_engine.MANIFEST_FORMAT,
+        "version": mpr_engine.MANIFEST_VERSION,
+        "series_type": "T1_POST_CONTRAST",
+        "series_description": "UI TEST T1+C",
+        "series_number": 1,
+        "study_instance_uid": "1",
+        "series_instance_uid": "2",
+        "frame_of_reference_uid": "3",
+        "rows": 24,
+        "columns": 32,
+        "slice_count": count,
+        "pixel_spacing": [0.5, 0.5],
+        "slice_spacing": 1.0,
+        "image_orientation_patient": [1, 0, 0, 0, 1, 0],
+        "affine": [],
+        "intensity": {},
+        "jpeg_quality": 100,
+        "ordered_slices": ordered,
+    }
+    (folder / mpr_engine.MANIFEST_NAME).write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
+
+
+class EmbeddedMprUiTests(unittest.TestCase):
+    def test_mpr_stays_in_main_window_and_reuses_volume(self):
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk display unavailable: {exc}")
+        root.withdraw()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                package = Path(tmp) / "MPR_T1_POST"
+                _write_mpr_package(package)
+                legacy_annotations = {
+                    "format": "dcom-mpr-roi",
+                    "version": 1,
+                    "lengths": [{
+                        "plane": "coronal",
+                        "index": 0,
+                        "p1": [2.0, 1.0],
+                        "p2": [8.0, 2.0],
+                    }],
+                    "rois": {
+                        "coronal": {
+                            "0": [[2.0, 1.0], [8.0, 1.0], [8.0, 3.0]],
+                        },
+                    },
+                }
+                (package / "mpr-roi.json").write_text(
+                    json.dumps(legacy_annotations), encoding="utf-8",
+                )
+                app = App(root)
+                root.geometry("1024x640+-2000+-2000")
+                root.deiconify()
+                app._load_dir(Path(tmp))
+                root.update()
+                self.assertLessEqual(
+                    app.panel_toggle_btn.winfo_x() + app.panel_toggle_btn.winfo_width(),
+                    app.panel_toggle_btn.master.winfo_width(),
+                )
+
+                self.assertTrue(app._set_viewer_mode("mpr"))
+                root.update()
+                self.assertEqual("mpr", app.viewer_mode)
+                self.assertTrue(app.mpr_workspace.is_loaded)
+                self.assertTrue(app.download_panel_collapsed)
+                self.assertFalse(
+                    any(isinstance(widget, tk.Toplevel) for widget in root.winfo_children())
+                )
+
+                cached_volume = id(app.mpr_workspace.volume)
+                app._set_viewer_mode("2d")
+                root.update()
+                self.assertFalse(app.download_panel_collapsed)
+                app._set_viewer_mode("mpr")
+                root.update()
+                self.assertEqual(cached_volume, id(app.mpr_workspace.volume))
+
+                workspace = app.mpr_workspace
+                self.assertEqual([2.0, 6.0], workspace.lengths[0]["p1"])
+                self.assertEqual((2.0, 6.0), workspace.rois["coronal"][0][0])
+                migrated = json.loads((package / "mpr-roi.json").read_text(encoding="utf-8"))
+                self.assertEqual(
+                    "pacs-superior-up", migrated["display_convention"],
+                )
+                workspace.panes["coronal"]._set_crosshair_from_point((5.0, 0.0))
+                self.assertEqual(7, workspace.crosshair[2])
+                workspace.panes["sagittal"]._set_crosshair_from_point((4.0, 7.0))
+                self.assertEqual(0, workspace.crosshair[2])
+                workspace.set_crosshair(
+                    workspace.volume.shape[2] // 2,
+                    workspace.volume.shape[1] // 2,
+                    workspace.volume.shape[0] // 2,
+                )
+                workspace.select_plane("coronal")
+                old_coronal = workspace.indices["coronal"]
+                app._viewer_next()
+                self.assertEqual(old_coronal + 1, workspace.indices["coronal"])
+
+                angle_index = workspace.indices["coronal"]
+                workspace.angle_click("coronal", angle_index, (1.0, 1.0))
+                workspace.angle_click("coronal", angle_index, (1.0, 10.0))
+                workspace.angle_click("coronal", angle_index, (10.0, 10.0))
+                self.assertEqual(1, len(workspace.angles))
+                self.assertAlmostEqual(90.0, workspace.angles[0]["angle_deg"], places=5)
+                workspace.undo_last()
+                self.assertEqual([], workspace.angles)
+
+                square = [(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0)]
+                axial_index = workspace.indices["axial"]
+                coronal_index = workspace.indices["coronal"]
+                workspace.set_roi("axial", axial_index, square)
+                workspace.set_roi("coronal", coronal_index, square)
+                workspace.select_plane("coronal")
+                workspace.delete_current_annotations()
+                self.assertNotIn(coronal_index, workspace.rois["coronal"])
+                self.assertIn(axial_index, workspace.rois["axial"])
+                workspace.undo_last()
+                self.assertIn(coronal_index, workspace.rois["coronal"])
+
+                # A panel collapsed manually before entering MPR remains
+                # collapsed after returning to 2D. Only automatic collapse is
+                # automatically restored.
+                app._set_viewer_mode("2d")
+                app._toggle_download_panel(collapse=True)
+                app._set_viewer_mode("mpr")
+                app._set_viewer_mode("2d")
+                root.update()
+                self.assertTrue(app.download_panel_collapsed)
+
+                app._toggle_download_panel(collapse=False)
+                root.update()
+                self.assertFalse(app.download_panel_collapsed)
+                app._toggle_download_panel(collapse=True)
+                root.update()
+                self.assertTrue(app.download_panel_collapsed)
+        finally:
+            root.destroy()
+
+
+if __name__ == "__main__":
+    unittest.main()

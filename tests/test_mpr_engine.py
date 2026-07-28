@@ -121,8 +121,22 @@ class MprPackageTests(unittest.TestCase):
             volume, manifest = mpr_engine.load_mpr_volume(manifest_path.parent)
             self.assertEqual((101, 16, 20), volume.shape)
             self.assertEqual((16, 20), mpr_engine.plane_array(volume, "axial", 0).shape)
-            self.assertEqual((101, 20), mpr_engine.plane_array(volume, "coronal", 0).shape)
-            self.assertEqual((101, 16), mpr_engine.plane_array(volume, "sagittal", 0).shape)
+            coronal = mpr_engine.plane_array(volume, "coronal", 0)
+            sagittal = mpr_engine.plane_array(volume, "sagittal", 0)
+            self.assertEqual((101, 20), coronal.shape)
+            self.assertEqual((101, 16), sagittal.shape)
+            np.testing.assert_array_equal(coronal[0], volume[-1, 0, :])
+            np.testing.assert_array_equal(sagittal[0], volume[-1, :, 0])
+
+            orientation = {"image_orientation_patient": [1, 0, 0, 0, 1, 0]}
+            self.assertEqual(
+                ("R", "L", "S", "I"),
+                mpr_engine.plane_orientation_labels(orientation, "coronal"),
+            )
+            self.assertEqual(
+                ("A", "P", "S", "I"),
+                mpr_engine.plane_orientation_labels(orientation, "sagittal"),
+            )
 
             square = [(0, 0), (10, 0), (10, 10), (0, 10)]
             self.assertAlmostEqual(
