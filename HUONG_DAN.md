@@ -27,6 +27,40 @@ Giao diện gồm **2 cột**: bên trái để tải, bên phải là **trình 
   (chọn thư mục `Tai_ve_...` hoặc thư mục `JPG` đều được).
 - Phím tắt: **←/→** đổi lát, **Space** bật/tắt phim.
 
+## MPR và đo u não
+
+Sau khi tải xong, ứng dụng tự quét header DICOM và chỉ tạo gói MPR khi tìm
+được một series phù hợp:
+
+1. Ưu tiên **T1 3D sau tiêm**.
+2. Nếu không có, dùng **T1 3D không tiêm**.
+3. Series phải có **trên 100 vị trí lát duy nhất**, đầy đủ thông tin tọa độ,
+   cùng kích thước/hướng và khoảng cách lát đủ đều.
+
+Các series còn lại vẫn chuyển JPG theo luồng cũ. Series MPR được chuyển một
+lần với JPG quality 100, một cửa sổ cường độ chung cho toàn volume và file
+`mpr-volume.json`. Ứng dụng không tự xóa DICOM.
+
+Khi chọn đúng series có MPR, nút **MPR & u não** sẽ sáng:
+
+- Ba mặt phẳng **AXIAL / CORONAL / SAGITTAL** liên kết bằng crosshair.
+- Lăn chuột để đổi lát; **Ctrl + lăn chuột** để zoom.
+- Giữ **chuột phải** và kéo để pan.
+- Thanh **Sáng / Tương phản** áp dụng đồng thời cho ba mặt phẳng.
+- **Đo dài:** kéo từ điểm đầu đến điểm cuối; kết quả hiển thị theo mm.
+- **ROI ellipse:** kéo hình ellipse bao quanh tổn thương.
+- **ROI đa giác:** bấm lần lượt quanh bờ u, nhấp đúp hoặc bấm
+  **Kết thúc ROI** để khép vùng.
+- ROI hiển thị diện tích theo cm². ROI vẽ trên nhiều lát axial được cộng theo
+  khoảng cách lát để tính thể tích mL.
+- Khung **3D U TỪ ROI AXIAL** dựng mô hình vùng đã đánh dấu; dùng hai thanh
+  Xoay/Nghiêng để quan sát.
+- Đường đo và ROI tự lưu vào `mpr-roi.json` trong folder series và được nạp lại
+  ở lần mở sau.
+
+Mô hình 3D u cần ROI trên nhiều lát axial. Nút này không tự nhận diện u và
+không thay thế việc kiểm tra đường viền của người dùng.
+
 Kết quả nằm trong thư mục đã chọn:
 ```
 Tai_ve_.../

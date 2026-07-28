@@ -998,6 +998,8 @@ class ConvertStats:
     converted: int = 0
     skipped: int = 0
     failed: int = 0
+    mpr_converted: int = 0
+    mpr_series: str = ""
 
 
 def _safe_name(text) -> str:
@@ -1111,6 +1113,7 @@ def convert_all(
     """Chuyển toàn bộ DICOM trong `dicom_dir` sang JPG (và tùy chọn PNG) ở `jpg_dir`."""
     import pydicom
     from PIL import Image
+    import mpr_engine
 
     dicom_dir = Path(dicom_dir)
     jpg_dir = Path(jpg_dir)
@@ -1123,6 +1126,49 @@ def convert_all(
         f"{' + PNG' if save_png else ''}, tương phản={mode_txt}.")
 
     stats = ConvertStats()
+    mpr_candidate = None
+
+    # Chỉ đọc header để chọn một T1 3D đủ hình học. Series này được chuyển một
+    # lần bằng cửa sổ cường độ chung, thay vì chuyển JPG thường rồi ghi đè.
+    try:
+        mpr_candidate = mpr_engine.select_mpr_candidate(dicom_dir)
+    except Exception as e:
+        log(f"MPR-JPG: không quét được series T1 ({e}); tiếp tục luồng JPG thường.")
+
+    if mpr_candidate is not None:
+        log(
+            "MPR-JPG tự chọn: "
+            f"{mpr_candidate.description} — {len(mpr_candidate.slices)} lát — "
+            f"{'T1 sau tiêm' if mpr_candidate.kind == 'T1_POST_CONTRAST' else 'T1 không tiêm'}."
+        )
+        try:
+            count, _ = mpr_engine.convert_mpr_candidate(
+                mpr_candidate,
+                jpg_dir,
+                quality=100,
+                log=log,
+                should_stop=should_stop,
+            )
+            stats.converted += count
+            stats.mpr_converted = count
+            stats.mpr_series = mpr_candidate.description
+        except InterruptedError:
+            log("Đã dừng khi đang tạo MPR-JPG.")
+            return stats
+        except Exception as e:
+            # Không để một lỗi MPR làm mất series trong luồng cũ: xóa riêng
+            # payload MPR chưa hoàn chỉnh rồi chuyển series này như JPG thường.
+            log(f"MPR-JPG lỗi ({e}); chuyển series này theo luồng JPG thường.")
+            try:
+                folder = jpg_dir / mpr_candidate.folder_name
+                for partial in folder.glob("MPR_*.jpg"):
+                    partial.unlink()
+                manifest = folder / mpr_engine.MANIFEST_NAME
+                if manifest.exists():
+                    manifest.unlink()
+            except Exception:
+                pass
+            mpr_candidate = None
 
     for path in dcm_files:
         if should_stop and should_stop():
@@ -1132,6 +1178,16 @@ def convert_all(
             ds = pydicom.dcmread(str(path), force=True)
             if "PixelData" not in ds:
                 stats.skipped += 1
+                continue
+
+            series_uid = str(getattr(ds, "SeriesInstanceUID", "") or "")
+            if not series_uid:
+                series_uid = (
+                    f"fallback:{getattr(ds, 'SeriesNumber', '')}:"
+                    f"{getattr(ds, 'SeriesDescription', '')}"
+                )
+            if mpr_candidate is not None and series_uid == mpr_candidate.series_uid:
+                # Đã chuyển theo chuẩn MPR ở trên.
                 continue
 
             series_number = getattr(ds, "SeriesNumber", "NoSeries")
@@ -1170,6 +1226,11 @@ def convert_all(
 
     log(f"Chuyển đổi xong: {stats.converted} ảnh JPG"
         f"{' (+PNG)' if save_png else ''}, bỏ qua {stats.skipped}, lỗi {stats.failed}.")
+    if stats.mpr_converted:
+        log(
+            f"MPR-JPG sẵn sàng: {stats.mpr_series} — "
+            f"{stats.mpr_converted} lát, mở bằng nút 'MPR & u não'."
+        )
     return stats
 
 

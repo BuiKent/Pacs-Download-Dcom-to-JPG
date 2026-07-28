@@ -12,7 +12,12 @@ echo [2/2] Dang dong goi (vai phut, dung tat cua so)...
 python -m PyInstaller --noconfirm --onefile --noconsole ^
   --name Dicom_Downloader_App ^
   --collect-all playwright ^
-  --collect-all pydicom ^
+  --exclude-module pandas ^
+  --exclude-module pyarrow ^
+  --exclude-module openpyxl ^
+  --exclude-module lxml ^
+  --exclude-module matplotlib ^
+  --exclude-module scipy ^
   dcom_downloader_app.py
 echo.
 if exist "dist\Dicom_Downloader_App.exe" (

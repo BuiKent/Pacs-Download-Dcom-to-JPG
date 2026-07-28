@@ -28,6 +28,8 @@ from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk, ImageOps, ImageEnhance, ImageDraw
 
 import dcom_pipeline as pipe
+import mpr_engine
+from mpr_viewer import MprViewerWindow
 
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff")
 
@@ -188,6 +190,14 @@ def scan_series(base: Path) -> "dict[str, list[Path]]":
     series: "dict[str, list[Path]]" = {}
 
     def imgs_in(d: Path):
+        manifest = mpr_engine.read_manifest(d)
+        if manifest:
+            # Gói MPR luôn dùng thứ tự tọa độ đã ghi trong manifest, không sắp
+            # theo tên file/InstanceNumber. Đồng thời bỏ qua JPG cũ còn sót lại
+            # nếu một folder được nâng cấp từ bản trước.
+            ordered = mpr_engine.manifest_image_files(d, manifest)
+            if ordered:
+                return ordered
         return sorted(
             [p for p in d.iterdir() if p.is_file() and p.suffix.lower() in IMG_EXTS],
             key=lambda p: _natkey(p.name),
@@ -665,6 +675,8 @@ class App:
         refresh_btn = ttk.Button(tb1, image=self._icon_refresh, command=self._reload_dir)
         refresh_btn.pack(side="left", padx=2)
         self._add_tooltip(refresh_btn, "Nạp lại thư mục đang mở")
+        self.mpr_btn = ttk.Button(tb1, text="MPR & u não", command=self._open_mpr, state="disabled")
+        self.mpr_btn.pack(side="left", padx=(8, 2))
 
         # Thanh 2: điều hướng lát cắt + phim
         tb2 = ttk.Frame(frm); tb2.pack(fill="x", padx=6, pady=2)
@@ -1076,7 +1088,14 @@ class App:
         self.series_map = series
         names = list(series.keys())
         self.series_cbo.config(values=names)
-        self.series_var.set(names[0])
+        mpr_name = next(
+            (
+                name for name in names
+                if series[name] and mpr_engine.read_manifest(series[name][0].parent)
+            ),
+            names[0],
+        )
+        self.series_var.set(mpr_name)
         total = sum(len(v) for v in series.values())
         self._log(self._t("Đã nạp trình xem: {} series, {} ảnh từ {}").format(len(names), total, base))
         self._on_series_change()
@@ -1108,6 +1127,12 @@ class App:
         if cur_name in series:  # giữ nguyên chỗ đang xem
             self.series_var.set(cur_name)
             self.cur_files = series[cur_name]
+            has_mpr = bool(
+                self.cur_files
+                and mpr_engine.read_manifest(self.cur_files[0].parent)
+            )
+            if hasattr(self, "mpr_btn"):
+                self.mpr_btn.config(state="normal" if has_mpr else "disabled")
             n = len(self.cur_files)
             self.slice_scale.config(from_=0, to=max(0, n - 1))
             self._show_index(min(cur_idx, n - 1))
@@ -1118,10 +1143,33 @@ class App:
     def _on_series_change(self):
         name = self.series_var.get()
         self.cur_files = self.series_map.get(name, [])
+        has_mpr = bool(
+            self.cur_files
+            and mpr_engine.read_manifest(self.cur_files[0].parent)
+        )
+        if hasattr(self, "mpr_btn"):
+            self.mpr_btn.config(state="normal" if has_mpr else "disabled")
         n = len(self.cur_files)
         self.slice_scale.config(from_=0, to=max(0, n - 1))
         self.cur_index = 0
         self._show_index(0)
+
+    def _open_mpr(self):
+        if not self.cur_files:
+            return
+        series_folder = self.cur_files[0].parent
+        if not mpr_engine.read_manifest(series_folder):
+            messagebox.showinfo(
+                "Không có dữ liệu MPR",
+                "Series này không có mpr-volume.json. "
+                "MPR chỉ được tạo cho T1 sau tiêm đủ trên 100 lát, "
+                "hoặc T1 không tiêm khi không có series sau tiêm.",
+            )
+            return
+        try:
+            MprViewerWindow(self.root, series_folder)
+        except Exception as e:
+            messagebox.showerror("Không mở được MPR", str(e))
 
     def _show_index(self, i):
         if not self.cur_files:

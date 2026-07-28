@@ -6,8 +6,6 @@ binaries = []
 hiddenimports = []
 tmp_ret = collect_all('playwright')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('pydicom')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
@@ -19,7 +17,10 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # pydicom's official PyInstaller hook includes its dictionaries and pixel
+    # handlers.  Do not collect-all pydicom: that also drags optional CLI/data
+    # science stacks (pandas/pyarrow/openpyxl) into this small desktop viewer.
+    excludes=['pandas', 'pyarrow', 'openpyxl', 'lxml', 'matplotlib', 'scipy'],
     noarchive=False,
     optimize=0,
 )
