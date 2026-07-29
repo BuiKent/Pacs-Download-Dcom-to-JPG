@@ -99,3 +99,13 @@ phẳng sau sửa.
 - Folder có loại T1 và hash 10 ký tự của SeriesInstanceUID để chống ghi đè khi trùng tên/số series.
 - Từng gói MPR chỉ chuyển một lần; series khác vẫn chuyển theo luồng thường.
 - Test hồi quy xác nhận hai series cùng tên/số nhưng khác UID đều có đủ 101 lát.
+
+## So sánh series và montage 6/8 lát
+
+- Thêm bố cục `1x1`, `1|1`, `3x2`, `4x2` ngay trên thanh 2D.
+- So sánh hai series ngang nhau, chọn series phụ và điều hướng lát độc lập cho hai bên.
+- Viền xanh cùng nhãn L/R thể hiện viewport đang hoạt động; slider và nút/lăn chuột đi theo viewport này.
+- Montage 6 hoặc 8 lát hiển thị đúng thứ tự, trượt một lát mỗi bước và giữ ô trống ở cuối series.
+- Ghép ảnh giữ nguyên tỷ lệ, không kéo méo; bộ nhớ đệm giới hạn 32 ảnh để tránh RAM tăng không giới hạn.
+- Lưu ảnh xuất được cả bố cục compare, 6-up và 8-up.
+- Test hồi quy gồm bộ ghép ảnh thuần và thao tác Tk thực với hai series độc lập.

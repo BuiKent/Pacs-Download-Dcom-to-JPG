@@ -210,8 +210,101 @@ class EmbeddedMprUiTests(unittest.TestCase):
                 root.update()
                 self.assertTrue(app.download_panel_collapsed)
         finally:
+            for job in root.tk.call("after", "info"):
+                try:
+                    root.after_cancel(job)
+                except tk.TclError:
+                    pass
             root.destroy()
 
 
+def _write_jpg_series(folder: Path, count: int, offset: int) -> None:
+    folder.mkdir(parents=True)
+    for index in range(count):
+        pixels = np.full((24, 32), offset + index, dtype=np.uint8)
+        Image.fromarray(pixels, mode="L").save(
+            folder / f"IMG_{index + 1:04d}.jpg",
+            quality=100,
+        )
+
+
+class MultiViewUiTests(unittest.TestCase):
+    def test_compare_and_six_eight_slice_montage(self):
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"Tk display unavailable: {exc}")
+        root.withdraw()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp)
+                _write_jpg_series(base / "SERIES_A", 12, 10)
+                _write_jpg_series(base / "SERIES_B", 9, 100)
+                app = App(root)
+                root.geometry("1024x640+-2000+-2000")
+                root.deiconify()
+                app._load_dir(base)
+                root.update()
+
+                names = list(app.series_map)
+                self.assertEqual(2, len(names))
+                self.assertEqual("normal", str(app.compare_btn["state"]))
+                self.assertTrue(app._set_2d_layout("compare"))
+                root.update()
+                self.assertTrue(app.compare_bar.winfo_ismapped())
+                self.assertNotEqual(app.series_var.get(), app.compare_series_var.get())
+
+                app.active_2d_pane = "right"
+                app._step_2d(3)
+                self.assertEqual(0, app.cur_index)
+                self.assertEqual(3, app.compare_index)
+                app.active_2d_pane = "left"
+                app._step_2d(2)
+                self.assertEqual(2, app.cur_index)
+                self.assertEqual(3, app.compare_index)
+                compare = app._layout_image()
+                self.assertIsNotNone(compare)
+                self.assertEqual((70, 24), compare.size)
+
+                app.series_var.set(app.compare_series_var.get())
+                app._on_series_change()
+                root.update()
+                self.assertNotEqual(app.series_var.get(), app.compare_series_var.get())
+                self.assertIsNotNone(app._layout_image())
+
+                long_name = next(name for name, files in app.series_map.items() if len(files) == 12)
+                app.series_var.set(long_name)
+                app._on_series_change()
+                app._show_index(2)
+                self.assertTrue(app._set_2d_layout("montage6"))
+                montage6 = app._layout_image()
+                self.assertIsNotNone(montage6)
+                self.assertEqual((108, 54), montage6.size)
+                self.assertEqual("3-8/12", app.idx_lbl.cget("text"))
+
+                self.assertTrue(app._set_2d_layout("montage8"))
+                app._show_index(9)
+                montage8 = app._layout_image()
+                self.assertIsNotNone(montage8)
+                self.assertEqual((146, 54), montage8.size)
+                self.assertEqual("10-12/12", app.idx_lbl.cget("text"))
+                self.assertFalse(app.compare_bar.winfo_ismapped())
+
+                self.assertTrue(app._set_2d_layout("single"))
+                self.assertEqual("single", app.viewer_layout)
+
+                only_name = app.series_var.get()
+                app.series_map = {only_name: app.series_map[only_name]}
+                app._set_2d_layout("single")
+                app.viewer_layout = "compare"
+                app._on_series_change()
+                self.assertEqual("single", app.viewer_layout)
+        finally:
+            for job in root.tk.call("after", "info"):
+                try:
+                    root.after_cancel(job)
+                except tk.TclError:
+                    pass
+            root.destroy()
 if __name__ == "__main__":
     unittest.main()

@@ -205,3 +205,14 @@ lọc theo modality MR/CT, chưa bảo đảm chỉ lấy vùng sọ não.
 - Mọi T1 3D sau tiêm/không tiêm đủ geometry và trên 100 lát đều được chuyển JPG quality 100 kèm manifest MPR.
 - Mỗi gói có cửa sổ cường độ và 'mpr-volume.json' riêng.
 - Các series khác vẫn theo luồng JPG bình thường; không tự xóa DICOM.
+
+## So sánh hai series và xem nhiều lát
+
+Thanh bố cục 2D có bốn chế độ gọn:
+
+- `1x1`: xem một lát như trước.
+- `1|1`: đặt hai series ngang nhau. Chọn **Series phụ** ở thanh xuất hiện bên dưới. Bấm hoặc đặt chuột trên nửa trái/phải rồi lăn chuột, kéo thanh lát hay bấm tiến/lùi để đổi lát độc lập của đúng bên đó. Viền xanh và ký hiệu `[L]`/`[R]` cho biết bên đang điều khiển.
+- `3x2`: xem 6 lát liên tiếp của series hiện tại.
+- `4x2`: xem 8 lát liên tiếp của series hiện tại.
+
+Ở bố cục 6/8 lát, mỗi lần lăn chuột hoặc bấm tiến/lùi sẽ dịch cửa sổ đúng một lát và giữ nguyên thứ tự. Khi gần cuối series, các ô còn thiếu để trống thay vì lặp ảnh. Sáng, tương phản, xoay, lật, đảo màu, fit/fill, zoom và pan áp dụng cho toàn bố cục. Nút **Lưu ảnh** xuất đúng bố cục đang hiển thị. MPR vẫn là workspace riêng và không bị trộn với các chế độ 2D này.

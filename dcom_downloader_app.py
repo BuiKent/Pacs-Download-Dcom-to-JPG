@@ -29,6 +29,7 @@ from PIL import Image, ImageTk, ImageOps, ImageEnhance, ImageDraw
 
 import dcom_pipeline as pipe
 import mpr_engine
+import viewer_layout
 from mpr_viewer import MprWorkspace
 
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff")
@@ -414,6 +415,12 @@ class App:
         self.viewer_mode = "2d"
         self.pan_2d_enabled = tk.BooleanVar(value=False)
         self.fit_policy_2d = tk.StringVar(value="contain")
+        self.viewer_layout = "single"
+        self.compare_series_var = tk.StringVar()
+        self.compare_files: list[Path] = []
+        self.compare_index = 0
+        self.active_2d_pane = "left"
+        self._image_cache: dict[Path, Image.Image] = {}
         self.download_panel_collapsed = False
         self._saved_sash = 470
         self._mpr_auto_collapsed = False
@@ -588,12 +595,110 @@ class App:
     def _sync_mode_buttons(self) -> None:
         if not hasattr(self, "mode_2d_btn"):
             return
-        self.mode_2d_btn.config(text="● 2D" if self.viewer_mode == "2d" else "2D")
+        active_2d = self.viewer_mode == "2d"
+        for button, layout, label, minimum in (
+            (self.mode_2d_btn, "single", "1x1", 1),
+            (self.compare_btn, "compare", "1|1", 1),
+            (self.montage6_btn, "montage6", "3x2", 6),
+            (self.montage8_btn, "montage8", "4x2", 8),
+        ):
+            enabled = len(self.cur_files) >= minimum
+            if layout == "compare":
+                enabled = len(self.series_map) >= 2
+            button.config(
+                text=("\u25cf " + label) if active_2d and self.viewer_layout == layout else label,
+                state="normal" if enabled else "disabled",
+            )
         has_mpr = self._current_series_has_mpr()
         self.mpr_btn.config(
-            text="● MPR" if self.viewer_mode == "mpr" else "MPR",
+            text="\u25cf MPR" if self.viewer_mode == "mpr" else "MPR",
             state="normal" if has_mpr else "disabled",
         )
+
+    def _refresh_compare_series_options(self) -> None:
+        primary = self.series_var.get()
+        names = [name for name in self.series_map if name != primary]
+        self.compare_cbo.config(values=names)
+        selected = self.compare_series_var.get()
+        if selected not in names:
+            selected = names[0] if names else ""
+            self.compare_series_var.set(selected)
+        self.compare_files = self.series_map.get(selected, [])
+        self.compare_index = max(0, min(self.compare_index, len(self.compare_files) - 1))
+
+    def _normalize_2d_layout(self) -> None:
+        """Fall back to one image when the newly selected data cannot fill a layout."""
+        invalid = (
+            (self.viewer_layout == "compare" and len(self.series_map) < 2)
+            or (self.viewer_layout == "montage6" and len(self.cur_files) < 6)
+            or (self.viewer_layout == "montage8" and len(self.cur_files) < 8)
+        )
+        if invalid:
+            self.viewer_layout = "single"
+            self.active_2d_pane = "left"
+            if hasattr(self, "compare_bar"):
+                self.compare_bar.pack_forget()
+
+    def _on_compare_series_change(self) -> None:
+        self.compare_files = self.series_map.get(self.compare_series_var.get(), [])
+        self.compare_index = 0
+        self.active_2d_pane = "right"
+        self._sync_2d_navigation()
+        self._render()
+
+    def _set_2d_layout(self, layout: str) -> bool:
+        if layout not in ("single", "compare", "montage6", "montage8"):
+            raise ValueError(f"Unknown 2D layout: {layout}")
+        if layout == "compare" and len(self.series_map) < 2:
+            self.root.bell()
+            return False
+        required = 6 if layout == "montage6" else 8 if layout == "montage8" else 1
+        if len(self.cur_files) < required:
+            self.root.bell()
+            return False
+        if self.viewer_mode == "mpr":
+            self._set_viewer_mode("2d")
+        self.viewer_layout = layout
+        self.active_2d_pane = "left"
+        if layout == "compare":
+            self._refresh_compare_series_options()
+            self.compare_bar.pack(fill="x", padx=6, pady=(0, 2), before=self.tb2)
+        else:
+            self.compare_bar.pack_forget()
+        self.fit_mode = True
+        self._sync_2d_navigation()
+        self._sync_mode_buttons()
+        self._render()
+        return True
+
+    def _sync_2d_navigation(self) -> None:
+        if not hasattr(self, "slice_scale"):
+            return
+        files = self.cur_files
+        index = self.cur_index
+        if self.viewer_layout == "compare" and self.active_2d_pane == "right":
+            files = self.compare_files
+            index = self.compare_index
+        self._syncing_slider = True
+        try:
+            self.slice_scale.config(from_=0, to=max(0, len(files) - 1))
+            self.slice_scale.set(index if files else 0)
+        finally:
+            self._syncing_slider = False
+
+        if self.viewer_layout == "compare":
+            left = f"L {self.cur_index + 1}/{len(self.cur_files)}" if self.cur_files else "L -"
+            right = f"R {self.compare_index + 1}/{len(self.compare_files)}" if self.compare_files else "R -"
+            marker = "L" if self.active_2d_pane == "left" else "R"
+            self.idx_lbl.config(text=f"{left} | {right} [{marker}]")
+        elif self.viewer_layout in ("montage6", "montage8"):
+            count = 6 if self.viewer_layout == "montage6" else 8
+            end = min(len(self.cur_files), self.cur_index + count)
+            self.idx_lbl.config(text=f"{self.cur_index + 1}-{end}/{len(self.cur_files)}")
+        else:
+            self.idx_lbl.config(
+                text=f"{self.cur_index + 1}/{len(self.cur_files)}" if self.cur_files else "-",
+            )
 
     def _set_viewer_mode(self, mode: str) -> bool:
         """Switch the embedded workspace while preserving the loaded MPR volume."""
@@ -809,9 +914,29 @@ class App:
         layout_bar.pack(fill="x", padx=6, pady=(0, 3))
         ttk.Label(layout_bar, text="Bố cục xem:").pack(side="left", padx=(0, 2))
         self.mode_2d_btn = ttk.Button(
-            layout_bar, text="2D", width=5, command=lambda: self._set_viewer_mode("2d")
+            layout_bar, text="1x1", width=5,
+            command=lambda: self._set_2d_layout("single"),
         )
         self.mode_2d_btn.pack(side="left", padx=1)
+        self._add_tooltip(self.mode_2d_btn, "M\u1ed9t \u1ea3nh")
+        self.compare_btn = ttk.Button(
+            layout_bar, text="1|1", width=5,
+            command=lambda: self._set_2d_layout("compare"),
+        )
+        self.compare_btn.pack(side="left", padx=1)
+        self._add_tooltip(self.compare_btn, "So s\u00e1nh hai series ngang nhau")
+        self.montage6_btn = ttk.Button(
+            layout_bar, text="3x2", width=5,
+            command=lambda: self._set_2d_layout("montage6"),
+        )
+        self.montage6_btn.pack(side="left", padx=1)
+        self._add_tooltip(self.montage6_btn, "Xem 6 l\u00e1t li\u00ean ti\u1ebfp")
+        self.montage8_btn = ttk.Button(
+            layout_bar, text="4x2", width=5,
+            command=lambda: self._set_2d_layout("montage8"),
+        )
+        self.montage8_btn.pack(side="left", padx=1)
+        self._add_tooltip(self.montage8_btn, "Xem 8 l\u00e1t li\u00ean ti\u1ebfp")
         self.mpr_btn = ttk.Button(
             layout_bar,
             text="MPR",
@@ -830,8 +955,24 @@ class App:
         self.viewer_2d = ttk.Frame(self.workspace_host)
         self.mpr_workspace = MprWorkspace(self.workspace_host)
 
+        self.compare_bar = ttk.Frame(self.viewer_2d)
+        ttk.Label(self.compare_bar, text="Series ph\u1ee5:").pack(side="left")
+        self.compare_cbo = ttk.Combobox(
+            self.compare_bar,
+            textvariable=self.compare_series_var,
+            state="readonly",
+            width=42,
+        )
+        self.compare_cbo.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        self.compare_cbo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._on_compare_series_change(),
+        )
+
         # Thanh 2D: điều hướng lát cắt + phim.
-        tb2 = ttk.Frame(self.viewer_2d); tb2.pack(fill="x", padx=6, pady=2)
+        self.tb2 = ttk.Frame(self.viewer_2d)
+        self.tb2.pack(fill="x", padx=6, pady=2)
+        tb2 = self.tb2
         ttk.Button(tb2, text="◀", width=3, command=self._prev).pack(side="left")
         self.slice_scale = ttk.Scale(tb2, from_=0, to=0, orient="horizontal", command=self._on_slider)
         self.slice_scale.pack(side="left", fill="x", expand=True, padx=6)
@@ -1316,6 +1457,8 @@ class App:
             self.cur_files = series[cur_name]
             n = len(self.cur_files)
             self.slice_scale.config(from_=0, to=max(0, n - 1))
+            self._normalize_2d_layout()
+            self._refresh_compare_series_options()
             self._show_index(min(cur_idx, n - 1))
             if self.viewer_mode == "mpr":
                 if self._current_series_has_mpr():
@@ -1326,7 +1469,10 @@ class App:
                         messagebox.showerror("Không nạp lại được MPR", str(exc))
                 else:
                     self._set_viewer_mode("2d")
+            self._sync_2d_navigation()
             self._sync_mode_buttons()
+            if self.viewer_mode == "2d":
+                self._render()
         else:
             self.series_var.set(names[0])
             self._on_series_change()
@@ -1337,6 +1483,8 @@ class App:
         n = len(self.cur_files)
         self.slice_scale.config(from_=0, to=max(0, n - 1))
         self.cur_index = 0
+        self._normalize_2d_layout()
+        self._refresh_compare_series_options()
         self._show_index(0)
         if self.viewer_mode == "mpr":
             if self._current_series_has_mpr():
@@ -1347,7 +1495,10 @@ class App:
                     messagebox.showerror("Không mở được MPR", str(exc))
             else:
                 self._set_viewer_mode("2d")
+        self._sync_2d_navigation()
         self._sync_mode_buttons()
+        if self.viewer_mode == "2d":
+            self._render()
 
     def _open_mpr(self):
         """Backward-compatible command target: MPR is now embedded."""
@@ -1359,7 +1510,7 @@ class App:
         self.cur_index = max(0, min(i, len(self.cur_files) - 1))
         path = self.cur_files[self.cur_index]
         try:
-            self.base_img = Image.open(path).convert("RGB")
+            self.base_img = self._load_cached_image(path)
         except Exception as e:
             self.base_img = None
             self.status_lbl.config(text=self._t("Lỗi mở ảnh: {} ({})").format(path.name, e))
@@ -1369,29 +1520,58 @@ class App:
             self.slice_scale.set(self.cur_index)
         finally:
             self._syncing_slider = False
-        self.idx_lbl.config(text=f"{self.cur_index + 1}/{len(self.cur_files)}")
+        self._sync_2d_navigation()
         self.status_lbl.config(text=f"{self.series_var.get()}  •  {path.name}")
         self._render()
 
     def _on_slider(self, v):
         if self._syncing_slider:
             return
-        self._show_index(int(float(v)))
+        value = int(float(v))
+        if self.viewer_layout == "compare" and self.active_2d_pane == "right":
+            self.compare_index = max(0, min(value, len(self.compare_files) - 1))
+            self._sync_2d_navigation()
+            self._render()
+        else:
+            self._show_index(value)
+
+    def _step_2d(self, delta: int) -> None:
+        if self.viewer_layout == "compare" and self.active_2d_pane == "right":
+            if self.compare_files:
+                self.compare_index = max(
+                    0, min(self.compare_index + delta, len(self.compare_files) - 1),
+                )
+                self._sync_2d_navigation()
+                self._render()
+        elif self.cur_files:
+            self._show_index(self.cur_index + delta)
 
     def _prev(self):
-        if self.cur_files:
-            self._show_index(self.cur_index - 1)
+        self._step_2d(-1)
 
     def _next(self):
-        if self.cur_files:
-            self._show_index(self.cur_index + 1)
+        self._step_2d(1)
 
     def _on_wheel(self, e):
         if e.state & 0x0004:  # Ctrl -> zoom
             self._zoom_in() if e.delta > 0 else self._zoom_out()
-        else:                 # cuộn -> đổi lát cắt
-            self._next() if e.delta < 0 else self._prev()
+        else:
+            if self.viewer_layout == "compare":
+                self.active_2d_pane = self._compare_pane_at(e.x)
+            self._step_2d(1 if e.delta < 0 else -1)
         return "break"
+
+    def _compare_pane_at(self, canvas_x: float) -> str:
+        """Map a click/wheel position to the visible compare pane after pan/zoom."""
+        try:
+            x0, _y0, x1, _y1 = (
+                float(value) for value in str(self.canvas.cget("scrollregion")).split()
+            )
+            if x1 > x0:
+                return "left" if self.canvas.canvasx(canvas_x) < (x0 + x1) / 2 else "right"
+        except (TypeError, ValueError):
+            pass
+        return "left" if canvas_x < self.canvas.winfo_width() / 2 else "right"
 
     def _toggle_2d_pan(self):
         self.canvas.configure(
@@ -1399,6 +1579,10 @@ class App:
         )
 
     def _pan_2d_press(self, event):
+        if self.viewer_layout == "compare":
+            self.active_2d_pane = self._compare_pane_at(event.x)
+            self._sync_2d_navigation()
+            self._render()
         if self.pan_2d_enabled.get():
             self.canvas.scan_mark(event.x, event.y)
             return "break"
@@ -1477,11 +1661,18 @@ class App:
         self.contrast_scale.set(1.0)
         self._render()
 
-    def _processed_image(self) -> "Image.Image | None":
-        """Ảnh sau khi áp mọi chỉnh (sáng, tương phản, đảo màu, lật, xoay) — CHƯA zoom."""
-        if self.base_img is None:
-            return None
-        img = self.base_img
+    def _load_cached_image(self, path: Path) -> Image.Image:
+        key = Path(path)
+        cached = self._image_cache.get(key)
+        if cached is None:
+            cached = Image.open(key).convert("RGB")
+            self._image_cache[key] = cached
+            while len(self._image_cache) > 32:
+                self._image_cache.pop(next(iter(self._image_cache)))
+        return cached
+
+    def _process_2d_image(self, source: Image.Image) -> Image.Image:
+        img = source
         b = float(self.bright_scale.get())
         c = float(self.contrast_scale.get())
         if abs(b - 1.0) > 1e-3:
@@ -1491,17 +1682,56 @@ class App:
         if self.invert:
             img = ImageOps.invert(img)
         if self.flip_h:
-            img = img.transpose(Image.FLIP_LEFT_RIGHT)
+            img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
         if self.flip_v:
-            img = img.transpose(Image.FLIP_TOP_BOTTOM)
+            img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
         if self.rotate:
             img = img.rotate(-self.rotate, expand=True)
         return img
 
+    def _layout_image(self) -> "Image.Image | None":
+        left = self._processed_image()
+        if self.viewer_layout == "single":
+            return left
+        if self.viewer_layout == "compare":
+            right = None
+            if self.compare_files:
+                right = self._process_2d_image(
+                    self._load_cached_image(self.compare_files[self.compare_index]),
+                )
+            return viewer_layout.compose_compare(
+                left,
+                right,
+                left_label=f"L {self.cur_index + 1}/{len(self.cur_files)}",
+                right_label=(
+                    f"R {self.compare_index + 1}/{len(self.compare_files)}"
+                    if self.compare_files else "R -"
+                ),
+                active=self.active_2d_pane,
+            )
+
+        count = 6 if self.viewer_layout == "montage6" else 8
+        files = self.cur_files[self.cur_index:self.cur_index + count]
+        images = [
+            self._process_2d_image(self._load_cached_image(file))
+            for file in files
+        ]
+        labels = [
+            f"{self.cur_index + offset + 1}/{len(self.cur_files)}"
+            for offset in range(len(images))
+        ]
+        return viewer_layout.compose_montage(images, count=count, labels=labels)
+
+    def _processed_image(self) -> "Image.Image | None":
+        """Ảnh sau khi áp mọi chỉnh (sáng, tương phản, đảo màu, lật, xoay) — CHƯA zoom."""
+        if self.base_img is None:
+            return None
+        return self._process_2d_image(self.base_img)
+
     def _render(self):
         if not hasattr(self, "canvas"):
             return  # giao diện chưa dựng xong (bị gọi sớm khi khởi tạo thanh trượt)
-        img = self._processed_image()
+        img = self._layout_image()
         if img is None:
             self.canvas.delete("all")
             return
@@ -1538,13 +1768,18 @@ class App:
             self.canvas.yview_moveto(0.0)
 
     def _save_current(self):
-        img = self._processed_image()
+        img = self._layout_image()
         if img is None:
             return
         src = self.cur_files[self.cur_index]
+        suffix = {
+            "compare": "_compare",
+            "montage6": "_6up",
+            "montage8": "_8up",
+        }.get(self.viewer_layout, "_edited")
         out = filedialog.asksaveasfilename(
             title=self._t("Lưu ảnh đang xem"),
-            initialfile=src.stem + "_edited.png",
+            initialfile=src.stem + suffix + ".png",
             defaultextension=".png",
             filetypes=[(self._t("PNG (không mất dữ liệu)"), "*.png"), ("JPEG", "*.jpg")],
         )
