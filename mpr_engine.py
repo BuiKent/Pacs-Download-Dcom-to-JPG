@@ -2,15 +2,16 @@
 Core MPR support for the DICOM downloader.
 
 The normal JPG conversion remains available for every series.  This module
-finds one high-resolution 3D T1 series (post-contrast first, pre-contrast as a
-fallback), converts it with one series-wide intensity window, and writes the
-geometry required to reconstruct orthogonal MPR views from JPG files alone.
+finds every eligible high-resolution 3D T1 series, including post-contrast and
+pre-contrast acquisitions, converts each with its own series-wide intensity
+window, and writes the geometry required to reconstruct orthogonal MPR views.
 
 No patient name or patient ID is written to the MPR manifest.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -52,6 +53,29 @@ def _safe_name(value) -> str:
     return text[:80] or "Unknown"
 
 
+def series_folder_name(
+    series_number,
+    description,
+    series_uid: str,
+    kind: Optional[str] = None,
+) -> str:
+    """Return a readable, collision-safe folder name for one DICOM series."""
+    uid_text = _text(series_uid) or f"fallback:{series_number}:{description}"
+    uid_token = hashlib.sha1(uid_text.encode("utf-8")).hexdigest()[:10]
+    kind_token = {
+        "T1_POST_CONTRAST": "T1_POST",
+        "T1_PRE_CONTRAST": "T1_PRE",
+    }.get(_text(kind), "")
+    parts = [
+        f"Series_{_safe_name(series_number)}",
+        _safe_name(description),
+    ]
+    if kind_token:
+        parts.append(kind_token)
+    parts.append(uid_token)
+    return "_".join(parts)
+
+
 @dataclass(frozen=True)
 class MprSlice:
     path: Path
@@ -82,7 +106,9 @@ class MprCandidate:
 
     @property
     def folder_name(self) -> str:
-        return f"Series_{_safe_name(self.series_number)}_{_safe_name(self.description)}"
+        return series_folder_name(
+            self.series_number, self.description, self.series_uid, self.kind,
+        )
 
 
 @dataclass
@@ -353,11 +379,20 @@ def discover_mpr_candidates(
     return candidates
 
 
+def select_mpr_candidates(
+    dicom_dir: Path,
+    min_slices: int = DEFAULT_MIN_SLICES,
+) -> list[MprCandidate]:
+    """Return every eligible post- and pre-contrast 3D T1 series."""
+    return discover_mpr_candidates(dicom_dir, min_slices=min_slices)
+
+
 def select_mpr_candidate(
     dicom_dir: Path,
     min_slices: int = DEFAULT_MIN_SLICES,
 ) -> Optional[MprCandidate]:
-    candidates = discover_mpr_candidates(dicom_dir, min_slices=min_slices)
+    """Backward-compatible best candidate selector."""
+    candidates = select_mpr_candidates(dicom_dir, min_slices=min_slices)
     return candidates[0] if candidates else None
 
 

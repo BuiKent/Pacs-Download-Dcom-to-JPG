@@ -260,3 +260,8 @@ Khi đổi layout, dữ liệu và annotation không được nạp lại hoặc
 - Volume JPG nạp lại: `180 x 512 x 512`.
 - Gói JPG quality 100: khoảng 12.1 MiB trong lần test hiện tại.
 - UI MPR, ROI, tính thể tích và canvas 3D đã chạy end-to-end.
+
+
+## Quyết định bổ sung: giữ cả hai nhóm T1
+
+Phần fallback một-candidate ở kế hoạch cũ đã được thay thế: bản hiện tại giữ mọi T1 3D sau tiêm và không tiêm đủ điều kiện. SeriesInstanceUID là khóa chống trùng; tên/SeriesNumber chỉ dùng để hiển thị.

@@ -48,8 +48,7 @@ quả AI và không tự xác định bờ u.
 ## Lưu ý sử dụng
 
 - Chỉ series có `mpr-volume.json` mới bật nút `MPR`.
-- Gói MPR ưu tiên T1 3D sau tiêm; fallback T1 3D không tiêm; yêu cầu trên
-  100 vị trí lát hợp lệ.
+- Gói MPR được tạo cho mọi T1 3D sau tiêm và không tiêm đủ trên 100 lát hợp lệ.
 - Ứng dụng không tự xóa DICOM.
 - Kết quả đo phụ thuộc geometry trong manifest và đường ROI của người dùng;
   đây không phải phần mềm đã được chứng nhận thay thế workstation chẩn đoán.
@@ -92,3 +91,11 @@ phẳng sau sửa.
 - Bỏ ô 3D trống khỏi layout MPR; ba mặt phẳng dùng ba cột bằng nhau.
 - 3D chỉ bật khi có ROI axial và mở thành workspace riêng; toolbar MPR không hiển thị trong chế độ 3D.
 - Test hồi quy bao phủ layout ba cột, trạng thái nút 3D, chuyển MPR/3D, pan và contain/cover.
+
+
+## Giữ toàn bộ T1 3D sau tiêm và không tiêm
+
+- Không còn chọn một candidate duy nhất; chuyển mọi series T1 3D đủ điều kiện.
+- Folder có loại T1 và hash 10 ký tự của SeriesInstanceUID để chống ghi đè khi trùng tên/số series.
+- Từng gói MPR chỉ chuyển một lần; series khác vẫn chuyển theo luồng thường.
+- Test hồi quy xác nhận hai series cùng tên/số nhưng khác UID đều có đủ 101 lát.

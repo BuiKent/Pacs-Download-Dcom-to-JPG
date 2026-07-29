@@ -1180,49 +1180,57 @@ def convert_all(
         f"{' + PNG' if save_png else ''}, tương phản={mode_txt}.")
 
     stats = ConvertStats()
-    mpr_candidate = None
+    mpr_candidates = []
+    converted_mpr_uids: set[str] = set()
+    mpr_series_names: list[str] = []
 
-    # Chỉ đọc header để chọn một T1 3D đủ hình học. Series này được chuyển một
-    # lần bằng cửa sổ cường độ chung, thay vì chuyển JPG thường rồi ghi đè.
+    # Keep every eligible T1 3D series (post-contrast and pre-contrast).  The
+    # SeriesInstanceUID-backed folder name prevents same-name series from
+    # overwriting each other.
     try:
-        mpr_candidate = mpr_engine.select_mpr_candidate(dicom_dir)
+        mpr_candidates = mpr_engine.select_mpr_candidates(dicom_dir)
     except Exception as e:
-        log(f"MPR-JPG: không quét được series T1 ({e}); tiếp tục luồng JPG thường.")
+        log(f"MPR-JPG: kh\u00f4ng qu\u00e9t \u0111\u01b0\u1ee3c series T1 ({e}); ti\u1ebfp t\u1ee5c lu\u1ed3ng JPG th\u01b0\u1eddng.")
 
-    if mpr_candidate is not None:
+    for candidate in mpr_candidates:
+        label = "T1 sau ti\u00eam" if candidate.kind == "T1_POST_CONTRAST" else "T1 kh\u00f4ng ti\u00eam"
         log(
-            "MPR-JPG tự chọn: "
-            f"{mpr_candidate.description} — {len(mpr_candidate.slices)} lát — "
-            f"{'T1 sau tiêm' if mpr_candidate.kind == 'T1_POST_CONTRAST' else 'T1 không tiêm'}."
+            "MPR-JPG ch\u1ecdn: "
+            f"{candidate.description} - {len(candidate.slices)} l\u00e1t - {label} - "
+            f"UID {candidate.series_uid}."
         )
         try:
             count, _ = mpr_engine.convert_mpr_candidate(
-                mpr_candidate,
+                candidate,
                 jpg_dir,
                 quality=100,
                 log=log,
                 should_stop=should_stop,
             )
             stats.converted += count
-            stats.mpr_converted = count
-            stats.mpr_series = mpr_candidate.description
+            stats.mpr_converted += count
+            converted_mpr_uids.add(candidate.series_uid)
+            mpr_series_names.append(f"{candidate.description} ({label})")
         except InterruptedError:
-            log("Đã dừng khi đang tạo MPR-JPG.")
+            log("\u0110\u00e3 d\u1eebng khi \u0111ang t\u1ea1o MPR-JPG.")
+            stats.mpr_series = " | ".join(mpr_series_names)
             return stats
         except Exception as e:
-            # Không để một lỗi MPR làm mất series trong luồng cũ: xóa riêng
-            # payload MPR chưa hoàn chỉnh rồi chuyển series này như JPG thường.
-            log(f"MPR-JPG lỗi ({e}); chuyển series này theo luồng JPG thường.")
+            # Keep the failed series available to the normal JPG path.
+            log(f"MPR-JPG l\u1ed7i cho {candidate.description} ({e}); chuy\u1ec3n series n\u00e0y theo lu\u1ed3ng JPG th\u01b0\u1eddng.")
             try:
-                folder = jpg_dir / mpr_candidate.folder_name
+                folder = jpg_dir / candidate.folder_name
                 for partial in folder.glob("MPR_*.jpg"):
                     partial.unlink()
                 manifest = folder / mpr_engine.MANIFEST_NAME
                 if manifest.exists():
                     manifest.unlink()
+                if folder.exists() and not any(folder.iterdir()):
+                    folder.rmdir()
             except Exception:
                 pass
-            mpr_candidate = None
+
+    stats.mpr_series = " | ".join(mpr_series_names)
 
     for path in dcm_files:
         if should_stop and should_stop():
@@ -1240,15 +1248,17 @@ def convert_all(
                     f"fallback:{getattr(ds, 'SeriesNumber', '')}:"
                     f"{getattr(ds, 'SeriesDescription', '')}"
                 )
-            if mpr_candidate is not None and series_uid == mpr_candidate.series_uid:
-                # Đã chuyển theo chuẩn MPR ở trên.
+            if series_uid in converted_mpr_uids:
+                # Series already converted as a geometry-preserving MPR package.
                 continue
 
             series_number = getattr(ds, "SeriesNumber", "NoSeries")
             series_desc = _safe_name(getattr(ds, "SeriesDescription", "UnknownSeries"))
             instance_number = getattr(ds, "InstanceNumber", stats.converted + 1)
 
-            series_folder = jpg_dir / f"Series_{_safe_name(series_number)}_{series_desc}"
+            series_folder = jpg_dir / mpr_engine.series_folder_name(
+                series_number, series_desc, series_uid,
+            )
             series_folder.mkdir(exist_ok=True)
 
             frames = _dicom_to_frames(ds, contrast_mode)
@@ -1282,9 +1292,10 @@ def convert_all(
         f"{' (+PNG)' if save_png else ''}, bỏ qua {stats.skipped}, lỗi {stats.failed}.")
     if stats.mpr_converted:
         log(
-            f"MPR-JPG sẵn sàng: {stats.mpr_series} — "
-            f"{stats.mpr_converted} lát, mở bằng nút 'MPR & u não'."
+            f"MPR-JPG s\u1eb5n s\u00e0ng: {len(converted_mpr_uids)} series - "
+            f"{stats.mpr_converted} l\u00e1t - {stats.mpr_series}."
         )
+
     return stats
 
 

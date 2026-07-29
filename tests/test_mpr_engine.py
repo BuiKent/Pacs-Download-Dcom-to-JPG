@@ -21,11 +21,12 @@ def _write_series(
     series_number: int,
     spacing: float = 1.0,
     value_offset: int = 0,
+    contrast_agent: str = "",
 ) -> str:
     series_uid = generate_uid()
     study_uid = generate_uid()
     frame_uid = generate_uid()
-    folder = base / f"series-{series_number}"
+    folder = base / f"series-{series_number}-{series_uid[-8:]}"
     folder.mkdir(parents=True)
     for index in range(count):
         sop_uid = generate_uid()
@@ -51,6 +52,8 @@ def _write_series(
         ds.SeriesNumber = series_number
         ds.SeriesDescription = description
         ds.ProtocolName = description
+        if contrast_agent:
+            ds.ContrastBolusAgent = contrast_agent
         ds.ImageType = ["ORIGINAL", "PRIMARY", "M"]
         ds.InstanceNumber = index + 1
         ds.Rows = 16
@@ -75,16 +78,18 @@ def _write_series(
 
 
 class MprSelectionTests(unittest.TestCase):
-    def test_post_contrast_wins_over_pre_contrast(self):
+    def test_all_eligible_post_and_pre_are_returned(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             pre_uid = _write_series(root, "3D AX T1 BRAVO", 101, series_number=6)
             post_uid = _write_series(root, "3D AX T1 BRAVO+c", 101, series_number=9)
-            selected = mpr_engine.select_mpr_candidate(root)
-            self.assertIsNotNone(selected)
-            self.assertEqual(post_uid, selected.series_uid)
-            self.assertNotEqual(pre_uid, selected.series_uid)
-            self.assertEqual("T1_POST_CONTRAST", selected.kind)
+            selected = mpr_engine.select_mpr_candidates(root)
+            self.assertEqual([post_uid, pre_uid], [item.series_uid for item in selected])
+            self.assertEqual(
+                ["T1_POST_CONTRAST", "T1_PRE_CONTRAST"],
+                [item.kind for item in selected],
+            )
+            self.assertEqual(post_uid, mpr_engine.select_mpr_candidate(root).series_uid)
 
     def test_pre_contrast_is_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -150,11 +155,17 @@ class MprPackageTests(unittest.TestCase):
                 places=6,
             )
 
-    def test_convert_all_routes_selected_series_only_once(self):
+    def test_convert_all_keeps_post_and_pre_even_when_names_collide(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             dicom = root / "dicom"
-            _write_series(dicom, "3D AX T1 BRAVO+c", 101, series_number=9)
+            pre_uid = _write_series(
+                dicom, "3D AX T1 BRAVO", 101, series_number=9,
+            )
+            post_uid = _write_series(
+                dicom, "3D AX T1 BRAVO", 101, series_number=9,
+                contrast_agent="Gadovist",
+            )
             _write_series(dicom, "Ax T2 FLAIR", 2, series_number=2)
             jpg = root / "jpg"
             stats = dcom_pipeline.convert_all(
@@ -163,12 +174,22 @@ class MprPackageTests(unittest.TestCase):
                 quality=95,
                 log=lambda _message: None,
             )
-            self.assertEqual(101, stats.mpr_converted)
-            self.assertEqual(103, stats.converted)
+            self.assertEqual(202, stats.mpr_converted)
+            self.assertEqual(204, stats.converted)
             mpr_folders = [p for p in jpg.iterdir() if mpr_engine.read_manifest(p)]
-            self.assertEqual(1, len(mpr_folders))
-            self.assertEqual(101, len(mpr_engine.manifest_image_files(mpr_folders[0])))
-            self.assertFalse(list(mpr_folders[0].glob("IM_*.jpg")))
+            self.assertEqual(2, len(mpr_folders))
+            manifests = [mpr_engine.read_manifest(path) for path in mpr_folders]
+            self.assertEqual(
+                {pre_uid, post_uid},
+                {manifest["series_instance_uid"] for manifest in manifests},
+            )
+            self.assertEqual(
+                {"T1_POST_CONTRAST", "T1_PRE_CONTRAST"},
+                {manifest["series_type"] for manifest in manifests},
+            )
+            self.assertEqual(2, len({path.name for path in mpr_folders}))
+            self.assertTrue(all(len(mpr_engine.manifest_image_files(path)) == 101 for path in mpr_folders))
+            self.assertTrue(all(not list(path.glob("IM_*.jpg")) for path in mpr_folders))
             normal_folders = [p for p in jpg.iterdir() if not mpr_engine.read_manifest(p)]
             self.assertEqual(1, len(normal_folders))
             self.assertEqual(2, len(list(normal_folders[0].glob("IM_*.jpg"))))

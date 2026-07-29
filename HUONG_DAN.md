@@ -29,19 +29,19 @@ Giao diện gồm **2 cột**: bên trái để tải, bên phải là **trình 
 
 ## MPR và đo u não
 
-Sau khi tải xong, ứng dụng tự quét header DICOM và chỉ tạo gói MPR khi tìm
-được một series phù hợp:
+Sau khi tải xong, ứng dụng quét header DICOM và tạo gói MPR cho **tất cả**
+series T1 3D sau tiêm và T1 3D không tiêm đủ điều kiện:
 
-1. Ưu tiên **T1 3D sau tiêm**.
-2. Nếu không có, dùng **T1 3D không tiêm**.
-3. Series phải có **trên 100 vị trí lát duy nhất**, đầy đủ thông tin tọa độ,
-   cùng kích thước/hướng và khoảng cách lát đủ đều.
+1. Mỗi series phải có **trên 100 vị trí lát duy nhất**.
+2. Phải có đủ geometry, cùng kích thước/hướng và khoảng cách lát đủ đều.
+3. T1 sau tiêm và T1 không tiêm được giữ thành các gói riêng; không còn cơ chế chọn một xung và bỏ xung còn lại.
+4. Tên folder có nhãn T1_POST/T1_PRE và mã rút gọn từ SeriesInstanceUID, nên hai xung trùng tên/số series không ghi đè nhau.
 
 Các series còn lại vẫn chuyển JPG theo luồng cũ. Series MPR được chuyển một
 lần với JPG quality 100, một cửa sổ cường độ chung cho toàn volume và file
 `mpr-volume.json`. Ứng dụng không tự xóa DICOM.
 
-Khi chọn đúng series, nút **MPR + ROI 3D** sẽ sáng. Bấm nút này để đổi ngay
+Khi chọn đúng series, nút **MPR** sẽ sáng. Bấm nút này để đổi ngay
 vùng xem chính từ **2D** sang **MPR**; ứng dụng không mở cửa sổ phụ:
 
 - Ba mặt phẳng **AXIAL / CORONAL / SAGITTAL** liên kết bằng crosshair.
@@ -198,3 +198,10 @@ lọc theo modality MR/CT, chưa bảo đảm chỉ lấy vùng sọ não.
 - Nút ⛶ hiện toàn bộ ảnh; nút ▣ lấp đầy viewport nhưng có thể cắt mép. Dùng bàn tay để kéo vùng cần xem.
 - MPR chỉ hiển thị axial, coronal và sagittal; không còn ô 3D trống chiếm chỗ.
 - Nút 3D ROI chỉ bật sau khi có ROI axial. Khi mở, 3D dùng toàn bộ workspace với toolbar xoay/nghiêng/đặt lại riêng.
+
+
+## Lưu cả hai nhóm T1
+
+- Mọi T1 3D sau tiêm/không tiêm đủ geometry và trên 100 lát đều được chuyển JPG quality 100 kèm manifest MPR.
+- Mỗi gói có cửa sổ cường độ và 'mpr-volume.json' riêng.
+- Các series khác vẫn theo luồng JPG bình thường; không tự xóa DICOM.
