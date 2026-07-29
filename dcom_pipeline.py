@@ -24,9 +24,13 @@ thì in ra màn hình.
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
+import os
 import re
 import sys
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -226,6 +230,29 @@ def ensure_browser(log: LogFn = _default_log) -> None:
 # resolver công khai -> ra IP công khai bị chặn -> ERR_CONNECTION_TIMED_OUT
 # dù trình duyệt thường vẫn vào được.
 _BROWSER_ARGS = ["--dns-over-https-mode=off", "--disable-features=DnsOverHttps,AsyncDns"]
+_BROWSER_STATE_LOCK = threading.Lock()
+_CHROME_UNAVAILABLE = False
+
+
+def _installed_chrome_paths() -> list[Path]:
+    """Các vị trí Chrome có thể bị Playwright bỏ sót trên một số máy Windows."""
+    roots = [
+        os.environ.get("PROGRAMFILES"),
+        os.environ.get("PROGRAMFILES(X86)"),
+        os.environ.get("LOCALAPPDATA"),
+    ]
+    candidates = []
+    for root in roots:
+        if root:
+            path = Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe"
+            if path.is_file() and path not in candidates:
+                candidates.append(path)
+    return candidates
+
+
+def _short_browser_error(exc: Exception) -> str:
+    text = " ".join(str(exc).split())
+    return text[:180] + ("..." if len(text) > 180 else "")
 
 
 def _launch_chromium(p, headless: bool, log: LogFn):
@@ -236,17 +263,44 @@ def _launch_chromium(p, headless: bool, log: LogFn):
     3. Microsoft Edge (nếu máy có sẵn mặc định trên Windows)
     4. Tải ngầm Chromium của Playwright (~150MB, phương án dự phòng cuối cùng)
     """
-    # 1. Ưu tiên Google Chrome
-    try:
-        b = p.chromium.launch(headless=headless, channel="chrome", args=_BROWSER_ARGS)
-        log("Dùng trình duyệt có sẵn trên máy: Google Chrome (chạy ngầm).")
-        return b
-    except Exception:
-        pass
+    global _CHROME_UNAVAILABLE
+    with _BROWSER_STATE_LOCK:
+        skip_chrome = _CHROME_UNAVAILABLE
+
+    # 1. Ưu tiên Google Chrome. Nếu Windows đã từ chối chạy trong lần đầu,
+    # bỏ qua các lần thử tiếp theo của cùng phiên app để không làm chậm mỗi study.
+    chrome_error = None
+    if not skip_chrome:
+        try:
+            b = p.chromium.launch(headless=headless, channel="chrome", args=_BROWSER_ARGS)
+            log("Dùng trình duyệt có sẵn trên máy: Google Chrome (chạy ngầm).")
+            return b
+        except Exception as exc:
+            chrome_error = exc
+
+        # Chrome cài theo tài khoản Windows đôi khi không được channel tìm thấy.
+        for chrome_path in _installed_chrome_paths():
+            try:
+                b = p.chromium.launch(
+                    headless=headless,
+                    executable_path=str(chrome_path),
+                    args=_BROWSER_ARGS,
+                )
+                log(f"Dùng Google Chrome tại {chrome_path} (chạy ngầm).")
+                return b
+            except Exception as exc:
+                chrome_error = exc
+
+        with _BROWSER_STATE_LOCK:
+            _CHROME_UNAVAILABLE = True
+        log(
+            "Google Chrome không khởi động được; chuyển sang trình duyệt dự phòng. "
+            f"Chi tiết: {_short_browser_error(chrome_error)}"
+        )
 
     # 2. Thử Safari / WebKit (nếu chạy trên macOS)
     try:
-        if hasattr(p, "webkit"):
+        if sys.platform == "darwin" and hasattr(p, "webkit"):
             b = p.webkit.launch(headless=headless)
             log("Dùng trình duyệt có sẵn trên máy: Safari / WebKit (chạy ngầm).")
             return b
@@ -258,8 +312,8 @@ def _launch_chromium(p, headless: bool, log: LogFn):
         b = p.chromium.launch(headless=headless, channel="msedge", args=_BROWSER_ARGS)
         log("Dùng trình duyệt có sẵn trên máy: Microsoft Edge (chạy ngầm).")
         return b
-    except Exception:
-        pass
+    except Exception as exc:
+        log(f"Microsoft Edge không khởi động được: {_short_browser_error(exc)}")
 
     # 4. Phương án cuối: Tự động tải & dùng Chromium ảo của Playwright
     ensure_browser(log)
@@ -1366,6 +1420,176 @@ HOSPITALS = {
 }
 
 
+_RIS_SESSION_TTL_SECONDS = 30 * 60
+_RIS_SESSION_LOCK = threading.Lock()
+_RIS_SESSION_STATES: dict[str, dict] = {}
+
+
+def clear_ris_session_cache(hospital_key: Optional[str] = None) -> None:
+    """Xóa phiên RIS trong RAM; cookie/token không bao giờ được ghi xuống ổ đĩa."""
+    with _RIS_SESSION_LOCK:
+        if hospital_key is None:
+            _RIS_SESSION_STATES.clear()
+        else:
+            _RIS_SESSION_STATES.pop(hospital_key.lower(), None)
+
+
+def _get_ris_session_state(hospital_key: str) -> Optional[dict]:
+    key = hospital_key.lower()
+    now = time.monotonic()
+    with _RIS_SESSION_LOCK:
+        entry = _RIS_SESSION_STATES.get(key)
+        if not entry:
+            return None
+        if now - float(entry["last_used"]) > _RIS_SESSION_TTL_SECONDS:
+            _RIS_SESSION_STATES.pop(key, None)
+            return None
+        entry["last_used"] = now
+        return copy.deepcopy(entry["storage_state"])
+
+
+def _store_ris_session_state(hospital_key: str, storage_state: dict) -> None:
+    with _RIS_SESSION_LOCK:
+        _RIS_SESSION_STATES[hospital_key.lower()] = {
+            "storage_state": copy.deepcopy(storage_state),
+            "last_used": time.monotonic(),
+        }
+
+
+def _page_is_ris_login(page) -> bool:
+    url = (page.url or "").lower()
+    if "/account/login" in url:
+        return True
+    try:
+        password = page.query_selector("input[type='password']")
+        return bool(password and password.is_visible())
+    except Exception:
+        return False
+
+
+def _perform_ris_login(
+    page,
+    login_url: str,
+    reading_url: str,
+    username: str,
+    password: str,
+) -> bool:
+    page.goto(login_url, wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_timeout(700)
+    acc_inp = (
+        page.query_selector("input[name='account']")
+        or page.query_selector("input[name='username']")
+        or page.query_selector("input[type='text']")
+    )
+    pwd_inp = (
+        page.query_selector("input[name='password']")
+        or page.query_selector("input[type='password']")
+    )
+    if not acc_inp or not pwd_inp:
+        return False
+    acc_inp.fill(username)
+    pwd_inp.fill(password)
+
+    btn = (
+        page.query_selector("button[type='submit']:not(.bv-hidden-submit)")
+        or page.query_selector("button:has-text('Đăng nhập')")
+    )
+    if btn and btn.is_visible():
+        btn.click()
+    else:
+        page.keyboard.press("Enter")
+
+    page.wait_for_timeout(1200)
+    try:
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except Exception:
+        pass
+    page.goto(reading_url, wait_until="domcontentloaded", timeout=15000)
+    page.wait_for_timeout(500)
+    return not _page_is_ris_login(page)
+
+
+def _query_ris_studies(page, patient_id: str) -> dict:
+    """Truy vấn RIS trong page đã xác thực và phân biệt rõ lỗi hết phiên."""
+    return page.evaluate(
+        """
+        async (patientId) => {
+            const encoded = encodeURIComponent(patientId);
+            const urls = [
+                '/ris/rest/study?pid=' + encoded + '&dateFrom=2019-1-1&dateTo=2030-12-31&status=all&limit=200',
+                '/ris/rest/study?keyword=' + encoded + '&fromDate=2019-01-01&toDate=2030-12-31&limit=200',
+                '/ris/rest/study?patientId=' + encoded + '&limit=200',
+            ];
+            const statuses = [];
+            for (const url of urls) {
+                try {
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        credentials: 'same-origin',
+                        cache: 'no-store',
+                        redirect: 'follow',
+                    });
+                    statuses.push(response.status);
+                    const finalUrl = (response.url || '').toLowerCase();
+                    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+                    if (
+                        response.status === 401 ||
+                        response.status === 403 ||
+                        finalUrl.includes('/account/login')
+                    ) {
+                        return {results: [], authFailed: true, statuses};
+                    }
+                    if (!response.ok) continue;
+                    const text = await response.text();
+                    if (
+                        contentType.includes('text/html') &&
+                        /type\\s*=\\s*["']password|account\\/login/i.test(text)
+                    ) {
+                        return {results: [], authFailed: true, statuses};
+                    }
+                    let data;
+                    try {
+                        data = JSON.parse(text);
+                    } catch (_) {
+                        continue;
+                    }
+                    let results = [];
+                    if (Array.isArray(data)) results = data;
+                    else if (Array.isArray(data?.results)) results = data.results;
+                    else if (Array.isArray(data?.data?.results)) results = data.data.results;
+                    else if (Array.isArray(data?.data)) results = data.data;
+                    if (results.length > 0) {
+                        return {results, authFailed: false, statuses};
+                    }
+                } catch (_) {}
+            }
+            return {results: [], authFailed: false, statuses};
+        }
+        """,
+        patient_id,
+    )
+
+
+def _study_patient_id(study: dict) -> str:
+    for key in (
+        "patientId", "patientID", "PatientID", "pid",
+        "patientCode", "patientNo", "patientNumber",
+    ):
+        value = study.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _patient_id_matches(study: dict, requested_patient_id: str) -> bool:
+    actual = _study_patient_id(study)
+    if not actual:
+        # Một số RIS bỏ PID vì endpoint đã được giới hạn theo PID truy vấn.
+        return True
+    normalize = lambda value: re.sub(r"\s+", "", str(value)).upper()
+    return normalize(actual) == normalize(requested_patient_id)
+
+
 def search_patient_studies(
     hospital_key: str,
     patient_id: str,
@@ -1376,7 +1600,7 @@ def search_patient_studies(
 ) -> list[dict]:
     """
     Đăng nhập cổng RIS bệnh viện (Việt Đức / ĐH Y), tìm kiếm theo Mã Bệnh Nhân,
-    lấy danh sách các study (ca chụp MRI / CT sọ não) và bóc tách link viewer trực tiếp.
+    lấy danh sách các study MRI / CT và bóc tách link viewer trực tiếp.
     """
     from playwright.sync_api import sync_playwright
 
@@ -1390,86 +1614,77 @@ def search_patient_studies(
     username = _dec_cred(info["username_enc"]) if "username_enc" in info else info.get("username", "")
     password = _dec_cred(info["password_enc"]) if "password_enc" in info else info.get("password", "")
 
-    log(f"Đang đăng nhập hệ thống RIS {info['name']} ({base_url})...")
+    reading_url = f"{base_url}/ris/study/reading"
+    cached_state = _get_ris_session_state(hospital_key)
+    if cached_state:
+        log(f"Đang tái sử dụng phiên RIS {info['name']} trong bộ nhớ...")
+    else:
+        log(f"Đang đăng nhập hệ thống RIS {info['name']} ({base_url})...")
     studies_found = []
 
     with sync_playwright() as p:
         browser = _launch_chromium(p, headless, log)
-        context = browser.new_context(
+        context_options = dict(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             viewport={"width": 1600, "height": 1000},
             ignore_https_errors=True
         )
+        if cached_state:
+            context_options["storage_state"] = cached_state
+        context = browser.new_context(**context_options)
         page = context.new_page()
 
         try:
-            # 1. Đăng nhập RIS
-            page.goto(login_url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(1000)
+            # 1. Thử phiên trong RAM trước; nếu không còn hợp lệ mới đăng nhập.
+            session_reused = False
+            if cached_state:
+                try:
+                    page.goto(reading_url, wait_until="domcontentloaded", timeout=15000)
+                    page.wait_for_timeout(500)
+                    session_reused = not _page_is_ris_login(page)
+                except Exception:
+                    session_reused = False
 
-            # Điền tài khoản + mật khẩu
-            acc_inp = (page.query_selector("input[name='account']") or
-                       page.query_selector("input[name='username']") or
-                       page.query_selector("input[type='text']"))
-            if acc_inp:
-                acc_inp.fill(username)
-            pwd_inp = (page.query_selector("input[name='password']") or
-                       page.query_selector("input[type='password']"))
-            if pwd_inp:
-                pwd_inp.fill(password)
+            if not session_reused:
+                clear_ris_session_cache(hospital_key)
+                if not _perform_ris_login(
+                    page, login_url, reading_url, username, password,
+                ):
+                    raise RuntimeError("RIS không xác nhận đăng nhập thành công.")
 
-            btn = (page.query_selector("button[type='submit']:not(.bv-hidden-submit)") or
-                   page.query_selector("button:has-text('Đăng nhập')"))
-            if btn and btn.is_visible():
-                btn.click()
-            else:
-                page.keyboard.press("Enter")
-
-            page.wait_for_timeout(2000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:
-                pass
-
-            try:
-                page.goto(f"{base_url}/ris/study/reading", wait_until="domcontentloaded", timeout=10000)
-                page.wait_for_timeout(1000)
-            except Exception:
-                pass
-
-            log(f"✓ Đăng nhập thành công vào RIS {info['name']}!")
-
-            # 2. Tìm kiếm bệnh nhân theo mã qua REST API của RIS (không bị lỗi input ẩn / timeout)
+            # 2. Truy vấn theo PID và nhận biết riêng trường hợp hết phiên.
             log(f"Đang tìm kiếm bệnh nhân mã '{patient_id}' trên hệ thống...")
+            api_result = _query_ris_studies(page, patient_id)
+            if api_result.get("authFailed"):
+                log("Phiên RIS đã hết hạn; đang tự đăng nhập lại một lần...")
+                session_reused = False
+                clear_ris_session_cache(hospital_key)
+                if not _perform_ris_login(
+                    page, login_url, reading_url, username, password,
+                ):
+                    raise RuntimeError("Không thể đăng nhập lại RIS sau khi phiên hết hạn.")
+                api_result = _query_ris_studies(page, patient_id)
+                if api_result.get("authFailed"):
+                    raise RuntimeError("RIS tiếp tục từ chối phiên sau khi đăng nhập lại.")
 
-            api_data = page.evaluate("""
-                (patientId) => {
-                    var urls = [
-                        '/ris/rest/study?pid=' + patientId + '&dateFrom=2019-1-1&dateTo=2030-12-31&status=all&limit=200',
-                        '/ris/rest/study?keyword=' + patientId + '&fromDate=2019-01-01&toDate=2030-12-31&limit=200',
-                        '/ris/rest/study?patientId=' + patientId + '&limit=200',
-                    ];
-                    for (var i = 0; i < urls.length; i++) {
-                        try {
-                            var xhr = new XMLHttpRequest();
-                            xhr.open('GET', urls[i], false);
-                            xhr.send();
-                            if (xhr.status === 200) {
-                                var data = JSON.parse(xhr.responseText);
-                                if (data && data.results && data.results.length > 0) {
-                                    return data.results;
-                                }
-                            }
-                        } catch(e) {}
-                    }
-                    return [];
-                }
-            """, patient_id)
+            _store_ris_session_state(hospital_key, context.storage_state())
+            if session_reused:
+                log(f"✓ Đã dùng lại phiên RIS {info['name']} — không cần đăng nhập lại.")
+            else:
+                log(f"✓ Đăng nhập thành công vào RIS {info['name']}!")
+
+            api_data = list(api_result.get("results") or [])
 
             studies_to_process = []
             if api_data:
                 target_mod = (modality or "MR_CT").strip().upper()
                 for s in api_data:
+                    if not _patient_id_matches(s, patient_id):
+                        log(
+                            "  ⚠ Bỏ qua study có Patient ID không khớp: "
+                            f"{_study_patient_id(s)!r}"
+                        )
+                        continue
                     m_dicom = str(s.get("modalityDicom") or s.get("modality") or "").strip().upper()
                     desc = str(s.get("studyDescription") or "").strip().upper()
                     
@@ -1500,12 +1715,13 @@ def search_patient_studies(
                                 "desc": s.get("studyDescription", "") or ""
                             })
 
-            # Fallback nếu REST API không trả về: thử tìm trong DOM và URL
+            # Không lấy Study UID tùy ý từ trang reading vì không chứng minh
+            # được chúng thuộc Patient ID vừa yêu cầu.
             if not studies_to_process:
-                content = page.content()
-                uids = list(set(re.findall(r"studyUID=([a-zA-Z0-9\.\_\-]+)", content)))
-                for u in uids:
-                    studies_to_process.append({"uid": u, "date": "", "modality": modality, "desc": ""})
+                log(
+                    "  Không có study phù hợp từ API. Vì an toàn, ứng dụng không "
+                    "lấy Study UID tùy ý từ danh sách/HTML của RIS."
+                )
 
             log(f"-> Tìm thấy {len(studies_to_process)} ca chụp (MRI / CT) cho bệnh nhân {patient_id}.")
 

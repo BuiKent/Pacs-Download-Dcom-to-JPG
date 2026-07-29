@@ -102,6 +102,10 @@ class MprPane:
             highlightthickness=2 if active else 1,
         )
 
+    def sync_cursor(self) -> None:
+        tool = self.owner.tool.get()
+        self.canvas.configure(cursor="fleur" if tool == "pan" else "crosshair")
+
     def index(self) -> int:
         return self.owner.indices[self.plane]
 
@@ -174,7 +178,8 @@ class MprPane:
         canvas_h = max(self.canvas.winfo_height(), 20)
         physical_w = max(cols * sx, 1e-6)
         physical_h = max(rows * sy, 1e-6)
-        fit_scale = min((canvas_w - 12) / physical_w, (canvas_h - 12) / physical_h)
+        scales = ((canvas_w - 12) / physical_w, (canvas_h - 12) / physical_h)
+        fit_scale = max(scales) if self.owner.fit_policy.get() == "cover" else min(scales)
         self.px_per_mm = max(fit_scale * self.zoom, 0.01)
         draw_w = max(1, round(physical_w * self.px_per_mm))
         draw_h = max(1, round(physical_h * self.px_per_mm))
@@ -318,6 +323,9 @@ class MprPane:
 
     def _left_press(self, event) -> None:
         self.owner.select_plane(self.plane)
+        if self.owner.tool.get() == "pan":
+            self._pan_press(event)
+            return
         point = self.canvas_to_image(*self._canvas_point(event))
         if point is None:
             return
@@ -330,6 +338,9 @@ class MprPane:
             self._drag_start = point
 
     def _left_drag(self, event) -> None:
+        if self.owner.tool.get() == "pan":
+            self._pan_drag(event)
+            return
         if self._drag_start is None:
             return
         point = self.canvas_to_image(*self._canvas_point(event))
@@ -349,6 +360,9 @@ class MprPane:
             )
 
     def _left_release(self, event) -> None:
+        if self.owner.tool.get() == "pan":
+            self._pan_release(event)
+            return
         if self._drag_start is None:
             return
         end = self.canvas_to_image(*self._canvas_point(event))
@@ -442,6 +456,8 @@ class MprWorkspace(ttk.Frame):
         self.crosshair = [0, 0, 0]
         self.indices = {"axial": 0, "coronal": 0, "sagittal": 0}
         self.tool = tk.StringVar(value="crosshair")
+        self.fit_policy = tk.StringVar(value="contain")
+        self.display_mode = "mpr"
         self.brightness = tk.DoubleVar(value=1.0)
         self.contrast = tk.DoubleVar(value=1.0)
         self.lengths: list[dict] = []
@@ -465,6 +481,12 @@ class MprWorkspace(ttk.Frame):
         self.pitch = tk.DoubleVar(value=25.0)
         self.panes: dict[str, MprPane] = {}
         self.model_canvas = None
+        self.mpr_toolbar = None
+        self.mpr_actions = None
+        self.mpr_controls = None
+        self.mpr_body = None
+        self.model_toolbar = None
+        self.model_frame = None
         self.info_var = tk.StringVar(value="Chọn một series MPR để bắt đầu.")
         self._build_ui()
 
@@ -500,9 +522,12 @@ class MprWorkspace(ttk.Frame):
         self.active_polygon_plane = None
         self.active_polygon_index = None
         self.tool.set("crosshair")
+        self.display_mode = "mpr"
         self.brightness.set(1.0)
         self.contrast.set(1.0)
+        self.fit_policy.set("contain")
         self._load_annotations()
+        self._sync_3d_button()
         self.info_var.set(
             f"{manifest.get('series_type', 'T1')} · "
             f"{z_count} lát · "
@@ -513,6 +538,7 @@ class MprWorkspace(ttk.Frame):
             pane.fit = True
             pane.zoom = 1.0
             pane.pan_x = pane.pan_y = 0.0
+        self.set_display_mode("mpr")
         self.after_idle(self.refresh_all)
         return True
 
@@ -520,11 +546,111 @@ class MprWorkspace(ttk.Frame):
     def is_loaded(self) -> bool:
         return self.volume is not None and self.series_folder is not None
 
+    def _add_tooltip(self, widget, text: str) -> None:
+        tip = {"window": None}
+
+        def show(_event=None):
+            if tip["window"] is not None:
+                return
+            window = tk.Toplevel(widget)
+            window.wm_overrideredirect(True)
+            window.wm_geometry(
+                f"+{widget.winfo_rootx() + 8}+"
+                f"{widget.winfo_rooty() + widget.winfo_height() + 5}"
+            )
+            tk.Label(
+                window,
+                text=text,
+                background="#ffffe0",
+                relief="solid",
+                borderwidth=1,
+                padx=6,
+                pady=2,
+            ).pack()
+            tip["window"] = window
+
+        def hide(_event=None):
+            if tip["window"] is not None:
+                tip["window"].destroy()
+                tip["window"] = None
+
+        widget.bind("<Enter>", show, add="+")
+        widget.bind("<Leave>", hide, add="+")
+        widget.bind("<ButtonPress>", hide, add="+")
+
+    def _select_tool(self, tool: str) -> None:
+        self.tool.set(tool)
+        self.cancel_draft(refresh=False)
+        for pane in self.panes.values():
+            pane.sync_cursor()
+        self.refresh_planes()
+
+    def _set_fit_policy(self, policy: str) -> None:
+        if policy not in ("contain", "cover"):
+            return
+        self.fit_policy.set(policy)
+        for pane in self.panes.values():
+            pane.zoom = 1.0
+            pane.pan_x = pane.pan_y = 0.0
+        self.refresh_planes()
+
+    def _sync_3d_button(self) -> None:
+        if hasattr(self, "open_3d_btn"):
+            self.open_3d_btn.config(
+                state="normal" if self.rois.get("axial") else "disabled",
+            )
+
+    def set_display_mode(self, mode: str) -> bool:
+        if mode not in ("mpr", "3d"):
+            raise ValueError(f"Chế độ MPR không hợp lệ: {mode}")
+        if mode == "3d" and not self.rois.get("axial"):
+            self.bell()
+            return False
+        self.display_mode = mode
+        if mode == "3d":
+            for frame in (
+                self.mpr_toolbar,
+                self.mpr_actions,
+                self.mpr_controls,
+                self.mpr_body,
+            ):
+                frame.pack_forget()
+            self.model_toolbar.pack(
+                fill="x", padx=6, pady=(2, 4), before=self.status,
+            )
+            self.model_frame.pack(
+                fill="both", expand=True, padx=6, pady=(0, 4), before=self.status,
+            )
+            self.after_idle(self.render_3d)
+        else:
+            self.model_toolbar.pack_forget()
+            self.model_frame.pack_forget()
+            self.mpr_toolbar.pack(
+                fill="x", padx=6, pady=2, before=self.status,
+            )
+            self.mpr_actions.pack(
+                fill="x", padx=6, pady=(0, 2), before=self.status,
+            )
+            self.mpr_controls.pack(
+                fill="x", padx=6, pady=(0, 4), before=self.status,
+            )
+            self.mpr_body.pack(
+                fill="both", expand=True, padx=6, pady=(0, 4), before=self.status,
+            )
+            self.after_idle(self.refresh_planes)
+        return True
+
+    def _reset_3d_camera(self) -> None:
+        self.yaw.set(-35.0)
+        self.pitch.set(25.0)
+        self.render_3d()
+
     def _build_ui(self) -> None:
         header = ttk.Frame(self)
         header.pack(fill="x", padx=8, pady=(6, 2))
-        toolbar = ttk.Frame(self)
-        toolbar.pack(fill="x", padx=6, pady=2)
+        self.mpr_toolbar = ttk.Frame(self)
+        self.mpr_toolbar.pack(fill="x", padx=6, pady=2)
+        toolbar = self.mpr_toolbar
         ttk.Label(
             header,
             textvariable=self.info_var,
@@ -536,37 +662,66 @@ class MprWorkspace(ttk.Frame):
             foreground="#4b6f8f",
         ).pack(side="right", padx=(10, 0))
 
-        ttk.Label(toolbar, text="Công cụ:").pack(side="left", padx=(0, 4))
-        for text, value in (
-            ("Crosshair", "crosshair"),
-            ("Đo dài", "length"),
-            ("Đo góc", "angle"),
-            ("ROI ellipse", "ellipse"),
-            ("ROI đa giác", "polygon"),
+        for icon, value, tooltip in (
+            ("⌖", "crosshair", "Crosshair liên kết ba mặt phẳng"),
+            ("✋", "pan", "Bàn tay: kéo ảnh bằng chuột trái"),
+            ("↔", "length", "Đo chiều dài"),
+            ("∠", "angle", "Đo góc bằng ba điểm"),
+            ("◯", "ellipse", "Vẽ ROI ellipse"),
+            ("⬡", "polygon", "Vẽ ROI đa giác"),
         ):
-            ttk.Radiobutton(
+            button = ttk.Radiobutton(
                 toolbar,
-                text=text,
+                text=icon,
                 value=value,
                 variable=self.tool,
-                command=self.cancel_draft,
-            ).pack(side="left", padx=2)
+                command=lambda selected=value: self._select_tool(selected),
+                style="Toolbutton",
+                width=3,
+            )
+            button.pack(side="left", padx=1)
+            self._add_tooltip(button, tooltip)
 
-        actions = ttk.Frame(self)
-        actions.pack(fill="x", padx=6, pady=(0, 2))
+        self.mpr_actions = ttk.Frame(self)
+        self.mpr_actions.pack(fill="x", padx=6, pady=(0, 2))
+        actions = self.mpr_actions
         ttk.Button(actions, text="Kết thúc ROI", command=self.finish_polygon).pack(side="left", padx=2)
-        ttk.Button(actions, text="Hoàn tác", command=self.undo_last).pack(side="left", padx=2)
-        ttk.Button(
-            actions, text="Xóa ở lát đang chọn", command=self.delete_current_annotations,
-        ).pack(side="left", padx=2)
-        ttk.Checkbutton(
-            actions, text="Hiện số đo/ROI", variable=self.show_annotations,
-            command=self.refresh_planes,
-        ).pack(side="left", padx=8)
-        ttk.Button(actions, text="Đặt lại hiển thị", command=self.reset_views).pack(side="left", padx=2)
+        undo_btn = ttk.Button(actions, text="↶", width=3, command=self.undo_last)
+        undo_btn.pack(side="left", padx=1)
+        self._add_tooltip(undo_btn, "Hoàn tác annotation cuối")
+        delete_btn = ttk.Button(actions, text="⌫", width=3, command=self.delete_current_annotations)
+        delete_btn.pack(side="left", padx=1)
+        self._add_tooltip(delete_btn, "Xóa annotation ở lát và mặt phẳng đang chọn")
+        annotations_btn = ttk.Checkbutton(
+            actions, text="◉", variable=self.show_annotations,
+            command=self.refresh_planes, style="Toolbutton", width=3,
+        )
+        annotations_btn.pack(side="left", padx=1)
+        self._add_tooltip(annotations_btn, "Ẩn/hiện số đo và ROI")
+        whole_btn = ttk.Button(
+            actions, text="⛶", width=3,
+            command=lambda: self._set_fit_policy("contain"),
+        )
+        whole_btn.pack(side="left", padx=(8, 1))
+        self._add_tooltip(whole_btn, "Hiện toàn bộ ảnh, không cắt mép")
+        fill_btn = ttk.Button(
+            actions, text="▣", width=3,
+            command=lambda: self._set_fit_policy("cover"),
+        )
+        fill_btn.pack(side="left", padx=1)
+        self._add_tooltip(fill_btn, "Lấp đầy viewport; có thể cắt mép, dùng bàn tay để kéo")
+        reset_btn = ttk.Button(actions, text="↺", width=3, command=self.reset_views)
+        reset_btn.pack(side="left", padx=1)
+        self._add_tooltip(reset_btn, "Đặt lại zoom, pan, sáng và tương phản")
+        self.open_3d_btn = ttk.Button(
+            actions, text="3D ROI", command=lambda: self.set_display_mode("3d"),
+            state="disabled",
+        )
+        self.open_3d_btn.pack(side="right", padx=2)
 
-        controls = ttk.Frame(self)
-        controls.pack(fill="x", padx=6, pady=(0, 4))
+        self.mpr_controls = ttk.Frame(self)
+        self.mpr_controls.pack(fill="x", padx=6, pady=(0, 4))
+        controls = self.mpr_controls
         ttk.Label(controls, text="Sáng").pack(side="left")
         ttk.Scale(
             controls,
@@ -593,49 +748,65 @@ class MprWorkspace(ttk.Frame):
             foreground="#555555",
         ).pack(side="left", padx=8)
 
-        body = ttk.Frame(self)
-        body.pack(fill="both", expand=True, padx=6, pady=(0, 4))
+        self.mpr_body = ttk.Frame(self)
+        self.mpr_body.pack(fill="both", expand=True, padx=6, pady=(0, 4))
+        body = self.mpr_body
         body.rowconfigure(0, weight=1)
-        body.rowconfigure(1, weight=1)
-        body.columnconfigure(0, weight=1)
-        body.columnconfigure(1, weight=1)
+        for column in range(3):
+            body.columnconfigure(column, weight=1)
 
-        for plane, row, column in (
-            ("axial", 0, 0),
-            ("coronal", 0, 1),
-            ("sagittal", 1, 0),
+        for plane, column in (
+            ("axial", 0),
+            ("coronal", 1),
+            ("sagittal", 2),
         ):
             pane = MprPane(self, body, plane)
-            pane.frame.grid(row=row, column=column, sticky="nsew", padx=2, pady=2)
+            pane.frame.grid(row=0, column=column, sticky="nsew", padx=2, pady=2)
             self.panes[plane] = pane
             pane.canvas.bind("<Button-1>", self._dispatch_polygon_click, add="+")
         self.select_plane("axial")
+        for pane in self.panes.values():
+            pane.sync_cursor()
 
-        model_frame = ttk.LabelFrame(body, text="3D U TỪ ROI AXIAL")
-        model_frame.grid(row=1, column=1, sticky="nsew", padx=2, pady=2)
-        model_frame.rowconfigure(0, weight=1)
-        model_frame.columnconfigure(0, weight=1)
-        self.model_canvas = tk.Canvas(model_frame, bg="#050505", highlightthickness=0)
-        self.model_canvas.grid(row=0, column=0, columnspan=4, sticky="nsew")
-        self.model_canvas.bind("<Configure>", lambda _e: self.render_3d())
-        ttk.Label(model_frame, text="Xoay").grid(row=1, column=0, padx=4)
+        self.model_toolbar = ttk.Frame(self)
+        back_btn = ttk.Button(
+            self.model_toolbar, text="← MPR",
+            command=lambda: self.set_display_mode("mpr"),
+        )
+        back_btn.pack(side="left", padx=(0, 10))
+        ttk.Label(self.model_toolbar, text="Xoay").pack(side="left")
         ttk.Scale(
-            model_frame,
+            self.model_toolbar,
             variable=self.yaw,
             from_=-180,
             to=180,
             command=lambda _v: self.render_3d(),
-        ).grid(row=1, column=1, sticky="ew")
-        ttk.Label(model_frame, text="Nghiêng").grid(row=1, column=2, padx=4)
+            length=220,
+        ).pack(side="left", padx=(4, 12))
+        ttk.Label(self.model_toolbar, text="Nghiêng").pack(side="left")
         ttk.Scale(
-            model_frame,
+            self.model_toolbar,
             variable=self.pitch,
             from_=-90,
             to=90,
             command=lambda _v: self.render_3d(),
-        ).grid(row=1, column=3, sticky="ew")
-        model_frame.columnconfigure(1, weight=1)
-        model_frame.columnconfigure(3, weight=1)
+            length=220,
+        ).pack(side="left", padx=(4, 12))
+        camera_btn = ttk.Button(
+            self.model_toolbar, text="↺", width=3,
+            command=self._reset_3d_camera,
+        )
+        camera_btn.pack(side="left")
+        self._add_tooltip(camera_btn, "Đặt lại góc nhìn 3D")
+
+        self.model_frame = ttk.LabelFrame(self, text="3D U TỪ ROI AXIAL")
+        self.model_frame.rowconfigure(0, weight=1)
+        self.model_frame.columnconfigure(0, weight=1)
+        self.model_canvas = tk.Canvas(
+            self.model_frame, bg="#050505", highlightthickness=0,
+        )
+        self.model_canvas.grid(row=0, column=0, sticky="nsew")
+        self.model_canvas.bind("<Configure>", lambda _e: self.render_3d())
 
         self.status = ttk.Label(self, text="", font=("Segoe UI", 10, "bold"))
         self.status.pack(fill="x", padx=8, pady=(0, 6))
@@ -676,6 +847,7 @@ class MprWorkspace(ttk.Frame):
         self.rois = snapshot["rois"]
         self.cancel_draft(refresh=False)
         self.save_annotations()
+        self._sync_3d_button()
         self.refresh_all()
 
     def angle_click(
@@ -755,8 +927,10 @@ class MprWorkspace(ttk.Frame):
     def refresh_all(self) -> None:
         if self.volume is None:
             return
-        self.refresh_planes()
-        self.render_3d()
+        if self.display_mode == "3d":
+            self.render_3d()
+        else:
+            self.refresh_planes()
 
     def reset_views(self) -> None:
         if self.volume is None:
@@ -776,6 +950,7 @@ class MprWorkspace(ttk.Frame):
         self.push_undo()
         self.rois.setdefault(plane, {})[int(index)] = clean
         self.save_annotations()
+        self._sync_3d_button()
         self.cancel_polygon()
         self.refresh_all()
 
@@ -832,6 +1007,7 @@ class MprWorkspace(ttk.Frame):
             if not (item.get("plane") == plane and int(item.get("index", -1)) == index)
         ]
         self.save_annotations()
+        self._sync_3d_button()
         self.cancel_draft(refresh=False)
         self.refresh_all()
 
@@ -919,6 +1095,7 @@ class MprWorkspace(ttk.Frame):
             return
         axial = self.rois.get("axial", {})
         volume = mpr_engine.roi_volume_ml(axial, self.manifest)
+        self._sync_3d_button()
         self.status.config(
             text=(
                 f"ROI axial: {len(axial)} lát · Thể tích u: {volume:.2f} mL"

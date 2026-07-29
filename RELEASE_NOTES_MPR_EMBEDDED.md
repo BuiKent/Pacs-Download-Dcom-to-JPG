@@ -5,8 +5,8 @@ Ngày build: 28/07/2026
 ## Thay đổi chính
 
 - MPR không còn mở cửa sổ phụ.
-- Chuyển trực tiếp giữa bố cục `2D` và `MPR + ROI 3D` trong màn hình chính.
-- MPR hiển thị đồng thời axial, coronal, sagittal và mô hình 3D từ ROI axial.
+- Chuyển trực tiếp giữa bố cục `2D` và `MPR` trong màn hình chính.
+- MPR hiển thị ba mặt phẳng axial, coronal và sagittal; 3D ROI là chế độ riêng.
 - Panel tải có thể thu/hiện mà không mất nội dung đã nhập hoặc nhật ký.
 - Khi vào MPR, panel tải tự thu để tăng diện tích quan sát.
 - Volume của cùng series được giữ trong bộ nhớ khi chuyển qua lại 2D/MPR.
@@ -47,7 +47,7 @@ quả AI và không tự xác định bờ u.
 
 ## Lưu ý sử dụng
 
-- Chỉ series có `mpr-volume.json` mới bật nút `MPR + ROI 3D`.
+- Chỉ series có `mpr-volume.json` mới bật nút `MPR`.
 - Gói MPR ưu tiên T1 3D sau tiêm; fallback T1 3D không tiêm; yêu cầu trên
   100 vị trí lát hợp lệ.
 - Ứng dụng không tự xóa DICOM.
@@ -69,3 +69,26 @@ Test hồi quy đã kiểm tra orientation, crosshair, nhãn hướng, đo góc,
 xóa đúng mặt phẳng, cache volume, không mở `Toplevel` và trạng thái panel.
 Ca MRI thật T1 sau tiêm 180 lát đã được mở lại để kiểm tra trực quan ba mặt
 phẳng sau sửa.
+
+## RC2 - tái sử dụng phiên RIS an toàn
+
+- Cookie/local storage của RIS chỉ được giữ trong RAM theo từng bệnh viện, tối đa 30 phút không
+  hoạt động.
+- Lần tìm bệnh nhân tiếp theo dùng lại phiên; khi RIS trả `401/403` hoặc chuyển về login, ứng dụng
+  tự đăng nhập lại một lần.
+- Đóng ứng dụng sẽ xóa toàn bộ phiên RIS trong RAM; không tạo file cookie/token.
+- Study có Patient ID tường minh không khớp mã yêu cầu bị loại.
+- Bỏ fallback lấy Study UID tùy ý từ HTML trang reading vì không chứng minh được thuộc bệnh nhân.
+- Đổi nhãn `TÌM & TẢI MRI / CT SỌ NÃO` thành `TÌM & TẢI MRI / CT`, đúng với bộ lọc modality
+  hiện có.
+- Ghi log lỗi Chrome thay vì âm thầm chuyển trình duyệt; sau một lần Chrome bị Windows từ chối,
+  app dùng thẳng Edge cho các study tiếp theo trong cùng phiên.
+
+
+## RC3 - viewer gọn theo ngữ cảnh
+
+- Thanh 2D/MPR dùng icon và tooltip cho thao tác thường gặp; thao tác hiếm/khó vẫn giữ tiêu đề.
+- Thêm bàn tay pan bằng chuột trái và hai chế độ hiện toàn bộ/lấp đầy viewport.
+- Bỏ ô 3D trống khỏi layout MPR; ba mặt phẳng dùng ba cột bằng nhau.
+- 3D chỉ bật khi có ROI axial và mở thành workspace riêng; toolbar MPR không hiển thị trong chế độ 3D.
+- Test hồi quy bao phủ layout ba cột, trạng thái nút 3D, chuyển MPR/3D, pan và contain/cover.

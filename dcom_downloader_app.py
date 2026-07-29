@@ -116,7 +116,7 @@ I18N_EN = {
     "🏥 TẢI TOÀN BỘ MRI / CT THEO MÃ BỆNH NHÂN (RIS)": "🏥 DOWNLOAD ALL MRI & CT BY PATIENT ID (RIS)",
     "Chọn viện:": "Select hospital:",
     "Mã BN:": "Patient ID:",
-    "🔍 TÌM & TẢI MRI / CT SỌ NÃO": "🔍 SEARCH & DOWNLOAD MRI & CT SCANS",
+    "🔍 TÌM & TẢI MRI / CT": "🔍 SEARCH & DOWNLOAD MRI & CT",
     "🔗 HOẶC DÁN LINK VIEWER TRỰC TIẾP:": "🔗 OR PASTE DIRECT VIEWER LINK:",
     "Thiếu mã bệnh nhân": "Missing Patient ID",
     "Vui lòng nhập MÃ BỆNH NHÂN (vd: 2605032022).": "Please enter PATIENT ID (e.g., 2605032022).",
@@ -412,6 +412,8 @@ class App:
         self.cine_job = None
         self._syncing_slider = False
         self.viewer_mode = "2d"
+        self.pan_2d_enabled = tk.BooleanVar(value=False)
+        self.fit_policy_2d = tk.StringVar(value="contain")
         self.download_panel_collapsed = False
         self._saved_sash = 470
         self._mpr_auto_collapsed = False
@@ -490,6 +492,7 @@ class App:
         if self.cine_playing:
             self.cine_playing = False
 
+        pipe.clear_ris_session_cache()
         self.root.destroy()
 
     def _auto_paste_pid(self, event=None):
@@ -588,7 +591,7 @@ class App:
         self.mode_2d_btn.config(text="● 2D" if self.viewer_mode == "2d" else "2D")
         has_mpr = self._current_series_has_mpr()
         self.mpr_btn.config(
-            text="● MPR + ROI 3D" if self.viewer_mode == "mpr" else "MPR + ROI 3D",
+            text="● MPR" if self.viewer_mode == "mpr" else "MPR",
             state="normal" if has_mpr else "disabled",
         )
 
@@ -612,6 +615,7 @@ class App:
                 self._toggle_cine()
             try:
                 self.mpr_workspace.load_series(self.cur_files[0].parent)
+                self.mpr_workspace.set_display_mode("mpr")
             except Exception as exc:
                 messagebox.showerror("Không mở được MPR", str(exc))
                 return False
@@ -691,7 +695,7 @@ class App:
         self.pid_ent.bind("<FocusIn>", self._auto_paste_pid)
         self.pid_ent.bind("<Button-1>", self._auto_paste_pid)
 
-        self.start_mri_btn = ttk.Button(rf2, text="🔍 TÌM & TẢI MRI / CT SỌ NÃO", command=self._start_mri_patient)
+        self.start_mri_btn = ttk.Button(rf2, text="🔍 TÌM & TẢI MRI / CT", command=self._start_mri_patient)
         self.start_mri_btn.pack(side="left", fill="x", expand=True)
 
         ttk.Label(frm, text="🔗 HOẶC DÁN LINK VIEWER TRỰC TIẾP:",
@@ -810,7 +814,7 @@ class App:
         self.mode_2d_btn.pack(side="left", padx=1)
         self.mpr_btn = ttk.Button(
             layout_bar,
-            text="MPR + ROI 3D",
+            text="MPR",
             command=lambda: self._set_viewer_mode("mpr"),
             state="disabled",
         )
@@ -838,13 +842,39 @@ class App:
         self.idx_lbl.pack(side="left")
 
         # Công cụ 2D được nhóm riêng để tránh lẫn với ROI/MPR.
-        tb3 = ttk.LabelFrame(self.viewer_2d, text="Hiển thị 2D")
+        tb3 = ttk.Frame(self.viewer_2d)
         tb3.pack(fill="x", padx=6, pady=2)
-        for txt, cmd in [("－ Thu nhỏ", self._zoom_out), ("＋ Phóng to", self._zoom_in),
-                         ("Vừa khung", self._fit), ("Xoay 90°", self._rotate90),
-                         ("Lật ⇔", self._toggle_flip_h), ("Lật ⇕", self._toggle_flip_v),
-                         ("Đảo màu", self._toggle_invert), ("Đặt lại", self._reset_view)]:
-            ttk.Button(tb3, text=txt, command=cmd).pack(side="left", padx=2)
+        for icon, tooltip, command in (
+            ("\u2212", "Thu nh\u1ecf", self._zoom_out),
+            ("+", "Ph\u00f3ng to", self._zoom_in),
+        ):
+            button = ttk.Button(tb3, text=icon, width=3, command=command)
+            button.pack(side="left", padx=1)
+            self._add_tooltip(button, tooltip)
+
+        pan_button = ttk.Checkbutton(
+            tb3,
+            text="\u270b",
+            width=3,
+            variable=self.pan_2d_enabled,
+            command=self._toggle_2d_pan,
+            style="Toolbutton",
+        )
+        pan_button.pack(side="left", padx=1)
+        self._add_tooltip(pan_button, "B\u00e0n tay: k\u00e9o \u1ea3nh khi \u0111\u00e3 ph\u00f3ng to")
+
+        for icon, tooltip, command in (
+            ("\u26f6", "Hi\u1ec7n to\u00e0n b\u1ed9 \u1ea3nh, kh\u00f4ng c\u1eaft m\u00e9p", self._fit),
+            ("\u25a3", "L\u1ea5p \u0111\u1ea7y khung; c\u00f3 th\u1ec3 c\u1eaft m\u00e9p", self._fill_view),
+            ("\u21bb", "Xoay 90\u00b0", self._rotate90),
+            ("\u2194", "L\u1eadt ngang", self._toggle_flip_h),
+            ("\u2195", "L\u1eadt d\u1ecdc", self._toggle_flip_v),
+            ("\u25d0", "\u0110\u1ea3o m\u00e0u", self._toggle_invert),
+            ("\u21ba", "\u0110\u1eb7t l\u1ea1i hi\u1ec3n th\u1ecb", self._reset_view),
+        ):
+            button = ttk.Button(tb3, text=icon, width=3, command=command)
+            button.pack(side="left", padx=1)
+            self._add_tooltip(button, tooltip)
 
         tb4 = ttk.Frame(self.viewer_2d); tb4.pack(fill="x", padx=6, pady=2)
         ttk.Label(tb4, text="Sáng").pack(side="left")
@@ -869,6 +899,8 @@ class App:
         cv.rowconfigure(0, weight=1); cv.columnconfigure(0, weight=1)
         self.canvas.bind("<Configure>", lambda e: self._render())
         self.canvas.bind("<MouseWheel>", self._on_wheel)
+        self.canvas.bind("<ButtonPress-1>", self._pan_2d_press)
+        self.canvas.bind("<B1-Motion>", self._pan_2d_drag)
 
         self.status_lbl = ttk.Label(
             self.viewer_2d,
@@ -1361,6 +1393,23 @@ class App:
             self._next() if e.delta < 0 else self._prev()
         return "break"
 
+    def _toggle_2d_pan(self):
+        self.canvas.configure(
+            cursor="fleur" if self.pan_2d_enabled.get() else "",
+        )
+
+    def _pan_2d_press(self, event):
+        if self.pan_2d_enabled.get():
+            self.canvas.scan_mark(event.x, event.y)
+            return "break"
+        return None
+
+    def _pan_2d_drag(self, event):
+        if self.pan_2d_enabled.get():
+            self.canvas.scan_dragto(event.x, event.y, gain=1)
+            return "break"
+        return None
+
     def _toggle_cine(self):
         if self.cine_playing:
             self.cine_playing = False
@@ -1392,6 +1441,12 @@ class App:
         self._render()
 
     def _fit(self):
+        self.fit_policy_2d.set("contain")
+        self.fit_mode = True
+        self._render()
+
+    def _fill_view(self):
+        self.fit_policy_2d.set("cover")
         self.fit_mode = True
         self._render()
 
@@ -1414,7 +1469,10 @@ class App:
     def _reset_view(self):
         self.rotate = 0
         self.flip_h = self.flip_v = self.invert = False
+        self.fit_policy_2d.set("contain")
         self.fit_mode = True
+        self.pan_2d_enabled.set(False)
+        self._toggle_2d_pan()
         self.bright_scale.set(1.0)
         self.contrast_scale.set(1.0)
         self._render()
@@ -1450,8 +1508,18 @@ class App:
         iw, ih = img.size
         cw = max(self.canvas.winfo_width(), 10)
         ch = max(self.canvas.winfo_height(), 10)
+        old_region = self.canvas.cget("scrollregion")
+        center_rel_x = center_rel_y = 0.5
+        try:
+            x0, y0, x1, y1 = (float(v) for v in str(old_region).split())
+            if x1 > x0 and y1 > y0:
+                center_rel_x = (self.canvas.canvasx(cw / 2) - x0) / (x1 - x0)
+                center_rel_y = (self.canvas.canvasy(ch / 2) - y0) / (y1 - y0)
+        except (TypeError, ValueError):
+            pass
         if self.fit_mode:
-            self.zoom = min(cw / iw, ch / ih)
+            scales = (cw / iw, ch / ih)
+            self.zoom = max(scales) if self.fit_policy_2d.get() == "cover" else min(scales)
         scale = self.zoom
         dw, dh = max(1, int(iw * scale)), max(1, int(ih * scale))
         disp = img.resize((dw, dh), Image.LANCZOS)
@@ -1460,6 +1528,14 @@ class App:
         self.canvas.delete("all")
         self.canvas.configure(scrollregion=(0, 0, W, H))
         self.canvas.create_image(W // 2, H // 2, image=self.tk_img, anchor="center")
+        if W > cw:
+            self.canvas.xview_moveto(max(0.0, min(1.0, (center_rel_x * W - cw / 2) / W)))
+        else:
+            self.canvas.xview_moveto(0.0)
+        if H > ch:
+            self.canvas.yview_moveto(max(0.0, min(1.0, (center_rel_y * H - ch / 2) / H)))
+        else:
+            self.canvas.yview_moveto(0.0)
 
     def _save_current(self):
         img = self._processed_image()

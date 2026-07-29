@@ -170,3 +170,31 @@ python -m playwright install chromium
 - `Hoàn tác` khôi phục thay đổi annotation cuối; có thể ẩn/hiện số đo và ROI
   mà không xóa dữ liệu.
 - `Enter` khép ROI đa giác; `Escape` hủy ROI hoặc góc đang vẽ.
+
+## Phiên đăng nhập RIS và trình duyệt tự động
+
+- Lần tìm bệnh nhân đầu tiên, ứng dụng đăng nhập RIS và chỉ giữ cookie/session trong RAM.
+- Những lần tìm tiếp theo tại cùng bệnh viện trong vòng 30 phút sẽ dùng lại phiên này.
+- Nếu RIS trả `401/403` hoặc chuyển về trang đăng nhập, ứng dụng tự đăng nhập lại đúng một lần
+  rồi chạy lại truy vấn.
+- Khi đóng ứng dụng, toàn bộ session trong RAM bị xóa. Ứng dụng không ghi cookie RIS xuống đĩa.
+- Session của BV Đại học Y và BV Việt Đức được tách riêng.
+- Kết quả có Patient ID tường minh nhưng không khớp mã yêu cầu sẽ bị bỏ qua.
+- Ứng dụng không còn lấy Study UID tùy ý từ HTML của trang reading khi API không trả kết quả.
+
+Ứng dụng ưu tiên Chrome. Nếu Windows/Playwright không cho khởi động Chrome, ứng dụng chuyển sang
+Microsoft Edge. Cả hai dùng lõi Chromium; với luồng tải trực tiếp bằng API, khác biệt tốc độ thường
+không đáng kể. Sau một lần Chrome thất bại, cùng phiên ứng dụng sẽ dùng thẳng Edge cho các study
+tiếp theo để tránh mất thời gian thử lại.
+
+Nút tìm theo mã bệnh nhân hiện ghi `TÌM & TẢI MRI / CT`, đúng với hành vi thực tế: bộ lọc hiện tại
+lọc theo modality MR/CT, chưa bảo đảm chỉ lấy vùng sọ não.
+
+
+## UI viewer 2D, MPR và 3D
+
+- Các thao tác thường dùng chuyển thành icon; rê chuột lên icon để xem tooltip.
+- Nút bàn tay cho phép kéo ảnh bằng chuột trái sau khi zoom trong cả 2D và MPR.
+- Nút ⛶ hiện toàn bộ ảnh; nút ▣ lấp đầy viewport nhưng có thể cắt mép. Dùng bàn tay để kéo vùng cần xem.
+- MPR chỉ hiển thị axial, coronal và sagittal; không còn ô 3D trống chiếm chỗ.
+- Nút 3D ROI chỉ bật sau khi có ROI axial. Khi mở, 3D dùng toàn bộ workspace với toolbar xoay/nghiêng/đặt lại riêng.

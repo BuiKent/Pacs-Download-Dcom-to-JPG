@@ -5,6 +5,7 @@ import tempfile
 import tkinter as tk
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
@@ -104,11 +105,28 @@ class EmbeddedMprUiTests(unittest.TestCase):
                 app._set_viewer_mode("2d")
                 root.update()
                 self.assertFalse(app.download_panel_collapsed)
+                app.pan_2d_enabled.set(True)
+                app._toggle_2d_pan()
+                self.assertEqual("fleur", app.canvas.cget("cursor"))
+                self.assertEqual("break", app._pan_2d_press(SimpleNamespace(x=10, y=10)))
+                self.assertEqual("break", app._pan_2d_drag(SimpleNamespace(x=20, y=15)))
                 app._set_viewer_mode("mpr")
                 root.update()
                 self.assertEqual(cached_volume, id(app.mpr_workspace.volume))
 
                 workspace = app.mpr_workspace
+                self.assertEqual("mpr", workspace.display_mode)
+                self.assertFalse(workspace.model_frame.winfo_ismapped())
+                self.assertTrue(workspace.mpr_body.winfo_ismapped())
+                self.assertEqual("disabled", str(workspace.open_3d_btn["state"]))
+                self.assertEqual(
+                    {"axial": 0, "coronal": 1, "sagittal": 2},
+                    {
+                        plane: int(pane.frame.grid_info()["column"])
+                        for plane, pane in workspace.panes.items()
+                    },
+                )
+                self.assertTrue(all(int(pane.frame.grid_info()["row"]) == 0 for pane in workspace.panes.values()))
                 self.assertEqual([2.0, 6.0], workspace.lengths[0]["p1"])
                 self.assertEqual((2.0, 6.0), workspace.rois["coronal"][0][0])
                 migrated = json.loads((package / "mpr-roi.json").read_text(encoding="utf-8"))
@@ -142,6 +160,31 @@ class EmbeddedMprUiTests(unittest.TestCase):
                 axial_index = workspace.indices["axial"]
                 coronal_index = workspace.indices["coronal"]
                 workspace.set_roi("axial", axial_index, square)
+                self.assertEqual("normal", str(workspace.open_3d_btn["state"]))
+                self.assertTrue(workspace.set_display_mode("3d"))
+                root.update()
+                self.assertEqual("3d", workspace.display_mode)
+                self.assertTrue(workspace.model_frame.winfo_ismapped())
+                self.assertTrue(workspace.model_toolbar.winfo_ismapped())
+                self.assertFalse(workspace.mpr_body.winfo_ismapped())
+                self.assertFalse(workspace.mpr_toolbar.winfo_ismapped())
+                workspace._reset_3d_camera()
+                self.assertAlmostEqual(-35.0, workspace.yaw.get())
+                self.assertAlmostEqual(25.0, workspace.pitch.get())
+                self.assertTrue(workspace.set_display_mode("mpr"))
+                root.update()
+                self.assertTrue(workspace.mpr_body.winfo_ismapped())
+                self.assertFalse(workspace.model_frame.winfo_ismapped())
+
+                pane = workspace.panes["axial"]
+                workspace._set_fit_policy("contain")
+                root.update()
+                contain_scale = pane.px_per_mm
+                workspace._set_fit_policy("cover")
+                root.update()
+                self.assertGreaterEqual(pane.px_per_mm, contain_scale)
+                workspace._select_tool("pan")
+                self.assertEqual("fleur", pane.canvas.cget("cursor"))
                 workspace.set_roi("coronal", coronal_index, square)
                 workspace.select_plane("coronal")
                 workspace.delete_current_annotations()
