@@ -128,7 +128,8 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                       labels: [...document.querySelectorAll('.viewport-label')].map(e => e.textContent),
                       error: document.querySelector('.empty-state.error')?.textContent || '',
                       errorStack: window.__lastViewerError?.stack || '',
-                      readyMode: window.__viewerReadyMode || ''
+                      readyMode: window.__viewerReadyMode || '',
+                      diagnostics: window.__viewerDiagnostics || null
                     })"""
                 )
                 if state.get("error"):
@@ -140,6 +141,46 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                 time.sleep(0.5)
             else:
                 raise TimeoutError(f"Không dựng được {key}: {state}")
+        # Regression gate for the real-world failure where repeated MPR/3D
+        # switches left only the crosshair overlay on a blank WebGL viewport.
+        result["volumeTransitions"] = []
+        for action, expected, key in (
+            ("mode-mpr", 3, "mpr-again"),
+            ("mode-volume3d", 1, "volume3d-again"),
+            ("mode-mpr", 3, "mpr-third"),
+        ):
+            window.evaluate_js(f'document.querySelector(\'[data-action="{action}"]\').click()')
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                state = window.evaluate_js(
+                    """({
+                      canvases: document.querySelectorAll('#workspace canvas').length,
+                      error: document.querySelector('.empty-state.error')?.textContent || '',
+                      errorStack: window.__lastViewerError?.stack || '',
+                      readyMode: window.__viewerReadyMode || '',
+                      loading: document.querySelector('#workspace')?.classList.contains('busy') || false,
+                      diagnostics: window.__viewerDiagnostics || null
+                    })"""
+                )
+                if state.get("error"):
+                    raise RuntimeError(state.get("errorStack") or state["error"])
+                diagnostics = state.get("diagnostics") or {}
+                actors = [item.get("actors", 0) for item in diagnostics.get("viewports", [])]
+                ready = (
+                    state.get("canvases") == expected
+                    and state.get("readyMode") == action.removeprefix("mode-")
+                    and diagnostics.get("destroyed") is False
+                    and len(actors) == expected
+                    and all(count >= 1 for count in actors)
+                    and not state.get("loading")
+                )
+                if ready:
+                    result["volumeTransitions"].append({"key": key, **state})
+                    _write_smoke_stage(result_path, result, key)
+                    break
+                time.sleep(0.5)
+            else:
+                raise TimeoutError(f"Repeated MPR/3D transition failed at {key}: {state}")
     except Exception as exc:
         result["error"] = str(exc)
     finally:

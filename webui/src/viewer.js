@@ -29,8 +29,8 @@ import {
 } from "@cornerstonejs/tools";
 import { api, apiBlob, imagePath } from "./api.js";
 
-const ENGINE_ID = "dcom-rendering-engine";
-const TOOL_GROUP_ID = "dcom-tools";
+const ENGINE_ID_PREFIX = "dcom-rendering-engine";
+const TOOL_GROUP_ID_PREFIX = "dcom-tools";
 const IMAGE_SCHEME = "dcomjpg";
 const VOLUME_SCHEME = "cornerstoneStreamingImageVolume";
 
@@ -71,6 +71,9 @@ const toolByMode = {
 
 let initialized = false;
 let renderingEngine = null;
+let renderingEngineId = "";
+let toolGroupId = "";
+let renderingGeneration = 0;
 let toolGroup = null;
 let resizeObserver = null;
 let activeElements = [];
@@ -240,18 +243,28 @@ function destroyCurrent() {
   }
   annotation.state.removeAllAnnotations();
   if (toolGroup) {
-    ToolGroupManager.destroyToolGroup(TOOL_GROUP_ID);
+    ToolGroupManager.destroyToolGroup(toolGroupId);
     toolGroup = null;
   }
   if (renderingEngine && !renderingEngine.hasBeenDestroyed) {
     renderingEngine.destroy();
   }
   renderingEngine = null;
+  renderingEngineId = "";
+  toolGroupId = "";
   activeElements = [];
 }
 
+function createRenderingEngine() {
+  renderingGeneration += 1;
+  renderingEngineId = `${ENGINE_ID_PREFIX}-${renderingGeneration}`;
+  toolGroupId = `${TOOL_GROUP_ID_PREFIX}-${renderingGeneration}`;
+  renderingEngine = new RenderingEngine(renderingEngineId);
+  return renderingEngine;
+}
+
 function createToolGroup(viewportIds, threeDimensional = false) {
-  toolGroup = ToolGroupManager.createToolGroup(TOOL_GROUP_ID);
+  toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
   if (!toolGroup) throw new Error("Không tạo được nhóm công cụ.");
   const allowed = threeDimensional
     ? [TrackballRotateTool, PanTool, ZoomTool]
@@ -260,7 +273,7 @@ function createToolGroup(viewportIds, threeDimensional = false) {
     toolGroup.addTool(ToolClass.toolName);
   }
   for (const viewportId of viewportIds) {
-    toolGroup.addViewport(viewportId, ENGINE_ID);
+    toolGroup.addViewport(viewportId, renderingEngineId);
   }
   toolGroup.setToolActive(PanTool.toolName, {
     bindings: [{ mouseButton: ToolEnums.MouseBindings.Auxiliary }],
@@ -285,6 +298,13 @@ function installResizeObserver(container) {
     }
   });
   resizeObserver.observe(container);
+}
+
+async function settleVolumeRendering() {
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  if (!renderingEngine || renderingEngine.hasBeenDestroyed) return;
+  renderingEngine.resize(true, true);
+  renderingEngine.render();
 }
 
 function viewportElement(container, id, label, shellClass = "") {
@@ -373,7 +393,7 @@ export async function showStacks(container, series, mode, secondarySeries = null
   if (secondarySeries) registerSeries(secondarySeries);
   container.innerHTML = "";
   setWorkspaceMode(container, mode);
-  renderingEngine = new RenderingEngine(ENGINE_ID);
+  createRenderingEngine();
 
   const viewports = [];
   if (mode === "compare") {
@@ -447,7 +467,7 @@ export async function showMpr(container, series, primaryPlane = "axial") {
     ["mpr-coronal", "CORONAL", "coronal", CoreEnums.OrientationAxis.CORONAL],
     ["mpr-sagittal", "SAGITTAL", "sagittal", CoreEnums.OrientationAxis.SAGITTAL],
   ];
-  renderingEngine = new RenderingEngine(ENGINE_ID);
+  createRenderingEngine();
   const inputs = definitions.map(([id, label, plane, orientation]) => {
     const element = viewportElement(container, id, label, "mpr-plane");
     element.parentElement.dataset.plane = plane;
@@ -473,6 +493,7 @@ export async function showMpr(container, series, primaryPlane = "axial") {
   createToolGroup(definitions.map((item) => item[0]));
   setTool("crosshair");
   installResizeObserver(container);
+  await settleVolumeRendering();
   await restoreAnnotations(series);
   onStatus("MPR dùng hình học DICOM thật · R/L, A/P, S/I do Cornerstone suy ra từ tọa độ bệnh nhân.");
 }
@@ -508,7 +529,7 @@ export async function show3d(container, series) {
   registerSeries(series);
   container.innerHTML = "";
   setWorkspaceMode(container, "volume3d");
-  renderingEngine = new RenderingEngine(ENGINE_ID);
+  createRenderingEngine();
   const element = viewportElement(container, "volume-3d", `3D · ${series.description}`);
   renderingEngine.enableElement({
     viewportId: "volume-3d",
@@ -524,7 +545,20 @@ export async function show3d(container, series) {
   viewport.render();
   createToolGroup(["volume-3d"], true);
   installResizeObserver(container);
+  await settleVolumeRendering();
   onStatus("3D volume rendering toàn bộ chuỗi T1 · kéo trái để xoay, chuột giữa pan, chuột phải zoom.");
+}
+
+export function viewerDiagnostics() {
+  return {
+    mode: activeMode,
+    engineId: renderingEngineId,
+    destroyed: !renderingEngine || renderingEngine._implementation?.hasBeenDestroyed === true,
+    viewports: (renderingEngine?.getViewports() || []).map((viewport) => ({
+      id: viewport.id,
+      actors: viewport.getActors?.().length || 0,
+    })),
+  };
 }
 
 export function setTool(mode) {

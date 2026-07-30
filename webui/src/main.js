@@ -14,6 +14,7 @@ import {
   showMpr,
   showStacks,
   toggleCine,
+  viewerDiagnostics,
 } from "./viewer.js";
 
 const app = document.querySelector("#app");
@@ -36,6 +37,7 @@ const state = {
   mprPrimary: "axial",
 };
 let viewerQueue = Promise.resolve();
+let viewerRequestId = 0;
 
 const icons = {
   folder: "📂",
@@ -391,10 +393,28 @@ function renderViewer() {
   const mode = state.mode;
   const comparison = compareSeries();
   if (!series) return viewerQueue;
+  const requestId = ++viewerRequestId;
+  const requestedWorkspace = document.querySelector("#workspace");
+  if (!requestedWorkspace) return viewerQueue;
+  const immediateLoadingText = mode === "mpr"
+    ? `Đang dựng MPR từ ${series.sliceCount} lát…`
+    : mode === "volume3d"
+      ? `Đang dựng mô hình 3D từ ${series.sliceCount} lát…`
+      : "Đang mở ảnh…";
+  state.busyViewer = true;
+  window.__viewerReadyMode = "";
+  requestedWorkspace.dataset.loadingText = immediateLoadingText;
+  requestedWorkspace.classList.add("busy");
+  app.querySelector(".status-dot")?.classList.add("busy");
+  setStatus(immediateLoadingText);
 
   const renderTask = async () => {
-    const workspace = document.querySelector("#workspace");
-    if (!workspace) return;
+    const workspace = requestedWorkspace;
+    if (requestId !== viewerRequestId || !workspace.isConnected) {
+      workspace.classList.remove("busy");
+      delete workspace.dataset.loadingText;
+      return;
+    }
     state.busyViewer = true;
     window.__viewerReadyMode = "";
     const loadingText = mode === "mpr"
@@ -408,6 +428,7 @@ function renderViewer() {
     setStatus(loadingText);
     try {
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (requestId !== viewerRequestId || !workspace.isConnected) return;
       if (mode === "mpr") {
         await showMpr(workspace, series, state.mprPrimary);
       } else if (mode === "volume3d") {
@@ -415,9 +436,12 @@ function renderViewer() {
       } else {
         await showStacks(workspace, series, mode, comparison);
       }
+      if (requestId !== viewerRequestId || !workspace.isConnected) return;
       window.__lastViewerError = null;
       window.__viewerReadyMode = mode;
+      window.__viewerDiagnostics = viewerDiagnostics();
     } catch (error) {
+      if (requestId !== viewerRequestId || !workspace.isConnected) return;
       window.__lastViewerError = {
         message: error?.message || String(error),
         stack: error?.stack || "",
@@ -425,10 +449,12 @@ function renderViewer() {
       workspace.innerHTML = `<div class="empty-state error"><b>Không mở được khung xem</b><span>${escapeHtml(error.message)}</span></div>`;
       setStatus(error.message, true);
     } finally {
-      state.busyViewer = false;
       workspace.classList.remove("busy");
       delete workspace.dataset.loadingText;
-      app.querySelector(".status-dot")?.classList.remove("busy");
+      if (requestId === viewerRequestId) {
+        state.busyViewer = false;
+        app.querySelector(".status-dot")?.classList.remove("busy");
+      }
     }
   };
 
