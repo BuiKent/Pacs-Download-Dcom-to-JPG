@@ -110,28 +110,28 @@ function iconButton(id, icon, title, active = false, disabled = false, label = "
 function renderInteractionTools(series) {
   if (state.mode === "volume3d") {
     return [
-      iconButton("tool-crosshair", icons.crosshair, "Kéo tâm giao điểm trên ba mặt phẳng MPR", state.tool === "crosshair", false, "Định vị MPR"),
-      iconButton("tool-rotate3d", icons.rotate3d, "Kéo chuột trái để xoay mô hình", state.tool === "rotate3d", false, "Xoay 3D"),
-      iconButton("tool-pan", icons.pan, "Kéo chuột trái để di chuyển mô hình", state.tool === "pan", false, "Di chuyển"),
-      iconButton("tool-zoom", icons.zoom, "Kéo chuột trái để thu/phóng", state.tool === "zoom", false, "Thu/phóng"),
+      iconButton("tool-crosshair", icons.crosshair, "Định vị MPR", state.tool === "crosshair"),
+      iconButton("tool-rotate3d", icons.rotate3d, "Xoay 3D", state.tool === "rotate3d"),
+      iconButton("tool-pan", icons.pan, "Di chuyển", state.tool === "pan"),
+      iconButton("tool-zoom", icons.zoom, "Thu/phóng", state.tool === "zoom"),
     ].join("");
   }
   if (state.mode === "mpr") {
     return [
-      iconButton("tool-crosshair", icons.crosshair, "Kéo tâm giao điểm để định vị đồng thời ba mặt phẳng", state.tool === "crosshair", false, "Định vị"),
-      iconButton("tool-window", icons.window, "Kéo chuột trái để chỉnh sáng/tương phản", state.tool === "window", false, "Sáng"),
-      iconButton("tool-pan", icons.pan, "Kéo chuột trái để di chuyển ảnh", state.tool === "pan", false, "Di chuyển"),
-      iconButton("tool-zoom", icons.zoom, "Kéo chuột trái để thu/phóng", state.tool === "zoom", false, "Thu/phóng"),
-      iconButton("tool-length", icons.length, "Đo chiều dài theo mm", state.tool === "length", false, "Đo dài"),
-      iconButton("tool-angle", icons.angle, "Đo góc", state.tool === "angle", false, "Đo góc"),
-      iconButton("tool-ellipse", icons.ellipse, "Vẽ ROI ellipse và đo diện tích", state.tool === "ellipse", false, "ROI ellipse"),
-      iconButton("tool-freehand", icons.freehand, "Vẽ ROI tự do và đo diện tích", state.tool === "freehand", false, "ROI tự do"),
+      iconButton("tool-crosshair", icons.crosshair, "Định vị MPR", state.tool === "crosshair"),
+      iconButton("tool-window", icons.window, "Sáng/tương phản", state.tool === "window"),
+      iconButton("tool-pan", icons.pan, "Di chuyển", state.tool === "pan"),
+      iconButton("tool-zoom", icons.zoom, "Thu/phóng", state.tool === "zoom"),
+      iconButton("tool-length", icons.length, "Đo chiều dài (mm)", state.tool === "length"),
+      iconButton("tool-angle", icons.angle, "Đo góc", state.tool === "angle"),
+      iconButton("tool-ellipse", icons.ellipse, "ROI ellipse", state.tool === "ellipse"),
+      iconButton("tool-freehand", icons.freehand, "ROI tự do", state.tool === "freehand"),
     ].join("");
   }
   return [
     iconButton("tool-window", icons.window, "Sáng/tương phản", state.tool === "window"),
-    iconButton("tool-pan", icons.pan, "Bàn tay: di chuyển ảnh", state.tool === "pan"),
-    iconButton("tool-zoom", icons.zoom, "Phóng to/thu nhỏ", state.tool === "zoom"),
+    iconButton("tool-pan", icons.pan, "Di chuyển", state.tool === "pan"),
+    iconButton("tool-zoom", icons.zoom, "Thu/phóng", state.tool === "zoom"),
     iconButton("tool-length", icons.length, series?.geometry ? "Đo chiều dài (mm)" : "Đo chiều dài (pixel)", state.tool === "length"),
     iconButton("tool-angle", icons.angle, "Đo góc", state.tool === "angle"),
     iconButton("tool-ellipse", icons.ellipse, "ROI ellipse", state.tool === "ellipse"),
@@ -142,25 +142,25 @@ function renderInteractionTools(series) {
 function renderUtilityTools(series) {
   if (state.mode === "volume3d") {
     return [
-      iconButton("reset", icons.reset, "Đặt lại góc nhìn", false, false, "Đặt lại"),
-      iconButton("capture", icons.capture, "Lưu ảnh 3D hiện tại", false, false, "Lưu ảnh"),
+      iconButton("reset", icons.reset, "Đặt lại góc nhìn"),
+      iconButton("capture", icons.capture, "Lưu ảnh 3D"),
     ].join("");
   }
   if (state.mode === "mpr") {
     return [
       iconButton("reset", icons.reset, "Đặt lại ba mặt phẳng"),
-      iconButton("capture", icons.capture, "Lưu ảnh khung đang xem"),
+      iconButton("capture", icons.capture, "Lưu ảnh"),
       iconButton("save-annotations", icons.save, "Lưu đo/ROI"),
-      iconButton("roi-volume", icons.volume, "Tính thể tích các ROI thủ công", false, !series?.mprReady, "Thể tích ROI"),
+      iconButton("roi-volume", icons.volume, "Tính thể tích ROI", false, !series?.mprReady),
     ].join("");
   }
   return [
     iconButton("reset", icons.reset, "Đặt lại hiển thị"),
     iconButton("invert", icons.invert, "Đảo màu"),
     iconButton("cine", state.cine ? "Ⅱ" : icons.cine, state.cine ? "Dừng chạy phim" : "Chạy phim", state.cine, state.mode !== "single"),
-    iconButton("capture", icons.capture, "Lưu ảnh khung đang xem"),
+    iconButton("capture", icons.capture, "Lưu ảnh"),
     iconButton("save-annotations", icons.save, "Lưu đo/ROI"),
-    iconButton("roi-volume", icons.volume, "Tính thể tích các ROI thủ công", false, !series?.mprReady),
+    iconButton("roi-volume", icons.volume, "Tính thể tích ROI", false, !series?.mprReady),
   ].join("");
 }
 
