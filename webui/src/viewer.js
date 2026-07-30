@@ -120,9 +120,11 @@ function metadataProvider(type, imageId) {
       rowCosines: geometry.orientation.slice(0, 3),
       columnCosines: geometry.orientation.slice(3, 6),
       imagePositionPatient: item.position,
+      pixelSpacing: [...geometry.pixelSpacing],
       rowPixelSpacing: geometry.pixelSpacing[0],
       columnPixelSpacing: geometry.pixelSpacing[1],
       sliceThickness: geometry.sliceSpacing,
+      spacingBetweenSlices: geometry.sliceSpacing,
       sliceLocation: item.distance,
     };
   }
@@ -575,9 +577,29 @@ export function roiVolumeMl(series = activeSeries) {
     throw new Error("Chỉ tính thể tích khi series có hình học DICOM hợp lệ.");
   }
   const eligible = new Set([EllipticalROITool.toolName, PlanarFreehandROITool.toolName]);
+  const orientation = series.geometry.orientation;
+  const row = orientation.slice(0, 3);
+  const column = orientation.slice(3, 6);
+  const acquisitionNormal = [
+    row[1] * column[2] - row[2] * column[1],
+    row[2] * column[0] - row[0] * column[2],
+    row[0] * column[1] - row[1] * column[0],
+  ];
+  const isAxialRoi = (item) => {
+    const normal = item.metadata?.viewPlaneNormal;
+    if (!Array.isArray(normal) || normal.length !== 3) {
+      // Stack annotations reference the acquired axial source image directly.
+      return Boolean(item.metadata?.referencedImageId);
+    }
+    const dot = Math.abs(normal.reduce(
+      (sum, value, index) => sum + value * acquisitionNormal[index],
+      0,
+    ));
+    return dot >= 0.999;
+  };
   const areas = annotation.state
     .getAllAnnotations()
-    .filter((item) => eligible.has(item.metadata?.toolName))
+    .filter((item) => eligible.has(item.metadata?.toolName) && isAxialRoi(item))
     .map((item) => findArea(item.data?.cachedStats))
     .filter((value) => value != null && value >= 0);
   if (!areas.length) {

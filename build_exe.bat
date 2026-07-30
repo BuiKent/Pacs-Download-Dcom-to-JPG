@@ -2,28 +2,38 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 echo ============================================================
-echo   DONG GOI Dicom_Downloader_App.exe
+echo   DONG GOI DCom JPG PACS v1.1
 echo ============================================================
 echo.
-echo [1/2] Cai/nang cap PyInstaller...
-python -m pip install --upgrade pyinstaller
+echo [1/3] Build giao dien Cornerstone offline...
+pushd webui
+call npm install
+if errorlevel 1 goto :failed
+call npm run build
+if errorlevel 1 goto :failed
+popd
 echo.
-echo [2/2] Dang dong goi (vai phut, dung tat cua so)...
-python -m PyInstaller --noconfirm --onefile --noconsole ^
-  --name Dicom_Downloader_App ^
-  --collect-all playwright ^
-  --exclude-module pandas ^
-  --exclude-module pyarrow ^
-  --exclude-module openpyxl ^
-  --exclude-module lxml ^
-  --exclude-module matplotlib ^
-  --exclude-module scipy ^
-  dcom_downloader_app.py
+echo [2/3] Cai/nang cap dependency Python...
+python -m pip install -r requirements.txt
+python -m pip install --upgrade pyinstaller
+if errorlevel 1 goto :failed
+echo.
+echo [3/3] Dong goi EXE (vai phut, dung tat cua so)...
+python -m PyInstaller --noconfirm --clean Dicom_Downloader_App.spec
+if errorlevel 1 goto :failed
 echo.
 if exist "dist\Dicom_Downloader_App.exe" (
-  echo XONG. File nam o:  dist\Dicom_Downloader_App.exe
-  echo Luu y: lan bam "BAT DAU TAI" dau tien tren may moi se tu tai Chromium ~150MB.
+  echo XONG. File nam o: dist\Dicom_Downloader_App.exe
+  echo UI moi dung WebView2 co san tren Windows. Co the chay --classic de dung UI cu.
 ) else (
-  echo Dong goi that bai. Xem thong bao loi ben tren.
+  goto :failed
 )
 pause
+exit /b 0
+
+:failed
+popd 2>nul
+echo.
+echo DONG GOI THAT BAI. Xem thong bao loi ben tren.
+pause
+exit /b 1

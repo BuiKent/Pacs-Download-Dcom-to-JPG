@@ -1,15 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 datas = []
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('playwright')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+datas += collect_data_files('webview')
+hiddenimports += [
+    'webview.platforms.edgechromium',
+    'webview.platforms.winforms',
+    'pythonnet',
+    'clr_loader',
+]
+datas += [('web_dist', 'web_dist')]
 
 
 a = Analysis(
-    ['dcom_downloader_app.py'],
+    ['dcom_web_app.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,

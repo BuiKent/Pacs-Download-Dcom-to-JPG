@@ -33,6 +33,7 @@ const state = {
   busyViewer: false,
   cine: false,
 };
+let viewerQueue = Promise.resolve();
 
 const icons = {
   folder: "📂",
@@ -371,27 +372,45 @@ function applyArchive(archive) {
   renderViewer();
 }
 
-async function renderViewer() {
+function renderViewer() {
   const series = selectedSeries();
-  const workspace = document.querySelector("#workspace");
-  if (!series || !workspace) return;
-  state.busyViewer = true;
-  workspace.classList.add("busy");
-  try {
-    if (state.mode === "mpr") {
-      await showMpr(workspace, series);
-    } else if (state.mode === "volume3d") {
-      await show3d(workspace, series);
-    } else {
-      await showStacks(workspace, series, state.mode, compareSeries());
+  const mode = state.mode;
+  const comparison = compareSeries();
+  if (!series) return viewerQueue;
+
+  const renderTask = async () => {
+    const workspace = document.querySelector("#workspace");
+    if (!workspace) return;
+    state.busyViewer = true;
+    window.__viewerReadyMode = "";
+    workspace.classList.add("busy");
+    try {
+      if (mode === "mpr") {
+        await showMpr(workspace, series);
+      } else if (mode === "volume3d") {
+        await show3d(workspace, series);
+      } else {
+        await showStacks(workspace, series, mode, comparison);
+      }
+      window.__lastViewerError = null;
+      window.__viewerReadyMode = mode;
+    } catch (error) {
+      window.__lastViewerError = {
+        message: error?.message || String(error),
+        stack: error?.stack || "",
+      };
+      workspace.innerHTML = `<div class="empty-state error"><b>Không mở được khung xem</b><span>${escapeHtml(error.message)}</span></div>`;
+      setStatus(error.message, true);
+    } finally {
+      state.busyViewer = false;
+      workspace.classList.remove("busy");
     }
-  } catch (error) {
-    workspace.innerHTML = `<div class="empty-state error"><b>Không mở được khung xem</b><span>${escapeHtml(error.message)}</span></div>`;
-    setStatus(error.message, true);
-  } finally {
-    state.busyViewer = false;
-    workspace.classList.remove("busy");
-  }
+  };
+
+  // Cornerstone shares one rendering engine/cache. Serialize layout changes so
+  // a rapid click cannot destroy an engine while its stack/volume is loading.
+  viewerQueue = viewerQueue.catch(() => undefined).then(renderTask);
+  return viewerQueue;
 }
 
 function setStatus(message, isError = false) {

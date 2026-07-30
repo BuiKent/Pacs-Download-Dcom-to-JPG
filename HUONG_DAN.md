@@ -1,3 +1,24 @@
+# DCom JPG PACS v1.1
+
+> Giao diện mặc định dùng WebView2/Cornerstone3D. Nếu cần giao diện cũ, chạy
+> `Dicom_Downloader_App.exe --classic` hoặc `python dcom_web_app.py --classic`.
+
+## Cách dùng giao diện mới
+
+1. Mở ứng dụng, bấm icon thư mục để nạp kho ảnh cũ hoặc mở panel **TẢI MRI / CT**.
+2. Tìm theo mã bệnh nhân, chọn ca chụp rồi bấm **Tải ca đã chọn**; cũng có thể
+   dán link viewer trực tiếp.
+3. Chọn series trên thanh thumbnail.
+4. Chọn bố cục: một ảnh, hai series, 6 lát, 8 lát, MPR hoặc 3D.
+5. Toolbar dùng quy ước: chuột trái theo công cụ đang chọn, chuột giữa để pan,
+   chuột phải để zoom, con lăn đổi lát.
+6. Với series có hình học, phép đo hiển thị theo mm/mm² và có thể tính thể tích
+   ROI thủ công. Series JPG thường chỉ đo theo pixel.
+7. Bấm icon đĩa mềm để lưu đo/ROI vào thư mục series.
+
+MPR/3D bị khóa nếu thiếu lát hoặc hình học không đạt. Đây là cơ chế an toàn, không
+phải lỗi giao diện.
+
 # Công cụ tải ảnh DICOM → JPG chất lượng cao
 
 Tải toàn bộ ảnh (mọi series/xung, mọi lát cắt) từ trang xem DICOM (VradViewer)
