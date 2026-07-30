@@ -202,12 +202,24 @@ button:disabled { opacity: .35; cursor: default; }
 }
 .icon-button:hover { color: #fff; background: #172430; }
 .icon-button.active { color: #8bd8ff; border-color: #1a78a7; background: #123247; }
+.icon-button.with-label {
+  display: inline-flex;
+  gap: 5px;
+  min-width: max-content;
+  padding: 0 8px;
+}
 .icon-button small {
   position: absolute;
   right: 2px;
   bottom: 0;
   color: #6fd2ff;
   font-size: 8px;
+}
+.icon-button.with-label small {
+  position: static;
+  color: inherit;
+  font-size: 10px;
+  line-height: 1;
 }
 .toolbar-divider { width: 1px; height: 24px; background: #2a3743; }
 .toolbar-spacer { flex: 1; }

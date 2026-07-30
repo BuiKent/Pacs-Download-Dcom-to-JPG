@@ -129,7 +129,9 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                       error: document.querySelector('.empty-state.error')?.textContent || '',
                       errorStack: window.__lastViewerError?.stack || '',
                       readyMode: window.__viewerReadyMode || '',
-                      diagnostics: window.__viewerDiagnostics || null
+                      diagnostics: window.__viewerDiagnostics || null,
+                      toolLabels: [...document.querySelectorAll('.interaction-tools .icon-button small')]
+                        .map(e => e.textContent)
                     })"""
                 )
                 if state.get("error"):
@@ -141,6 +143,11 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                 time.sleep(0.5)
             else:
                 raise TimeoutError(f"Không dựng được {key}: {state}")
+        if len(result["mpr"].get("toolLabels", [])) != 8:
+            raise RuntimeError(f"MPR contextual toolbar is incomplete: {result['mpr']}")
+        if len(result["volume3d"].get("toolLabels", [])) != 3:
+            raise RuntimeError(f"3D contextual toolbar is incomplete: {result['volume3d']}")
+
         # Regression gate for the real-world failure where repeated MPR/3D
         # switches left only the crosshair overlay on a blank WebGL viewport.
         result["volumeTransitions"] = []
@@ -181,6 +188,30 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                 time.sleep(0.5)
             else:
                 raise TimeoutError(f"Repeated MPR/3D transition failed at {key}: {state}")
+
+        window.evaluate_js(
+            """(() => {
+              const select = document.querySelector('[data-field="mpr-primary"]');
+              select.value = 'sagittal';
+              select.dispatchEvent(new Event('change', { bubbles: true }));
+            })()"""
+        )
+        time.sleep(1)
+        result["mprPrimarySwitch"] = window.evaluate_js(
+            """({
+              primary: document.querySelector('.mode-mpr .mpr-primary')?.dataset.plane || '',
+              primaryWidth: document.querySelector('.mode-mpr .mpr-primary')?.getBoundingClientRect().width || 0,
+              secondaryWidth: document.querySelector('.mode-mpr .mpr-secondary-top')?.getBoundingClientRect().width || 0,
+              actors: (window.__viewerDiagnostics?.viewports || []).map(item => item.actors)
+            })"""
+        )
+        if (
+            result["mprPrimarySwitch"].get("primary") != "sagittal"
+            or result["mprPrimarySwitch"].get("primaryWidth", 0)
+            <= result["mprPrimarySwitch"].get("secondaryWidth", 0)
+            or not all(count >= 1 for count in result["mprPrimarySwitch"].get("actors", []))
+        ):
+            raise RuntimeError(f"MPR primary-plane switch failed: {result['mprPrimarySwitch']}")
     except Exception as exc:
         result["error"] = str(exc)
     finally:

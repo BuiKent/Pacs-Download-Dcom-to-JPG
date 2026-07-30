@@ -40,6 +40,8 @@ let viewerQueue = Promise.resolve();
 let viewerRequestId = 0;
 
 const icons = {
+  crosshair: "⊕",
+  rotate3d: "⟳",
   folder: "📂",
   current: "⌂",
   single: "▣",
@@ -80,10 +82,66 @@ function escapeHtml(value) {
 }
 
 function iconButton(id, icon, title, active = false, disabled = false, label = "") {
-  return `<button class="icon-button ${active ? "active" : ""}" data-action="${id}"
+  return `<button class="icon-button ${active ? "active" : ""} ${label ? "with-label" : ""}" data-action="${id}"
     title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}" ${disabled ? "disabled" : ""}>
     <span>${icon}</span>${label ? `<small>${escapeHtml(label)}</small>` : ""}
   </button>`;
+}
+
+function renderInteractionTools(series) {
+  if (state.mode === "volume3d") {
+    return [
+      iconButton("tool-rotate3d", icons.rotate3d, "Kéo chuột trái để xoay mô hình", state.tool === "rotate3d", false, "Xoay 3D"),
+      iconButton("tool-pan", icons.pan, "Kéo chuột trái để di chuyển mô hình", state.tool === "pan", false, "Di chuyển"),
+      iconButton("tool-zoom", icons.zoom, "Kéo chuột trái để thu/phóng", state.tool === "zoom", false, "Thu/phóng"),
+    ].join("");
+  }
+  if (state.mode === "mpr") {
+    return [
+      iconButton("tool-crosshair", icons.crosshair, "Kéo tâm giao điểm để định vị đồng thời ba mặt phẳng", state.tool === "crosshair", false, "Định vị"),
+      iconButton("tool-window", icons.window, "Kéo chuột trái để chỉnh sáng/tương phản", state.tool === "window", false, "Sáng"),
+      iconButton("tool-pan", icons.pan, "Kéo chuột trái để di chuyển ảnh", state.tool === "pan", false, "Di chuyển"),
+      iconButton("tool-zoom", icons.zoom, "Kéo chuột trái để thu/phóng", state.tool === "zoom", false, "Thu/phóng"),
+      iconButton("tool-length", icons.length, "Đo chiều dài theo mm", state.tool === "length", false, "Đo dài"),
+      iconButton("tool-angle", icons.angle, "Đo góc", state.tool === "angle", false, "Đo góc"),
+      iconButton("tool-ellipse", icons.ellipse, "Vẽ ROI ellipse và đo diện tích", state.tool === "ellipse", false, "ROI ellipse"),
+      iconButton("tool-freehand", icons.freehand, "Vẽ ROI tự do và đo diện tích", state.tool === "freehand", false, "ROI tự do"),
+    ].join("");
+  }
+  return [
+    iconButton("tool-window", icons.window, "Sáng/tương phản", state.tool === "window"),
+    iconButton("tool-pan", icons.pan, "Bàn tay: di chuyển ảnh", state.tool === "pan"),
+    iconButton("tool-zoom", icons.zoom, "Phóng to/thu nhỏ", state.tool === "zoom"),
+    iconButton("tool-length", icons.length, series?.geometry ? "Đo chiều dài (mm)" : "Đo chiều dài (pixel)", state.tool === "length"),
+    iconButton("tool-angle", icons.angle, "Đo góc", state.tool === "angle"),
+    iconButton("tool-ellipse", icons.ellipse, "ROI ellipse", state.tool === "ellipse"),
+    iconButton("tool-freehand", icons.freehand, "ROI tự do", state.tool === "freehand"),
+  ].join("");
+}
+
+function renderUtilityTools(series) {
+  if (state.mode === "volume3d") {
+    return [
+      iconButton("reset", icons.reset, "Đặt lại góc nhìn", false, false, "Đặt lại"),
+      iconButton("capture", icons.capture, "Lưu ảnh 3D hiện tại", false, false, "Lưu ảnh"),
+    ].join("");
+  }
+  if (state.mode === "mpr") {
+    return [
+      iconButton("reset", icons.reset, "Đặt lại ba mặt phẳng"),
+      iconButton("capture", icons.capture, "Lưu ảnh khung đang xem"),
+      iconButton("save-annotations", icons.save, "Lưu đo/ROI"),
+      iconButton("roi-volume", icons.volume, "Tính thể tích các ROI thủ công", false, !series?.mprReady, "Thể tích ROI"),
+    ].join("");
+  }
+  return [
+    iconButton("reset", icons.reset, "Đặt lại hiển thị"),
+    iconButton("invert", icons.invert, "Đảo màu"),
+    iconButton("cine", state.cine ? "Ⅱ" : icons.cine, state.cine ? "Dừng chạy phim" : "Chạy phim", state.cine, state.mode !== "single"),
+    iconButton("capture", icons.capture, "Lưu ảnh khung đang xem"),
+    iconButton("save-annotations", icons.save, "Lưu đo/ROI"),
+    iconButton("roi-volume", icons.volume, "Tính thể tích các ROI thủ công", false, !series?.mprReady),
+  ].join("");
 }
 
 function render() {
@@ -167,7 +225,8 @@ function render() {
             </select>
           </label>` : ""}
           <span class="toolbar-divider"></span>
-          <div class="tool-cluster interaction-tools">
+          <div class="tool-cluster interaction-tools">${renderInteractionTools(series)}</div>
+          <div class="tool-cluster legacy-interaction-tools" hidden>
             ${iconButton("tool-window", icons.window, "Sáng/tương phản", state.tool === "window", state.mode === "volume3d")}
             ${iconButton("tool-pan", icons.pan, "Bàn tay: di chuyển ảnh", state.tool === "pan")}
             ${iconButton("tool-zoom", icons.zoom, "Phóng to/thu nhỏ", state.tool === "zoom")}
@@ -177,7 +236,8 @@ function render() {
             ${iconButton("tool-freehand", icons.freehand, series?.geometry ? "ROI đa giác/tự do (mm²)" : "ROI đa giác/tự do (pixel²)", state.tool === "freehand", state.mode === "volume3d")}
           </div>
           <span class="toolbar-spacer"></span>
-          <div class="tool-cluster utility-tools">
+          <div class="tool-cluster utility-tools">${renderUtilityTools(series)}</div>
+          <div class="tool-cluster legacy-utility-tools" hidden>
             ${iconButton("reset", icons.reset, "Đặt lại hiển thị")}
             ${iconButton("invert", icons.invert, "Đảo màu", false, state.mode === "volume3d")}
             ${iconButton("cine", state.cine ? "Ⅱ" : icons.cine, state.cine ? "Dừng chạy phim" : "Chạy phim", state.cine, state.mode !== "single")}
@@ -234,6 +294,7 @@ function bindEvents() {
     const selected = selectedSeries();
     if ((state.mode === "mpr" || state.mode === "volume3d") && !selected?.mprReady) {
       state.mode = "single";
+      state.tool = "window";
     }
     render();
     renderViewer();
@@ -252,6 +313,7 @@ function bindEvents() {
       const selected = selectedSeries();
       if ((state.mode === "mpr" || state.mode === "volume3d") && !selected?.mprReady) {
         state.mode = "single";
+        state.tool = "window";
       }
       render();
       renderViewer();
@@ -319,6 +381,13 @@ async function action(name) {
     }
     if (name?.startsWith("mode-")) {
       state.mode = name.slice(5);
+      if (state.mode === "volume3d") {
+        state.tool = "rotate3d";
+      } else if (state.mode === "mpr") {
+        state.tool = "crosshair";
+      } else if (state.tool === "rotate3d" || state.tool === "crosshair") {
+        state.tool = "window";
+      }
       if (state.mode === "compare" && !state.compareId) {
         state.compareId = state.archive.series.find((item) => item.id !== state.selectedId)?.id || state.selectedId;
       }
@@ -384,6 +453,7 @@ function applyArchive(archive) {
     state.compareId = archive.series.find((item) => item.id !== state.selectedId)?.id || state.selectedId;
   }
   state.mode = "single";
+  state.tool = "window";
   render();
   renderViewer();
 }
