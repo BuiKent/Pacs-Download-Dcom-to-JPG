@@ -8,6 +8,7 @@ import {
   resetView,
   roiVolumeMl,
   saveAnnotations,
+  setMprPrimaryPlane,
   setTool,
   show3d,
   showMpr,
@@ -32,6 +33,7 @@ const state = {
   sliceText: "",
   busyViewer: false,
   cine: false,
+  mprPrimary: "axial",
 };
 let viewerQueue = Promise.resolve();
 
@@ -154,6 +156,14 @@ function render() {
             ${iconButton("mode-mpr", icons.mpr, mprDisabled ? series?.mprReason || "Series không đủ MPR" : "MPR ba mặt phẳng", state.mode === "mpr", mprDisabled)}
             ${iconButton("mode-volume3d", icons.volume3d, mprDisabled ? series?.mprReason || "Series không đủ 3D" : "Dựng volume 3D toàn màn hình", state.mode === "volume3d", mprDisabled, "3D")}
           </div>
+          ${state.mode === "mpr" ? `<label class="mpr-primary-control">
+            Khung lớn
+            <select data-field="mpr-primary">
+              <option value="axial" ${state.mprPrimary === "axial" ? "selected" : ""}>Axial</option>
+              <option value="coronal" ${state.mprPrimary === "coronal" ? "selected" : ""}>Coronal</option>
+              <option value="sagittal" ${state.mprPrimary === "sagittal" ? "selected" : ""}>Sagittal</option>
+            </select>
+          </label>` : ""}
           <span class="toolbar-divider"></span>
           <div class="tool-cluster interaction-tools">
             ${iconButton("tool-window", icons.window, "Sáng/tương phản", state.tool === "window", state.mode === "volume3d")}
@@ -229,6 +239,10 @@ function bindEvents() {
   app.querySelector("[data-field='compare']")?.addEventListener("change", (event) => {
     state.compareId = event.target.value;
     renderViewer();
+  });
+  app.querySelector("[data-field='mpr-primary']")?.addEventListener("change", (event) => {
+    state.mprPrimary = event.target.value;
+    setMprPrimaryPlane(state.mprPrimary);
   });
   app.querySelectorAll("[data-series-id]").forEach((element) => {
     element.addEventListener("click", () => {
@@ -383,10 +397,19 @@ function renderViewer() {
     if (!workspace) return;
     state.busyViewer = true;
     window.__viewerReadyMode = "";
+    const loadingText = mode === "mpr"
+      ? `Đang dựng MPR từ ${series.sliceCount} lát…`
+      : mode === "volume3d"
+        ? `Đang dựng mô hình 3D từ ${series.sliceCount} lát…`
+        : "Đang mở ảnh…";
+    workspace.dataset.loadingText = loadingText;
     workspace.classList.add("busy");
+    app.querySelector(".status-dot")?.classList.add("busy");
+    setStatus(loadingText);
     try {
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       if (mode === "mpr") {
-        await showMpr(workspace, series);
+        await showMpr(workspace, series, state.mprPrimary);
       } else if (mode === "volume3d") {
         await show3d(workspace, series);
       } else {
@@ -404,6 +427,8 @@ function renderViewer() {
     } finally {
       state.busyViewer = false;
       workspace.classList.remove("busy");
+      delete workspace.dataset.loadingText;
+      app.querySelector(".status-dot")?.classList.remove("busy");
     }
   };
 

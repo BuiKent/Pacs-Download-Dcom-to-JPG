@@ -171,6 +171,23 @@ button:disabled { opacity: .35; cursor: default; }
   border-bottom: 1px solid #1d2a36;
 }
 .tool-cluster { display: flex; gap: 3px; }
+.mpr-primary-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 7px;
+  color: #8fa9bc;
+  white-space: nowrap;
+  font-size: 10px;
+}
+.mpr-primary-control select {
+  height: 29px;
+  padding: 0 7px;
+  color: #dcecf7;
+  border: 1px solid #2a4254;
+  border-radius: 5px;
+  background: #101c26;
+}
 .icon-button {
   position: relative;
   display: grid;
@@ -245,8 +262,13 @@ button:disabled { opacity: .35; cursor: default; }
 .workspace-grid.mode-single, .workspace-grid.mode-volume3d { grid-template: 1fr / 1fr; }
 .workspace-grid.mode-compare { grid-template: 1fr / repeat(2, minmax(0, 1fr)); }
 .workspace-grid.mode-montage6 { grid-template: repeat(2, minmax(0, 1fr)) / repeat(3, minmax(0, 1fr)); }
-.workspace-grid.mode-montage8, .workspace-grid.mode-mpr { grid-template: repeat(2, minmax(0, 1fr)) / repeat(4, minmax(0, 1fr)); }
-.workspace-grid.mode-mpr { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.workspace-grid.mode-montage8 { grid-template: repeat(2, minmax(0, 1fr)) / repeat(4, minmax(0, 1fr)); }
+.workspace-grid.mode-mpr {
+  grid-template: repeat(2, minmax(0, 1fr)) / minmax(0, 2fr) minmax(280px, 1fr);
+}
+.mode-mpr .mpr-primary { grid-area: 1 / 1 / 3 / 2; }
+.mode-mpr .mpr-secondary-top { grid-area: 1 / 2 / 2 / 3; }
+.mode-mpr .mpr-secondary-bottom { grid-area: 2 / 2 / 3 / 3; }
 .viewport-shell {
   position: relative;
   min-width: 0;
@@ -283,6 +305,34 @@ button:disabled { opacity: .35; cursor: default; }
   text-align: center;
   background: #05080c;
 }
+.workspace-grid.busy::before {
+  content: attr(data-loading-text);
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-content: center;
+  padding-top: 58px;
+  color: #ccecff;
+  text-align: center;
+  background: #03070cde;
+  font-size: 13px;
+  font-weight: 600;
+}
+.workspace-grid.busy::after {
+  content: "";
+  position: absolute;
+  top: calc(50% - 24px);
+  left: calc(50% - 18px);
+  z-index: 21;
+  width: 32px;
+  height: 32px;
+  border: 3px solid #163a50;
+  border-top-color: #49c7ff;
+  border-radius: 50%;
+  animation: viewer-spin .8s linear infinite;
+}
+@keyframes viewer-spin { to { transform: rotate(360deg); } }
 .empty-state b { color: #c4d9e8; }
 .empty-state button { justify-self: center; padding: 9px 16px; }
 .empty-state.error span { color: #ff9898; }

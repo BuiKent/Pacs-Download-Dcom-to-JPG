@@ -77,6 +77,7 @@ let activeElements = [];
 let activeSeries = null;
 let activeMode = "single";
 let currentTool = "window";
+let mprPrimaryPlane = "axial";
 let cineTimer = null;
 let onStatus = () => {};
 let onSlice = () => {};
@@ -286,9 +287,9 @@ function installResizeObserver(container) {
   resizeObserver.observe(container);
 }
 
-function viewportElement(container, id, label) {
+function viewportElement(container, id, label, shellClass = "") {
   const shell = document.createElement("section");
-  shell.className = "viewport-shell";
+  shell.className = `viewport-shell ${shellClass}`.trim();
   shell.dataset.viewportId = id;
   const tag = document.createElement("div");
   tag.className = "viewport-label";
@@ -303,8 +304,47 @@ function viewportElement(container, id, label) {
   return element;
 }
 
+export function mprPlaneLayout(plane) {
+  const planes = ["axial", "coronal", "sagittal"];
+  if (!planes.includes(plane)) return null;
+  const secondary = planes.filter((item) => item !== plane);
+  return {
+    [plane]: "mpr-primary",
+    [secondary[0]]: "mpr-secondary-top",
+    [secondary[1]]: "mpr-secondary-bottom",
+  };
+}
+
+export function setMprPrimaryPlane(plane, resize = true) {
+  const layout = mprPlaneLayout(plane);
+  if (!layout) return false;
+  mprPrimaryPlane = plane;
+  for (const shell of document.querySelectorAll(".mode-mpr .mpr-plane")) {
+    shell.classList.remove("mpr-primary", "mpr-secondary-top", "mpr-secondary-bottom");
+    const positionClass = layout[shell.dataset.plane];
+    if (positionClass) shell.classList.add(positionClass);
+  }
+  if (resize) {
+    requestAnimationFrame(() => {
+      try {
+        renderingEngine?.resize(true, true);
+        renderingEngine?.render();
+      } catch (_) {
+        // Ignore a resize that races with a mode change.
+      }
+    });
+  }
+  return true;
+}
+
 function imageIds(series) {
   return Array.from({ length: series.sliceCount }, (_, index) => makeImageId(series.id, index));
+}
+
+function setWorkspaceMode(container, mode) {
+  const wasBusy = container.classList.contains("busy");
+  container.className = `workspace-grid mode-${mode}`;
+  if (wasBusy) container.classList.add("busy");
 }
 
 async function setupStackViewport(viewportId, series, index = 0, prefetch = true) {
@@ -332,7 +372,7 @@ export async function showStacks(container, series, mode, secondarySeries = null
   registerSeries(series);
   if (secondarySeries) registerSeries(secondarySeries);
   container.innerHTML = "";
-  container.className = `workspace-grid mode-${mode}`;
+  setWorkspaceMode(container, mode);
   renderingEngine = new RenderingEngine(ENGINE_ID);
 
   const viewports = [];
@@ -394,29 +434,34 @@ async function ensureVolume(series) {
   return { id, volume };
 }
 
-export async function showMpr(container, series) {
+export async function showMpr(container, series, primaryPlane = "axial") {
   if (!series.mprReady) throw new Error(series.mprReason);
   destroyCurrent();
   activeSeries = series;
   activeMode = "mpr";
   registerSeries(series);
   container.innerHTML = "";
-  container.className = "workspace-grid mode-mpr";
+  setWorkspaceMode(container, "mpr");
   const definitions = [
-    ["mpr-axial", "AXIAL", CoreEnums.OrientationAxis.AXIAL],
-    ["mpr-coronal", "CORONAL", CoreEnums.OrientationAxis.CORONAL],
-    ["mpr-sagittal", "SAGITTAL", CoreEnums.OrientationAxis.SAGITTAL],
+    ["mpr-axial", "AXIAL", "axial", CoreEnums.OrientationAxis.AXIAL],
+    ["mpr-coronal", "CORONAL", "coronal", CoreEnums.OrientationAxis.CORONAL],
+    ["mpr-sagittal", "SAGITTAL", "sagittal", CoreEnums.OrientationAxis.SAGITTAL],
   ];
   renderingEngine = new RenderingEngine(ENGINE_ID);
-  const inputs = definitions.map(([id, label, orientation]) => ({
+  const inputs = definitions.map(([id, label, plane, orientation]) => {
+    const element = viewportElement(container, id, label, "mpr-plane");
+    element.parentElement.dataset.plane = plane;
+    return {
     viewportId: id,
     type: CoreEnums.ViewportType.ORTHOGRAPHIC,
-    element: viewportElement(container, id, label),
+    element,
     defaultOptions: {
       orientation,
       background: [0.01, 0.015, 0.025],
     },
-  }));
+    };
+  });
+  setMprPrimaryPlane(primaryPlane, false);
   renderingEngine.setViewports(inputs);
   const { id: volumeId } = await ensureVolume(series);
   await setVolumesForViewports(renderingEngine, [{ volumeId }], definitions.map((item) => item[0]));
@@ -462,7 +507,7 @@ export async function show3d(container, series) {
   activeMode = "volume3d";
   registerSeries(series);
   container.innerHTML = "";
-  container.className = "workspace-grid mode-volume3d";
+  setWorkspaceMode(container, "volume3d");
   renderingEngine = new RenderingEngine(ENGINE_ID);
   const element = viewportElement(container, "volume-3d", `3D · ${series.description}`);
   renderingEngine.enableElement({
