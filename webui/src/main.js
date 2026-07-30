@@ -3,16 +3,18 @@ import { api, configureApi } from "./api.js";
 import {
   applyWindowPreset,
   captureActiveViewport,
+  clearActiveMeasurements,
   disposeViewer,
+  flipActiveViewportHorizontal,
   initViewer,
   invertView,
   persistActiveAnnotations,
   registerSeries,
   resetView,
   roiVolumeMl,
+  rotateActiveViewportClockwise,
   saveAnnotations,
   seriesSafetyNotice,
-  setMprPrimaryPlane,
   setTool,
   show3d,
   showMpr,
@@ -67,12 +69,18 @@ const icons = {
   volume3d: "◇",
   window: "◐",
   pan: "✋",
-  zoom: "⌕",
+  zoom: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="10.5" cy="10.5" r="6.5"></circle>
+    <path d="M15.5 15.5 21 21"></path>
+  </svg>`,
   length: "╱",
   angle: "∠",
   ellipse: "◯",
   freehand: "✎",
   reset: "↺",
+  rotateClockwise: "↻",
+  flipHorizontal: "↔",
+  clearAnnotations: "×",
   invert: "◑",
   cine: "▶",
   capture: "▧",
@@ -140,22 +148,32 @@ function renderInteractionTools(series) {
 }
 
 function renderUtilityTools(series) {
+  const viewportActions = [
+    iconButton("reset", icons.reset, state.mode === "mpr"
+      ? "Đặt lại ba mặt phẳng"
+      : state.mode === "volume3d"
+        ? "Đặt lại góc nhìn"
+        : "Đặt lại hiển thị"),
+    iconButton("clear-annotations", icons.clearAnnotations, "Xóa tất cả đo dài, đo góc và ROI"),
+    iconButton("rotate-clockwise", icons.rotateClockwise, "Xoay khung đang chọn 90° theo chiều kim đồng hồ"),
+    iconButton("flip-horizontal", icons.flipHorizontal, "Lật ngang khung đang chọn"),
+  ];
   if (state.mode === "volume3d") {
     return [
-      iconButton("reset", icons.reset, "Đặt lại góc nhìn"),
+      ...viewportActions,
       iconButton("capture", icons.capture, "Lưu ảnh 3D"),
     ].join("");
   }
   if (state.mode === "mpr") {
     return [
-      iconButton("reset", icons.reset, "Đặt lại ba mặt phẳng"),
+      ...viewportActions,
       iconButton("capture", icons.capture, "Lưu ảnh"),
       iconButton("save-annotations", icons.save, "Lưu đo/ROI"),
       iconButton("roi-volume", icons.volume, "Tính thể tích ROI", false, !series?.mprReady),
     ].join("");
   }
   return [
-    iconButton("reset", icons.reset, "Đặt lại hiển thị"),
+    ...viewportActions,
     iconButton("invert", icons.invert, "Đảo màu"),
     iconButton("cine", state.cine ? "Ⅱ" : icons.cine, state.cine ? "Dừng chạy phim" : "Chạy phim", state.cine, state.mode !== "single"),
     iconButton("capture", icons.capture, "Lưu ảnh"),
@@ -245,14 +263,6 @@ function render() {
             ${iconButton("mode-mpr", icons.mpr, mprDisabled ? series?.mprReason || "Series không đủ MPR" : "MPR ba mặt phẳng", state.mode === "mpr", mprDisabled)}
             ${iconButton("mode-volume3d", icons.volume3d, mprDisabled ? series?.mprReason || "Series không đủ 3D" : "Dựng volume 3D toàn màn hình", state.mode === "volume3d", mprDisabled, "3D")}
           </div>
-          ${state.mode === "mpr" ? `<label class="mpr-primary-control">
-            Khung lớn
-            <select data-field="mpr-primary">
-              <option value="axial" ${state.mprPrimary === "axial" ? "selected" : ""}>Axial</option>
-              <option value="coronal" ${state.mprPrimary === "coronal" ? "selected" : ""}>Coronal</option>
-              <option value="sagittal" ${state.mprPrimary === "sagittal" ? "selected" : ""}>Sagittal</option>
-            </select>
-          </label>` : ""}
           ${state.mode !== "volume3d" ? `<label class="window-preset-control">
             Hiển thị
             <select data-field="window-preset" title="Preset thị giác trên dữ liệu JPG 8-bit, không phải cửa sổ HU">
@@ -328,10 +338,6 @@ function bindEvents() {
   app.querySelector("[data-field='compare']")?.addEventListener("change", (event) => {
     state.compareId = event.target.value;
     renderViewer();
-  });
-  app.querySelector("[data-field='mpr-primary']")?.addEventListener("change", (event) => {
-    state.mprPrimary = event.target.value;
-    setMprPrimaryPlane(state.mprPrimary);
   });
   app.querySelector("[data-field='window-preset']")?.addEventListener("change", async (event) => {
     state.windowPreset = event.target.value;
@@ -454,6 +460,20 @@ async function action(name) {
       window.__viewerDiagnostics = viewerDiagnostics();
       const select = app.querySelector("[data-field='window-preset']");
       if (select) select.value = state.windowPreset;
+    }
+    if (name === "clear-annotations") {
+      const count = await clearActiveMeasurements();
+      setStatus(count
+        ? `Đã xóa ${count} phép đo/ROI.`
+        : "Khung xem hiện tại không có phép đo/ROI để xóa.");
+    }
+    if (name === "rotate-clockwise") {
+      if (!rotateActiveViewportClockwise()) throw new Error("Chưa chọn khung ảnh để xoay.");
+      window.__viewerDiagnostics = viewerDiagnostics();
+    }
+    if (name === "flip-horizontal") {
+      if (!flipActiveViewportHorizontal()) throw new Error("Chưa chọn khung ảnh để lật.");
+      window.__viewerDiagnostics = viewerDiagnostics();
     }
     if (name === "invert") invertView();
     if (name === "cine") {
@@ -781,6 +801,9 @@ async function boot() {
       state.sliceText = `${label ? `${label} · ` : ""}${index + 1}/${count}`;
       updateStatusOnly();
     },
+  });
+  app.addEventListener("mprprimarychange", (event) => {
+    if (event.detail?.plane) state.mprPrimary = event.detail.plane;
   });
   installKeyboardShortcuts();
   // Releasing the GPU contexts on close keeps a WebView2 restart from

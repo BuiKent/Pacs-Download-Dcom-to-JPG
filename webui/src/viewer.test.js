@@ -4,8 +4,10 @@ import {
   WINDOW_PRESETS,
   annotationBelongsToSeries,
   annotationTargetViewportId,
+  isMeasurementAnnotation,
   montageIndices,
   mprPlaneLayout,
+  nextViewportRotation,
   seriesSafetyNotice,
   toolFallback,
 } from "./viewer.js";
@@ -36,6 +38,21 @@ describe("viewer shell", () => {
       coronal: "mpr-secondary-bottom",
     });
     expect(mprPlaneLayout("invalid")).toBeNull();
+  });
+
+  it("rotates the selected viewport clockwise in exact 90 degree steps", () => {
+    expect(nextViewportRotation()).toBe(90);
+    expect(nextViewportRotation(90)).toBe(180);
+    expect(nextViewportRotation(270)).toBe(0);
+    expect(nextViewportRotation(-90)).toBe(0);
+  });
+
+  it("limits the red clear action to measurements and ROIs", () => {
+    expect(isMeasurementAnnotation({ metadata: { toolName: "Length" } })).toBe(true);
+    expect(isMeasurementAnnotation({ metadata: { toolName: "Angle" } })).toBe(true);
+    expect(isMeasurementAnnotation({ metadata: { toolName: "EllipticalROI" } })).toBe(true);
+    expect(isMeasurementAnnotation({ metadata: { toolName: "PlanarFreehandROI" } })).toBe(true);
+    expect(isMeasurementAnnotation({ metadata: { toolName: "Crosshairs" } })).toBe(false);
   });
 
   it("keeps montage panes consecutive when any pane is scrolled", () => {

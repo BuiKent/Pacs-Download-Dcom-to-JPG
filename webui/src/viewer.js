@@ -73,6 +73,13 @@ const toolByMode = {
   rotate3d: TrackballRotateTool.toolName,
 };
 
+const measurementToolNames = new Set([
+  LengthTool.toolName,
+  AngleTool.toolName,
+  EllipticalROITool.toolName,
+  PlanarFreehandROITool.toolName,
+]);
+
 let initialized = false;
 let renderingEngine = null;
 let engineUsable = false;
@@ -501,6 +508,28 @@ function viewportElement(container, id, label, shellClass = "", seriesId = "") {
   return element;
 }
 
+function installMprSwapButton(shell, plane) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "mpr-swap-button";
+  button.textContent = "⇄";
+  button.title = `Đưa ${plane} vào khung lớn`;
+  button.setAttribute("aria-label", button.title);
+  button.addEventListener("pointerdown", (event) => {
+    markActiveViewport(shell.dataset.viewportId);
+    event.stopPropagation();
+  });
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (!setMprPrimaryPlane(plane)) return;
+    shell.dispatchEvent(new CustomEvent("mprprimarychange", {
+      bubbles: true,
+      detail: { plane },
+    }));
+  });
+  shell.append(button);
+}
+
 function installSliceControl({
   element,
   viewport,
@@ -599,6 +628,48 @@ export function setMprPrimaryPlane(plane, resize = true) {
     });
   }
   return true;
+}
+
+export function nextViewportRotation(rotation = 0, delta = 90) {
+  const current = Number.isFinite(Number(rotation)) ? Number(rotation) : 0;
+  const change = Number.isFinite(Number(delta)) ? Number(delta) : 0;
+  return ((current + change) % 360 + 360) % 360;
+}
+
+function transformActiveViewport(update) {
+  const viewport = activeViewport();
+  if (!viewport || typeof viewport.getViewPresentation !== "function"
+    || typeof viewport.setViewPresentation !== "function") {
+    return null;
+  }
+  const current = viewport.getViewPresentation();
+  const next = update(current || {});
+  viewport.setViewPresentation(next);
+  viewport.render();
+  return next;
+}
+
+/** Rotates only the pane selected by the pointer, including MPR and 3D panes. */
+export function rotateActiveViewportClockwise() {
+  return transformActiveViewport((current) => ({
+    ...current,
+    rotation: nextViewportRotation(current.rotation, 90),
+  }));
+}
+
+/** Mirrors only the pane selected by the pointer around its vertical axis. */
+export function flipActiveViewportHorizontal() {
+  const viewport = activeViewport();
+  if (!viewport || typeof viewport.getCamera !== "function"
+    || typeof viewport.setCamera !== "function") {
+    return null;
+  }
+  const flipHorizontal = !Boolean(viewport.getCamera()?.flipHorizontal);
+  // Cornerstone's camera setter handles both directions of the toggle for
+  // stack, orthographic volume and 3D volume viewports.
+  viewport.setCamera({ flipHorizontal });
+  viewport.render();
+  return { flipHorizontal };
 }
 
 function imageIds(series) {
@@ -869,6 +940,7 @@ export async function showMpr(container, series, primaryPlane = "axial", tool = 
   const inputs = definitions.map(([id, label, plane, orientation]) => {
     const element = viewportElement(container, id, label, "mpr-plane", series.id);
     element.parentElement.dataset.plane = plane;
+    installMprSwapButton(element.parentElement, plane);
     return {
     viewportId: id,
     type: CoreEnums.ViewportType.ORTHOGRAPHIC,
@@ -1159,6 +1231,31 @@ export function annotationBelongsToSeries(item, seriesId) {
   if (String(item.metadata?.referencedImageId || "").includes(seriesId)) return true;
   if (String(item.metadata?.volumeId || "").includes(seriesId)) return true;
   return Object.keys(item.data?.cachedStats || {}).some((key) => key.includes(seriesId));
+}
+
+export function isMeasurementAnnotation(item) {
+  return measurementToolNames.has(item?.metadata?.toolName);
+}
+
+/**
+ * Removes all length, angle and ROI annotations in the active layout, then
+ * persists the empty/current state so deleted measurements stay deleted.
+ */
+export async function clearActiveMeasurements() {
+  const targets = new Set(activeSeriesList.map((series) => series.id));
+  if (!targets.size && activeSeries?.id) targets.add(activeSeries.id);
+  const removable = annotation.state
+    .getAllAnnotations()
+    .filter((item) => (
+      isMeasurementAnnotation(item)
+      && (!targets.size || [...targets].some((seriesId) => annotationBelongsToSeries(item, seriesId)))
+    ));
+  for (const item of removable) {
+    if (item.annotationUID) annotation.state.removeAnnotation(item.annotationUID);
+  }
+  if (engineIsLive()) renderingEngine.render();
+  await saveAnnotations();
+  return removable.length;
 }
 
 function serializableAnnotations(seriesId) {
