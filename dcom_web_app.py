@@ -117,7 +117,7 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
             ("mode-montage6", 6, "montage6"),
             ("mode-montage8", 8, "montage8"),
             ("mode-mpr", 3, "mpr"),
-            ("mode-volume3d", 1, "volume3d"),
+            ("mode-volume3d", 4, "volume3d"),
         ):
             window.evaluate_js(f'document.querySelector(\'[data-action="{action}"]\').click()')
             deadline = time.time() + 60
@@ -130,6 +130,7 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                       errorStack: window.__lastViewerError?.stack || '',
                       readyMode: window.__viewerReadyMode || '',
                       diagnostics: window.__viewerDiagnostics || null,
+                      volumeLoad: window.__volumeLoadState || null,
                       toolLabels: [...document.querySelectorAll('.interaction-tools .icon-button small')]
                         .map(e => e.textContent)
                     })"""
@@ -145,7 +146,7 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                 raise TimeoutError(f"Không dựng được {key}: {state}")
         if len(result["mpr"].get("toolLabels", [])) != 8:
             raise RuntimeError(f"MPR contextual toolbar is incomplete: {result['mpr']}")
-        if len(result["volume3d"].get("toolLabels", [])) != 3:
+        if len(result["volume3d"].get("toolLabels", [])) != 4:
             raise RuntimeError(f"3D contextual toolbar is incomplete: {result['volume3d']}")
 
         # Regression gate for the real-world failure where repeated MPR/3D
@@ -153,7 +154,7 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
         result["volumeTransitions"] = []
         for action, expected, key in (
             ("mode-mpr", 3, "mpr-again"),
-            ("mode-volume3d", 1, "volume3d-again"),
+            ("mode-volume3d", 4, "volume3d-again"),
             ("mode-mpr", 3, "mpr-third"),
         ):
             window.evaluate_js(f'document.querySelector(\'[data-action="{action}"]\').click()')

@@ -271,7 +271,10 @@ button:disabled { opacity: .35; cursor: default; }
   overflow: hidden;
   background: #000;
 }
-.workspace-grid.mode-single, .workspace-grid.mode-volume3d { grid-template: 1fr / 1fr; }
+.workspace-grid.mode-single { grid-template: 1fr / 1fr; }
+.workspace-grid.mode-volume3d {
+  grid-template: repeat(2, minmax(0, 1fr)) / repeat(2, minmax(0, 1fr));
+}
 .workspace-grid.mode-compare { grid-template: 1fr / repeat(2, minmax(0, 1fr)); }
 .workspace-grid.mode-montage6 { grid-template: repeat(2, minmax(0, 1fr)) / repeat(3, minmax(0, 1fr)); }
 .workspace-grid.mode-montage8 { grid-template: repeat(2, minmax(0, 1fr)) / repeat(4, minmax(0, 1fr)); }

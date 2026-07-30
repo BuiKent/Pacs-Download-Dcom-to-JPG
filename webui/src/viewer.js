@@ -194,6 +194,7 @@ function decodeImage(imageId) {
       photometricInterpretation: "MONOCHROME2",
       sizeInBytes: pixels.byteLength,
       dataType: "Uint8Array",
+      imageQualityStatus: CoreEnums.ImageQualityStatus.FULL_RESOLUTION,
     };
   })();
   return { promise };
@@ -263,12 +264,16 @@ function createRenderingEngine() {
   return renderingEngine;
 }
 
-function createToolGroup(viewportIds, threeDimensional = false) {
+function createToolGroup(viewportIds, mode = "stack") {
+  const threeDimensional = mode === "volume3d";
+  const hybrid = mode === "hybrid";
   toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
   if (!toolGroup) throw new Error("Không tạo được nhóm công cụ.");
   const allowed = threeDimensional
     ? [TrackballRotateTool, PanTool, ZoomTool]
-    : toolClasses.filter((tool) => tool !== TrackballRotateTool);
+    : hybrid
+      ? toolClasses
+      : toolClasses.filter((tool) => tool !== TrackballRotateTool);
   for (const ToolClass of allowed) {
     toolGroup.addTool(ToolClass.toolName);
   }
@@ -440,16 +445,77 @@ export async function showStacks(container, series, mode, secondarySeries = null
     : "Series JPG không có hình học: chỉ xem/zoom/pan; không dùng kết quả đo vật lý.");
 }
 
+async function preloadVolumeImages(series, concurrency = 4) {
+  const ids = imageIds(series);
+  const missing = ids.filter((imageId) => !cache.getImage(imageId));
+  let loaded = ids.length - missing.length;
+  const updateProgress = () => {
+    window.__volumeLoadState = {
+      volumeId: `${VOLUME_SCHEME}:${series.id}`,
+      loaded,
+      processed: loaded,
+      total: ids.length,
+      complete: loaded === ids.length,
+    };
+    onStatus(`Đang nạp volume: ${loaded}/${ids.length} lát…`);
+  };
+  updateProgress();
+  let cursor = 0;
+  const failures = [];
+  const worker = async () => {
+    while (cursor < missing.length) {
+      const imageId = missing[cursor];
+      cursor += 1;
+      try {
+        await imageLoader.loadAndCacheImage(imageId);
+        loaded += 1;
+        if (loaded === ids.length || loaded % 10 === 0) updateProgress();
+      } catch (error) {
+        failures.push({ imageId, error });
+      }
+    }
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(Math.max(1, concurrency), Math.max(1, missing.length)) },
+      () => worker(),
+    ),
+  );
+  const uncached = ids.filter((imageId) => !cache.getImage(imageId));
+  if (failures.length || uncached.length) {
+    window.__volumeLoadState = {
+      volumeId: `${VOLUME_SCHEME}:${series.id}`,
+      loaded: ids.length - uncached.length,
+      processed: ids.length,
+      total: ids.length,
+      complete: false,
+    };
+    throw new Error(
+      `Không thể nạp đủ volume: thiếu ${uncached.length || failures.length}/${ids.length} lát.`,
+    );
+  }
+  loaded = ids.length;
+  updateProgress();
+  return ids;
+}
+
 async function ensureVolume(series) {
   await ensureManifest(series);
   const id = `${VOLUME_SCHEME}:${series.id}`;
+  const ids = await preloadVolumeImages(series);
   let volume = cache.getVolume(id);
-  if (!volume) {
-    onStatus(`Đang nạp ${series.sliceCount} lát để dựng volume...`);
-    volume = await volumeLoader.createAndCacheVolumeFromImages(id, imageIds(series));
+  if (volume?.loadStatus && !volume.loadStatus.loaded) {
+    cache.removeVolumeLoadObject(id);
+    volume = null;
   }
-  if (typeof volume.load === "function") {
-    await volume.load();
+  if (!volume) {
+    onStatus(`Đang dựng volume từ đủ ${series.sliceCount} lát…`);
+    volume = await volumeLoader.createAndCacheVolumeFromImages(id, ids);
+  }
+  if (volume.imageIds?.length !== series.sliceCount) {
+    throw new Error(
+      `Volume không đầy đủ: ${volume.imageIds?.length || 0}/${series.sliceCount} lát.`,
+    );
   }
   return { id, volume };
 }
@@ -530,23 +596,35 @@ export async function show3d(container, series) {
   container.innerHTML = "";
   setWorkspaceMode(container, "volume3d");
   createRenderingEngine();
-  const element = viewportElement(container, "volume-3d", `3D · ${series.description}`);
-  renderingEngine.enableElement({
-    viewportId: "volume-3d",
-    type: CoreEnums.ViewportType.VOLUME_3D,
-    element,
-    defaultOptions: { background: [0.01, 0.015, 0.025] },
-  });
+  const definitions = [
+    ["volume-axial", "AXIAL", CoreEnums.ViewportType.ORTHOGRAPHIC, CoreEnums.OrientationAxis.AXIAL],
+    ["volume-coronal", "CORONAL", CoreEnums.ViewportType.ORTHOGRAPHIC, CoreEnums.OrientationAxis.CORONAL],
+    ["volume-sagittal", "SAGITTAL", CoreEnums.ViewportType.ORTHOGRAPHIC, CoreEnums.OrientationAxis.SAGITTAL],
+    ["volume-3d", `3D · ${series.description}`, CoreEnums.ViewportType.VOLUME_3D, null],
+  ];
+  renderingEngine.setViewports(definitions.map(([id, label, type, orientation]) => ({
+    viewportId: id,
+    type,
+    element: viewportElement(container, id, label, id === "volume-3d" ? "volume-render-pane" : "volume-mpr-pane"),
+    defaultOptions: {
+      ...(orientation ? { orientation } : {}),
+      background: [0.01, 0.015, 0.025],
+    },
+  })));
   const { id: volumeId } = await ensureVolume(series);
-  await setVolumesForViewports(renderingEngine, [{ volumeId }], ["volume-3d"]);
-  const viewport = renderingEngine.getViewport("volume-3d");
-  applyBrainPreset(viewport);
-  viewport.resetCamera();
-  viewport.render();
-  createToolGroup(["volume-3d"], true);
+  const viewportIds = definitions.map((item) => item[0]);
+  await setVolumesForViewports(renderingEngine, [{ volumeId }], viewportIds);
+  applyBrainPreset(renderingEngine.getViewport("volume-3d"));
+  for (const viewportId of viewportIds) {
+    const viewport = renderingEngine.getViewport(viewportId);
+    viewport.resetCamera();
+    viewport.render();
+  }
+  createToolGroup(viewportIds, "hybrid");
+  setTool(currentTool === "rotate3d" ? "rotate3d" : "crosshair");
   installResizeObserver(container);
   await settleVolumeRendering();
-  onStatus("3D volume rendering toàn bộ chuỗi T1 · kéo trái để xoay, chuột giữa pan, chuột phải zoom.");
+  onStatus("Ba mặt phẳng MPR và mô hình 3D dùng chung một volume đã nạp đầy đủ.");
 }
 
 export function viewerDiagnostics() {

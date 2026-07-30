@@ -91,6 +91,7 @@ function iconButton(id, icon, title, active = false, disabled = false, label = "
 function renderInteractionTools(series) {
   if (state.mode === "volume3d") {
     return [
+      iconButton("tool-crosshair", icons.crosshair, "Kéo tâm giao điểm trên ba mặt phẳng MPR", state.tool === "crosshair", false, "Định vị MPR"),
       iconButton("tool-rotate3d", icons.rotate3d, "Kéo chuột trái để xoay mô hình", state.tool === "rotate3d", false, "Xoay 3D"),
       iconButton("tool-pan", icons.pan, "Kéo chuột trái để di chuyển mô hình", state.tool === "pan", false, "Di chuyển"),
       iconButton("tool-zoom", icons.zoom, "Kéo chuột trái để thu/phóng", state.tool === "zoom", false, "Thu/phóng"),
