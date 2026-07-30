@@ -148,6 +148,41 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
             raise RuntimeError(f"MPR contextual toolbar is incomplete: {result['mpr']}")
         if len(result["volume3d"].get("toolLabels", [])) != 4:
             raise RuntimeError(f"3D contextual toolbar is incomplete: {result['volume3d']}")
+        for key, count in (("montage6", 6), ("montage8", 8)):
+            indices = [
+                item.get("imageIndex")
+                for item in result[key].get("diagnostics", {}).get("viewports", [])
+            ]
+            if indices != list(range(count)):
+                raise RuntimeError(f"{key} panes are not consecutive: {indices}")
+        window.evaluate_js(
+            """(() => {
+              document.querySelector('[data-action="mode-montage6"]').click();
+              setTimeout(() => {
+                document.querySelector('#stack-2')?.dispatchEvent(new WheelEvent('wheel', {
+                  deltaY: -120,
+                  bubbles: true,
+                  cancelable: true
+                }));
+              }, 750);
+            })()"""
+        )
+        time.sleep(2)
+        result["montageScroll"] = window.evaluate_js(
+            """({
+              readyMode: window.__viewerReadyMode || '',
+              labels: [...document.querySelectorAll('.viewport-label')].map(item => item.textContent)
+            })"""
+        )
+        # The source pane moves from index 2 to 3. All six panes must advance
+        # together and remain consecutive.
+        montage_labels = result["montageScroll"].get("labels", [])
+        expected_suffixes = [f"· {index}/121" for index in range(2, 8)]
+        if (
+            len(montage_labels) != 6
+            or not all(label.endswith(suffix) for label, suffix in zip(montage_labels, expected_suffixes))
+        ):
+            raise RuntimeError(f"Montage wheel synchronization failed: {result['montageScroll']}")
 
         # Regression gate for the real-world failure where repeated MPR/3D
         # switches left only the crosshair overlay on a blank WebGL viewport.

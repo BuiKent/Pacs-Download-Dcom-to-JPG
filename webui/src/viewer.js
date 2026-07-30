@@ -366,6 +366,19 @@ function imageIds(series) {
   return Array.from({ length: series.sliceCount }, (_, index) => makeImageId(series.id, index));
 }
 
+export function montageIndices(sliceCount, paneCount, sourcePane = 0, sourceIndex = 0) {
+  if (!Number.isInteger(sliceCount) || sliceCount < 1) return [];
+  if (!Number.isInteger(paneCount) || paneCount < 1) return [];
+  const safePane = Math.max(0, Math.min(sourcePane, paneCount - 1));
+  const safeIndex = Math.max(0, Math.min(sourceIndex, sliceCount - 1));
+  const maxBase = Math.max(0, sliceCount - paneCount);
+  const base = Math.max(0, Math.min(safeIndex - safePane, maxBase));
+  return Array.from(
+    { length: paneCount },
+    (_, index) => Math.min(base + index, sliceCount - 1),
+  );
+}
+
 function setWorkspaceMode(container, mode) {
   const wasBusy = container.classList.contains("busy");
   container.className = `workspace-grid mode-${mode}`;
@@ -378,7 +391,13 @@ async function setupStackViewport(viewportId, series, index = 0, prefetch = true
   viewport.resetCamera();
   viewport.render();
   const element = document.getElementById(viewportId);
+  const label = element.closest(".viewport-shell")?.querySelector(".viewport-label");
+  const updateLabel = (sliceIndex) => {
+    if (label) label.textContent = `${series.name} · ${sliceIndex + 1}/${series.sliceCount}`;
+  };
+  updateLabel(index);
   element.addEventListener(CoreEnums.Events.STACK_NEW_IMAGE, (event) => {
+    updateLabel(event.detail.imageIdIndex);
     onSlice({
       viewportId,
       index: event.detail.imageIdIndex,
@@ -388,6 +407,37 @@ async function setupStackViewport(viewportId, series, index = 0, prefetch = true
   if (prefetch) {
     toolUtilities.stackContextPrefetch.enable(element);
   }
+}
+
+function installMontageSynchronization(series, viewportIds) {
+  let synchronizing = false;
+  viewportIds.forEach((viewportId, paneIndex) => {
+    const element = document.getElementById(viewportId);
+    element.addEventListener(CoreEnums.Events.STACK_NEW_IMAGE, async (event) => {
+      if (synchronizing) return;
+      const indices = montageIndices(
+        series.sliceCount,
+        viewportIds.length,
+        paneIndex,
+        event.detail.imageIdIndex,
+      );
+      synchronizing = true;
+      try {
+        // Cornerstone emits STACK_NEW_IMAGE just before it commits
+        // currentImageIdIndex. Yield once so the source pane can also be
+        // corrected when the requested page would cross the first/last slice.
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        await Promise.all(viewportIds.map(async (targetId, targetPane) => {
+          const viewport = renderingEngine?.getStackViewport(targetId);
+          if (!viewport || viewport.getCurrentImageIdIndex() === indices[targetPane]) return;
+          await viewport.setImageIdIndex(indices[targetPane]);
+        }));
+        renderingEngine?.renderViewports(viewportIds);
+      } finally {
+        synchronizing = false;
+      }
+    });
+  });
 }
 
 export async function showStacks(container, series, mode, secondarySeries = null) {
@@ -430,13 +480,18 @@ export async function showStacks(container, series, mode, secondarySeries = null
     ]);
   } else {
     const count = viewports.length;
-    const step = Math.max(1, Math.floor(series.sliceCount / count));
     const shouldPrefetch = mode === "single";
+    const indices = count > 1
+      ? montageIndices(series.sliceCount, count)
+      : [Math.floor(series.sliceCount / 2)];
     await Promise.all(
       viewports.map((item, index) => (
-        setupStackViewport(item.viewportId, series, index * step, shouldPrefetch)
+        setupStackViewport(item.viewportId, series, indices[index], shouldPrefetch)
       )),
     );
+    if (count > 1) {
+      installMontageSynchronization(series, viewports.map((item) => item.viewportId));
+    }
   }
   installResizeObserver(container);
   await restoreAnnotations(series);
@@ -635,6 +690,7 @@ export function viewerDiagnostics() {
     viewports: (renderingEngine?.getViewports() || []).map((viewport) => ({
       id: viewport.id,
       actors: viewport.getActors?.().length || 0,
+      imageIndex: viewport.getCurrentImageIdIndex?.() ?? null,
     })),
   };
 }
