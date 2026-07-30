@@ -26,6 +26,10 @@ env/
 *.txt
 !requirements.txt
 !classes.txt
+!webui/package.json
+!webui/package-lock.json
+!webui/index.html
+!web_dist/index.html
 
 # OS Files
 .DS_Store
@@ -40,3 +44,5 @@ Thumbs.db
 Tai_ve_*/
 JPG_moi/
 Auto_Download_DICOM/
+.codegraph/
+webui/node_modules/
