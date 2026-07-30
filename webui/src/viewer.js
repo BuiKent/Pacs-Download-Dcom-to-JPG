@@ -25,6 +25,7 @@ import {
   addTool,
   annotation,
   init as initTools,
+  utilities as toolUtilities,
 } from "@cornerstonejs/tools";
 import { api, apiBlob, imagePath } from "./api.js";
 
@@ -32,6 +33,16 @@ const ENGINE_ID = "dcom-rendering-engine";
 const TOOL_GROUP_ID = "dcom-tools";
 const IMAGE_SCHEME = "dcomjpg";
 const VOLUME_SCHEME = "cornerstoneStreamingImageVolume";
+
+export const STACK_PREFETCH_CONFIG = Object.freeze({
+  // Keep the working set small: enough for smooth wheel scrolling without
+  // decoding the whole 100-300 slice series in the background.
+  maxImagesToPrefetch: 8,
+  minBefore: 2,
+  maxAfter: 6,
+  directionExtraImages: 0,
+  preserveExistingPool: true,
+});
 
 const toolClasses = [
   PanTool,
@@ -190,6 +201,7 @@ export async function initViewer(callbacks = {}) {
   if (initialized) return;
   await initCore();
   await initTools();
+  toolUtilities.stackContextPrefetch.setConfiguration(STACK_PREFETCH_CONFIG);
   imageLoader.registerImageLoader(IMAGE_SCHEME, decodeImage);
   metaData.addProvider(metadataProvider, 10000);
   for (const ToolClass of toolClasses) {
@@ -218,6 +230,13 @@ function destroyCurrent() {
   stopCine();
   resizeObserver?.disconnect();
   resizeObserver = null;
+  for (const element of activeElements) {
+    try {
+      toolUtilities.stackContextPrefetch.disable(element);
+    } catch (_) {
+      // The viewport may already have been removed during a rapid mode change.
+    }
+  }
   annotation.state.removeAllAnnotations();
   if (toolGroup) {
     ToolGroupManager.destroyToolGroup(TOOL_GROUP_ID);
@@ -288,7 +307,7 @@ function imageIds(series) {
   return Array.from({ length: series.sliceCount }, (_, index) => makeImageId(series.id, index));
 }
 
-async function setupStackViewport(viewportId, series, index = 0) {
+async function setupStackViewport(viewportId, series, index = 0, prefetch = true) {
   const viewport = renderingEngine.getStackViewport(viewportId);
   await viewport.setStack(imageIds(series), Math.max(0, Math.min(index, series.sliceCount - 1)));
   viewport.resetCamera();
@@ -301,6 +320,9 @@ async function setupStackViewport(viewportId, series, index = 0) {
       count: series.sliceCount,
     });
   });
+  if (prefetch) {
+    toolUtilities.stackContextPrefetch.enable(element);
+  }
 }
 
 export async function showStacks(container, series, mode, secondarySeries = null) {
@@ -344,8 +366,11 @@ export async function showStacks(container, series, mode, secondarySeries = null
   } else {
     const count = viewports.length;
     const step = Math.max(1, Math.floor(series.sliceCount / count));
+    const shouldPrefetch = mode === "single";
     await Promise.all(
-      viewports.map((item, index) => setupStackViewport(item.viewportId, series, index * step)),
+      viewports.map((item, index) => (
+        setupStackViewport(item.viewportId, series, index * step, shouldPrefetch)
+      )),
     );
   }
   installResizeObserver(container);
