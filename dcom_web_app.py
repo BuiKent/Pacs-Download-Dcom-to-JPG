@@ -40,26 +40,29 @@ def launch_classic() -> None:
 
 class NativeApi:
     def __init__(self, controller: WebController):
-        self.controller = controller
-        self.window = None
+        # pywebview exposes public attributes of js_api recursively. Keeping
+        # the controller/window public makes it inspect the whole native
+        # WinForms/Accessibility graph and can freeze startup.
+        self._controller = controller
+        self._window = None
 
     def choose_archive(self):
         import webview
 
-        result = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
         if not result:
             return None
         path = result[0] if isinstance(result, (list, tuple)) else result
-        return self.controller.open_archive(str(path))
+        return self._controller.open_archive(str(path))
 
     def choose_output(self):
         import webview
 
-        result = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
         if not result:
             return None
         path = result[0] if isinstance(result, (list, tuple)) else result
-        return self.controller.set_output_root(str(path))
+        return self._controller.set_output_root(str(path))
 
     def open_in_explorer(self, path: str):
         target = Path(path).expanduser().resolve(strict=True)
@@ -75,7 +78,7 @@ class NativeApi:
             "--classic",
         ]
         subprocess.Popen(command, close_fds=True)
-        self.window.destroy()
+        self._window.destroy()
         return True
 
 
@@ -180,7 +183,7 @@ def launch_web(
         minimized=False,
         background_color="#060a10",
     )
-    native_api.window = window
+    native_api._window = window
     _write_smoke_stage(smoke_result, result, "window-created")
     closed_event = threading.Event()
     window.events.closed += lambda: closed_event.set()
