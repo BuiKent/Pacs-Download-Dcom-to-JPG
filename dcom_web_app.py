@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -55,8 +56,18 @@ class NativeApi:
         os.startfile(str(target))  # type: ignore[attr-defined]
         return True
 
+    def restart_classic(self):
+        command = [sys.executable, "--classic"] if getattr(sys, "frozen", False) else [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--classic",
+        ]
+        subprocess.Popen(command, close_fds=True)
+        self.window.destroy()
+        return True
 
-def launch_web(debug: bool = False) -> None:
+
+def launch_web(debug: bool = False, archive: str = "") -> None:
     import webview
 
     static_dir = resource_path("web_dist")
@@ -64,6 +75,8 @@ def launch_web(debug: bool = False) -> None:
         raise RuntimeError("Thiếu web_dist/index.html. Hãy build frontend trước.")
 
     controller = WebController()
+    if archive:
+        controller.open_archive(archive)
     server = LocalApiServer(controller, static_dir)
     url = server.start()
     native_api = NativeApi(controller)
@@ -88,12 +101,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--classic", action="store_true")
     parser.add_argument("--debug-web", action="store_true")
+    parser.add_argument("--archive", default="")
     args, _ = parser.parse_known_args()
     if args.classic:
         launch_classic()
         return
     try:
-        launch_web(debug=args.debug_web)
+        launch_web(debug=args.debug_web, archive=args.archive)
     except Exception as exc:
         if args.debug_web:
             raise

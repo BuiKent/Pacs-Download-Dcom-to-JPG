@@ -46,3 +46,4 @@ JPG_moi/
 Auto_Download_DICOM/
 .codegraph/
 webui/node_modules/
+webui/dist/
