@@ -41,8 +41,6 @@ def _write_series(
             file_meta=file_meta,
             preamble=b"\0" * 128,
         )
-        ds.is_little_endian = True
-        ds.is_implicit_VR = False
         ds.SOPClassUID = MRImageStorage
         ds.SOPInstanceUID = sop_uid
         ds.StudyInstanceUID = study_uid

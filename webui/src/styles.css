@@ -154,11 +154,16 @@ button:disabled { opacity: .35; cursor: default; }
 
 .viewer-main {
   display: grid;
-  grid-template-rows: 48px 76px 1fr 27px;
+  grid-template-rows: 48px 76px auto 1fr 27px;
   min-width: 0;
   min-height: 0;
   background: #05080c;
 }
+.viewer-main > .toolbar { grid-row: 1; }
+.viewer-main > .series-strip { grid-row: 2; }
+.viewer-main > .safety-notice { grid-row: 3; }
+.viewer-main > .workspace-grid { grid-row: 4; }
+.viewer-main > .status-bar { grid-row: 5; }
 
 .toolbar {
   display: flex;
@@ -171,7 +176,7 @@ button:disabled { opacity: .35; cursor: default; }
   border-bottom: 1px solid #1d2a36;
 }
 .tool-cluster { display: flex; gap: 3px; }
-.mpr-primary-control {
+.mpr-primary-control, .window-preset-control {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -180,7 +185,7 @@ button:disabled { opacity: .35; cursor: default; }
   white-space: nowrap;
   font-size: 10px;
 }
-.mpr-primary-control select {
+.mpr-primary-control select, .window-preset-control select {
   height: 29px;
   padding: 0 7px;
   color: #dcecf7;
@@ -261,6 +266,25 @@ button:disabled { opacity: .35; cursor: default; }
 .series-card small { color: #60798c; font-size: 9px; }
 .series-card.active { color: #eff9ff; border-color: #007fbd; background: #0e2838; }
 
+.safety-notice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 30px;
+  padding: 5px 10px;
+  color: #ffd792;
+  border-bottom: 1px solid #5b451f;
+  background: #2b210f;
+  font-size: 10px;
+}
+.safety-notice[hidden] { display: none; }
+.safety-notice.danger {
+  color: #ffc1c1;
+  border-color: #6c2d34;
+  background: #2b1418;
+}
+.safety-notice b { white-space: nowrap; }
+
 .workspace-grid {
   position: relative;
   display: grid;
@@ -293,6 +317,12 @@ button:disabled { opacity: .35; cursor: default; }
   background: #000;
 }
 .viewport-shell:focus-within, .viewport-shell:hover { border-color: #008bc8; }
+/* The pane that "save frame" and the keyboard shortcuts act on. */
+.viewport-shell.is-active { border-color: #00b0f0; box-shadow: inset 0 0 0 1px #00b0f055; }
+.icon-button:focus-visible, .soft-button:focus-visible, .series-card:focus-visible {
+  outline: 2px solid #49c7ff;
+  outline-offset: 1px;
+}
 .viewport { width: 100%; height: 100%; cursor: crosshair; }
 .viewport canvas { display: block; }
 .viewport-label {
@@ -310,6 +340,28 @@ button:disabled { opacity: .35; cursor: default; }
   font-size: 10px;
   font-weight: 700;
 }
+.slice-control {
+  position: absolute;
+  right: 8px;
+  bottom: 7px;
+  left: 8px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 6px;
+  color: #c8e9fb;
+  border: 1px solid #21455a;
+  border-radius: 5px;
+  background: #07121bca;
+  opacity: .32;
+  transition: opacity 120ms ease;
+}
+.viewport-shell:hover .slice-control,
+.viewport-shell.is-active .slice-control,
+.slice-control:focus-within { opacity: 1; }
+.slice-control input { min-width: 40px; width: 100%; accent-color: #20b7ef; }
+.slice-control output { min-width: 48px; text-align: right; font: 10px Consolas, monospace; }
 .viewer-loading, .empty-state, .fatal-error {
   position: absolute;
   inset: 0;

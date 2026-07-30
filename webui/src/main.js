@@ -1,25 +1,39 @@
 import "./styles.css";
 import { api, configureApi } from "./api.js";
 import {
+  applyWindowPreset,
   captureActiveViewport,
+  disposeViewer,
   initViewer,
   invertView,
+  persistActiveAnnotations,
   registerSeries,
   resetView,
   roiVolumeMl,
   saveAnnotations,
+  seriesSafetyNotice,
   setMprPrimaryPlane,
   setTool,
   show3d,
   showMpr,
   showStacks,
+  stepSlice,
   toggleCine,
   viewerDiagnostics,
 } from "./viewer.js";
 
 const app = document.querySelector("#app");
-const token = new URLSearchParams(location.search).get("token") || "";
-configureApi(token);
+const sessionUrl = new URL(location.href);
+let sessionToken = sessionUrl.searchParams.get("token") || "";
+configureApi(sessionToken);
+const hasSessionToken = Boolean(sessionToken);
+sessionToken = "";
+sessionUrl.searchParams.delete("token");
+history.replaceState(
+  history.state,
+  "",
+  `${sessionUrl.pathname}${sessionUrl.search}${sessionUrl.hash}`,
+);
 
 const state = {
   bootstrap: null,
@@ -35,6 +49,7 @@ const state = {
   busyViewer: false,
   cine: false,
   mprPrimary: "axial",
+  windowPreset: "full",
 };
 let viewerQueue = Promise.resolve();
 let viewerRequestId = 0;
@@ -82,8 +97,12 @@ function escapeHtml(value) {
 }
 
 function iconButton(id, icon, title, active = false, disabled = false, label = "") {
+  // Mode, tool and cine buttons are stateful, so screen readers need the state
+  // that the highlight conveys visually.
+  const stateful = /^(mode-|tool-)/.test(id) || id === "cine";
   return `<button class="icon-button ${active ? "active" : ""} ${label ? "with-label" : ""}" data-action="${id}"
-    title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}" ${disabled ? "disabled" : ""}>
+    title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"
+    ${stateful ? `aria-pressed="${active ? "true" : "false"}"` : ""} ${disabled ? "disabled" : ""}>
     <span>${icon}</span>${label ? `<small>${escapeHtml(label)}</small>` : ""}
   </button>`;
 }
@@ -147,14 +166,15 @@ function renderUtilityTools(series) {
 
 function render() {
   const series = selectedSeries();
+  const safety = seriesSafetyNotice(series);
   const mprDisabled = !series?.mprReady;
   app.innerHTML = `
     <div class="app-shell ${state.downloadOpen ? "" : "download-collapsed"}">
       <header class="app-header">
-        <button class="brand" data-action="toggle-download" title="Ẩn/hiện khu tải phim">
+        <div class="brand">
           <span class="brand-mark">D</span>
           <span><b>DCom JPG PACS</b><small>OFFLINE · v1.1</small></span>
-        </button>
+        </div>
         <div class="series-selects">
           <label>Series
             <select data-field="series">${state.archive.series.map((item) =>
@@ -171,6 +191,14 @@ function render() {
             </select></label>` : ""}
         </div>
         <div class="header-actions">
+          ${iconButton(
+            "toggle-download",
+            state.downloadOpen ? "⇤" : "⇥",
+            state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim",
+            state.downloadOpen,
+            false,
+            "Tải phim",
+          )}
           ${iconButton("choose-archive", icons.folder, "Mở thư mục phim")}
           ${iconButton("refresh-archive", "⟳", "Quét lại thư mục hiện tại", false, !state.archive.root)}
           <button class="soft-button" data-action="classic" title="Khởi động lại bằng --classic">Classic</button>
@@ -225,27 +253,19 @@ function render() {
               <option value="sagittal" ${state.mprPrimary === "sagittal" ? "selected" : ""}>Sagittal</option>
             </select>
           </label>` : ""}
+          ${state.mode !== "volume3d" ? `<label class="window-preset-control">
+            Hiển thị
+            <select data-field="window-preset" title="Preset thị giác trên dữ liệu JPG 8-bit, không phải cửa sổ HU">
+              <option value="full" ${state.windowPreset === "full" ? "selected" : ""}>Toàn dải</option>
+              <option value="soft" ${state.windowPreset === "soft" ? "selected" : ""}>Mô mềm JPG</option>
+              <option value="contrast" ${state.windowPreset === "contrast" ? "selected" : ""}>Tương phản cao</option>
+            </select>
+          </label>` : ""}
           <span class="toolbar-divider"></span>
           <div class="tool-cluster interaction-tools">${renderInteractionTools(series)}</div>
-          <div class="tool-cluster legacy-interaction-tools" hidden>
-            ${iconButton("tool-window", icons.window, "Sáng/tương phản", state.tool === "window", state.mode === "volume3d")}
-            ${iconButton("tool-pan", icons.pan, "Bàn tay: di chuyển ảnh", state.tool === "pan")}
-            ${iconButton("tool-zoom", icons.zoom, "Phóng to/thu nhỏ", state.tool === "zoom")}
-            ${iconButton("tool-length", icons.length, series?.geometry ? "Đo chiều dài (mm)" : "Đo chiều dài (pixel, series thiếu hình học)", state.tool === "length", state.mode === "volume3d")}
-            ${iconButton("tool-angle", icons.angle, "Đo góc", state.tool === "angle", state.mode === "volume3d")}
-            ${iconButton("tool-ellipse", icons.ellipse, series?.geometry ? "ROI ellipse (mm²)" : "ROI ellipse (pixel²)", state.tool === "ellipse", state.mode === "volume3d")}
-            ${iconButton("tool-freehand", icons.freehand, series?.geometry ? "ROI đa giác/tự do (mm²)" : "ROI đa giác/tự do (pixel²)", state.tool === "freehand", state.mode === "volume3d")}
-          </div>
           <span class="toolbar-spacer"></span>
           <div class="tool-cluster utility-tools">${renderUtilityTools(series)}</div>
-          <div class="tool-cluster legacy-utility-tools" hidden>
-            ${iconButton("reset", icons.reset, "Đặt lại hiển thị")}
-            ${iconButton("invert", icons.invert, "Đảo màu", false, state.mode === "volume3d")}
-            ${iconButton("cine", state.cine ? "Ⅱ" : icons.cine, state.cine ? "Dừng chạy phim" : "Chạy phim", state.cine, state.mode !== "single")}
-            ${iconButton("capture", icons.capture, "Lưu ảnh khung đang xem")}
-            ${iconButton("save-annotations", icons.save, "Lưu đo/ROI")}
-            ${iconButton("roi-volume", icons.volume, "Tính thể tích các ROI thủ công", false, !series?.mprReady)}
-          </div>
+          ${iconButton("shortcuts", "⌨", "Xem danh sách phím tắt")}
         </nav>
 
         <div class="series-strip">
@@ -257,6 +277,9 @@ function render() {
           </button>`).join("")}
         </div>
 
+        <div class="safety-notice ${safety?.level || ""}" ${safety ? "" : "hidden"}>
+          <b>An toàn hiển thị</b><span>${escapeHtml(safety?.text || "")}</span>
+        </div>
         <section id="workspace" class="workspace-grid">
           ${state.archive.series.length
             ? `<div class="viewer-loading">${state.busyViewer ? "Đang dựng khung xem…" : ""}</div>`
@@ -290,6 +313,8 @@ function bindEvents() {
   app.querySelectorAll("[data-action]").forEach((element) => {
     element.addEventListener("click", () => action(element.dataset.action));
   });
+  app.querySelector(".app-header [data-action='toggle-download']")
+    ?.setAttribute("aria-expanded", state.downloadOpen ? "true" : "false");
   app.querySelector("[data-field='series']")?.addEventListener("change", (event) => {
     state.selectedId = event.target.value;
     const selected = selectedSeries();
@@ -307,6 +332,11 @@ function bindEvents() {
   app.querySelector("[data-field='mpr-primary']")?.addEventListener("change", (event) => {
     state.mprPrimary = event.target.value;
     setMprPrimaryPlane(state.mprPrimary);
+  });
+  app.querySelector("[data-field='window-preset']")?.addEventListener("change", async (event) => {
+    state.windowPreset = event.target.value;
+    await applyWindowPreset(state.windowPreset);
+    window.__viewerDiagnostics = viewerDiagnostics();
   });
   app.querySelectorAll("[data-series-id]").forEach((element) => {
     element.addEventListener("click", () => {
@@ -327,12 +357,24 @@ async function action(name) {
     if (name === "toggle-download") {
       state.downloadOpen = !state.downloadOpen;
       app.querySelector(".app-shell")?.classList.toggle("download-collapsed", !state.downloadOpen);
+      const toggle = app.querySelector(".app-header [data-action='toggle-download']");
+      if (toggle) {
+        toggle.classList.toggle("active", state.downloadOpen);
+        toggle.setAttribute("aria-expanded", state.downloadOpen ? "true" : "false");
+        toggle.title = state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim";
+        const icon = toggle.querySelector("span");
+        if (icon) icon.textContent = state.downloadOpen ? "⇤" : "⇥";
+      }
       return;
     }
     if (name === "choose-archive") {
       if (!window.pywebview?.api) throw new Error("Chọn thư mục cần chạy trong ứng dụng WebView2.");
-      const archive = await window.pywebview.api.choose_archive();
-      if (archive) applyArchive(archive);
+      const job = await window.pywebview.api.choose_archive();
+      if (job) {
+        state.bootstrap.job = job;
+        setStatus("Đang quét thư mục phim trong nền…");
+        startJobPolling();
+      }
       return;
     }
     if (name === "choose-output") {
@@ -345,10 +387,12 @@ async function action(name) {
       return;
     }
     if (name === "refresh-archive") {
-      applyArchive(await api("/api/archive/open", {
+      state.bootstrap.job = await api("/api/archive/scan", {
         method: "POST",
         body: JSON.stringify({ path: state.archive.root }),
-      }));
+      });
+      setStatus("Đang quét lại thư mục phim trong nền…");
+      startJobPolling();
       return;
     }
     if (name === "search") {
@@ -381,14 +425,11 @@ async function action(name) {
       return;
     }
     if (name?.startsWith("mode-")) {
-      state.mode = name.slice(5);
-      if (state.mode === "volume3d") {
-        state.tool = "rotate3d";
-      } else if (state.mode === "mpr") {
-        state.tool = "crosshair";
-      } else if (state.tool === "rotate3d" || state.tool === "crosshair") {
-        state.tool = "window";
-      }
+      const mode = name.slice(5);
+      if (mode === state.mode) return;
+      state.mode = mode;
+      state.tool = defaultToolForMode(mode, state.tool);
+      state.cine = false;
       if (state.mode === "compare" && !state.compareId) {
         state.compareId = state.archive.series.find((item) => item.id !== state.selectedId)?.id || state.selectedId;
       }
@@ -397,14 +438,23 @@ async function action(name) {
       return;
     }
     if (name?.startsWith("tool-")) {
-      state.tool = name.slice(5);
-      setTool(state.tool);
-      app.querySelectorAll(".interaction-tools .icon-button").forEach((button) => {
-        button.classList.toggle("active", button.dataset.action === name);
-      });
+      // setTool reports the tool actually in force, so the highlight can never
+      // claim a tool the current layout refused.
+      state.tool = setTool(name.slice(5));
+      syncToolHighlight();
       return;
     }
-    if (name === "reset") resetView();
+    if (name === "shortcuts") {
+      setStatus(SHORTCUT_HINT);
+      return;
+    }
+    if (name === "reset") {
+      state.windowPreset = "full";
+      resetView();
+      window.__viewerDiagnostics = viewerDiagnostics();
+      const select = app.querySelector("[data-field='window-preset']");
+      if (select) select.value = state.windowPreset;
+    }
     if (name === "invert") invertView();
     if (name === "cine") {
       state.cine = toggleCine(selectedSeries(), (index) => {
@@ -418,7 +468,10 @@ async function action(name) {
         button.title = state.cine ? "Dừng chạy phim" : "Chạy phim";
       }
     }
-    if (name === "capture") await captureActiveViewport();
+    if (name === "capture") {
+      const pane = await captureActiveViewport();
+      setStatus(`Đã lưu ảnh PNG của khung "${pane}".`);
+    }
     if (name === "save-annotations") {
       const count = await saveAnnotations();
       setStatus(`Đã lưu ${count} phép đo/ROI vào thư mục series.`);
@@ -432,8 +485,38 @@ async function action(name) {
       await window.pywebview.api.restart_classic();
     }
   } catch (error) {
-    setStatus(error.message || String(error), true);
+    setStatus(humanError(error), true);
   }
+}
+
+const DEFAULT_TOOLS = { volume3d: "rotate3d", mpr: "crosshair" };
+
+function defaultToolForMode(mode, currentTool) {
+  if (DEFAULT_TOOLS[mode]) return DEFAULT_TOOLS[mode];
+  return currentTool === "rotate3d" || currentTool === "crosshair" ? "window" : currentTool;
+}
+
+function syncToolHighlight() {
+  app.querySelectorAll(".interaction-tools .icon-button").forEach((button) => {
+    const active = button.dataset.action === `tool-${state.tool}`;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+const ERROR_HINTS = [
+  [/cachedSizeExceeded|Cache size|cacheSize/i,
+    "Hết bộ đệm ảnh. Hãy đóng series khác hoặc chọn series ít lát hơn rồi thử lại."],
+  [/Failed to fetch|NetworkError|load failed/i,
+    "Mất kết nối tới dịch vụ nội bộ của ứng dụng. Hãy khởi động lại ứng dụng."],
+  [/WebGL|GPU|context lost/i,
+    "Trình kết xuất GPU gặp sự cố. Hãy khởi động lại ứng dụng; nếu lặp lại, cập nhật driver card đồ họa."],
+];
+
+function humanError(error) {
+  const raw = error?.message || String(error);
+  const hint = ERROR_HINTS.find(([pattern]) => pattern.test(raw));
+  return hint ? `${hint[1]} (chi tiết: ${raw})` : raw;
 }
 
 function downloadOptions() {
@@ -455,6 +538,7 @@ function applyArchive(archive) {
   }
   state.mode = "single";
   state.tool = "window";
+  state.windowPreset = "full";
   render();
   renderViewer();
 }
@@ -498,27 +582,51 @@ function renderViewer() {
     app.querySelector(".status-dot")?.classList.add("busy");
     setStatus(loadingText);
     try {
+      // Rebuilding a layout drops every in-memory annotation, so measurements
+      // are written to the series folder first instead of being lost silently.
+      const saved = await persistActiveAnnotations();
+      if (saved === -1) setStatus("Không lưu được phép đo trước khi đổi khung xem.", true);
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       if (requestId !== viewerRequestId || !workspace.isConnected) return;
+      let applied = state.tool;
       if (mode === "mpr") {
-        await showMpr(workspace, series, state.mprPrimary);
+        applied = await showMpr(workspace, series, state.mprPrimary, state.tool);
       } else if (mode === "volume3d") {
-        await show3d(workspace, series);
+        applied = await show3d(workspace, series, state.tool);
       } else {
-        await showStacks(workspace, series, mode, comparison);
+        applied = await showStacks(workspace, series, mode, comparison, state.tool);
       }
       if (requestId !== viewerRequestId || !workspace.isConnected) return;
+      if (applied && applied !== state.tool) {
+        state.tool = applied;
+        syncToolHighlight();
+      }
+      // Cornerstone establishes its default VOI while the stack actor is being
+      // attached. Re-applying an equivalent range in that same transition can
+      // blank a ContextPool stack on WebView2, so only override on an explicit
+      // non-default user preset.
+      if (mode !== "volume3d" && state.windowPreset !== "full") {
+        await applyWindowPreset(state.windowPreset);
+      }
       window.__lastViewerError = null;
       window.__viewerReadyMode = mode;
       window.__viewerDiagnostics = viewerDiagnostics();
     } catch (error) {
+      // A superseded build is the expected outcome of a fast mode change; the
+      // newer request owns the workspace and reports its own state.
+      if (error?.superseded) return;
       if (requestId !== viewerRequestId || !workspace.isConnected) return;
+      const message = humanError(error);
       window.__lastViewerError = {
         message: error?.message || String(error),
         stack: error?.stack || "",
       };
-      workspace.innerHTML = `<div class="empty-state error"><b>Không mở được khung xem</b><span>${escapeHtml(error.message)}</span></div>`;
-      setStatus(error.message, true);
+      workspace.innerHTML = `<div class="empty-state error"><b>Không mở được khung xem</b>
+        <span>${escapeHtml(message)}</span>
+        <button class="primary" data-action="retry-viewer">Thử lại</button></div>`;
+      workspace.querySelector("[data-action='retry-viewer']")
+        ?.addEventListener("click", () => renderViewer());
+      setStatus(message, true);
     } finally {
       workspace.classList.remove("busy");
       delete workspace.dataset.loadingText;
@@ -550,6 +658,57 @@ function updateStatusOnly() {
   if (element) element.textContent = state.sliceText;
 }
 
+const SHORTCUT_HINT = "Phím tắt: ←/→ hoặc PgUp/PgDn đổi lát · Home/End lát đầu/cuối · 1 sáng · 2 pan"
+  + " · 3 zoom · 4 đo dài · 5 góc · 6 ROI ellipse · 7 ROI tự do · C định vị · R đặt lại · I đảo màu"
+  + " · Space chạy phim · S lưu đo · P lưu ảnh.";
+
+const SHORTCUT_TOOLS = {
+  1: "window",
+  2: "pan",
+  3: "zoom",
+  4: "length",
+  5: "angle",
+  6: "ellipse",
+  7: "freehand",
+};
+
+function isTypingTarget(target) {
+  return Boolean(target?.closest?.("input, textarea, select"));
+}
+
+function installKeyboardShortcuts() {
+  window.addEventListener("keydown", (event) => {
+    if (event.ctrlKey || event.altKey || event.metaKey || isTypingTarget(event.target)) return;
+    if (state.busyViewer || !state.archive.series.length) return;
+    const step = { ArrowLeft: -1, ArrowUp: -1, PageUp: -5, ArrowRight: 1, ArrowDown: 1, PageDown: 5 };
+    if (event.key in step) {
+      if (stepSlice(step[event.key])) event.preventDefault();
+      return;
+    }
+    if (event.key === "Home" || event.key === "End") {
+      const series = selectedSeries();
+      if (series && stepSlice(event.key === "Home" ? -series.sliceCount : series.sliceCount)) {
+        event.preventDefault();
+      }
+      return;
+    }
+    if (SHORTCUT_TOOLS[event.key]) {
+      action(`tool-${SHORTCUT_TOOLS[event.key]}`);
+      return;
+    }
+    const key = event.key.toLowerCase();
+    if (key === "c") action("tool-crosshair");
+    else if (key === "r") action("reset");
+    else if (key === "i") action("invert");
+    else if (key === "s") action("save-annotations");
+    else if (key === "p") action("capture");
+    else if (event.key === " " && state.mode === "single") {
+      event.preventDefault();
+      action("cine");
+    }
+  });
+}
+
 let jobPoll = null;
 function startJobPolling() {
   if (jobPoll) window.clearInterval(jobPoll);
@@ -557,13 +716,21 @@ function startJobPolling() {
   pollJob();
 }
 
+function renderStudyList() {
+  const list = app.querySelector(".study-list");
+  if (list) list.innerHTML = renderStudies();
+  const button = app.querySelector("[data-action='download-selected']");
+  if (button) button.disabled = !state.studies.length;
+}
+
 async function pollJob() {
   const job = await api("/api/job");
   state.bootstrap.job = job;
   if (job.kind === "search" && job.status === "complete") {
     state.studies = job.result || [];
-    render();
-    if (state.archive.series.length) await renderViewer();
+    // Only the study list changed. A full render() would replace #workspace and
+    // throw away the layout, camera and measurements the user is working with.
+    renderStudyList();
   }
   if ((job.kind === "download" || job.kind === "direct-download") && job.status === "complete") {
     const archive = job.result?.archive;
@@ -574,12 +741,19 @@ async function pollJob() {
       return;
     }
   }
+  if (job.kind === "archive" && job.status === "complete") {
+    window.clearInterval(jobPoll);
+    jobPoll = null;
+    applyArchive(job.result || { root: "", series: [] });
+    return;
+  }
   const log = app.querySelector(".job-log");
   if (log) {
     log.textContent = (job.logs || []).slice(-80).join("\n");
     log.scrollTop = log.scrollHeight;
   }
-  setStatus(job.message || job.status);
+  // The viewer owns the status bar while it is building a layout.
+  if (!state.busyViewer) setStatus(job.message || job.status);
   if (["complete", "error", "stopped"].includes(job.status)) {
     window.clearInterval(jobPoll);
     jobPoll = null;
@@ -587,24 +761,40 @@ async function pollJob() {
 }
 
 async function boot() {
-  if (!token) throw new Error("Thiếu token phiên local.");
+  if (!hasSessionToken) throw new Error("Thiếu token phiên local.");
   state.bootstrap = await api("/api/bootstrap");
   state.archive = state.bootstrap.archive;
   state.selectedId = state.archive.series[0]?.id || "";
   state.compareId = state.archive.series[1]?.id || state.selectedId;
   for (const series of state.archive.series) registerSeries(series);
   await initViewer({
-    onStatus: (message) => setStatus(message),
-    onSlice: ({ index, count }) => {
-      state.sliceText = `${index + 1}/${count}`;
+    onStatus: (message, progress) => {
+      setStatus(message);
+      // Keep the blocking overlay in step with the load instead of freezing on
+      // the text it was given when the layout change started.
+      const workspace = document.querySelector("#workspace.busy");
+      if (workspace && progress) {
+        workspace.dataset.loadingText = `${message} (${progress.loaded}/${progress.total})`;
+      }
+    },
+    onSlice: ({ label, index, count }) => {
+      state.sliceText = `${label ? `${label} · ` : ""}${index + 1}/${count}`;
       updateStatusOnly();
     },
   });
-  state.status = "Sẵn sàng.";
+  installKeyboardShortcuts();
+  // Releasing the GPU contexts on close keeps a WebView2 restart from
+  // inheriting a page that still holds them.
+  window.addEventListener("pagehide", disposeViewer);
+  state.status = "Sẵn sàng. Nhấn ⌨ trên thanh công cụ để xem phím tắt.";
   render();
   await renderViewer();
 }
 
 boot().catch((error) => {
-  app.innerHTML = `<div class="fatal-error"><b>Không khởi động được DCom JPG PACS</b><pre>${escapeHtml(error.stack || error.message)}</pre></div>`;
+  app.innerHTML = `<div class="fatal-error"><b>Không khởi động được DCom JPG PACS</b>
+    <pre>${escapeHtml(error.stack || error.message)}</pre>
+    <button class="primary" id="fatal-reload">Tải lại</button></div>`;
+  // The local API forbids inline handlers, so the listener is attached here.
+  document.querySelector("#fatal-reload")?.addEventListener("click", () => location.reload());
 });

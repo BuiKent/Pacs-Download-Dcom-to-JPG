@@ -1,7 +1,11 @@
-"""Headless-ish WebView2 smoke test for the production app bundle.
+"""Quick WebView2 smoke test for the production app bundle.
 
-The WebView window is created hidden, but uses the same Edge Chromium engine,
-local API, token, Cornerstone bundle and synthetic archive as the release.
+Uses the same Edge Chromium engine, local API, token, Cornerstone bundle and
+synthetic archive as the release.  The window must be visible: WebView2 gives a
+hidden window no surface to composite, so Cornerstone never attaches a canvas
+and every check below would time out on a healthy build.  For the full release
+gate (pixel assertions, repeated MPR/3D transitions) use
+``python dcom_web_app.py --smoke-test``.
 """
 
 from __future__ import annotations
@@ -9,7 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -35,7 +38,6 @@ def main() -> int:
         url=url,
         width=1280,
         height=800,
-        hidden=True,
         background_color="#060a10",
     )
     result: dict = {}
@@ -111,8 +113,17 @@ def main() -> int:
         webview.start(run_checks, gui="edgechromium", private_mode=True)
     finally:
         server.stop()
+    # Vietnamese diagnostics must survive a redirected stdout (cp1252 pipe).
+    _force_utf8_stdout()
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 1 if result.get("error") else 0
+
+
+def _force_utf8_stdout() -> None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 
 if __name__ == "__main__":

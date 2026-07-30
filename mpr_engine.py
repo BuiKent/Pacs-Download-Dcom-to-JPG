@@ -398,7 +398,11 @@ def select_mpr_candidate(
 
 def _pixel_array(path: Path) -> tuple[np.ndarray, object]:
     import pydicom
-    from pydicom.pixel_data_handlers.util import apply_modality_lut
+    try:
+        # pydicom 3.x moved the public pixel helpers here.
+        from pydicom.pixels import apply_modality_lut
+    except ImportError:  # pragma: no cover - compatibility with pydicom 2.4
+        from pydicom.pixel_data_handlers.util import apply_modality_lut
 
     ds = pydicom.dcmread(str(path), force=True)
     arr = ds.pixel_array
@@ -494,6 +498,7 @@ def convert_mpr_candidate(
         "version": MANIFEST_VERSION,
         "series_type": candidate.kind,
         "series_description": candidate.description,
+        "modality": "MR",
         "series_number": candidate.series_number,
         "study_instance_uid": candidate.study_uid,
         "series_instance_uid": candidate.series_uid,

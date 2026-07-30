@@ -149,6 +149,7 @@ class SeriesRecord:
     manifest: Optional[dict]
     mpr_ready: bool
     mpr_reason: str
+    modality: str = "UNKNOWN"
 
     def public_dict(self) -> dict:
         data = {
@@ -159,6 +160,7 @@ class SeriesRecord:
             "mprReason": self.mpr_reason,
             "seriesType": (self.manifest or {}).get("series_type", ""),
             "description": (self.manifest or {}).get("series_description", self.name),
+            "modality": self.modality,
         }
         if self.mpr_ready and self.manifest:
             data["geometry"] = {
@@ -192,21 +194,53 @@ class ArchiveCatalog:
             key=lambda path: _natural_key(path.name),
         )
 
-    def open(self, value: os.PathLike[str] | str) -> dict:
+    @staticmethod
+    def _modality(folder: Path, root: Path, manifest: Optional[dict]) -> str:
+        declared = str((manifest or {}).get("modality") or "").strip().upper()
+        if declared in {"CT", "MR", "MRI"}:
+            return "MR" if declared == "MRI" else declared
+        if str((manifest or {}).get("series_type") or "").upper().startswith("T1_"):
+            return "MR"
+        text = f"{root.name} {folder.relative_to(root)}"
+        tokens = {token for token in re.split(r"[^A-Z0-9]+", text.upper()) if token}
+        if "CT" in tokens:
+            return "CT"
+        if tokens.intersection({"MR", "MRI"}):
+            return "MR"
+        return "UNKNOWN"
+
+    def open(
+        self,
+        value: os.PathLike[str] | str,
+        *,
+        log: Optional[Callable[[str], None]] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> dict:
         root = Path(value).expanduser().resolve(strict=True)
         if not root.is_dir():
             raise ValueError("Đường dẫn không phải thư mục.")
-        candidates = [root] + sorted(
-            (item for item in root.rglob("*") if item.is_dir()),
-            key=lambda path: _natural_key(str(path.relative_to(root))),
-        )
         records: dict[str, SeriesRecord] = {}
-        for folder in candidates:
-            relative_parts = folder.relative_to(root).parts
-            if any(part.upper() in {"DICOM", "RAW_JPG"} for part in relative_parts):
+        scanned = 0
+        blocked = {"DICOM", "RAW_JPG"}
+        for current, dirnames, _filenames in os.walk(root):
+            if should_stop and should_stop():
+                return self.snapshot()
+            # Raw DICOM trees can contain tens of thousands of files and can
+            # never be displayed by this JPG catalog. Prune them before walk
+            # descends instead of filtering their children after rglob().
+            dirnames[:] = [name for name in dirnames if name.upper() not in blocked]
+            dirnames.sort(key=_natural_key)
+            folder = Path(current)
+            scanned += 1
+            if log and (scanned == 1 or scanned % 100 == 0):
+                log(f"Đang quét thư mục phim: {scanned} thư mục…")
+            try:
+                manifest = mpr_engine.read_manifest(folder)
+                images = self._image_files(folder, manifest)
+            except (OSError, ValueError) as exc:
+                if log:
+                    log(f"Bỏ qua thư mục không đọc được: {folder.name} ({exc})")
                 continue
-            manifest = mpr_engine.read_manifest(folder)
-            images = self._image_files(folder, manifest)
             if not images:
                 continue
             digest = hashlib.sha256(str(folder).casefold().encode("utf-8")).hexdigest()[:20]
@@ -220,7 +254,10 @@ class ArchiveCatalog:
                 manifest=manifest,
                 mpr_ready=ready,
                 mpr_reason=reason,
+                modality=self._modality(folder, root, manifest),
             )
+        if log:
+            log(f"Đã quét {scanned} thư mục, tìm thấy {len(records)} series ảnh.")
         with self._lock:
             self.root = root
             self._series = records
@@ -324,6 +361,19 @@ class WebController:
 
     def open_archive(self, path: str) -> dict:
         return self.catalog.open(path)
+
+    def start_archive_scan(self, path: str) -> dict:
+        root = str(Path(path).expanduser().resolve(strict=True))
+
+        def target() -> dict:
+            return self.catalog.open(
+                root,
+                log=self.job.log,
+                should_stop=self.job.stop_event.is_set,
+            )
+
+        self.job.start("archive", target)
+        return self.job.snapshot()
 
     def set_output_root(self, path: str) -> dict:
         root = Path(path).expanduser().resolve()
@@ -527,6 +577,8 @@ class LocalApiServer:
             def _api_post(self, path: str, payload: dict) -> Any:
                 if path == "/api/archive/open":
                     return owner.controller.open_archive(str(payload.get("path") or ""))
+                if path == "/api/archive/scan":
+                    return owner.controller.start_archive_scan(str(payload.get("path") or ""))
                 if path == "/api/output":
                     return owner.controller.set_output_root(str(payload.get("path") or ""))
                 if path == "/api/search":

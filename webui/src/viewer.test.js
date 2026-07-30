@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { STACK_PREFETCH_CONFIG, montageIndices, mprPlaneLayout } from "./viewer.js";
+import {
+  STACK_PREFETCH_CONFIG,
+  WINDOW_PRESETS,
+  annotationBelongsToSeries,
+  annotationTargetViewportId,
+  montageIndices,
+  mprPlaneLayout,
+  seriesSafetyNotice,
+  toolFallback,
+} from "./viewer.js";
 
 describe("viewer shell", () => {
   it("keeps the test environment available", () => {
@@ -34,5 +43,75 @@ describe("viewer shell", () => {
     expect(montageIndices(100, 6, 2, 12)).toEqual([10, 11, 12, 13, 14, 15]);
     expect(montageIndices(100, 8, 7, 99)).toEqual([92, 93, 94, 95, 96, 97, 98, 99]);
     expect(montageIndices(4, 6, 0, 3)).toEqual([0, 1, 2, 3, 3, 3]);
+  });
+
+  it("never keeps a tool the layout cannot honour", () => {
+    // Crosshairs need two linked viewports; a single stack pane must fall back.
+    expect(toolFallback("crosshair", 1, false)).toBe("window");
+    expect(toolFallback("crosshair", 3, false)).toBe("crosshair");
+    // TrackballRotate needs a 3D viewport.
+    expect(toolFallback("rotate3d", 4, false)).toBe("window");
+    expect(toolFallback("rotate3d", 4, true)).toBe("rotate3d");
+    expect(toolFallback("length", 1, false)).toBe("length");
+    expect(toolFallback("nonsense", 3, true)).toBe("window");
+  });
+
+  it("attributes each measurement to the series it was drawn on", () => {
+    const seriesA = "aaaaaaaaaaaaaaaaaaaa";
+    const seriesB = "bbbbbbbbbbbbbbbbbbbb";
+    const stackRoi = { metadata: { referencedImageId: `dcomjpg:${seriesA}:12` } };
+    const volumeRoi = {
+      metadata: {},
+      data: { cachedStats: { [`volumeId:cornerstoneStreamingImageVolume:${seriesB}`]: { area: 4 } } },
+    };
+    expect(annotationBelongsToSeries(stackRoi, seriesA)).toBe(true);
+    expect(annotationBelongsToSeries(stackRoi, seriesB)).toBe(false);
+    expect(annotationBelongsToSeries(volumeRoi, seriesB)).toBe(true);
+    expect(annotationBelongsToSeries(volumeRoi, seriesA)).toBe(false);
+    expect(annotationBelongsToSeries(null, seriesA)).toBe(false);
+    expect(annotationBelongsToSeries(stackRoi, "")).toBe(false);
+  });
+
+  it("restores annotations only to a proven series and plane", () => {
+    const seriesA = "aaaaaaaaaaaaaaaaaaaa";
+    const seriesB = "bbbbbbbbbbbbbbbbbbbb";
+    const viewports = [
+      {
+        id: "axial-a",
+        seriesId: seriesA,
+        imageIds: [`dcomjpg:${seriesA}:12`],
+        viewPlaneNormal: [0, 0, 1],
+      },
+      {
+        id: "coronal-a",
+        seriesId: seriesA,
+        imageIds: [`dcomjpg:${seriesA}:12`],
+        viewPlaneNormal: [0, 1, 0],
+      },
+      {
+        id: "stack-b",
+        seriesId: seriesB,
+        imageIds: [`dcomjpg:${seriesB}:7`],
+        viewPlaneNormal: [0, 0, 1],
+      },
+    ];
+    expect(annotationTargetViewportId({
+      metadata: {
+        referencedImageId: `dcomjpg:${seriesA}:12`,
+        viewPlaneNormal: [0, -1, 0],
+      },
+    }, viewports)).toBe("coronal-a");
+    expect(annotationTargetViewportId({
+      metadata: { referencedImageId: `dcomjpg:${seriesB}:7` },
+    }, viewports)).toBe("stack-b");
+    expect(annotationTargetViewportId({ metadata: {} }, viewports)).toBe("");
+  });
+
+  it("warns about CT or unknown 8-bit intensity without claiming HU presets", () => {
+    expect(seriesSafetyNotice({ modality: "MR" })).toBeNull();
+    expect(seriesSafetyNotice({ modality: "CT" }).text).toContain("HU");
+    expect(seriesSafetyNotice({ modality: "UNKNOWN" }).level).toBe("warning");
+    expect(WINDOW_PRESETS.full).toEqual({ lower: 0, upper: 255 });
+    expect(Object.keys(WINDOW_PRESETS)).not.toContain("bone");
   });
 });

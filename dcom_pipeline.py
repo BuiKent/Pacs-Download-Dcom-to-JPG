@@ -1098,7 +1098,10 @@ def _gray_to_uint8(arr, ds, contrast_mode: str):
 
     # CLINICAL: để pydicom áp VOI đúng chuẩn (LUT sequence / sigmoid / linear)
     try:
-        from pydicom.pixel_data_handlers.util import apply_voi_lut
+        try:
+            from pydicom.pixels import apply_voi_lut
+        except ImportError:  # pragma: no cover - compatibility with pydicom 2.4
+            from pydicom.pixel_data_handlers.util import apply_voi_lut
         v = apply_voi_lut(arr, ds).astype(np.float32)
         if float(v.max()) > float(v.min()):
             return _stretch_uint8(v, float(v.min()), float(v.max()))
@@ -1123,7 +1126,10 @@ def _rgb_to_uint8(arr):
 
 def _dicom_to_frames(ds, contrast_mode: str = CLINICAL):
     import numpy as np
-    from pydicom.pixel_data_handlers.util import apply_modality_lut
+    try:
+        from pydicom.pixels import apply_modality_lut
+    except ImportError:  # pragma: no cover - compatibility with pydicom 2.4
+        from pydicom.pixel_data_handlers.util import apply_modality_lut
 
     try:
         arr = apply_modality_lut(ds.pixel_array, ds)

@@ -23,6 +23,46 @@ def resource_path(relative: str) -> Path:
     return base / relative
 
 
+# A viewport can hold a live actor, report itself rendered and still show a
+# black canvas when the browser refuses another WebGL context. Structural checks
+# cannot see that, so every gate below also samples real pixels.
+PIXEL_PROBE = """(() => {
+  const canvases = [...document.querySelectorAll('#workspace canvas')];
+  return canvases.map((canvas) => {
+    try {
+      const sample = document.createElement('canvas');
+      sample.width = Math.max(1, Math.min(96, canvas.width));
+      sample.height = Math.max(1, Math.min(96, canvas.height));
+      const context = sample.getContext('2d');
+      context.drawImage(canvas, 0, 0, sample.width, sample.height);
+      const data = context.getImageData(0, 0, sample.width, sample.height).data;
+      let lit = 0;
+      for (let index = 0; index < data.length; index += 4) {
+        if (data[index] > 12 || data[index + 1] > 12 || data[index + 2] > 12) lit += 1;
+      }
+      return lit;
+    } catch (error) {
+      return -1;
+    }
+  });
+})()"""
+
+# Only the 3D volume-rendered pane may legitimately be sparse at the default
+# camera; an orthographic MPR pane through the middle of a head never is.
+MIN_LIT_PIXELS = 40
+
+
+def _assert_panes_drawn(window, label: str, expected: int) -> list[int]:
+    """Fail when a viewport reports success but paints nothing."""
+    lit = window.evaluate_js(PIXEL_PROBE) or []
+    if len(lit) != expected:
+        raise RuntimeError(f"{label}: cần {expected} khung, thấy {len(lit)} ({lit})")
+    blank = [index for index, count in enumerate(lit) if count < MIN_LIT_PIXELS]
+    if blank:
+        raise RuntimeError(f"{label}: khung {blank} không vẽ được pixel nào (lit={lit})")
+    return lit
+
+
 def _write_smoke_stage(path: str, result: dict, stage: str) -> None:
     if not path:
         return
@@ -53,7 +93,7 @@ class NativeApi:
         if not result:
             return None
         path = result[0] if isinstance(result, (list, tuple)) else result
-        return self._controller.open_archive(str(path))
+        return self._controller.start_archive_scan(str(path))
 
     def choose_output(self):
         import webview
@@ -100,7 +140,12 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                 """({
                   fatal: document.querySelector('.fatal-error')?.textContent || '',
                   series: document.querySelectorAll('.series-card').length,
-                  canvases: document.querySelectorAll('#workspace canvas').length
+                  canvases: document.querySelectorAll('#workspace canvas').length,
+                  locationSearch: location.search,
+                  diagnostics: window.__viewerDiagnostics || null,
+                  panelToggle: Boolean(document.querySelector(
+                    '.app-header [data-action="toggle-download"][aria-expanded]'
+                  ))
                 })"""
             )
             if state.get("fatal"):
@@ -111,6 +156,11 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
             time.sleep(0.5)
         else:
             raise TimeoutError(f"Không dựng được stack: {state}")
+        if "token=" in result["single"].get("locationSearch", ""):
+            raise RuntimeError("Token phiên vẫn còn trong URL sau khi khởi động.")
+        if not result["single"].get("panelToggle"):
+            raise RuntimeError("Thiếu nút thu gọn/mở khu tải phim có trạng thái truy cập.")
+        result["single"]["litPixels"] = _assert_panes_drawn(window, "single", 1)
 
         for action, expected, key in (
             ("mode-compare", 2, "compare"),
@@ -131,6 +181,7 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                       readyMode: window.__viewerReadyMode || '',
                       diagnostics: window.__viewerDiagnostics || null,
                       volumeLoad: window.__volumeLoadState || null,
+                      sliceControls: document.querySelectorAll('.slice-control input').length,
                       toolLabels: [...document.querySelectorAll('.interaction-tools .icon-button small')]
                         .map(e => e.textContent)
                     })"""
@@ -138,12 +189,26 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                 if state.get("error"):
                     raise RuntimeError(state.get("errorStack") or state["error"])
                 if state.get("canvases") == expected and state.get("readyMode") == action.removeprefix("mode-"):
+                    state["litPixels"] = _assert_panes_drawn(window, key, expected)
                     result[key] = state
                     _write_smoke_stage(result_path, result, key)
                     break
                 time.sleep(0.5)
             else:
                 raise TimeoutError(f"Không dựng được {key}: {state}")
+        for key, expected_controls in (
+            ("compare", 2),
+            ("montage6", 6),
+            ("montage8", 8),
+            ("mpr", 3),
+            ("volume3d", 3),
+        ):
+            if result[key].get("sliceControls") != expected_controls:
+                raise RuntimeError(
+                    f"{key} slice controls mismatch: {result[key].get('sliceControls')}"
+                )
+        if result["mpr"].get("diagnostics", {}).get("decodePath") != "worker":
+            raise RuntimeError(f"Web Worker decode is not active: {result['mpr']}")
         if len(result["mpr"].get("toolLabels", [])) != 8:
             raise RuntimeError(f"MPR contextual toolbar is incomplete: {result['mpr']}")
         if len(result["volume3d"].get("toolLabels", [])) != 4:
@@ -218,12 +283,37 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                     and not state.get("loading")
                 )
                 if ready:
+                    # The regression this gate exists for: a rebuilt volume
+                    # layout that keeps its actors but paints nothing.
+                    state["litPixels"] = _assert_panes_drawn(window, key, expected)
                     result["volumeTransitions"].append({"key": key, **state})
                     _write_smoke_stage(result_path, result, key)
                     break
                 time.sleep(0.5)
             else:
                 raise TimeoutError(f"Repeated MPR/3D transition failed at {key}: {state}")
+
+        # Every layout must reuse the one rendering engine. A new engine per
+        # layout exhausts the browser's WebGL context budget and blanks MPR/3D.
+        engine_ids = {
+            item.get("diagnostics", {}).get("engineId")
+            for item in result["volumeTransitions"]
+        }
+        engine_ids.add(result["mpr"].get("diagnostics", {}).get("engineId"))
+        if len(engine_ids) != 1 or not all(engine_ids):
+            raise RuntimeError(f"Rendering engine was rebuilt per layout: {sorted(engine_ids)}")
+
+        # The toolbar must never highlight a tool the layout refused to activate.
+        tool_state = window.evaluate_js(
+            """({
+              highlighted: [...document.querySelectorAll('.interaction-tools .icon-button.active')]
+                .map(item => item.dataset.action.replace('tool-', '')),
+              active: window.__viewerDiagnostics?.tool || ''
+            })"""
+        )
+        if tool_state.get("highlighted") != [tool_state.get("active")]:
+            raise RuntimeError(f"Toolbar and active tool disagree: {tool_state}")
+        result["toolState"] = tool_state
 
         window.evaluate_js(
             """(() => {
@@ -248,6 +338,55 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
             or not all(count >= 1 for count in result["mprPrimarySwitch"].get("actors", []))
         ):
             raise RuntimeError(f"MPR primary-plane switch failed: {result['mprPrimarySwitch']}")
+
+        window.evaluate_js(
+            """(() => {
+              const slider = document.querySelector(
+                '[data-viewport-id="mpr-axial"] .slice-control input'
+              );
+              slider.value = '10';
+              slider.dispatchEvent(new Event('input', { bubbles: true }));
+            })()"""
+        )
+        time.sleep(0.5)
+        window.evaluate_js("document.querySelector('[data-action=\"reset\"]').click()")
+        time.sleep(0.5)
+        result["mprReset"] = window.evaluate_js(
+            """({
+              indices: (window.__viewerDiagnostics?.viewports || [])
+                .map(item => item.imageIndex)
+            })"""
+        )
+        if result["mprReset"].get("indices") != [60, 95, 96]:
+            raise RuntimeError(f"MPR crosshair reset failed: {result['mprReset']}")
+
+        window.evaluate_js(
+            """(() => {
+              const select = document.querySelector('[data-field="window-preset"]');
+              select.value = 'soft';
+              select.dispatchEvent(new Event('change', { bubbles: true }));
+            })()"""
+        )
+        time.sleep(0.5)
+        result["windowPreset"] = window.evaluate_js(
+            """({
+              selected: document.querySelector('[data-field="window-preset"]')?.value || '',
+              ranges: (window.__viewerDiagnostics?.viewports || [])
+                .map(item => item.voiRange)
+            })"""
+        )
+        ranges = result["windowPreset"].get("ranges", [])
+        if (
+            result["windowPreset"].get("selected") != "soft"
+            or len(ranges) != 3
+            or not all(
+                value
+                and value.get("lower") == 28
+                and value.get("upper") == 205
+                for value in ranges
+            )
+        ):
+            raise RuntimeError(f"JPG display preset failed: {result['windowPreset']}")
     except Exception as exc:
         result["error"] = str(exc)
     finally:
@@ -316,6 +455,13 @@ def launch_web(
 
 
 def main() -> None:
+    # The fallback message below is Vietnamese; a cp1252 stdout (redirected by
+    # run_app.bat or a CI pipe) would raise UnicodeEncodeError instead of
+    # actually falling back to the classic UI.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--classic", action="store_true")
     parser.add_argument("--debug-web", action="store_true")

@@ -29,8 +29,12 @@ import {
 } from "@cornerstonejs/tools";
 import { api, apiBlob, imagePath } from "./api.js";
 
-const ENGINE_ID_PREFIX = "dcom-rendering-engine";
-const TOOL_GROUP_ID_PREFIX = "dcom-tools";
+// Cornerstone allocates a pool of WebGL contexts per RenderingEngine
+// (webGlContextCount: 7 by default) and the browser caps how many contexts a
+// page may keep alive. destroy() does not reliably free them, so the viewer
+// keeps exactly one engine for the whole session and only swaps its viewports.
+const ENGINE_ID = "dcom-rendering-engine";
+const TOOL_GROUP_ID = "dcom-tools";
 const IMAGE_SCHEME = "dcomjpg";
 const VOLUME_SCHEME = "cornerstoneStreamingImageVolume";
 
@@ -71,21 +75,51 @@ const toolByMode = {
 
 let initialized = false;
 let renderingEngine = null;
-let renderingEngineId = "";
-let toolGroupId = "";
-let renderingGeneration = 0;
+let engineUsable = false;
 let toolGroup = null;
 let resizeObserver = null;
 let activeElements = [];
+let activeViewportId = "";
 let activeSeries = null;
+let activeSeriesList = [];
 let activeMode = "single";
 let currentTool = "window";
 let mprPrimaryPlane = "axial";
 let cineTimer = null;
+let loadGeneration = 0;
 let onStatus = () => {};
 let onSlice = () => {};
 const seriesRegistry = new Map();
 const manifestRegistry = new Map();
+const decodeRequests = new Map();
+let decodeWorker = null;
+let decodeWorkerDisabled = false;
+let decodeRequestId = 0;
+let decodePath = "main";
+let lastDecodeStats = null;
+
+export const WINDOW_PRESETS = Object.freeze({
+  full: { lower: 0, upper: 255 },
+  soft: { lower: 28, upper: 205 },
+  contrast: { lower: 62, upper: 168 },
+});
+
+export function seriesSafetyNotice(series) {
+  if (!series) return null;
+  if (series.modality === "CT") {
+    return {
+      level: "danger",
+      text: "CT đã chuyển sang JPG 8-bit: chỉ dùng xem hình thái và đo hình học; không dùng mức xám để suy luận HU hay cửa sổ CT chẩn đoán.",
+    };
+  }
+  if (!["MR", "CT"].includes(series.modality)) {
+    return {
+      level: "warning",
+      text: "Chưa xác định được modality của series JPG 8-bit; không dùng mức xám để định lượng tín hiệu hoặc đậm độ.",
+    };
+  }
+  return null;
+}
 
 function parseImageId(imageId) {
   const match = new RegExp(`^${IMAGE_SCHEME}:([a-f0-9]{20}):(\\d+)$`).exec(imageId);
@@ -101,7 +135,8 @@ function metadataProvider(type, imageId) {
   if (!series) return undefined;
   const geometry = series.geometry;
   if (type === "generalSeriesModule") {
-    return { modality: "MR", seriesInstanceUID: parsed.seriesId };
+    const modality = series.modality === "CT" ? "CT" : series.modality === "MR" ? "MR" : "OT";
+    return { modality, seriesInstanceUID: parsed.seriesId };
   }
   if (type === "generalImageModule") {
     return { instanceNumber: parsed.index + 1 };
@@ -150,24 +185,121 @@ function makeImageId(seriesId, index) {
   return `${IMAGE_SCHEME}:${seriesId}:${index}`;
 }
 
+function greyscaleCanvas(pixels, width, height) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  const frame = context.createImageData(width, height);
+  for (let source = 0, target = 0; source < pixels.length; source += 1, target += 4) {
+    frame.data[target] = pixels[source];
+    frame.data[target + 1] = pixels[source];
+    frame.data[target + 2] = pixels[source];
+    frame.data[target + 3] = 255;
+  }
+  context.putImageData(frame, 0, 0);
+  return canvas;
+}
+
+async function decodeBlobOnMain(blob) {
+  const bitmap = await createImageBitmap(blob);
+  const width = bitmap.width;
+  const height = bitmap.height;
+  const scratch = typeof OffscreenCanvas === "function"
+    ? new OffscreenCanvas(width, height)
+    : Object.assign(document.createElement("canvas"), { width, height });
+  const context = scratch.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("Không tạo được bộ giải mã ảnh.");
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const rgba = context.getImageData(0, 0, width, height).data;
+  const pixels = new Uint8Array(width * height);
+  for (let source = 0, target = 0; target < pixels.length; source += 4, target += 1) {
+    pixels[target] = Math.round(
+      rgba[source] * 0.299 + rgba[source + 1] * 0.587 + rgba[source + 2] * 0.114,
+    );
+  }
+  decodePath = "main";
+  return { pixels, width, height };
+}
+
+function rejectDecodeRequests(error) {
+  for (const pending of decodeRequests.values()) pending.reject(error);
+  decodeRequests.clear();
+}
+
+function getDecodeWorker() {
+  if (decodeWorkerDisabled || typeof Worker !== "function") return null;
+  if (decodeWorker) return decodeWorker;
+  try {
+    decodeWorker = new Worker(new URL("./image-worker.js", import.meta.url), { type: "module" });
+    decodeWorker.addEventListener("message", (event) => {
+      const { id, width, height, pixels, error } = event.data || {};
+      const pending = decodeRequests.get(id);
+      if (!pending) return;
+      decodeRequests.delete(id);
+      if (error) {
+        pending.reject(new Error(error));
+        return;
+      }
+      decodePath = "worker";
+      // WebView2/Cornerstone can read a transferred worker buffer in JS but its
+      // WebGL uploader may paint it black. A main-realm copy keeps decode and
+      // grayscale conversion off-thread while giving vtk.js a normal local
+      // ArrayBuffer it can upload reliably.
+      const transferred = new Uint8Array(pixels);
+      pending.resolve({ pixels: transferred.slice(), width, height });
+    });
+    decodeWorker.addEventListener("error", (event) => {
+      const error = new Error(event.message || "Bộ giải mã ảnh nền gặp sự cố.");
+      rejectDecodeRequests(error);
+      decodeWorker?.terminate();
+      decodeWorker = null;
+      decodeWorkerDisabled = true;
+    });
+    return decodeWorker;
+  } catch (_) {
+    decodeWorkerDisabled = true;
+    return null;
+  }
+}
+
+async function decodeBlob(blob) {
+  const worker = getDecodeWorker();
+  if (worker) {
+    try {
+      const id = ++decodeRequestId;
+      return await new Promise((resolve, reject) => {
+        decodeRequests.set(id, { resolve, reject });
+        worker.postMessage({ id, blob });
+      });
+    } catch (error) {
+      if (/OffscreenCanvas|createImageBitmap|giải mã ảnh nền/i.test(error?.message || "")) {
+        decodeWorkerDisabled = true;
+        decodeWorker?.terminate();
+        decodeWorker = null;
+      }
+    }
+  }
+  return decodeBlobOnMain(blob);
+}
+
 function decodeImage(imageId) {
   const parsed = parseImageId(imageId);
   const promise = (async () => {
     if (!parsed) throw new Error("ImageId không hợp lệ.");
     const blob = await apiBlob(imagePath(parsed.seriesId, parsed.index));
-    const bitmap = await createImageBitmap(blob);
-    const canvas = document.createElement("canvas");
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    context.drawImage(bitmap, 0, 0);
-    bitmap.close();
-    const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
-    const pixels = new Uint8Array(canvas.width * canvas.height);
-    for (let source = 0, target = 0; target < pixels.length; source += 4, target += 1) {
-      pixels[target] = Math.round(
-        rgba[source] * 0.299 + rgba[source + 1] * 0.587 + rgba[source + 2] * 0.114,
-      );
+    const { pixels, width, height } = await decodeBlob(blob);
+    if (!lastDecodeStats) {
+      let min = 255;
+      let max = 0;
+      let nonZero = 0;
+      for (const value of pixels) {
+        min = Math.min(min, value);
+        max = Math.max(max, value);
+        if (value) nonZero += 1;
+      }
+      lastDecodeStats = { width, height, min, max, nonZero };
     }
     const series = seriesRegistry.get(parsed.seriesId);
     const spacing = series?.geometry?.pixelSpacing;
@@ -180,11 +312,14 @@ function decodeImage(imageId) {
       windowCenter: 127.5,
       windowWidth: 255,
       getPixelData: () => pixels,
-      getCanvas: () => canvas,
-      rows: canvas.height,
-      columns: canvas.width,
-      height: canvas.height,
-      width: canvas.width,
+      // Only the CPU fallback for colour images asks for a canvas. Rebuilding it
+      // on demand keeps a 4x RGBA copy of every cached slice out of memory —
+      // Cornerstone bills the cache by sizeInBytes and cannot see such a copy.
+      getCanvas: () => greyscaleCanvas(pixels, width, height),
+      rows: height,
+      columns: width,
+      height,
+      width,
       color: false,
       rgba: false,
       numberOfComponents: 1,
@@ -231,8 +366,13 @@ async function ensureManifest(series) {
   return manifestRegistry.get(series.id);
 }
 
+function engineIsLive() {
+  return Boolean(renderingEngine) && engineUsable;
+}
+
 function destroyCurrent() {
   stopCine();
+  loadGeneration += 1;
   resizeObserver?.disconnect();
   resizeObserver = null;
   for (const element of activeElements) {
@@ -244,30 +384,56 @@ function destroyCurrent() {
   }
   annotation.state.removeAllAnnotations();
   if (toolGroup) {
-    ToolGroupManager.destroyToolGroup(toolGroupId);
+    ToolGroupManager.destroyToolGroup(TOOL_GROUP_ID);
     toolGroup = null;
   }
-  if (renderingEngine && !renderingEngine.hasBeenDestroyed) {
-    renderingEngine.destroy();
+  // Release each viewport explicitly: this is what returns its slot in the
+  // engine's WebGL context pool. setViewports() alone leaves the slot bound.
+  if (engineIsLive()) {
+    for (const viewport of renderingEngine.getViewports() || []) {
+      try {
+        renderingEngine.disableElement(viewport.id);
+      } catch (_) {
+        // Already released by a previous layout change.
+      }
+    }
   }
-  renderingEngine = null;
-  renderingEngineId = "";
-  toolGroupId = "";
   activeElements = [];
+  activeViewportId = "";
 }
 
 function createRenderingEngine() {
-  renderingGeneration += 1;
-  renderingEngineId = `${ENGINE_ID_PREFIX}-${renderingGeneration}`;
-  toolGroupId = `${TOOL_GROUP_ID_PREFIX}-${renderingGeneration}`;
-  renderingEngine = new RenderingEngine(renderingEngineId);
+  if (engineIsLive()) return renderingEngine;
+  renderingEngine = new RenderingEngine(ENGINE_ID);
+  engineUsable = true;
   return renderingEngine;
+}
+
+/** Release every GPU resource. Only for window teardown, never per layout. */
+export function disposeViewer() {
+  destroyCurrent();
+  if (engineIsLive()) {
+    try {
+      renderingEngine.destroy();
+    } catch (_) {
+      // Nothing else can be done while the window is closing.
+    }
+  }
+  renderingEngine = null;
+  engineUsable = false;
+  activeSeries = null;
+  activeSeriesList = [];
+  rejectDecodeRequests(new Error("Cửa sổ viewer đã đóng."));
+  decodeWorker?.terminate();
+  decodeWorker = null;
 }
 
 function createToolGroup(viewportIds, mode = "stack") {
   const threeDimensional = mode === "volume3d";
   const hybrid = mode === "hybrid";
-  toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
+  // A stale group survives a failed teardown and would block creation.
+  ToolGroupManager.destroyToolGroup(TOOL_GROUP_ID);
+  toolGroup = ToolGroupManager.createToolGroup(TOOL_GROUP_ID);
   if (!toolGroup) throw new Error("Không tạo được nhóm công cụ.");
   const allowed = threeDimensional
     ? [TrackballRotateTool, PanTool, ZoomTool]
@@ -278,7 +444,7 @@ function createToolGroup(viewportIds, mode = "stack") {
     toolGroup.addTool(ToolClass.toolName);
   }
   for (const viewportId of viewportIds) {
-    toolGroup.addViewport(viewportId, renderingEngineId);
+    toolGroup.addViewport(viewportId, ENGINE_ID);
   }
   toolGroup.setToolActive(PanTool.toolName, {
     bindings: [{ mouseButton: ToolEnums.MouseBindings.Auxiliary }],
@@ -291,7 +457,6 @@ function createToolGroup(viewportIds, mode = "stack") {
       bindings: [{ mouseButton: ToolEnums.MouseBindings.Wheel }],
     });
   }
-  setTool(threeDimensional ? "rotate3d" : currentTool);
 }
 
 function installResizeObserver(container) {
@@ -307,26 +472,100 @@ function installResizeObserver(container) {
 
 async function settleVolumeRendering() {
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  if (!renderingEngine || renderingEngine.hasBeenDestroyed) return;
+  if (!engineIsLive()) return;
   renderingEngine.resize(true, true);
   renderingEngine.render();
 }
 
-function viewportElement(container, id, label, shellClass = "") {
+function viewportElement(container, id, label, shellClass = "", seriesId = "") {
   const shell = document.createElement("section");
   shell.className = `viewport-shell ${shellClass}`.trim();
   shell.dataset.viewportId = id;
+  shell.dataset.seriesId = seriesId;
   const tag = document.createElement("div");
   tag.className = "viewport-label";
   tag.textContent = label;
   const element = document.createElement("div");
   element.id = id;
   element.className = "viewport";
+  element.dataset.seriesId = seriesId;
   element.oncontextmenu = (event) => event.preventDefault();
+  // "Save the frame I am looking at" and the keyboard shortcuts must act on the
+  // pane under the pointer, not on whichever pane happens to be built first.
+  element.addEventListener("pointerenter", () => markActiveViewport(id));
+  element.addEventListener("pointerdown", () => markActiveViewport(id));
   shell.append(tag, element);
   container.append(shell);
   activeElements.push(element);
+  if (!activeViewportId) markActiveViewport(id);
   return element;
+}
+
+function installSliceControl({
+  element,
+  viewport,
+  label,
+  count,
+  initialIndex,
+  eventName,
+  eventIndex,
+  eventCount,
+}) {
+  if (!Number.isFinite(count) || count < 2) return;
+  const shell = element.closest(".viewport-shell");
+  const labelElement = shell?.querySelector(".viewport-label");
+  if (!shell) return;
+  const control = document.createElement("label");
+  control.className = "slice-control";
+  control.innerHTML = `<input type="range" min="0" max="${count - 1}" step="1"
+    aria-label="Lát ảnh ${label}"><output></output>`;
+  const input = control.querySelector("input");
+  const output = control.querySelector("output");
+  const update = (index, total = count) => {
+    const safeTotal = Math.max(1, Number(total) || count);
+    const safeIndex = Math.max(0, Math.min(Number(index) || 0, safeTotal - 1));
+    input.max = String(safeTotal - 1);
+    input.value = String(safeIndex);
+    output.textContent = `${safeIndex + 1}/${safeTotal}`;
+    if (labelElement) labelElement.textContent = `${label} · ${safeIndex + 1}/${safeTotal}`;
+    if (activeViewportId === element.id) {
+      onSlice({ viewportId: element.id, label, index: safeIndex, count: safeTotal });
+    }
+  };
+  control.addEventListener("pointerenter", () => markActiveViewport(element.id));
+  control.addEventListener("pointerdown", (event) => {
+    markActiveViewport(element.id);
+    event.stopPropagation();
+  });
+  input.addEventListener("input", () => {
+    const target = Number(input.value);
+    const current = viewport.getCurrentImageIdIndex?.() ?? viewport.getSliceIndex?.() ?? 0;
+    const delta = target - current;
+    if (delta) viewport.scroll(delta);
+    viewport.render();
+  });
+  element.addEventListener(eventName, (event) => {
+    update(eventIndex(event.detail), eventCount?.(event.detail) || count);
+  });
+  shell.append(control);
+  update(initialIndex, count);
+}
+
+function markActiveViewport(viewportId) {
+  if (activeViewportId === viewportId) return;
+  activeViewportId = viewportId;
+  for (const shell of document.querySelectorAll("#workspace .viewport-shell")) {
+    shell.classList.toggle("is-active", shell.dataset.viewportId === viewportId);
+  }
+}
+
+export function activeViewport() {
+  if (!engineIsLive() || !activeViewportId) return null;
+  try {
+    return renderingEngine.getViewport(activeViewportId) || null;
+  } catch (_) {
+    return null;
+  }
 }
 
 export function mprPlaneLayout(plane) {
@@ -391,18 +630,16 @@ async function setupStackViewport(viewportId, series, index = 0, prefetch = true
   viewport.resetCamera();
   viewport.render();
   const element = document.getElementById(viewportId);
-  const label = element.closest(".viewport-shell")?.querySelector(".viewport-label");
-  const updateLabel = (sliceIndex) => {
-    if (label) label.textContent = `${series.name} · ${sliceIndex + 1}/${series.sliceCount}`;
-  };
-  updateLabel(index);
-  element.addEventListener(CoreEnums.Events.STACK_NEW_IMAGE, (event) => {
-    updateLabel(event.detail.imageIdIndex);
-    onSlice({
-      viewportId,
-      index: event.detail.imageIdIndex,
-      count: series.sliceCount,
-    });
+  element.dataset.seriesId = series.id;
+  element.closest(".viewport-shell").dataset.seriesId = series.id;
+  installSliceControl({
+    element,
+    viewport,
+    label: series.name,
+    count: series.sliceCount,
+    initialIndex: index,
+    eventName: CoreEnums.Events.STACK_NEW_IMAGE,
+    eventIndex: (detail) => detail.imageIdIndex,
   });
   if (prefetch) {
     toolUtilities.stackContextPrefetch.enable(element);
@@ -440,20 +677,33 @@ function installMontageSynchronization(series, viewportIds) {
   });
 }
 
-export async function showStacks(container, series, mode, secondarySeries = null) {
+export async function showStacks(container, series, mode, secondarySeries = null, tool = currentTool) {
   destroyCurrent();
   activeSeries = series;
+  activeSeriesList = secondarySeries && secondarySeries.id !== series.id
+    ? [series, secondarySeries]
+    : [series];
   activeMode = mode;
   registerSeries(series);
   if (secondarySeries) registerSeries(secondarySeries);
+  // Stack measurements need real DICOM spacing, otherwise Cornerstone falls
+  // back to pixel units while the status bar promises millimetres.
+  await ensureManifest(series);
+  if (secondarySeries) await ensureManifest(secondarySeries);
   container.innerHTML = "";
   setWorkspaceMode(container, mode);
   createRenderingEngine();
 
   const viewports = [];
   if (mode === "compare") {
-    const left = viewportElement(container, "stack-a", series.name);
-    const right = viewportElement(container, "stack-b", secondarySeries?.name || "Chọn series B");
+    const left = viewportElement(container, "stack-a", series.name, "", series.id);
+    const right = viewportElement(
+      container,
+      "stack-b",
+      secondarySeries?.name || "Chọn series B",
+      "",
+      secondarySeries?.id || "",
+    );
     viewports.push(
       { viewportId: "stack-a", type: CoreEnums.ViewportType.STACK, element: left },
       { viewportId: "stack-b", type: CoreEnums.ViewportType.STACK, element: right },
@@ -465,7 +715,7 @@ export async function showStacks(container, series, mode, secondarySeries = null
       viewports.push({
         viewportId: id,
         type: CoreEnums.ViewportType.STACK,
-        element: viewportElement(container, id, `${series.name} · ${index + 1}`),
+        element: viewportElement(container, id, `${series.name} · ${index + 1}`, "", series.id),
       });
     }
   }
@@ -494,13 +744,27 @@ export async function showStacks(container, series, mode, secondarySeries = null
     }
   }
   installResizeObserver(container);
+  const applied = setTool(tool);
   await restoreAnnotations(series);
+  if (secondarySeries && secondarySeries.id !== series.id) {
+    await restoreAnnotations(secondarySeries);
+  }
   onStatus(series.geometry
     ? "Đo chiều dài/ROI theo mm. Chuột giữa: pan · chuột phải: zoom · lăn: đổi lát."
     : "Series JPG không có hình học: chỉ xem/zoom/pan; không dùng kết quả đo vật lý.");
+  return applied;
 }
 
-async function preloadVolumeImages(series, concurrency = 4) {
+/** Thrown when a newer layout request supersedes a volume build in progress. */
+class SupersededError extends Error {
+  constructor() {
+    super("Yêu cầu dựng volume đã bị thay thế.");
+    this.name = "SupersededError";
+    this.superseded = true;
+  }
+}
+
+async function preloadVolumeImages(series, generation, concurrency = 4) {
   const ids = imageIds(series);
   const missing = ids.filter((imageId) => !cache.getImage(imageId));
   let loaded = ids.length - missing.length;
@@ -512,13 +776,17 @@ async function preloadVolumeImages(series, concurrency = 4) {
       total: ids.length,
       complete: loaded === ids.length,
     };
-    onStatus(`Đang nạp volume: ${loaded}/${ids.length} lát…`);
+    onStatus(`Đang nạp volume: ${loaded}/${ids.length} lát…`, {
+      loaded,
+      total: ids.length,
+    });
   };
   updateProgress();
   let cursor = 0;
   const failures = [];
   const worker = async () => {
     while (cursor < missing.length) {
+      if (generation !== loadGeneration) return;
       const imageId = missing[cursor];
       cursor += 1;
       try {
@@ -536,6 +804,9 @@ async function preloadVolumeImages(series, concurrency = 4) {
       () => worker(),
     ),
   );
+  // Abandoning a superseded load keeps a fast mode switch from waiting for
+  // hundreds of slices it will never display.
+  if (generation !== loadGeneration) throw new SupersededError();
   const uncached = ids.filter((imageId) => !cache.getImage(imageId));
   if (failures.length || uncached.length) {
     window.__volumeLoadState = {
@@ -555,9 +826,13 @@ async function preloadVolumeImages(series, concurrency = 4) {
 }
 
 async function ensureVolume(series) {
+  const generation = loadGeneration;
   await ensureManifest(series);
   const id = `${VOLUME_SCHEME}:${series.id}`;
-  const ids = await preloadVolumeImages(series);
+  // A full study holds several 100-300 slice series. Without this the image and
+  // volume caches only grow, until Cornerstone throws cachedSizeExceeded.
+  releaseOtherSeries(series.id);
+  const ids = await preloadVolumeImages(series, generation);
   let volume = cache.getVolume(id);
   if (volume?.loadStatus && !volume.loadStatus.loaded) {
     cache.removeVolumeLoadObject(id);
@@ -567,6 +842,7 @@ async function ensureVolume(series) {
     onStatus(`Đang dựng volume từ đủ ${series.sliceCount} lát…`);
     volume = await volumeLoader.createAndCacheVolumeFromImages(id, ids);
   }
+  if (generation !== loadGeneration) throw new SupersededError();
   if (volume.imageIds?.length !== series.sliceCount) {
     throw new Error(
       `Volume không đầy đủ: ${volume.imageIds?.length || 0}/${series.sliceCount} lát.`,
@@ -575,10 +851,11 @@ async function ensureVolume(series) {
   return { id, volume };
 }
 
-export async function showMpr(container, series, primaryPlane = "axial") {
+export async function showMpr(container, series, primaryPlane = "axial", tool = "crosshair") {
   if (!series.mprReady) throw new Error(series.mprReason);
   destroyCurrent();
   activeSeries = series;
+  activeSeriesList = [series];
   activeMode = "mpr";
   registerSeries(series);
   container.innerHTML = "";
@@ -590,7 +867,7 @@ export async function showMpr(container, series, primaryPlane = "axial") {
   ];
   createRenderingEngine();
   const inputs = definitions.map(([id, label, plane, orientation]) => {
-    const element = viewportElement(container, id, label, "mpr-plane");
+    const element = viewportElement(container, id, label, "mpr-plane", series.id);
     element.parentElement.dataset.plane = plane;
     return {
     viewportId: id,
@@ -611,12 +888,27 @@ export async function showMpr(container, series, primaryPlane = "axial") {
     viewport.resetCamera();
     viewport.render();
   }
+  for (const [viewportId, label] of definitions) {
+    const viewport = renderingEngine.getViewport(viewportId);
+    const count = viewport.getNumberOfSlices?.() || series.sliceCount;
+    installSliceControl({
+      element: document.getElementById(viewportId),
+      viewport,
+      label,
+      count,
+      initialIndex: viewport.getSliceIndex?.() || 0,
+      eventName: CoreEnums.Events.VOLUME_NEW_IMAGE,
+      eventIndex: (detail) => detail.imageIndex,
+      eventCount: (detail) => detail.numberOfSlices,
+    });
+  }
   createToolGroup(definitions.map((item) => item[0]));
-  setTool("crosshair");
+  const applied = setTool(tool);
   installResizeObserver(container);
   await settleVolumeRendering();
   await restoreAnnotations(series);
   onStatus("MPR dùng hình học DICOM thật · R/L, A/P, S/I do Cornerstone suy ra từ tọa độ bệnh nhân.");
+  return applied;
 }
 
 function applyBrainPreset(viewport) {
@@ -642,10 +934,11 @@ function applyBrainPreset(viewport) {
   property.setInterpolationTypeToLinear();
 }
 
-export async function show3d(container, series) {
+export async function show3d(container, series, tool = "rotate3d") {
   if (!series.mprReady) throw new Error(series.mprReason);
   destroyCurrent();
   activeSeries = series;
+  activeSeriesList = [series];
   activeMode = "volume3d";
   registerSeries(series);
   container.innerHTML = "";
@@ -660,7 +953,13 @@ export async function show3d(container, series) {
   renderingEngine.setViewports(definitions.map(([id, label, type, orientation]) => ({
     viewportId: id,
     type,
-    element: viewportElement(container, id, label, id === "volume-3d" ? "volume-render-pane" : "volume-mpr-pane"),
+    element: viewportElement(
+      container,
+      id,
+      label,
+      id === "volume-3d" ? "volume-render-pane" : "volume-mpr-pane",
+      series.id,
+    ),
     defaultOptions: {
       ...(orientation ? { orientation } : {}),
       background: [0.01, 0.015, 0.025],
@@ -675,31 +974,68 @@ export async function show3d(container, series) {
     viewport.resetCamera();
     viewport.render();
   }
+  for (const [viewportId, label, type] of definitions) {
+    if (type === CoreEnums.ViewportType.VOLUME_3D) continue;
+    const viewport = renderingEngine.getViewport(viewportId);
+    const count = viewport.getNumberOfSlices?.() || series.sliceCount;
+    installSliceControl({
+      element: document.getElementById(viewportId),
+      viewport,
+      label,
+      count,
+      initialIndex: viewport.getSliceIndex?.() || 0,
+      eventName: CoreEnums.Events.VOLUME_NEW_IMAGE,
+      eventIndex: (detail) => detail.imageIndex,
+      eventCount: (detail) => detail.numberOfSlices,
+    });
+  }
   createToolGroup(viewportIds, "hybrid");
-  setTool(currentTool === "rotate3d" ? "rotate3d" : "crosshair");
+  const applied = setTool(tool);
   installResizeObserver(container);
   await settleVolumeRendering();
+  await restoreAnnotations(series);
   onStatus("Ba mặt phẳng MPR và mô hình 3D dùng chung một volume đã nạp đầy đủ.");
+  return applied;
 }
 
 export function viewerDiagnostics() {
   return {
     mode: activeMode,
-    engineId: renderingEngineId,
-    destroyed: !renderingEngine || renderingEngine._implementation?.hasBeenDestroyed === true,
-    viewports: (renderingEngine?.getViewports() || []).map((viewport) => ({
+    engineId: engineIsLive() ? ENGINE_ID : "",
+    destroyed: !engineIsLive(),
+    activeViewportId,
+    tool: currentTool,
+    decodePath,
+    lastDecodeStats,
+    viewports: (engineIsLive() ? renderingEngine.getViewports() || [] : []).map((viewport) => ({
       id: viewport.id,
       actors: viewport.getActors?.().length || 0,
       imageIndex: viewport.getCurrentImageIdIndex?.() ?? null,
+      voiRange: viewport.getProperties?.().voiRange || null,
     })),
   };
 }
 
+/**
+ * Tools a layout cannot honour must never be reported as active: Crosshairs
+ * needs at least two linked viewports and TrackballRotate needs a 3D viewport.
+ */
+export function toolFallback(mode, viewportCount = activeElements.length, hasVolume3d = false) {
+  if (mode === "crosshair" && viewportCount < 2) return "window";
+  if (mode === "rotate3d" && !hasVolume3d) return "window";
+  if (!toolByMode[mode]) return "window";
+  return mode;
+}
+
+/** Activates `mode` on the primary mouse button and returns the tool in force. */
 export function setTool(mode) {
-  currentTool = mode;
-  if (!toolGroup) return;
-  const toolName = toolByMode[mode];
-  if (!toolName || !toolGroup.hasTool(toolName)) return;
+  const hasVolume3d = activeElements.some((element) => element.id === "volume-3d");
+  const requested = toolFallback(mode, activeElements.length, hasVolume3d);
+  const toolName = toolByMode[requested];
+  if (!toolGroup || !toolName || !toolGroup.hasTool(toolName)) {
+    currentTool = requested;
+    return currentTool;
+  }
   for (const candidate of Object.values(toolByMode)) {
     if (candidate !== toolName && toolGroup.hasTool(candidate)) {
       try {
@@ -712,22 +1048,63 @@ export function setTool(mode) {
   toolGroup.setToolActive(toolName, {
     bindings: [{ mouseButton: ToolEnums.MouseBindings.Primary }],
   });
+  currentTool = requested;
+  return currentTool;
 }
 
 export function resetView() {
-  for (const viewport of renderingEngine?.getViewports() || []) {
+  if (!engineIsLive()) return;
+  for (const viewport of renderingEngine.getViewports() || []) {
     viewport.resetCamera();
     if (typeof viewport.resetProperties === "function") viewport.resetProperties();
     viewport.render();
   }
+  if (activeMode === "mpr" || activeMode === "volume3d") {
+    const reference = (renderingEngine.getViewports() || []).find(
+      (viewport) => viewport.id !== "volume-3d" && viewport.getCamera?.().focalPoint,
+    );
+    const center = reference?.getCamera?.().focalPoint;
+    const crosshairs = toolGroup?.getToolInstance?.(CrosshairsTool.toolName);
+    if (center && crosshairs?.setToolCenter) {
+      crosshairs.setToolCenter([...center], true);
+      renderingEngine.render();
+    }
+  }
+}
+
+export async function applyWindowPreset(name) {
+  const range = WINDOW_PRESETS[name];
+  if (!range || !engineIsLive()) return false;
+  for (const viewport of renderingEngine.getViewports() || []) {
+    if (viewport.id === "volume-3d" || typeof viewport.setProperties !== "function") continue;
+    viewport.setProperties({ voiRange: { ...range } });
+    viewport.render();
+  }
+  // RenderingEngine.render() schedules composition. Do not let the caller mark
+  // a new layout ready while the previous frame is still on the canvas.
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  return true;
 }
 
 export function invertView() {
-  for (const viewport of renderingEngine?.getStackViewports() || []) {
+  if (!engineIsLive()) return;
+  for (const viewport of renderingEngine.getStackViewports() || []) {
     const properties = viewport.getProperties();
     viewport.setProperties({ invert: !properties.invert });
     viewport.render();
   }
+}
+
+/**
+ * Moves the pane under the pointer by `delta` slices (keyboard navigation).
+ * Both StackViewport and the volume viewports clamp `scroll` to their own
+ * bounds, so Home/End can pass the whole slice count.
+ */
+export function stepSlice(delta) {
+  const viewport = activeViewport() || (engineIsLive() ? renderingEngine.getViewports()?.[0] : null);
+  if (!viewport || typeof viewport.scroll !== "function") return false;
+  viewport.scroll(delta);
+  return true;
 }
 
 export function toggleCine(series, onChange) {
@@ -735,8 +1112,8 @@ export function toggleCine(series, onChange) {
     stopCine();
     return false;
   }
-  if (activeMode !== "single") return false;
-  const viewport = renderingEngine?.getStackViewport("stack-0");
+  if (activeMode !== "single" || !engineIsLive()) return false;
+  const viewport = renderingEngine.getStackViewport("stack-0");
   if (!viewport) return false;
   cineTimer = window.setInterval(() => {
     const next = (viewport.getCurrentImageIdIndex() + 1) % series.sliceCount;
@@ -755,23 +1132,44 @@ export function stopCine() {
 }
 
 export async function captureActiveViewport() {
-  const canvas = activeElements[0]?.querySelector("canvas");
+  const element = document.getElementById(activeViewportId) || activeElements[0];
+  const canvas = element?.querySelector("canvas");
   if (!canvas) throw new Error("Chưa có ảnh để lưu.");
+  const label = element.closest(".viewport-shell")?.querySelector(".viewport-label")?.textContent;
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) throw new Error("Không đọc được ảnh từ khung xem.");
+  const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
+  link.href = url;
   link.download = `DCom_${Date.now()}.png`;
   link.click();
-  URL.revokeObjectURL(link.href);
+  // Revoking in the same tick can cancel the download before Chromium reads it.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+  return label || activeViewportId;
 }
 
-function serializableAnnotations() {
-  return annotation.state.getAllAnnotations().map((item) => JSON.parse(JSON.stringify(item)));
+/**
+ * True when the annotation was drawn on `seriesId`. Cornerstone keys stack
+ * annotations by referenced imageId and volume annotations by target volumeId;
+ * both embed our opaque series id, while FrameOfReferenceUID is shared by every
+ * series of the same study and therefore cannot tell them apart.
+ */
+export function annotationBelongsToSeries(item, seriesId) {
+  if (!item || !seriesId) return false;
+  if (String(item.metadata?.referencedImageId || "").includes(seriesId)) return true;
+  if (String(item.metadata?.volumeId || "").includes(seriesId)) return true;
+  return Object.keys(item.data?.cachedStats || {}).some((key) => key.includes(seriesId));
 }
 
-export async function saveAnnotations(series = activeSeries) {
-  if (!series) return;
-  const annotations = serializableAnnotations();
+function serializableAnnotations(seriesId) {
+  return annotation.state
+    .getAllAnnotations()
+    .filter((item) => !seriesId || annotationBelongsToSeries(item, seriesId))
+    .map((item) => JSON.parse(JSON.stringify(item)));
+}
+
+async function saveSeriesAnnotations(series) {
+  const annotations = serializableAnnotations(series.id);
   await api(`/api/series/${series.id}/annotations`, {
     method: "POST",
     body: JSON.stringify({ annotations }),
@@ -779,18 +1177,122 @@ export async function saveAnnotations(series = activeSeries) {
   return annotations.length;
 }
 
+export async function saveAnnotations(series = null) {
+  const targets = series
+    ? [series]
+    : activeSeriesList.length
+      ? activeSeriesList
+      : activeSeries
+        ? [activeSeries]
+        : [];
+  let saved = 0;
+  for (const target of targets) saved += await saveSeriesAnnotations(target);
+  return saved;
+}
+
+/**
+ * Persists the current measurements before a layout change wipes them.
+ * Returns the number saved, or -1 when saving failed, so the caller can warn
+ * instead of destroying work silently.
+ */
+export async function persistActiveAnnotations() {
+  const targets = activeSeriesList.filter(
+    (series) => serializableAnnotations(series.id).length,
+  );
+  if (!targets.length) return 0;
+  try {
+    let saved = 0;
+    for (const series of targets) saved += await saveSeriesAnnotations(series);
+    return saved;
+  } catch (_) {
+    return -1;
+  }
+}
+
+function vectorMatches(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== 3 || right.length !== 3) {
+    return false;
+  }
+  const leftNorm = Math.hypot(...left);
+  const rightNorm = Math.hypot(...right);
+  if (!leftNorm || !rightNorm) return false;
+  const dot = left.reduce((sum, value, index) => sum + value * right[index], 0);
+  return Math.abs(dot / leftNorm / rightNorm) >= 0.999;
+}
+
+/**
+ * Selects a viewport only from persisted identifiers or DICOM plane geometry.
+ * Multi-pane restores deliberately return an empty id when the target cannot be
+ * proven; placing a measurement on a plausible-looking wrong plane is unsafe.
+ */
+export function annotationTargetViewportId(item, viewports) {
+  if (!item || !Array.isArray(viewports) || !viewports.length) return "";
+  const viewPlaneNormal = item.metadata?.viewPlaneNormal;
+  const referencedImageId = String(item.metadata?.referencedImageId || "");
+  if (referencedImageId) {
+    const exact = viewports.filter((viewport) => viewport.imageIds?.includes(referencedImageId));
+    if (exact.length === 1) return exact[0].id;
+    if (exact.length > 1 && Array.isArray(viewPlaneNormal)) {
+      const plane = exact.find(
+        (viewport) => vectorMatches(viewPlaneNormal, viewport.viewPlaneNormal),
+      );
+      if (plane) return plane.id;
+    }
+    if (exact.length) return exact[0].id;
+    const matchingSeries = viewports.filter(
+      (viewport) => viewport.seriesId && referencedImageId.includes(viewport.seriesId),
+    );
+    if (matchingSeries.length) return matchingSeries[0].id;
+  }
+  const targetText = [
+    item.metadata?.volumeId,
+    ...Object.keys(item.data?.cachedStats || {}),
+  ].join(" ");
+  const candidates = targetText
+    ? viewports.filter((viewport) => !viewport.seriesId || targetText.includes(viewport.seriesId))
+    : [...viewports];
+  if (Array.isArray(viewPlaneNormal)) {
+    const plane = candidates.find(
+      (viewport) => vectorMatches(viewPlaneNormal, viewport.viewPlaneNormal),
+    );
+    if (plane) return plane.id;
+  }
+  return candidates.length === 1 ? candidates[0].id : "";
+}
+
+function activeViewportDescriptors() {
+  if (!engineIsLive()) return [];
+  return activeElements.map((element) => {
+    let viewport = null;
+    try {
+      viewport = renderingEngine.getViewport(element.id);
+    } catch (_) {
+      // The element may belong to a layout being replaced.
+    }
+    return {
+      id: element.id,
+      seriesId: element.dataset.seriesId || "",
+      imageIds: viewport?.getImageIds?.() || [],
+      viewPlaneNormal: viewport?.getCamera?.().viewPlaneNormal || null,
+    };
+  });
+}
+
 async function restoreAnnotations(series) {
   const stored = await api(`/api/series/${series.id}/annotations`);
   if (!Array.isArray(stored.annotations) || !stored.annotations.length) return;
-  const target = activeElements[0];
+  const descriptors = activeViewportDescriptors();
   for (const item of stored.annotations) {
+    const viewportId = annotationTargetViewportId(item, descriptors);
+    const target = viewportId ? document.getElementById(viewportId) : null;
+    if (!target) continue;
     try {
       annotation.state.addAnnotation(item, target);
     } catch (_) {
       // A measurement referencing a missing image is ignored, not guessed.
     }
   }
-  renderingEngine?.render();
+  if (engineIsLive()) renderingEngine.render();
 }
 
 function findArea(value, depth = 0) {
@@ -837,7 +1339,11 @@ export function roiVolumeMl(series = activeSeries) {
   };
   const areas = annotation.state
     .getAllAnnotations()
-    .filter((item) => eligible.has(item.metadata?.toolName) && isAxialRoi(item))
+    .filter((item) => (
+      annotationBelongsToSeries(item, series.id)
+      && eligible.has(item.metadata?.toolName)
+      && isAxialRoi(item)
+    ))
     .map((item) => findArea(item.data?.cachedStats))
     .filter((value) => value != null && value >= 0);
   if (!areas.length) {
@@ -846,10 +1352,36 @@ export function roiVolumeMl(series = activeSeries) {
   return areas.reduce((sum, area) => sum + area, 0) * series.geometry.sliceSpacing / 1000;
 }
 
+/**
+ * Frees the volume and the decoded slices of one series. The slice ids are
+ * derived from the registry instead of scanning the cache, because Cornerstone
+ * exposes no public iterator over cached image ids.
+ */
 export function purgeSeriesCache(seriesId) {
+  const series = seriesRegistry.get(seriesId);
+  if (!seriesId || !series) return 0;
   const volumeId = `${VOLUME_SCHEME}:${seriesId}`;
-  if (cache.getVolume(volumeId)) cache.removeVolumeLoadObject(volumeId);
-  for (const image of cache.getCachedImageBasedOnImageURI?.(seriesId) || []) {
-    cache.removeImageLoadObject(image.imageId);
+  try {
+    if (cache.getVolume(volumeId)) cache.removeVolumeLoadObject(volumeId);
+  } catch (_) {
+    // A volume still bound to a live viewport stays until the layout changes.
+  }
+  let removed = 0;
+  for (const imageId of imageIds(series)) {
+    if (!cache.getImage(imageId)) continue;
+    try {
+      cache.removeImageLoadObject(imageId);
+      removed += 1;
+    } catch (_) {
+      // Slices shared with a live volume cannot be evicted individually.
+    }
+  }
+  return removed;
+}
+
+/** Frees the volume and decoded slices of every series except `keepSeriesId`. */
+function releaseOtherSeries(keepSeriesId) {
+  for (const seriesId of seriesRegistry.keys()) {
+    if (seriesId !== keepSeriesId) purgeSeriesCache(seriesId);
   }
 }

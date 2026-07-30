@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -27,6 +28,7 @@ def make_mpr(folder: Path, count: int = 101) -> dict:
         "version": 1,
         "series_type": "T1_POST_CONTRAST",
         "series_description": "T1 CE",
+        "modality": "MR",
         "rows": 6,
         "columns": 8,
         "slice_count": count,
@@ -78,6 +80,37 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(len(snapshot["series"]), 2)
             self.assertEqual(len({item["id"] for item in snapshot["series"]}), 2)
 
+    def test_modality_is_fail_closed_and_raw_trees_are_pruned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ct = root / "Study_CT" / "Series_1"
+            unknown = root / "Study" / "Series_2"
+            raw = root / "RAW_JPG" / "ShouldNotAppear"
+            for folder in (ct, unknown, raw):
+                folder.mkdir(parents=True)
+                Image.new("L", (4, 4)).save(folder / "1.jpg")
+            snapshot = ArchiveCatalog().open(root)
+            modalities = {item["name"]: item["modality"] for item in snapshot["series"]}
+            self.assertEqual(modalities[str(Path("Study_CT") / "Series_1")], "CT")
+            self.assertEqual(modalities[str(Path("Study") / "Series_2")], "UNKNOWN")
+            self.assertFalse(any("ShouldNotAppear" in name for name in modalities))
+
+    def test_archive_scan_runs_as_background_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            series = root / "Series_1"
+            series.mkdir()
+            Image.new("L", (4, 4)).save(series / "1.jpg")
+            controller = WebController()
+            started = controller.start_archive_scan(str(root))
+            self.assertEqual(started["kind"], "archive")
+            deadline = time.time() + 3
+            while controller.job.snapshot()["status"] == "running" and time.time() < deadline:
+                time.sleep(0.01)
+            finished = controller.job.snapshot()
+            self.assertEqual(finished["status"], "complete")
+            self.assertEqual(len(finished["result"]["series"]), 1)
+
 
 class ServerSecurityTests(unittest.TestCase):
     def setUp(self):
@@ -114,6 +147,7 @@ class ServerSecurityTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.request("/api/bootstrap")
         self.assertEqual(caught.exception.code, 401)
+        caught.exception.close()
 
     def test_authorized_image_uses_opaque_id(self):
         series_id = self.controller.catalog.snapshot()["series"][0]["id"]
@@ -128,6 +162,7 @@ class ServerSecurityTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.request("/api/series/../../image/0", self.server.token)
         self.assertEqual(caught.exception.code, 404)
+        caught.exception.close()
 
 
 if __name__ == "__main__":
