@@ -10,6 +10,8 @@ import {
   nextViewportRotation,
   seriesSafetyNotice,
   toolFallback,
+  volumeTransferRange,
+  windowPresetRange,
 } from "./viewer.js";
 
 describe("viewer shell", () => {
@@ -130,5 +132,38 @@ describe("viewer shell", () => {
     expect(seriesSafetyNotice({ modality: "UNKNOWN" }).level).toBe("warning");
     expect(WINDOW_PRESETS.full).toEqual({ lower: 0, upper: 255 });
     expect(Object.keys(WINDOW_PRESETS)).not.toContain("bone");
+  });
+
+  it("derives display and 3D transfer ranges from original DICOM intensity", () => {
+    const dicom = {
+      sourceType: "dicom",
+      pixelData: {
+        bitsStored: 12,
+        pixelRepresentation: 0,
+        rescaleSlope: 1,
+        rescaleIntercept: 0,
+        windowCenter: 1200,
+        windowWidth: 1800,
+      },
+    };
+    expect(windowPresetRange("full", dicom)).toEqual({ lower: 300, upper: 2100 });
+    expect(windowPresetRange("soft", dicom)).toEqual({ lower: -150, upper: 2550 });
+    expect(windowPresetRange("contrast", dicom)).toEqual({ lower: 660, upper: 1740 });
+    expect(volumeTransferRange(dicom, [0, 4095])).toEqual([300, 2100]);
+
+    const ct = {
+      sourceType: "dicom",
+      pixelData: {
+        bitsStored: 12,
+        pixelRepresentation: 0,
+        rescaleSlope: 1,
+        rescaleIntercept: -1024,
+        windowCenter: 40,
+        windowWidth: 400,
+      },
+    };
+    // A raw CT volume spans 0..4095, so the physical -160..240 window must be
+    // mapped back to stored values 864..1264 before building transfer points.
+    expect(volumeTransferRange(ct, [0, 4095])).toEqual([864, 1264]);
   });
 });

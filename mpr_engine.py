@@ -2,9 +2,9 @@
 Core MPR support for the DICOM downloader.
 
 The normal JPG conversion remains available for every series.  This module
-finds every eligible high-resolution 3D T1 series, including post-contrast and
-pre-contrast acquisitions, converts each with its own series-wide intensity
-window, and writes the geometry required to reconstruct orthogonal MPR views.
+finds eligible high-resolution 3D T1 and CT volume series, converts each with
+its own series-wide intensity window, and writes the geometry required to
+reconstruct orthogonal MPR views.
 
 No patient name or patient ID is written to the MPR manifest.
 """
@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 import numpy as np
+
+from dicom_io import discover_dicom_files
 
 
 MANIFEST_NAME = "mpr-volume.json"
@@ -65,6 +67,7 @@ def series_folder_name(
     kind_token = {
         "T1_POST_CONTRAST": "T1_POST",
         "T1_PRE_CONTRAST": "T1_PRE",
+        "CT_VOLUME": "CT_VOLUME",
     }.get(_text(kind), "")
     parts = [
         f"Series_{_safe_name(series_number)}",
@@ -101,6 +104,7 @@ class MprCandidate:
     slice_spacing: float
     slices: list[MprSlice]
     kind: str
+    modality: str
     score: float
     reasons: list[str] = field(default_factory=list)
 
@@ -136,10 +140,7 @@ class _Header:
 
 
 def _dicom_files(base: Path) -> list[Path]:
-    return sorted(
-        p for p in Path(base).rglob("*")
-        if p.is_file() and p.suffix.lower() in (".dcm", ".dicom")
-    )
+    return discover_dicom_files(Path(base))
 
 
 def _read_header(path: Path) -> Optional[_Header]:
@@ -220,12 +221,24 @@ def _classify_text(header: _Header) -> tuple[Optional[str], float, list[str]]:
     )))
     reasons: list[str] = []
 
-    if header.modality not in ("MR", "MRI"):
-        return None, 0.0, ["không phải MRI"]
+    if header.modality not in ("CT", "MR", "MRI"):
+        return None, 0.0, ["không phải CT/MRI"]
     if _REJECT_RE.search(text):
-        return None, 0.0, ["series dẫn xuất hoặc không phải T1 3D"]
+        return None, 0.0, ["series dẫn xuất/localizer hoặc không phù hợp dựng volume"]
     if "DERIVED" in header.image_type and "ORIGINAL" not in header.image_type:
         return None, 0.0, ["ảnh DERIVED"]
+
+    if header.modality == "CT":
+        kind = "CT_VOLUME"
+        score = 700.0
+        reasons.append("CT volume")
+        if "ORIGINAL" in header.image_type:
+            score += 20.0
+            reasons.append("ORIGINAL")
+        if "PRIMARY" in header.image_type:
+            score += 10.0
+            reasons.append("PRIMARY")
+        return kind, score, reasons
 
     is_t1 = bool(_T1_RE.search(text) or re.search(r"\b(BRAVO|MPRAGE|SPGR|TFE)\b", text))
     if not is_t1:
@@ -351,6 +364,7 @@ def _candidate_from_group(headers: list[_Header], min_slices: int) -> Optional[M
         slice_spacing=slice_spacing,
         slices=slices,
         kind=kind,
+        modality="MR" if first.modality == "MRI" else first.modality,
         score=score,
         reasons=reasons,
     )
@@ -383,7 +397,7 @@ def select_mpr_candidates(
     dicom_dir: Path,
     min_slices: int = DEFAULT_MIN_SLICES,
 ) -> list[MprCandidate]:
-    """Return every eligible post- and pre-contrast 3D T1 series."""
+    """Return every eligible 3D T1 and CT volume series."""
     return discover_mpr_candidates(dicom_dir, min_slices=min_slices)
 
 
@@ -498,7 +512,7 @@ def convert_mpr_candidate(
         "version": MANIFEST_VERSION,
         "series_type": candidate.kind,
         "series_description": candidate.description,
-        "modality": "MR",
+        "modality": candidate.modality,
         "series_number": candidate.series_number,
         "study_instance_uid": candidate.study_uid,
         "series_instance_uid": candidate.series_uid,

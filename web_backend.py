@@ -24,6 +24,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import unquote, urlparse
 
 import dcom_pipeline
+from dicom_io import discover_dicom_files
 import mpr_engine
 
 
@@ -44,6 +45,8 @@ MIME_TYPES = {
     ".wasm": "application/wasm",
 }
 
+DICOM_MANIFEST_FORMAT = "dcom-direct-dicom"
+
 
 def _natural_key(value: str) -> list[Any]:
     return [int(item) if item.isdigit() else item.casefold() for item in re.split(r"(\d+)", value)]
@@ -61,6 +64,292 @@ def _finite_numbers(value: Any, count: int) -> Optional[list[float]]:
     except (TypeError, ValueError):
         return None
     return result if all(math.isfinite(item) for item in result) else None
+
+
+def _dicom_numbers(value: Any, count: int) -> Optional[list[float]]:
+    if value is None or isinstance(value, (str, bytes)):
+        return None
+    try:
+        result = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+    return result if len(result) == count and all(math.isfinite(item) for item in result) else None
+
+
+def _dicom_number(value: Any, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        if not isinstance(value, (str, bytes)) and hasattr(value, "__len__"):
+            value = value[0]
+        result = float(value)
+    except (IndexError, TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
+
+
+@dataclass(frozen=True)
+class DicomHeader:
+    path: Path
+    series_uid: str
+    study_uid: str
+    frame_uid: str
+    series_number: str
+    description: str
+    modality: str
+    rows: int
+    columns: int
+    samples_per_pixel: int
+    photometric: str
+    bits_allocated: int
+    bits_stored: int
+    high_bit: int
+    pixel_representation: int
+    pixel_spacing: Optional[list[float]]
+    orientation: Optional[list[float]]
+    position: Optional[list[float]]
+    instance_number: float
+    sop_uid: str
+    rescale_slope: float
+    rescale_intercept: float
+    window_center: Optional[float]
+    window_width: Optional[float]
+
+
+def _read_dicom_header(path: Path) -> Optional[DicomHeader]:
+    import pydicom
+
+    try:
+        ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+        rows = int(getattr(ds, "Rows", 0) or 0)
+        columns = int(getattr(ds, "Columns", 0) or 0)
+        frames = int(getattr(ds, "NumberOfFrames", 1) or 1)
+    except Exception:
+        return None
+    if rows <= 0 or columns <= 0 or frames != 1:
+        return None
+    samples = int(getattr(ds, "SamplesPerPixel", 1) or 1)
+    photometric = str(getattr(ds, "PhotometricInterpretation", "MONOCHROME2") or "MONOCHROME2").upper()
+    if samples != 1 or photometric not in {"MONOCHROME1", "MONOCHROME2"}:
+        return None
+    series_number = str(getattr(ds, "SeriesNumber", "") or "")
+    description = str(getattr(ds, "SeriesDescription", "") or "").strip() or "DICOM series"
+    series_uid = str(getattr(ds, "SeriesInstanceUID", "") or "").strip()
+    if not series_uid:
+        series_uid = f"fallback:{path.parent}:{series_number}:{description}"
+    window_center_value = getattr(ds, "WindowCenter", None)
+    window_width_value = getattr(ds, "WindowWidth", None)
+    window_center = _dicom_number(window_center_value, math.nan)
+    window_width = _dicom_number(window_width_value, math.nan)
+    return DicomHeader(
+        path=path,
+        series_uid=series_uid,
+        study_uid=str(getattr(ds, "StudyInstanceUID", "") or ""),
+        frame_uid=str(getattr(ds, "FrameOfReferenceUID", "") or ""),
+        series_number=series_number,
+        description=description,
+        modality=str(getattr(ds, "Modality", "UNKNOWN") or "UNKNOWN").upper(),
+        rows=rows,
+        columns=columns,
+        samples_per_pixel=samples,
+        photometric=photometric,
+        bits_allocated=int(getattr(ds, "BitsAllocated", 16) or 16),
+        bits_stored=int(getattr(ds, "BitsStored", 16) or 16),
+        high_bit=int(getattr(ds, "HighBit", 15) or 15),
+        pixel_representation=int(getattr(ds, "PixelRepresentation", 0) or 0),
+        pixel_spacing=_dicom_numbers(getattr(ds, "PixelSpacing", None), 2),
+        orientation=_dicom_numbers(getattr(ds, "ImageOrientationPatient", None), 6),
+        position=_dicom_numbers(getattr(ds, "ImagePositionPatient", None), 3),
+        instance_number=_dicom_number(getattr(ds, "InstanceNumber", None), math.inf),
+        sop_uid=str(getattr(ds, "SOPInstanceUID", "") or ""),
+        rescale_slope=_dicom_number(getattr(ds, "RescaleSlope", None), 1.0),
+        rescale_intercept=_dicom_number(getattr(ds, "RescaleIntercept", None), 0.0),
+        window_center=window_center if math.isfinite(window_center) else None,
+        window_width=window_width if math.isfinite(window_width) and window_width > 0 else None,
+    )
+
+
+def _dicom_vectors_close(left: Optional[list[float]], right: Optional[list[float]]) -> bool:
+    if left is None or right is None or len(left) != len(right):
+        return False
+    return all(abs(a - b) <= 1e-4 for a, b in zip(left, right))
+
+
+def _ordered_dicom_headers(headers: list[DicomHeader]) -> list[DicomHeader]:
+    if not headers or not headers[0].orientation or any(item.position is None for item in headers):
+        return sorted(headers, key=lambda item: (item.instance_number, str(item.path).casefold()))
+    orientation = headers[0].orientation
+    row = orientation[:3]
+    column = orientation[3:]
+    normal = [
+        row[1] * column[2] - row[2] * column[1],
+        row[2] * column[0] - row[0] * column[2],
+        row[0] * column[1] - row[1] * column[0],
+    ]
+    norm = math.sqrt(sum(item * item for item in normal))
+    if norm <= 1e-9:
+        return sorted(headers, key=lambda item: (item.instance_number, str(item.path).casefold()))
+    normal = [item / norm for item in normal]
+    return sorted(
+        headers,
+        key=lambda item: (
+            sum(a * b for a, b in zip(item.position or [], normal)),
+            item.instance_number,
+            str(item.path).casefold(),
+        ),
+    )
+
+
+def _direct_dicom_manifest(headers: list[DicomHeader]) -> tuple[Optional[dict], bool, str]:
+    first = headers[0]
+    spacing = first.pixel_spacing
+    orientation = first.orientation
+    if not spacing or min(spacing) <= 0:
+        return None, False, "DICOM thiếu PixelSpacing nên chỉ mở được ảnh 2D theo pixel."
+    if not orientation:
+        return None, False, "DICOM thiếu ImageOrientationPatient nên chưa dựng được MPR/3D."
+    frame_uids = {item.frame_uid for item in headers if item.frame_uid}
+    if len(frame_uids) > 1:
+        return None, False, "Các lát DICOM không cùng FrameOfReferenceUID."
+    row = orientation[:3]
+    column = orientation[3:]
+    row_norm = math.sqrt(sum(item * item for item in row))
+    column_norm = math.sqrt(sum(item * item for item in column))
+    dot = sum(a * b for a, b in zip(row, column))
+    normal = [
+        row[1] * column[2] - row[2] * column[1],
+        row[2] * column[0] - row[0] * column[2],
+        row[0] * column[1] - row[1] * column[0],
+    ]
+    normal_norm = math.sqrt(sum(item * item for item in normal))
+    if (
+        abs(row_norm - 1) > 1e-3
+        or abs(column_norm - 1) > 1e-3
+        or abs(dot) > 1e-3
+        or normal_norm <= 1e-9
+    ):
+        return None, False, "ImageOrientationPatient không hợp lệ."
+    normal = [item / normal_norm for item in normal]
+    if any(
+        item.rows != first.rows
+        or item.columns != first.columns
+        or not _dicom_vectors_close(item.pixel_spacing, spacing)
+        or not _dicom_vectors_close(item.orientation, orientation)
+        or item.position is None
+        for item in headers
+    ):
+        return None, False, "Các lát DICOM không đồng nhất geometry nên chưa dựng được MPR/3D."
+    positioned = sorted(
+        ((sum(a * b for a, b in zip(item.position or [], normal)), item) for item in headers),
+        key=lambda pair: pair[0],
+    )
+    unique: list[tuple[float, DicomHeader]] = []
+    for distance, item in positioned:
+        if unique and abs(distance - unique[-1][0]) < 1e-4:
+            continue
+        unique.append((distance, item))
+    if len(unique) != len(headers):
+        return None, False, "Series DICOM có lát trùng vị trí nên chưa dựng được MPR/3D."
+    gaps = [b[0] - a[0] for a, b in zip(unique, unique[1:])]
+    slice_spacing = sorted(abs(value) for value in gaps)[len(gaps) // 2] if gaps else 0.0
+    ordered = [
+        {
+            "file": f"dicom-{index + 1:06d}",
+            "position": list(item.position or []),
+            "distance": float(distance),
+            "sop_instance_uid": item.sop_uid,
+        }
+        for index, (distance, item) in enumerate(unique)
+    ]
+    origin = list(unique[0][1].position or [0.0, 0.0, 0.0])
+    row_spacing, column_spacing = spacing
+    affine = [
+        [row[0] * column_spacing, column[0] * row_spacing, normal[0] * slice_spacing, origin[0]],
+        [row[1] * column_spacing, column[1] * row_spacing, normal[1] * slice_spacing, origin[1]],
+        [row[2] * column_spacing, column[2] * row_spacing, normal[2] * slice_spacing, origin[2]],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    manifest = {
+        "format": DICOM_MANIFEST_FORMAT,
+        "version": 1,
+        "series_type": "DICOM_DIRECT",
+        "series_description": first.description,
+        "modality": "MR" if first.modality == "MRI" else first.modality,
+        "series_number": first.series_number,
+        "study_instance_uid": first.study_uid,
+        "series_instance_uid": first.series_uid,
+        "frame_of_reference_uid": first.frame_uid or first.series_uid,
+        "rows": first.rows,
+        "columns": first.columns,
+        "slice_count": len(headers),
+        "pixel_spacing": list(spacing),
+        "slice_spacing": float(slice_spacing),
+        "image_orientation_patient": list(orientation),
+        "affine": affine,
+        "ordered_slices": ordered,
+    }
+    if len(headers) < mpr_engine.DEFAULT_MIN_SLICES:
+        return manifest, False, f"Cần ít nhất {mpr_engine.DEFAULT_MIN_SLICES} lát đồng nhất để dựng MPR/3D."
+    if slice_spacing <= 0:
+        return manifest, False, "Khoảng cách lát cắt không hợp lệ."
+    if gaps and max(abs(abs(gap) - slice_spacing) for gap in gaps) > max(0.15, slice_spacing * 0.15):
+        return manifest, False, "Khoảng cách giữa các lát DICOM không đồng nhất."
+    return manifest, True, ""
+
+
+def _dicom_pixel_payload(path: Path) -> tuple[bytes, dict[str, str]]:
+    import numpy as np
+    import pydicom
+
+    try:
+        ds = pydicom.dcmread(str(path), force=True)
+        pixels = np.asarray(ds.pixel_array)
+    except Exception as exc:
+        raise ValueError(f"Không giải mã được pixel DICOM: {path.name} ({exc})") from exc
+    if pixels.ndim != 2:
+        raise ValueError("Viewer trực tiếp hiện chỉ hỗ trợ DICOM xám một khung 2D.")
+
+    bits = int(getattr(ds, "BitsAllocated", pixels.dtype.itemsize * 8) or pixels.dtype.itemsize * 8)
+    signed = int(getattr(ds, "PixelRepresentation", 0) or 0) == 1
+    if bits <= 8:
+        dtype = np.dtype("i1" if signed else "u1")
+        pixel_type = "int8" if signed else "uint8"
+    elif bits <= 16:
+        dtype = np.dtype("<i2" if signed else "<u2")
+        pixel_type = "int16" if signed else "uint16"
+    elif bits <= 32:
+        dtype = np.dtype("<i4" if signed else "<u4")
+        pixel_type = "int32" if signed else "uint32"
+    else:
+        raise ValueError(f"BitsAllocated={bits} chưa được hỗ trợ.")
+    pixels = np.ascontiguousarray(pixels.astype(dtype, copy=False))
+    raw_min = int(pixels.min())
+    raw_max = int(pixels.max())
+    slope = _dicom_number(getattr(ds, "RescaleSlope", None), 1.0)
+    intercept = _dicom_number(getattr(ds, "RescaleIntercept", None), 0.0)
+    center = _dicom_number(getattr(ds, "WindowCenter", None), math.nan)
+    width = _dicom_number(getattr(ds, "WindowWidth", None), math.nan)
+    physical_min = raw_min * slope + intercept
+    physical_max = raw_max * slope + intercept
+    if not math.isfinite(center):
+        center = (physical_min + physical_max) / 2.0
+    if not math.isfinite(width) or width <= 0:
+        width = max(1.0, physical_max - physical_min)
+    headers = {
+        "X-DCom-Pixel-Type": pixel_type,
+        "X-DCom-Rows": str(pixels.shape[0]),
+        "X-DCom-Columns": str(pixels.shape[1]),
+        "X-DCom-Min": str(raw_min),
+        "X-DCom-Max": str(raw_max),
+        "X-DCom-Slope": repr(slope),
+        "X-DCom-Intercept": repr(intercept),
+        "X-DCom-Window-Center": repr(center),
+        "X-DCom-Window-Width": repr(width),
+        "X-DCom-Photometric": str(
+            getattr(ds, "PhotometricInterpretation", "MONOCHROME2") or "MONOCHROME2"
+        ).upper(),
+    }
+    return pixels.tobytes(order="C"), headers
 
 
 def validate_mpr_manifest(folder: Path, manifest: Optional[dict]) -> tuple[bool, str]:
@@ -150,6 +439,8 @@ class SeriesRecord:
     mpr_ready: bool
     mpr_reason: str
     modality: str = "UNKNOWN"
+    source_type: str = "image"
+    pixel_data: Optional[dict] = None
 
     def public_dict(self) -> dict:
         data = {
@@ -161,8 +452,14 @@ class SeriesRecord:
             "seriesType": (self.manifest or {}).get("series_type", ""),
             "description": (self.manifest or {}).get("series_description", self.name),
             "modality": self.modality,
+            "sourceType": self.source_type,
         }
-        if self.mpr_ready and self.manifest:
+        if self.pixel_data:
+            data["pixelData"] = self.pixel_data
+        if self.manifest and all(
+            key in self.manifest
+            for key in ("rows", "columns", "pixel_spacing", "image_orientation_patient")
+        ):
             data["geometry"] = {
                 "rows": int(self.manifest["rows"]),
                 "columns": int(self.manifest["columns"]),
@@ -209,6 +506,68 @@ class ArchiveCatalog:
             return "MR"
         return "UNKNOWN"
 
+    @staticmethod
+    def _dicom_records(
+        root: Path,
+        *,
+        log: Optional[Callable[[str], None]] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> tuple[dict[str, SeriesRecord], int, int]:
+        paths = discover_dicom_files(root)
+        groups: dict[str, list[DicomHeader]] = {}
+        unsupported = 0
+        for index, path in enumerate(paths, start=1):
+            if should_stop and should_stop():
+                return {}, unsupported, len(paths)
+            if log and (index == 1 or index % 100 == 0):
+                log(f"Đang đọc metadata DICOM: {index}/{len(paths)} file…")
+            header = _read_dicom_header(path)
+            if header is not None:
+                groups.setdefault(header.series_uid, []).append(header)
+            else:
+                unsupported += 1
+
+        records: dict[str, SeriesRecord] = {}
+        for uid, headers in groups.items():
+            headers = _ordered_dicom_headers(headers)
+            manifest, ready, reason = _direct_dicom_manifest(headers)
+            first = headers[0]
+            digest = hashlib.sha256(f"dicom:{root}:{uid}".casefold().encode("utf-8")).hexdigest()[:20]
+            common = Path(os.path.commonpath([str(item.path.parent) for item in headers]))
+            modality = "MR" if first.modality == "MRI" else first.modality
+            records[digest] = SeriesRecord(
+                series_id=digest,
+                name=f"Series {first.series_number or '?'} - {first.description}",
+                folder=common,
+                images=[item.path for item in headers],
+                manifest=manifest,
+                mpr_ready=ready,
+                mpr_reason=reason,
+                modality=modality if modality in {"CT", "MR"} else "UNKNOWN",
+                source_type="dicom",
+                pixel_data={
+                    "rows": first.rows,
+                    "columns": first.columns,
+                    "pixelSpacing": first.pixel_spacing,
+                    "samplesPerPixel": first.samples_per_pixel,
+                    "photometricInterpretation": first.photometric,
+                    "bitsAllocated": first.bits_allocated,
+                    "bitsStored": first.bits_stored,
+                    "highBit": first.high_bit,
+                    "pixelRepresentation": first.pixel_representation,
+                    "rescaleSlope": first.rescale_slope,
+                    "rescaleIntercept": first.rescale_intercept,
+                    "windowCenter": first.window_center,
+                    "windowWidth": first.window_width,
+                },
+            )
+        if log and unsupported:
+            log(
+                f"Bỏ qua {unsupported} file nghi DICOM chưa hỗ trợ "
+                "(multi-frame, ảnh màu, metadata thiếu hoặc file hỏng)."
+            )
+        return records, unsupported, len(paths)
+
     def open(
         self,
         value: os.PathLike[str] | str,
@@ -219,6 +578,17 @@ class ArchiveCatalog:
         root = Path(value).expanduser().resolve(strict=True)
         if not root.is_dir():
             raise ValueError("Đường dẫn không phải thư mục.")
+        dicom_records, unsupported_dicom, dicom_candidates = self._dicom_records(
+            root, log=log, should_stop=should_stop,
+        )
+        if dicom_records:
+            if log:
+                log(f"Đã nhận diện {len(dicom_records)} series DICOM, mở trực tiếp không chuyển JPG.")
+            with self._lock:
+                self.root = root
+                self._series = dicom_records
+            return self.snapshot()
+
         records: dict[str, SeriesRecord] = {}
         scanned = 0
         blocked = {"DICOM", "RAW_JPG"}
@@ -258,6 +628,12 @@ class ArchiveCatalog:
             )
         if log:
             log(f"Đã quét {scanned} thư mục, tìm thấy {len(records)} series ảnh.")
+        if not records and dicom_candidates:
+            raise ValueError(
+                "Folder có file DICOM nhưng chưa có series ảnh xám một khung đọc được. "
+                f"Đã bỏ qua {unsupported_dicom}/{dicom_candidates} file; "
+                "hãy kiểm tra DICOM multi-frame, ảnh màu, file hỏng hoặc codec nén."
+            )
         with self._lock:
             self.root = root
             self._series = records
@@ -346,6 +722,8 @@ class WebController:
         self.catalog = ArchiveCatalog()
         self.job = JobState()
         self.output_root = Path.home() / "DCom JPG PACS"
+        app_data = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+        self.annotation_root = app_data / "DCom JPG PACS" / "viewer-annotations"
 
     def bootstrap(self) -> dict:
         return {
@@ -373,6 +751,50 @@ class WebController:
             )
 
         self.job.start("archive", target)
+        return self.job.snapshot()
+
+    def start_local_dicom_import(self, path: str, payload: Optional[dict] = None) -> dict:
+        source = Path(path).expanduser().resolve(strict=True)
+        if not source.is_dir():
+            raise ValueError("Đường dẫn DICOM không phải thư mục.")
+        options = payload or {}
+        quality = max(70, min(int(options.get("quality", 100)), 100))
+        output_root = Path(str(options.get("outputRoot") or self.output_root)).expanduser().resolve()
+        output_root.mkdir(parents=True, exist_ok=True)
+
+        def target() -> dict:
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            source_token = hashlib.sha256(str(source).casefold().encode("utf-8")).hexdigest()[:8]
+            destination = output_root / f"LOCAL_DICOM_{stamp}_{source_token}" / "JPG"
+            self.job.log(f"Đang quét folder DICOM local và chuyển sang JPG chất lượng {quality}…")
+            stats = dcom_pipeline.convert_all(
+                source,
+                destination,
+                log=self.job.log,
+                quality=quality,
+                save_png=False,
+                contrast_mode=dcom_pipeline.CLINICAL,
+                should_stop=self.job.stop_event.is_set,
+            )
+            if not self.job.stop_event.is_set() and stats.converted <= 0:
+                raise ValueError(
+                    "Không tìm thấy ảnh DICOM có PixelData "
+                    "(.dcm, .dicom, .ima hoặc file DICOM không đuôi)."
+                )
+            archive = self.catalog.open(
+                destination,
+                log=self.job.log,
+                should_stop=self.job.stop_event.is_set,
+            )
+            return {
+                "archive": archive,
+                "source": str(source),
+                "output": str(destination),
+                "converted": stats.converted,
+                "failed": stats.failed,
+            }
+
+        self.job.start("local-import", target)
         return self.job.snapshot()
 
     def set_output_root(self, path: str) -> dict:
@@ -455,9 +877,14 @@ class WebController:
         self.job.log("Đang yêu cầu dừng an toàn...")
         return self.job.snapshot()
 
+    def _annotations_path(self, record: SeriesRecord) -> Path:
+        if record.source_type == "dicom":
+            return self.annotation_root / f"{record.series_id}.json"
+        return record.folder / ANNOTATIONS_NAME
+
     def get_annotations(self, series_id: str) -> dict:
         record = self.catalog.get(series_id)
-        path = record.folder / ANNOTATIONS_NAME
+        path = self._annotations_path(record)
         if not path.is_file():
             return {"version": 1, "annotations": []}
         try:
@@ -472,7 +899,8 @@ class WebController:
         if not isinstance(annotations, list):
             raise ValueError("Dữ liệu đo/ROI không hợp lệ.")
         payload = {"version": 1, "annotations": annotations}
-        path = record.folder / ANNOTATIONS_NAME
+        path = self._annotations_path(record)
+        path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(path)
@@ -506,7 +934,12 @@ class LocalApiServer:
             def log_message(self, _format: str, *_args: Any) -> None:
                 return
 
-            def _headers(self, content_type: str, length: int) -> None:
+            def _headers(
+                self,
+                content_type: str,
+                length: int,
+                extra: Optional[dict[str, str]] = None,
+            ) -> None:
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(length))
                 self.send_header("Cache-Control", "no-store")
@@ -519,12 +952,26 @@ class LocalApiServer:
                     "img-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self'; "
                     "object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
                 )
+                for name, value in (extra or {}).items():
+                    self.send_header(name, value)
 
-            def _send(self, status: int, body: bytes, content_type: str) -> None:
+            def _send(
+                self,
+                status: int,
+                body: bytes,
+                content_type: str,
+                extra: Optional[dict[str, str]] = None,
+            ) -> None:
                 self.send_response(status)
-                self._headers(content_type, len(body))
-                self.end_headers()
-                self.wfile.write(body)
+                self._headers(content_type, len(body), extra)
+                try:
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    # The viewer can cancel prefetched slices while switching
+                    # layouts or closing. The request is already gone; there is
+                    # no client left to receive a second error response.
+                    return
 
             def _json(self, status: int, value: Any) -> None:
                 self._send(status, _json_bytes(value), "application/json; charset=utf-8")
@@ -603,6 +1050,15 @@ class LocalApiServer:
                 if not 0 <= index < len(record.images):
                     raise IndexError("Lát ảnh ngoài phạm vi.")
                 image = record.images[index]
+                if record.source_type == "dicom":
+                    body, headers = _dicom_pixel_payload(image)
+                    self._send(
+                        HTTPStatus.OK,
+                        body,
+                        "application/vnd.dcom.pixel-data",
+                        headers,
+                    )
+                    return True
                 body = image.read_bytes()
                 mime = MIME_TYPES.get(image.suffix.casefold(), "application/octet-stream")
                 self._send(HTTPStatus.OK, body, mime)

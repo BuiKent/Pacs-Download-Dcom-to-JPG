@@ -35,6 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from dicom_io import discover_dicom_files
+
 # --------------------------------------------------------------------------- #
 #  Tiện ích chung
 # --------------------------------------------------------------------------- #
@@ -1180,8 +1182,7 @@ def convert_all(
     jpg_dir.mkdir(parents=True, exist_ok=True)
 
     mode_txt = "auto-contrast" if contrast_mode == AUTO else "chuẩn lâm sàng (VOI LUT)"
-    dcm_files = [p for p in dicom_dir.rglob("*")
-                 if p.is_file() and p.suffix.lower() in (".dcm", ".dicom")]
+    dcm_files = discover_dicom_files(dicom_dir)
     log(f"Chuyển đổi: tìm thấy {len(dcm_files)} file DICOM. Chất lượng JPG={quality}"
         f"{' + PNG' if save_png else ''}, tương phản={mode_txt}.")
 
@@ -1199,7 +1200,11 @@ def convert_all(
         log(f"MPR-JPG: kh\u00f4ng qu\u00e9t \u0111\u01b0\u1ee3c series T1 ({e}); ti\u1ebfp t\u1ee5c lu\u1ed3ng JPG th\u01b0\u1eddng.")
 
     for candidate in mpr_candidates:
-        label = "T1 sau ti\u00eam" if candidate.kind == "T1_POST_CONTRAST" else "T1 kh\u00f4ng ti\u00eam"
+        label = {
+            "T1_POST_CONTRAST": "T1 sau ti\u00eam",
+            "T1_PRE_CONTRAST": "T1 kh\u00f4ng ti\u00eam",
+            "CT_VOLUME": "CT volume",
+        }.get(candidate.kind, candidate.kind)
         log(
             "MPR-JPG ch\u1ecdn: "
             f"{candidate.description} - {len(candidate.slices)} l\u00e1t - {label} - "

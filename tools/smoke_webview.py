@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import webview
 
+from dcom_web_app import _assert_panes_drawn
 from web_backend import LocalApiServer, WebController
 
 
@@ -53,13 +54,22 @@ def main() -> int:
                       title: document.title,
                       brand: document.querySelector('.brand b')?.textContent || '',
                       fatal: document.querySelector('.fatal-error')?.textContent || '',
+                      error: document.querySelector('.empty-state.error')?.textContent || '',
+                      readyMode: window.__viewerReadyMode || '',
                       series: document.querySelectorAll('.series-card').length,
                       canvases: document.querySelectorAll('#workspace canvas').length
                     })"""
                 )
                 if state.get("fatal"):
                     raise RuntimeError(state["fatal"])
-                if state.get("series") == 1 and state.get("canvases", 0) >= 1:
+                if state.get("error"):
+                    raise RuntimeError(state["error"])
+                if (
+                    state.get("series") == 1
+                    and state.get("canvases", 0) >= 1
+                    and state.get("readyMode") == "single"
+                ):
+                    state["litPixels"] = _assert_panes_drawn(window, "single", 1)
                     result["single"] = state
                     break
                 time.sleep(0.5)
@@ -73,18 +83,66 @@ def main() -> int:
                     """({
                       disabled: document.querySelector('[data-action="mode-mpr"]')?.disabled,
                       canvases: document.querySelectorAll('#workspace canvas').length,
+                      readyMode: window.__viewerReadyMode || '',
+                      diagnostics: window.__viewerDiagnostics || null,
                       labels: [...document.querySelectorAll('.viewport-label')].map(e => e.textContent),
-                      error: document.querySelector('.empty-state.error')?.textContent || ''
+                      error: document.querySelector('.empty-state.error')?.textContent || '',
+                      controls: ['tool-angle', 'tool-ellipse', 'tool-freehand'].map(action => {
+                        const button = document.querySelector(`[data-action="${action}"]`);
+                        const toolbar = document.querySelector('.toolbar');
+                        const rect = button?.getBoundingClientRect();
+                        const bounds = toolbar?.getBoundingClientRect();
+                        return {
+                          action,
+                          visible: Boolean(button && rect && bounds
+                            && rect.left >= bounds.left && rect.right <= bounds.right
+                            && rect.top >= bounds.top && rect.bottom <= bounds.bottom)
+                        };
+                      })
                     })"""
                 )
                 if mpr.get("error"):
                     raise RuntimeError(mpr["error"])
-                if mpr.get("canvases", 0) >= 3:
+                if mpr.get("canvases", 0) >= 3 and mpr.get("readyMode") == "mpr":
+                    hidden_controls = [
+                        item.get("action")
+                        for item in mpr.get("controls", [])
+                        if not item.get("visible")
+                    ]
+                    if hidden_controls:
+                        raise RuntimeError(f"MPR controls are clipped: {hidden_controls}")
+                    mpr["litPixels"] = _assert_panes_drawn(window, "mpr", 3)
                     result["mpr"] = mpr
                     break
                 time.sleep(0.5)
             else:
                 raise TimeoutError(f"Không dựng được MPR: {mpr}")
+
+            if (mpr.get("diagnostics") or {}).get("sourceType") == "dicom":
+                window.evaluate_js(
+                    """(() => {
+                      const select = document.querySelector('[data-field="window-preset"]');
+                      select.value = 'contrast';
+                      select.dispatchEvent(new Event('change', { bubbles: true }));
+                    })()"""
+                )
+                time.sleep(0.75)
+                result["dicomPreset"] = window.evaluate_js(
+                    """({
+                      selected: document.querySelector('[data-field="window-preset"]')?.value || '',
+                      ranges: (window.__viewerDiagnostics?.viewports || []).map(item => item.voiRange)
+                    })"""
+                )
+                ranges = result["dicomPreset"].get("ranges", [])
+                if (
+                    result["dicomPreset"].get("selected") != "contrast"
+                    or not ranges
+                    or any(value in ({"lower": 62, "upper": 168}, None) for value in ranges)
+                ):
+                    raise RuntimeError(f"DICOM preset still uses JPG range: {result['dicomPreset']}")
+                result["dicomPreset"]["litPixels"] = _assert_panes_drawn(
+                    window, "dicom-preset", 3,
+                )
 
             window.evaluate_js("document.querySelector('[data-action=\"mode-volume3d\"]').click()")
             deadline = time.time() + 45
@@ -92,13 +150,21 @@ def main() -> int:
                 volume = window.evaluate_js(
                     """({
                       canvases: document.querySelectorAll('#workspace canvas').length,
+                      readyMode: window.__viewerReadyMode || '',
                       labels: [...document.querySelectorAll('.viewport-label')].map(e => e.textContent),
                       error: document.querySelector('.empty-state.error')?.textContent || ''
                     })"""
                 )
                 if volume.get("error"):
                     raise RuntimeError(volume["error"])
-                if volume.get("canvases", 0) >= 1 and any("3D" in text for text in volume.get("labels", [])):
+                if (
+                    volume.get("canvases", 0) >= 1
+                    and volume.get("readyMode") == "volume3d"
+                    and any("3D" in text for text in volume.get("labels", []))
+                ):
+                    volume["litPixels"] = _assert_panes_drawn(
+                        window, "volume3d", volume.get("canvases", 0),
+                    )
                     result["volume3d"] = volume
                     break
                 time.sleep(0.5)

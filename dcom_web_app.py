@@ -95,6 +95,17 @@ class NativeApi:
         path = result[0] if isinstance(result, (list, tuple)) else result
         return self._controller.start_archive_scan(str(path))
 
+    def choose_dicom_folder(self, options=None):
+        import webview
+
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        if not result:
+            return None
+        path = result[0] if isinstance(result, (list, tuple)) else result
+        return self._controller.start_local_dicom_import(
+            str(path), options if isinstance(options, dict) else {},
+        )
+
     def choose_output(self):
         import webview
 
@@ -182,8 +193,8 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                       diagnostics: window.__viewerDiagnostics || null,
                       volumeLoad: window.__volumeLoadState || null,
                       sliceControls: document.querySelectorAll('.slice-control input').length,
-                      toolLabels: [...document.querySelectorAll('.interaction-tools .icon-button small')]
-                        .map(e => e.textContent)
+                      toolLabels: [...document.querySelectorAll('.interaction-tools .icon-button')]
+                        .map(e => e.getAttribute('aria-label') || '')
                     })"""
                 )
                 if state.get("error"):
@@ -207,8 +218,10 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                 raise RuntimeError(
                     f"{key} slice controls mismatch: {result[key].get('sliceControls')}"
                 )
-        if result["mpr"].get("diagnostics", {}).get("decodePath") != "worker":
-            raise RuntimeError(f"Web Worker decode is not active: {result['mpr']}")
+        diagnostics = result["mpr"].get("diagnostics", {})
+        expected_decode = "dicom-direct" if diagnostics.get("sourceType") == "dicom" else "worker"
+        if diagnostics.get("decodePath") != expected_decode:
+            raise RuntimeError(f"Unexpected decode path: {result['mpr']}")
         if len(result["mpr"].get("toolLabels", [])) != 8:
             raise RuntimeError(f"MPR contextual toolbar is incomplete: {result['mpr']}")
         if len(result["volume3d"].get("toolLabels", [])) != 4:
@@ -317,9 +330,9 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
 
         window.evaluate_js(
             """(() => {
-              const select = document.querySelector('[data-field="mpr-primary"]');
-              select.value = 'sagittal';
-              select.dispatchEvent(new Event('change', { bubbles: true }));
+              document.querySelector(
+                '.mode-mpr [data-plane="sagittal"] .mpr-swap-button'
+              )?.click();
             })()"""
         )
         time.sleep(1)

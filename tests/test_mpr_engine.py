@@ -22,6 +22,8 @@ def _write_series(
     spacing: float = 1.0,
     value_offset: int = 0,
     contrast_agent: str = "",
+    modality: str = "MR",
+    extension: str = ".dcm",
 ) -> str:
     series_uid = generate_uid()
     study_uid = generate_uid()
@@ -36,7 +38,7 @@ def _write_series(
         file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
         file_meta.ImplementationClassUID = generate_uid()
         ds = FileDataset(
-            str(folder / f"{index:04d}.dcm"),
+            str(folder / f"{index:04d}{extension}"),
             {},
             file_meta=file_meta,
             preamble=b"\0" * 128,
@@ -46,7 +48,7 @@ def _write_series(
         ds.StudyInstanceUID = study_uid
         ds.SeriesInstanceUID = series_uid
         ds.FrameOfReferenceUID = frame_uid
-        ds.Modality = "MR"
+        ds.Modality = modality
         ds.SeriesNumber = series_number
         ds.SeriesDescription = description
         ds.ProtocolName = description
@@ -71,11 +73,23 @@ def _write_series(
             + index
         )
         ds.PixelData = pixels.tobytes()
-        ds.save_as(str(folder / f"{index:04d}.dcm"), enforce_file_format=True)
+        ds.save_as(str(folder / f"{index:04d}{extension}"), enforce_file_format=True)
     return series_uid
 
 
 class MprSelectionTests(unittest.TestCase):
+    def test_complete_ct_and_extensionless_dicom_are_volume_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ct_uid = _write_series(
+                root, "CT HEAD THIN", 101, series_number=2,
+                modality="CT", extension="",
+            )
+            selected = mpr_engine.select_mpr_candidates(root)
+            self.assertEqual([ct_uid], [item.series_uid for item in selected])
+            self.assertEqual("CT_VOLUME", selected[0].kind)
+            self.assertEqual("CT", selected[0].modality)
+
     def test_all_eligible_post_and_pre_are_returned(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -191,7 +191,7 @@ function render() {
       <header class="app-header">
         <div class="brand">
           <span class="brand-mark">D</span>
-          <span><b>DCom JPG PACS</b><small>OFFLINE · v1.1</small></span>
+          <span><b>DCom DICOM/JPG PACS</b><small>OFFLINE · v1.1</small></span>
         </div>
         <div class="series-selects">
           <label>Series
@@ -217,7 +217,7 @@ function render() {
             false,
             "Tải phim",
           )}
-          ${iconButton("choose-archive", icons.folder, "Mở thư mục phim")}
+          ${iconButton("choose-archive", icons.folder, "Mở folder DICOM hoặc JPG/PNG trong viewer")}
           ${iconButton("refresh-archive", "⟳", "Quét lại thư mục hiện tại", false, !state.archive.root)}
           <button class="soft-button" data-action="classic" title="Khởi động lại bằng --classic">Classic</button>
         </div>
@@ -225,6 +225,11 @@ function render() {
 
       <aside class="download-panel">
         <div class="panel-title"><b>TẢI MRI / CT</b><button data-action="toggle-download">×</button></div>
+        <section class="dicom-source-card">
+          <div><b>CHUYỂN DICOM → JPG</b><small>Tính năng xuất JPG riêng; không dùng để mở DICOM trong viewer.</small></div>
+          <button class="primary" data-action="import-dicom-folder">Chuyển folder DICOM sang JPG</button>
+        </section>
+        <div class="source-divider"><span>hoặc tải từ PACS / link viewer</span></div>
         <div class="hospital-row">
           ${(state.bootstrap?.hospitals || []).map((item, index) =>
             `<label><input type="radio" name="hospital" value="${item.id}" ${index === 0 ? "checked" : ""}>
@@ -254,7 +259,7 @@ function render() {
       </aside>
 
       <main class="viewer-main">
-        <nav class="toolbar">
+        <nav class="toolbar mode-${state.mode}">
           <div class="tool-cluster layout-tools">
             ${iconButton("mode-single", icons.single, "Một khung ảnh", state.mode === "single")}
             ${iconButton("mode-compare", icons.compare, "So sánh hai series cạnh nhau", state.mode === "compare")}
@@ -265,10 +270,12 @@ function render() {
           </div>
           ${state.mode !== "volume3d" ? `<label class="window-preset-control">
             Hiển thị
-            <select data-field="window-preset" title="Preset thị giác trên dữ liệu JPG 8-bit, không phải cửa sổ HU">
-              <option value="full" ${state.windowPreset === "full" ? "selected" : ""}>Toàn dải</option>
-              <option value="soft" ${state.windowPreset === "soft" ? "selected" : ""}>Mô mềm JPG</option>
-              <option value="contrast" ${state.windowPreset === "contrast" ? "selected" : ""}>Tương phản cao</option>
+            <select data-field="window-preset" title="${series?.sourceType === "dicom"
+              ? "Cửa sổ hiển thị trên pixel DICOM gốc"
+              : "Preset thị giác trên dữ liệu ảnh 8-bit"}">
+              <option value="full" ${state.windowPreset === "full" ? "selected" : ""}>${series?.sourceType === "dicom" ? "DICOM mặc định" : "Toàn dải"}</option>
+              <option value="soft" ${state.windowPreset === "soft" ? "selected" : ""}>${series?.sourceType === "dicom" ? "Cửa sổ rộng" : "Mô mềm JPG"}</option>
+              <option value="contrast" ${state.windowPreset === "contrast" ? "selected" : ""}>${series?.sourceType === "dicom" ? "Cửa sổ hẹp" : "Tương phản cao"}</option>
             </select>
           </label>` : ""}
           <span class="toolbar-divider"></span>
@@ -293,9 +300,9 @@ function render() {
         <section id="workspace" class="workspace-grid">
           ${state.archive.series.length
             ? `<div class="viewer-loading">${state.busyViewer ? "Đang dựng khung xem…" : ""}</div>`
-            : `<div class="empty-state"><b>Mở thư mục JPG/DICOM đã chuyển</b>
-              <span>Series T1 đủ hình học sẽ tự bật MPR và 3D.</span>
-              <button class="primary" data-action="choose-archive">Chọn thư mục phim</button></div>`}
+            : `<div class="empty-state"><b>Mở folder DICOM hoặc JPG/PNG</b>
+              <span>DICOM được đọc trực tiếp với pixel gốc; không tạo JPG trung gian. Geometry hợp lệ sẽ bật MPR/3D.</span>
+              <div class="empty-actions"><button class="primary" data-action="choose-archive">Mở folder trong viewer</button></div></div>`}
         </section>
         <footer class="status-bar">
           <span class="status-dot ${state.busyViewer ? "busy" : ""}"></span>
@@ -378,7 +385,17 @@ async function action(name) {
       const job = await window.pywebview.api.choose_archive();
       if (job) {
         state.bootstrap.job = job;
-        setStatus("Đang quét thư mục phim trong nền…");
+        setStatus("Đang nhận diện DICOM hoặc JPG/PNG trong folder…");
+        startJobPolling();
+      }
+      return;
+    }
+    if (name === "import-dicom-folder") {
+      if (!window.pywebview?.api) throw new Error("Nhập DICOM local cần chạy trong ứng dụng WebView2.");
+      const job = await window.pywebview.api.choose_dicom_folder(downloadOptions());
+      if (job) {
+        state.bootstrap.job = job;
+        setStatus("Đang đọc và chuyển folder DICOM local…");
         startJobPolling();
       }
       return;
@@ -494,7 +511,7 @@ async function action(name) {
     }
     if (name === "save-annotations") {
       const count = await saveAnnotations();
-      setStatus(`Đã lưu ${count} phép đo/ROI vào thư mục series.`);
+      setStatus(`Đã lưu ${count} phép đo/ROI.`);
     }
     if (name === "roi-volume") {
       const volume = roiVolumeMl();
@@ -752,7 +769,7 @@ async function pollJob() {
     // throw away the layout, camera and measurements the user is working with.
     renderStudyList();
   }
-  if ((job.kind === "download" || job.kind === "direct-download") && job.status === "complete") {
+  if (["download", "direct-download", "local-import"].includes(job.kind) && job.status === "complete") {
     const archive = job.result?.archive;
     if (archive) {
       window.clearInterval(jobPoll);

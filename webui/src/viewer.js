@@ -27,7 +27,7 @@ import {
   init as initTools,
   utilities as toolUtilities,
 } from "@cornerstonejs/tools";
-import { api, apiBlob, imagePath } from "./api.js";
+import { api, apiBlob, apiPixelData, imagePath } from "./api.js";
 
 // Cornerstone allocates a pool of WebGL contexts per RenderingEngine
 // (webGlContextCount: 7 by default) and the browser caps how many contexts a
@@ -111,8 +111,44 @@ export const WINDOW_PRESETS = Object.freeze({
   contrast: { lower: 62, upper: 168 },
 });
 
+function storedDicomRange(series) {
+  const pixel = series?.pixelData || {};
+  const bits = Math.max(1, Math.min(Number(pixel.bitsStored) || 16, 32));
+  const signed = Number(pixel.pixelRepresentation) === 1;
+  const storedLower = signed ? -(2 ** (bits - 1)) : 0;
+  const storedUpper = signed ? (2 ** (bits - 1)) - 1 : (2 ** bits) - 1;
+  const slope = Number.isFinite(pixel.rescaleSlope) && pixel.rescaleSlope !== 0
+    ? pixel.rescaleSlope
+    : 1;
+  const intercept = Number.isFinite(pixel.rescaleIntercept) ? pixel.rescaleIntercept : 0;
+  return {
+    lower: storedLower * slope + intercept,
+    upper: storedUpper * slope + intercept,
+  };
+}
+
+export function windowPresetRange(name, series = null) {
+  if (series?.sourceType !== "dicom") return WINDOW_PRESETS[name] || null;
+  const pixel = series.pixelData || {};
+  const fallback = storedDicomRange(series);
+  const center = Number.isFinite(pixel.windowCenter)
+    ? pixel.windowCenter
+    : (fallback.lower + fallback.upper) / 2;
+  const defaultWidth = Number.isFinite(pixel.windowWidth) && pixel.windowWidth > 0
+    ? pixel.windowWidth
+    : Math.max(1, fallback.upper - fallback.lower);
+  const width = name === "soft"
+    ? defaultWidth * 1.5
+    : name === "contrast"
+      ? defaultWidth * 0.6
+      : defaultWidth;
+  if (!Number.isFinite(width) || width <= 0) return null;
+  return { lower: center - width / 2, upper: center + width / 2 };
+}
+
 export function seriesSafetyNotice(series) {
   if (!series) return null;
+  if (series.sourceType === "dicom") return null;
   if (series.modality === "CT") {
     return {
       level: "danger",
@@ -149,22 +185,32 @@ function metadataProvider(type, imageId) {
     return { instanceNumber: parsed.index + 1 };
   }
   if (type === "imagePixelModule") {
+    const pixel = series.pixelData || {};
     return {
-      samplesPerPixel: 1,
-      photometricInterpretation: "MONOCHROME2",
-      rows: geometry?.rows || 1,
-      columns: geometry?.columns || 1,
-      bitsAllocated: 8,
-      bitsStored: 8,
-      highBit: 7,
-      pixelRepresentation: 0,
+      samplesPerPixel: pixel.samplesPerPixel || 1,
+      photometricInterpretation: pixel.photometricInterpretation || "MONOCHROME2",
+      rows: geometry?.rows || pixel.rows || 1,
+      columns: geometry?.columns || pixel.columns || 1,
+      bitsAllocated: pixel.bitsAllocated || 8,
+      bitsStored: pixel.bitsStored || 8,
+      highBit: pixel.highBit ?? 7,
+      pixelRepresentation: pixel.pixelRepresentation || 0,
     };
   }
   if (type === "modalityLutModule") {
-    return { rescaleIntercept: 0, rescaleSlope: 1, rescaleType: "US" };
+    return {
+      rescaleIntercept: series.pixelData?.rescaleIntercept ?? 0,
+      rescaleSlope: series.pixelData?.rescaleSlope ?? 1,
+      rescaleType: series.modality === "CT" ? "HU" : "US",
+    };
   }
   if (type === "voiLutModule") {
-    return { windowCenter: [127.5], windowWidth: [255] };
+    const center = series.pixelData?.windowCenter;
+    const width = series.pixelData?.windowWidth;
+    return {
+      windowCenter: [Number.isFinite(center) ? center : 127.5],
+      windowWidth: [Number.isFinite(width) && width > 0 ? width : 255],
+    };
   }
   if (type === "imagePlaneModule" && geometry && manifest) {
     const item = manifest.ordered_slices?.[parsed.index];
@@ -291,10 +337,76 @@ async function decodeBlob(blob) {
   return decodeBlobOnMain(blob);
 }
 
+function typedDicomPixels(buffer, pixelType) {
+  const constructors = {
+    uint8: Uint8Array,
+    int8: Int8Array,
+    uint16: Uint16Array,
+    int16: Int16Array,
+    uint32: Uint32Array,
+    int32: Int32Array,
+  };
+  const Type = constructors[pixelType];
+  if (!Type) throw new Error(`Kiểu pixel DICOM chưa được hỗ trợ: ${pixelType}`);
+  return new Type(buffer);
+}
+
+function dicomCanvas(pixels, width, height, min, max, invert) {
+  const display = new Uint8Array(pixels.length);
+  const span = Math.max(1, max - min);
+  for (let index = 0; index < pixels.length; index += 1) {
+    const value = Math.max(0, Math.min(255, Math.round(((pixels[index] - min) / span) * 255)));
+    display[index] = invert ? 255 - value : value;
+  }
+  return greyscaleCanvas(display, width, height);
+}
+
+async function decodeDicomImage(imageId, parsed, series) {
+  const decoded = await apiPixelData(imagePath(parsed.seriesId, parsed.index));
+  const pixels = typedDicomPixels(decoded.buffer, decoded.pixelType);
+  if (pixels.length !== decoded.rows * decoded.columns) {
+    throw new Error(`Pixel DICOM không đầy đủ: ${pixels.length}/${decoded.rows * decoded.columns}.`);
+  }
+  const spacing = series?.geometry?.pixelSpacing || series?.pixelData?.pixelSpacing;
+  const invert = decoded.photometric === "MONOCHROME1";
+  decodePath = "dicom-direct";
+  return {
+    imageId,
+    minPixelValue: decoded.min,
+    maxPixelValue: decoded.max,
+    slope: decoded.slope,
+    intercept: decoded.intercept,
+    windowCenter: decoded.windowCenter,
+    windowWidth: decoded.windowWidth,
+    getPixelData: () => pixels,
+    getCanvas: () => dicomCanvas(
+      pixels, decoded.columns, decoded.rows, decoded.min, decoded.max, invert,
+    ),
+    rows: decoded.rows,
+    columns: decoded.columns,
+    height: decoded.rows,
+    width: decoded.columns,
+    color: false,
+    rgba: false,
+    numberOfComponents: 1,
+    columnPixelSpacing: spacing?.[1],
+    rowPixelSpacing: spacing?.[0],
+    invert,
+    photometricInterpretation: decoded.photometric,
+    sizeInBytes: pixels.byteLength,
+    dataType: pixels.constructor.name,
+    imageQualityStatus: CoreEnums.ImageQualityStatus.FULL_RESOLUTION,
+  };
+}
+
 function decodeImage(imageId) {
   const parsed = parseImageId(imageId);
   const promise = (async () => {
     if (!parsed) throw new Error("ImageId không hợp lệ.");
+    const series = seriesRegistry.get(parsed.seriesId);
+    if (series?.sourceType === "dicom") {
+      return decodeDicomImage(imageId, parsed, series);
+    }
     const blob = await apiBlob(imagePath(parsed.seriesId, parsed.index));
     const { pixels, width, height } = await decodeBlob(blob);
     if (!lastDecodeStats) {
@@ -308,8 +420,7 @@ function decodeImage(imageId) {
       }
       lastDecodeStats = { width, height, min, max, nonZero };
     }
-    const series = seriesRegistry.get(parsed.seriesId);
-    const spacing = series?.geometry?.pixelSpacing;
+    const spacing = series?.geometry?.pixelSpacing || series?.pixelData?.pixelSpacing;
     return {
       imageId,
       minPixelValue: 0,
@@ -983,26 +1094,61 @@ export async function showMpr(container, series, primaryPlane = "axial", tool = 
   return applied;
 }
 
-function applyBrainPreset(viewport) {
+function overlapLength(left, right) {
+  return Math.max(0, Math.min(left[1], right[1]) - Math.max(left[0], right[0]));
+}
+
+export function volumeTransferRange(series, scalarRange) {
+  const actual = Array.isArray(scalarRange) && scalarRange.length === 2
+    ? scalarRange.map(Number)
+    : [0, 255];
+  if (series?.sourceType !== "dicom") return [0, 255];
+  const physical = windowPresetRange("full", series);
+  if (!physical) return actual;
+  const slope = Number.isFinite(series.pixelData?.rescaleSlope)
+    && series.pixelData.rescaleSlope !== 0
+    ? series.pixelData.rescaleSlope
+    : 1;
+  const intercept = Number.isFinite(series.pixelData?.rescaleIntercept)
+    ? series.pixelData.rescaleIntercept
+    : 0;
+  const raw = [
+    (physical.lower - intercept) / slope,
+    (physical.upper - intercept) / slope,
+  ].sort((a, b) => a - b);
+  const physicalPair = [physical.lower, physical.upper].sort((a, b) => a - b);
+  const desired = overlapLength(raw, actual) > overlapLength(physicalPair, actual)
+    ? raw
+    : physicalPair;
+  const lower = Math.max(actual[0], desired[0]);
+  const upper = Math.min(actual[1], desired[1]);
+  return upper > lower ? [lower, upper] : actual;
+}
+
+function applyBrainPreset(viewport, series) {
   const actorEntry = viewport.getDefaultActor?.();
   const actor = actorEntry?.actor;
   const property = actor?.getProperty?.();
   if (!property) return;
+  const scalars = actor.getMapper?.().getInputData?.().getPointData?.().getScalars?.();
+  const [low, high] = volumeTransferRange(series, scalars?.getRange?.());
+  const span = Math.max(1, high - low);
+  const at = (fraction) => low + span * fraction;
   const color = property.getRGBTransferFunction(0);
   color.removeAllPoints();
-  color.addRGBPoint(0, 0, 0, 0);
-  color.addRGBPoint(45, 0.04, 0.025, 0.02);
-  color.addRGBPoint(95, 0.35, 0.22, 0.18);
-  color.addRGBPoint(150, 0.72, 0.58, 0.50);
-  color.addRGBPoint(225, 1, 0.94, 0.86);
+  color.addRGBPoint(at(0), 0, 0, 0);
+  color.addRGBPoint(at(0.2), 0.04, 0.025, 0.02);
+  color.addRGBPoint(at(0.42), 0.35, 0.22, 0.18);
+  color.addRGBPoint(at(0.67), 0.72, 0.58, 0.50);
+  color.addRGBPoint(at(1), 1, 0.94, 0.86);
   const opacity = property.getScalarOpacity(0);
   opacity.removeAllPoints();
-  opacity.addPoint(0, 0);
-  opacity.addPoint(55, 0);
-  opacity.addPoint(95, 0.03);
-  opacity.addPoint(145, 0.16);
-  opacity.addPoint(220, 0.46);
-  opacity.addPoint(255, 0.72);
+  opacity.addPoint(at(0), 0);
+  opacity.addPoint(at(0.24), 0);
+  opacity.addPoint(at(0.42), 0.03);
+  opacity.addPoint(at(0.64), 0.16);
+  opacity.addPoint(at(0.98), 0.46);
+  opacity.addPoint(at(1), 0.72);
   property.setInterpolationTypeToLinear();
 }
 
@@ -1040,7 +1186,7 @@ export async function show3d(container, series, tool = "rotate3d") {
   const { id: volumeId } = await ensureVolume(series);
   const viewportIds = definitions.map((item) => item[0]);
   await setVolumesForViewports(renderingEngine, [{ volumeId }], viewportIds);
-  applyBrainPreset(renderingEngine.getViewport("volume-3d"));
+  applyBrainPreset(renderingEngine.getViewport("volume-3d"), series);
   for (const viewportId of viewportIds) {
     const viewport = renderingEngine.getViewport(viewportId);
     viewport.resetCamera();
@@ -1073,6 +1219,7 @@ export async function show3d(container, series, tool = "rotate3d") {
 export function viewerDiagnostics() {
   return {
     mode: activeMode,
+    sourceType: activeSeries?.sourceType || "",
     engineId: engineIsLive() ? ENGINE_ID : "",
     destroyed: !engineIsLive(),
     activeViewportId,
@@ -1145,7 +1292,7 @@ export function resetView() {
 }
 
 export async function applyWindowPreset(name) {
-  const range = WINDOW_PRESETS[name];
+  const range = windowPresetRange(name, activeSeries);
   if (!range || !engineIsLive()) return false;
   for (const viewport of renderingEngine.getViewports() || []) {
     if (viewport.id === "volume-3d" || typeof viewport.setProperties !== "function") continue;
