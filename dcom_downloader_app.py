@@ -1094,12 +1094,14 @@ class App:
         hosp = self.hosp_var.get()
         info = pipe.HOSPITALS.get(hosp, {})
         hosp_name = info.get("name", hosp)
-        out_base = Path(self.out_var.get().strip() or Path.cwd()) / f"{hosp.upper()}_BN_{pid}"
+        # The shared pipeline now owns patient-folder resolution. Passing the
+        # selected storage root lets it reuse an indexed patient, import the
+        # legacy `<BV>_BN_<PID>` layout, or create the new readable name.
+        out_base = Path(self.out_var.get().strip() or Path.cwd())
 
         self._clear_log()
         self.last_url = None
         self.last_out_base = out_base
-        self._add_history(out_base, f"{hosp_name} - BN: {pid}")
 
         self.stop_flag.clear()
         self.start_btn.config(state="disabled")
@@ -1150,6 +1152,9 @@ class App:
                     contrast_mode=contrast_mode,
                     should_stop=self.stop_flag.is_set,
                 )
+                patient_folder, _manifest = pipe.find_patient_archive(out_base, pid, hosp)
+                if patient_folder:
+                    self.msg_q.put(("patientfolder", (str(patient_folder), f"{hosp_name} - BN: {pid}")))
                 self.msg_q.put(("done", True))
             except Exception:
                 self.msg_q.put(("log", self._t("LỖI:\n{}").format(traceback.format_exc())))
@@ -1233,6 +1238,11 @@ class App:
                     self._log(str(payload))
                 elif kind == "jpgdir":
                     self.last_jpg_dir = Path(str(payload))
+                elif kind == "patientfolder":
+                    folder, label = payload
+                    self.last_out_base = Path(str(folder))
+                    self.last_jpg_dir = self.last_out_base
+                    self._add_history(self.last_out_base, str(label))
                 elif kind == "studies_found":
                     hosp, pid, hosp_name, out_base, studies = payload
                     if not studies:

@@ -94,9 +94,27 @@ vùng xem chính từ **2D** sang **MPR**; ứng dụng không mở cửa sổ p
 Mô hình 3D u cần ROI trên nhiều lát axial. Nút này không tự nhận diện u và
 không thay thế việc kiểm tra đường viền của người dùng.
 
-Kết quả nằm trong thư mục đã chọn:
+Khi tải theo mã bệnh nhân, kết quả được gom ổn định theo thứ tự mã BN, tên BN,
+bệnh viện và ngày tạo hồ sơ:
 ```
-Tai_ve_.../
+2605032022 - NGUYEN VAN A - Viet Duc - 2026-08-02/
+  patient-index.json        ← nhận biết ca đã tải/phim mới ở lần tìm sau
+  2026-07-28 - MR - MR BRAIN - a1b2c3d4e5/
+    DICOM/
+    RAW_JPG/
+    2026-07-28 - 45Y - MR BRAIN _ MR/
+      Series_..._<UID-hash>/
+```
+
+Cùng mã BN và bệnh viện sẽ dùng lại folder trên; study đã tải được bỏ chọn mặc
+định, study mới hoặc chưa hoàn tất được chọn để bổ sung. Nếu cùng mã nhưng tên
+khác, app chặn tự động gộp. Folder Classic cũ dạng `<BV>_BN_<mã>` được nhận diện
+qua DICOM và tạo chỉ mục khi dùng lại.
+
+Khi tải một link viewer riêng, mỗi lượt được đặt trong folder `LINK_<thời gian>_<hash>`.
+Kết quả bên trong:
+```
+LINK_.../
   DICOM/     ← file DICOM gốc tải về
   RAW_JPG/   ← ảnh JPG viewer trả trực tiếp (nếu có)
   JPG/       ← ẢNH JPG CHẤT LƯỢNG CAO, chia theo từng series  ← DÙNG CÁI NÀY

@@ -46,6 +46,7 @@ const state = {
   tool: "window",
   downloadOpen: true,
   studies: [],
+  patient: null,
   status: "Đang khởi động...",
   sliceText: "",
   busyViewer: false,
@@ -232,12 +233,14 @@ function render() {
         <div class="source-divider"><span>hoặc tải từ PACS / link viewer</span></div>
         <div class="hospital-row">
           ${(state.bootstrap?.hospitals || []).map((item, index) =>
-        `<label><input type="radio" name="hospital" value="${item.id}" ${index === 0 ? "checked" : ""}>
+        `<label><input type="radio" name="hospital" value="${item.id}"
+          ${state.patient?.hospitalKey ? (item.id === state.patient.hospitalKey ? "checked" : "") : (index === 0 ? "checked" : "")}>
               ${escapeHtml(item.name)}</label>`).join("")}
         </div>
         <label class="field">Mã bệnh nhân
-          <div class="inline-field"><input id="patient-id" autocomplete="off"><button data-action="search">Tìm ca</button></div>
+          <div class="inline-field"><input id="patient-id" autocomplete="off" value="${escapeHtml(state.patient?.patientId || "")}"><button data-action="search">Tìm ca</button></div>
         </label>
+        <div class="patient-status">${renderPatientStatus()}</div>
         <div class="study-list">${renderStudies()}</div>
         <label class="field">Hoặc dán link viewer
           <textarea id="direct-url" rows="2" spellcheck="false"></textarea>
@@ -251,7 +254,8 @@ function render() {
             <button data-action="choose-output">…</button></div>
         </label>
         <div class="download-actions">
-          <button class="primary" data-action="download-selected" ${state.studies.length ? "" : "disabled"}>Tải ca đã chọn</button>
+          <button class="primary" data-action="download-selected"
+            ${state.studies.some((item) => item.local_status !== "downloaded") && !state.patient?.nameConflict ? "" : "disabled"}>Tải ca đã chọn</button>
           <button data-action="download-direct">Tải link</button>
           <button class="danger" data-action="stop-job">Dừng</button>
         </div>
@@ -320,10 +324,42 @@ function renderStudies() {
   if (!state.studies.length) return '<span class="muted">Chưa tìm ca chụp.</span>';
   return state.studies.map((study, index) => `
     <label class="study-item">
-      <input type="checkbox" data-study-index="${index}" checked>
+      <input type="checkbox" data-study-index="${index}"
+        ${study.local_status === "downloaded" || state.patient?.nameConflict ? "" : "checked"}
+        ${state.patient?.nameConflict ? "disabled" : ""}>
       <span><b>${escapeHtml(study.modality)} · ${escapeHtml(study.date)}</b>
-        <small>${escapeHtml(study.desc || study.study_uid)}</small></span>
+        <small>${escapeHtml(study.desc || study.study_uid)}</small>
+        <em class="study-state ${escapeHtml(study.local_status || "new")}">${{
+          downloaded: "Đã tải",
+          incomplete: "Tải chưa hoàn tất",
+          new: "Phim mới",
+        }[study.local_status] || "Phim mới"}</em></span>
     </label>`).join("");
+}
+
+function renderPatientStatus() {
+  const patient = state.patient;
+  if (!patient) return "";
+  if (patient.nameConflict) {
+    return `<div class="patient-alert danger"><b>Không tự động gộp bệnh nhân</b>
+      <span>Mã ${escapeHtml(patient.patientId)} đã lưu tên “${escapeHtml(patient.storedPatientName)}”,
+      nhưng RIS trả “${escapeHtml(patient.patientName)}”. Hãy kiểm tra lại.</span></div>`;
+  }
+  if (!patient.patientName) {
+    return `<div class="patient-alert warning"><b>${escapeHtml(patient.patientId)} · ${escapeHtml(patient.hospitalName)}</b>
+      <span>RIS chưa trả tên bệnh nhân. App vẫn có thể tải nhưng folder sẽ ghi CHUA_RO_TEN; hãy kiểm tra tên trên RIS/DICOM.</span></div>`;
+  }
+  const identity = [patient.patientId, patient.patientName, patient.hospitalName]
+    .filter(Boolean).map(escapeHtml).join(" · ");
+  const summary = patient.exists
+    ? `Đã có trong kho · ${patient.downloadedStudies} ca đã tải · ${patient.newStudies} ca mới · ${patient.incompleteStudies} ca chưa hoàn tất`
+    : `${patient.newStudies} ca chưa có trong kho; app sẽ tạo một folder bệnh nhân.`;
+  const legacy = patient.legacyStudiesDetected
+    ? ` · Đã nhận diện ${patient.legacyStudiesDetected} ca từ folder Classic cũ`
+    : "";
+  return `<div class="patient-alert ${patient.exists ? "existing" : "new"}">
+    <b>${identity}</b><span>${summary}${legacy}</span>
+    ${patient.folder ? `<small>${escapeHtml(patient.folder)}</small>` : ""}</div>`;
 }
 
 function bindEvents() {
@@ -363,6 +399,16 @@ function bindEvents() {
       renderViewer();
     });
   });
+  app.querySelectorAll("[data-study-index]").forEach((item) => {
+    item.addEventListener("change", syncDownloadButton);
+  });
+  syncDownloadButton();
+}
+
+function syncDownloadButton() {
+  const button = app.querySelector("[data-action='download-selected']");
+  if (button) button.disabled = Boolean(state.patient?.nameConflict)
+    || !app.querySelector("[data-study-index]:checked");
 }
 
 async function action(name) {
@@ -404,8 +450,12 @@ async function action(name) {
       const result = await window.pywebview?.api?.choose_output();
       if (result) {
         state.bootstrap.outputRoot = result.outputRoot;
+        state.studies = [];
+        state.patient = null;
         const field = app.querySelector("#output-root");
         if (field) field.value = result.outputRoot;
+        renderStudyList();
+        setStatus("Đã đổi kho lưu; hãy tìm lại mã bệnh nhân để đối chiếu phim cũ/mới.");
       }
       return;
     }
@@ -421,16 +471,28 @@ async function action(name) {
     if (name === "search") {
       const patientId = app.querySelector("#patient-id").value.trim();
       const hospital = app.querySelector("input[name='hospital']:checked")?.value;
+      state.studies = [];
+      state.patient = null;
+      renderStudyList();
       await api("/api/search", { method: "POST", body: JSON.stringify({ patientId, hospital }) });
       startJobPolling();
       return;
     }
     if (name === "download-selected") {
+      if (state.patient?.nameConflict) throw new Error("Tên bệnh nhân không khớp; app đã chặn tự động gộp.");
       const studies = [...app.querySelectorAll("[data-study-index]:checked")]
         .map((item) => state.studies[Number(item.dataset.studyIndex)]);
+      if (!studies.length) throw new Error("Không có phim mới/chưa hoàn tất được chọn để tải.");
       await api("/api/download", {
         method: "POST",
-        body: JSON.stringify({ studies, ...downloadOptions() }),
+        body: JSON.stringify({
+          studies,
+          patientId: state.patient?.patientId,
+          patientName: state.patient?.patientName,
+          hospital: state.patient?.hospitalKey,
+          allStudies: state.studies,
+          ...downloadOptions(),
+        }),
       });
       startJobPolling();
       return;
@@ -756,21 +818,33 @@ function startJobPolling() {
 function renderStudyList() {
   const list = app.querySelector(".study-list");
   if (list) list.innerHTML = renderStudies();
-  const button = app.querySelector("[data-action='download-selected']");
-  if (button) button.disabled = !state.studies.length;
+  const patient = app.querySelector(".patient-status");
+  if (patient) patient.innerHTML = renderPatientStatus();
+  app.querySelectorAll("[data-study-index]").forEach((item) => {
+    item.addEventListener("change", syncDownloadButton);
+  });
+  syncDownloadButton();
 }
 
 async function pollJob() {
   const job = await api("/api/job");
   state.bootstrap.job = job;
   if (job.kind === "search" && job.status === "complete") {
-    state.studies = job.result || [];
+    state.studies = Array.isArray(job.result) ? job.result : job.result?.studies || [];
+    state.patient = Array.isArray(job.result) ? null : job.result?.patient || null;
     // Only the study list changed. A full render() would replace #workspace and
     // throw away the layout, camera and measurements the user is working with.
     renderStudyList();
   }
   if (["download", "direct-download", "local-import"].includes(job.kind) && job.status === "complete") {
     const archive = job.result?.archive;
+    if (job.result?.patient) state.patient = job.result.patient;
+    if (Array.isArray(job.result?.studies)) {
+      const completed = new Map(job.result.studies.map((item) => [item.study_uid, item.local_status]));
+      state.studies.forEach((item) => {
+        if (completed.has(item.study_uid)) item.local_status = completed.get(item.study_uid);
+      });
+    }
     if (archive) {
       window.clearInterval(jobPoll);
       jobPoll = null;

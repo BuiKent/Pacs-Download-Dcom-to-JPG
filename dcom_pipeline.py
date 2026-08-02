@@ -26,14 +26,17 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import json
 import os
 import re
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
+import unicodedata
 
 from dicom_io import discover_dicom_files
 
@@ -1065,6 +1068,354 @@ def _safe_name(text) -> str:
     return text[:80] if text else "Unknown"
 
 
+PATIENT_MANIFEST_NAME = "patient-index.json"
+PATIENT_MANIFEST_FORMAT = "dcom-patient-index-v1"
+
+
+def _identity_token(value: Any) -> str:
+    """Normalize a patient/hospital identity value for local matching only."""
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^A-Z0-9]+", "", text.upper())
+
+
+def _study_patient_name(study: dict) -> str:
+    for key in (
+        "patientName", "patientFullName", "PatientName", "patient_name",
+        "fullName", "patientFullname", "patientNameUnsign", "ptName",
+        "patName", "tenBenhNhan", "hoTen", "hoten",
+    ):
+        value = study.get(key)
+        if value is not None and str(value).strip():
+            return re.sub(r"\s+", " ", str(value)).strip()
+    nested = study.get("patient")
+    if isinstance(nested, dict):
+        return _study_patient_name(nested)
+    if isinstance(nested, str) and nested.strip():
+        return re.sub(r"\s+", " ", nested).strip()
+    return ""
+
+
+def _now_local() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _study_date_token(value: Any) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    if len(digits) >= 8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    return _safe_name(value or "KHONG_RO_NGAY")
+
+
+def study_archive_folder_name(study: dict) -> str:
+    """Readable study folder name with a full-UID-derived collision token."""
+    uid = str(study.get("study_uid") or study.get("uid") or "").strip()
+    uid_token = hashlib.sha1(uid.encode("utf-8")).hexdigest()[:10]
+    modality = _safe_name(study.get("modality") or "UNKNOWN")[:12]
+    description = _safe_name(study.get("desc") or "KHONG_RO_MO_TA")[:40]
+    # Keep the UID token at the end; truncating the whole string would remove
+    # the part that actually prevents two similarly named studies colliding.
+    return f"{_study_date_token(study.get('date'))} - {modality} - {description} - {uid_token}"
+
+
+def _read_patient_manifest(folder: Path) -> Optional[dict]:
+    path = Path(folder) / PATIENT_MANIFEST_NAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or data.get("format") != PATIENT_MANIFEST_FORMAT:
+        return None
+    if not isinstance(data.get("studies"), dict):
+        data["studies"] = {}
+    return data
+
+
+def _legacy_study_index(folder: Path) -> dict[str, dict]:
+    """Recover StudyInstanceUIDs from a pre-registry patient folder."""
+    try:
+        import pydicom
+    except Exception:
+        return {}
+    grouped: dict[str, dict] = {}
+    for path in discover_dicom_files(folder):
+        try:
+            ds = pydicom.dcmread(
+                str(path),
+                stop_before_pixels=True,
+                force=True,
+                specific_tags=[
+                    "StudyInstanceUID", "StudyDate", "Modality", "StudyDescription",
+                ],
+            )
+        except Exception:
+            continue
+        uid = str(getattr(ds, "StudyInstanceUID", "") or "").strip()
+        if not uid:
+            continue
+        entry = grouped.setdefault(uid, {
+            "studyUid": uid,
+            "date": str(getattr(ds, "StudyDate", "") or ""),
+            "modality": str(getattr(ds, "Modality", "") or ""),
+            "description": str(getattr(ds, "StudyDescription", "") or ""),
+            "folder": "",
+            "status": "complete",
+            "imageCount": 0,
+            "downloadedAt": "",
+            "importedFromLegacy": True,
+        })
+        entry["imageCount"] += 1
+        if not entry["folder"]:
+            try:
+                entry["folder"] = str(path.parent.relative_to(folder))
+            except ValueError:
+                entry["folder"] = ""
+    return grouped
+
+
+def _legacy_patient_identity(folder: Path) -> tuple[str, str]:
+    try:
+        import pydicom
+    except Exception:
+        return "", ""
+    for path in discover_dicom_files(folder):
+        try:
+            ds = pydicom.dcmread(
+                str(path),
+                stop_before_pixels=True,
+                force=True,
+                specific_tags=["PatientID", "PatientName"],
+            )
+        except Exception:
+            continue
+        patient_id = str(getattr(ds, "PatientID", "") or "").strip()
+        patient_name = str(getattr(ds, "PatientName", "") or "").strip()
+        if patient_id or patient_name:
+            return patient_id, patient_name
+    return "", ""
+
+
+def _write_patient_manifest(folder: Path, manifest: dict) -> None:
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / PATIENT_MANIFEST_NAME
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _manifest_identity_matches(manifest: dict, patient_id: str, hospital_key: str) -> bool:
+    return (
+        _identity_token(manifest.get("patientId")) == _identity_token(patient_id)
+        and _identity_token(manifest.get("hospitalKey")) == _identity_token(hospital_key)
+    )
+
+
+def _patient_name_conflicts(stored: str, current: str) -> bool:
+    return bool(stored and current and _identity_token(stored) != _identity_token(current))
+
+
+def _legacy_patient_folder_matches(folder: Path, patient_id: str, hospital_key: str) -> bool:
+    expected = _identity_token(f"{hospital_key}_BN_{patient_id}")
+    return bool(expected and _identity_token(folder.name) == expected)
+
+
+def find_patient_archive(
+    output_root: Path,
+    patient_id: str,
+    hospital_key: str,
+) -> tuple[Optional[Path], Optional[dict]]:
+    """Find one stable patient archive without creating or modifying folders."""
+    root = Path(output_root).expanduser().resolve()
+    candidates = [root]
+    if root.is_dir():
+        try:
+            children = [path for path in root.iterdir() if path.is_dir()]
+            candidates.extend(children)
+            # Classic commonly stored `<timestamp>/<BV>_BN_<PID>`. Inspect
+            # exactly one extra level for that legacy name, not an unbounded
+            # recursive scan of the whole imaging archive.
+            for child in children:
+                try:
+                    candidates.extend(
+                        path for path in child.iterdir()
+                        if path.is_dir()
+                        and _legacy_patient_folder_matches(path, patient_id, hospital_key)
+                    )
+                except OSError:
+                    continue
+        except OSError:
+            pass
+
+    matched: list[tuple[Path, dict]] = []
+    legacy: list[Path] = []
+    for folder in candidates:
+        manifest = _read_patient_manifest(folder)
+        if manifest and _manifest_identity_matches(manifest, patient_id, hospital_key):
+            matched.append((folder, manifest))
+        elif not manifest and _legacy_patient_folder_matches(folder, patient_id, hospital_key):
+            legacy.append(folder)
+    if len(matched) > 1:
+        raise ValueError(
+            f"Có nhiều folder cùng mã bệnh nhân {patient_id} tại {root}; cần hợp nhất thủ công trước."
+        )
+    if matched:
+        return matched[0]
+    if len(legacy) > 1:
+        raise ValueError(
+            f"Có nhiều folder cũ cùng mã bệnh nhân {patient_id} tại {root}; cần chọn đúng folder."
+        )
+    return (legacy[0], None) if legacy else (None, None)
+
+
+def patient_archive_status(
+    output_root: Path,
+    *,
+    patient_id: str,
+    patient_name: str,
+    hospital_key: str,
+    hospital_name: str,
+    studies: list[dict],
+) -> dict:
+    folder, manifest = find_patient_archive(output_root, patient_id, hospital_key)
+    legacy_id, legacy_name = _legacy_patient_identity(folder) if folder and not manifest else ("", "")
+    stored_name = str((manifest or {}).get("patientName") or legacy_name or "")
+    conflict = (
+        _patient_name_conflicts(stored_name, patient_name)
+        or bool(legacy_id and _identity_token(legacy_id) != _identity_token(patient_id))
+    )
+    known = (manifest or {}).get("studies") or (_legacy_study_index(folder) if folder else {})
+    new_count = downloaded_count = incomplete_count = 0
+    for study in studies:
+        uid = str(study.get("study_uid") or "")
+        entry = known.get(uid) if uid else None
+        if isinstance(entry, dict) and entry.get("status") == "complete":
+            study["local_status"] = "downloaded"
+            downloaded_count += 1
+        elif isinstance(entry, dict):
+            study["local_status"] = "incomplete"
+            incomplete_count += 1
+        else:
+            study["local_status"] = "new"
+            new_count += 1
+    return {
+        "exists": bool(folder),
+        "folder": str(folder) if folder else "",
+        "patientId": patient_id,
+        "patientName": patient_name or stored_name,
+        "hospitalKey": hospital_key,
+        "hospitalName": hospital_name,
+        "nameConflict": conflict,
+        "storedPatientName": stored_name,
+        "newStudies": new_count,
+        "downloadedStudies": downloaded_count,
+        "incompleteStudies": incomplete_count,
+        "legacyStudiesDetected": sum(
+            1 for entry in known.values()
+            if isinstance(entry, dict) and entry.get("importedFromLegacy")
+        ),
+    }
+
+
+def ensure_patient_archive(
+    output_root: Path,
+    *,
+    patient_id: str,
+    patient_name: str,
+    hospital_key: str,
+    hospital_name: str,
+) -> tuple[Path, dict, bool]:
+    root = Path(output_root).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    folder, manifest = find_patient_archive(root, patient_id, hospital_key)
+    created = False
+    legacy_id, legacy_name = _legacy_patient_identity(folder) if folder and not manifest else ("", "")
+    if legacy_id and _identity_token(legacy_id) != _identity_token(patient_id):
+        raise ValueError(
+            f"Folder cũ có PatientID '{legacy_id}', không khớp mã đang tìm '{patient_id}'. Không tự động gộp."
+        )
+    if _patient_name_conflicts(legacy_name, patient_name):
+        raise ValueError(
+            "Folder cũ có cùng mã trong tên nhưng PatientName DICOM không khớp: "
+            f"'{legacy_name}' so với '{patient_name}'. Không tự động gộp."
+        )
+    if manifest and _patient_name_conflicts(str(manifest.get("patientName") or ""), patient_name):
+        raise ValueError(
+            "Mã bệnh nhân đã tồn tại nhưng tên không khớp: "
+            f"đã lưu '{manifest.get('patientName')}', RIS trả '{patient_name}'. Không tự động gộp."
+        )
+    if folder is None:
+        created_date = datetime.now().strftime("%Y-%m-%d")
+        display_name = patient_name or "CHUA_RO_TEN"
+        folder_name = " - ".join((
+            _safe_name(patient_id),
+            _safe_name(display_name),
+            _safe_name(hospital_name or hospital_key),
+            created_date,
+        ))
+        folder = root / folder_name
+        if folder.exists():
+            suffix = hashlib.sha1(
+                f"{hospital_key}:{patient_id}".encode("utf-8")
+            ).hexdigest()[:8]
+            folder = root / f"{folder_name} - {suffix}"
+        folder.mkdir(parents=True, exist_ok=False)
+        created = True
+
+    now = _now_local()
+    if manifest is None:
+        manifest = {
+            "format": PATIENT_MANIFEST_FORMAT,
+            "patientId": patient_id,
+            "patientName": patient_name or legacy_name,
+            "hospitalKey": hospital_key,
+            "hospitalName": hospital_name,
+            "createdAt": now,
+            "updatedAt": now,
+            "studies": _legacy_study_index(folder),
+        }
+    else:
+        if patient_name and not manifest.get("patientName"):
+            manifest["patientName"] = patient_name
+        manifest["hospitalName"] = hospital_name or manifest.get("hospitalName", "")
+        manifest["updatedAt"] = now
+    _write_patient_manifest(folder, manifest)
+    return folder, manifest, created
+
+
+def record_patient_study(
+    patient_folder: Path,
+    study: dict,
+    study_folder: Path,
+    *,
+    complete: bool,
+    image_count: int,
+) -> None:
+    manifest = _read_patient_manifest(patient_folder)
+    if manifest is None:
+        raise ValueError("Thiếu patient-index.json khi cập nhật study.")
+    uid = str(study.get("study_uid") or "").strip()
+    if not uid:
+        raise ValueError("Study thiếu StudyInstanceUID.")
+    previous = manifest["studies"].get(uid) or {}
+    status = "complete" if complete else previous.get("status", "incomplete")
+    manifest["studies"][uid] = {
+        "studyUid": uid,
+        "date": study.get("date") or "",
+        "modality": study.get("modality") or "",
+        "description": study.get("desc") or "",
+        "folder": str(Path(study_folder).relative_to(patient_folder)),
+        "status": status,
+        "imageCount": max(int(image_count or 0), int(previous.get("imageCount") or 0)),
+        "downloadedAt": _now_local() if complete else previous.get("downloadedAt", ""),
+    }
+    manifest["updatedAt"] = _now_local()
+    _write_patient_manifest(patient_folder, manifest)
+
+
 # Chế độ tương phản:
 #   "clinical" (mặc định) — bám đúng cửa sổ hiển thị y khoa. Dùng apply_voi_lut
 #       của pydicom nên xử lý đúng cả 3 kiểu: window tuyến tính (WC/WW), hàm
@@ -1732,6 +2083,8 @@ def search_patient_studies(
                         if uid:
                             studies_to_process.append({
                                 "uid": uid,
+                                "patient_id": _study_patient_id(s) or patient_id,
+                                "patient_name": _study_patient_name(s),
                                 "date": s.get("date", ""),
                                 "modality": m_dicom or ("CT" if is_ct else "MR"),
                                 "desc": s.get("studyDescription", "") or ""
@@ -1769,6 +2122,10 @@ def search_patient_studies(
 
                 studies_found.append({
                     "study_uid": uid,
+                    "patient_id": st.get("patient_id") or patient_id,
+                    "patient_name": st.get("patient_name") or "",
+                    "hospital_key": hospital_key.lower(),
+                    "hospital_name": info["name"],
                     "name": f"Ca_{idx}_{st['date'].replace(':', '-').replace(' ', '_')}" if st['date'] else f"Study_{idx}",
                     "date": st['date'],
                     "modality": st['modality'],
@@ -1781,6 +2138,18 @@ def search_patient_studies(
         finally:
             browser.close()
 
+    names = {
+        _identity_token(item.get("patient_name")): item.get("patient_name")
+        for item in studies_found
+        if item.get("patient_name")
+    }
+    if len(names) > 1:
+        log("❌ RIS trả nhiều tên khác nhau cho cùng mã bệnh nhân; không tự động gộp hoặc tải.")
+        return []
+    resolved_name = next(iter(names.values()), "")
+    if resolved_name:
+        for item in studies_found:
+            item["patient_name"] = resolved_name
     return studies_found
 
 
@@ -1793,6 +2162,10 @@ def download_studies_list(
     save_png: bool = False,
     contrast_mode: str = CLINICAL,
     should_stop: Optional[Callable[[], bool]] = None,
+    patient_id: str = "",
+    patient_name: str = "",
+    hospital_key: str = "",
+    hospital_name: str = "",
 ) -> int:
     """
     Tải trực tiếp danh sách các ca phim đã có sẵn `direct_url` (không cần đăng nhập RIS lại lần 2).
@@ -1801,17 +2174,45 @@ def download_studies_list(
         log("⚠️ Danh sách ca phim rỗng.")
         return 0
 
+    first = studies[0]
+    patient_id = str(patient_id or first.get("patient_id") or "").strip()
+    patient_name = str(patient_name or first.get("patient_name") or "").strip()
+    hospital_key = str(hospital_key or first.get("hospital_key") or "").strip().lower()
+    hospital_name = str(
+        hospital_name
+        or first.get("hospital_name")
+        or HOSPITALS.get(hospital_key, {}).get("name")
+        or hospital_key
+    ).strip()
+    patient_folder = Path(out_base)
+    managed_patient = bool(patient_id and hospital_key)
+    if managed_patient:
+        patient_folder, _manifest, created = ensure_patient_archive(
+            out_base,
+            patient_id=patient_id,
+            patient_name=patient_name,
+            hospital_key=hospital_key,
+            hospital_name=hospital_name,
+        )
+        if created:
+            log(f"Đã tạo hồ sơ bệnh nhân: {patient_folder.name}")
+        else:
+            log(f"Bệnh nhân đã có trong kho; phim mới sẽ được thêm vào: {patient_folder}")
+
     total_downloaded = 0
     for idx, st in enumerate(studies, 1):
         if should_stop and should_stop():
             log(">>> Đã nhận lệnh dừng tải hàng loạt!")
             break
 
-        st_out_dir = out_base / f"Ca_{idx}_{st['study_uid'][:12]}"
+        st_out_dir = patient_folder / study_archive_folder_name(st)
+        resume_study = st_out_dir.exists()
         log("\n" + "-" * 60)
         log(f"[{idx}/{len(studies)}] BẮT ĐẦU TẢI CA {idx}: StudyUID={st['study_uid']}")
         log(f"      Link Viewer: {st['direct_url']}")
         log(f"      Lưu tại: {st_out_dir}")
+        if resume_study:
+            log("      Study đã có dữ liệu cục bộ; chuyển sang chế độ tải tiếp và bỏ file trùng.")
         log("-" * 60)
 
         try:
@@ -1824,16 +2225,37 @@ def download_studies_list(
                 save_png=save_png,
                 contrast_mode=contrast_mode,
                 should_stop=should_stop,
+                resume=resume_study,
             )
-            if dl:
-                total_downloaded += dl.total()
+            downloaded = dl.total() if dl else 0
+            total_downloaded += downloaded
+            complete = bool(downloaded and not (should_stop and should_stop()))
+            if managed_patient:
+                record_patient_study(
+                    patient_folder,
+                    st,
+                    st_out_dir,
+                    complete=complete,
+                    image_count=downloaded,
+                )
             log(f"✓ ĐÃ TẢI XONG CA {idx}: {jpg_dir}")
         except Exception as e:
+            if managed_patient:
+                try:
+                    record_patient_study(
+                        patient_folder,
+                        st,
+                        st_out_dir,
+                        complete=False,
+                        image_count=0,
+                    )
+                except Exception:
+                    pass
             log(f"❌ Lỗi khi tải ca {idx}: {e}")
 
     log("\n" + "=" * 70)
     log(f"HOÀN TẤT TẢI PHIM BỆNH NHÂN! Tổng số ca đã tải: {len(studies)}")
-    log(f"Thư mục lưu: {out_base}")
+    log(f"Thư mục lưu: {patient_folder}")
     log("=" * 70)
     return total_downloaded
 

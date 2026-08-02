@@ -578,6 +578,21 @@ class ArchiveCatalog:
         root = Path(value).expanduser().resolve(strict=True)
         if not root.is_dir():
             raise ValueError("Đường dẫn không phải thư mục.")
+        if dcom_pipeline._read_patient_manifest(root) is None:
+            patient_folders = []
+            try:
+                patient_folders = [
+                    folder for folder in root.iterdir()
+                    if folder.is_dir() and dcom_pipeline._read_patient_manifest(folder)
+                ]
+            except OSError:
+                pass
+            if len(patient_folders) == 1:
+                root = patient_folders[0]
+            elif len(patient_folders) > 1:
+                raise ValueError(
+                    "Folder tổng chứa nhiều bệnh nhân. Hãy mở đúng folder có tên bắt đầu bằng mã bệnh nhân để tránh trộn phim."
+                )
         dicom_records, unsupported_dicom, dicom_candidates = self._dicom_records(
             root, log=log, should_stop=should_stop,
         )
@@ -763,7 +778,7 @@ class WebController:
         output_root.mkdir(parents=True, exist_ok=True)
 
         def target() -> dict:
-            stamp = time.strftime("%Y%m%d_%H%M%S")
+            stamp = f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1_000_000:06d}"
             source_token = hashlib.sha256(str(source).casefold().encode("utf-8")).hexdigest()[:8]
             destination = output_root / f"LOCAL_DICOM_{stamp}_{source_token}" / "JPG"
             self.job.log(f"Đang quét folder DICOM local và chuyển sang JPG chất lượng {quality}…")
@@ -809,8 +824,8 @@ class WebController:
         if not patient_id:
             raise ValueError("Cần nhập mã bệnh nhân.")
 
-        def target() -> list[dict]:
-            return dcom_pipeline.search_patient_studies(
+        def target() -> dict:
+            studies = dcom_pipeline.search_patient_studies(
                 hospital_key=hospital,
                 patient_id=patient_id,
                 modality="MR_CT",
@@ -818,6 +833,26 @@ class WebController:
                 headless=not bool(payload.get("showBrowser")),
                 should_stop=self.job.stop_event.is_set,
             )
+            names = {
+                dcom_pipeline._identity_token(item.get("patient_name")): item.get("patient_name")
+                for item in studies
+                if item.get("patient_name")
+            }
+            if len(names) > 1:
+                raise ValueError(
+                    "RIS trả nhiều tên khác nhau cho cùng mã bệnh nhân; không thể tự động gộp an toàn."
+                )
+            patient_name = next(iter(names.values()), "")
+            hospital_name = dcom_pipeline.HOSPITALS.get(hospital, {}).get("name", hospital)
+            patient = dcom_pipeline.patient_archive_status(
+                self.output_root,
+                patient_id=patient_id,
+                patient_name=patient_name,
+                hospital_key=hospital,
+                hospital_name=hospital_name,
+                studies=studies,
+            )
+            return {"studies": studies, "patient": patient}
 
         self.job.start("search", target)
         return self.job.snapshot()
@@ -826,9 +861,26 @@ class WebController:
         studies = payload.get("studies")
         if not isinstance(studies, list) or not studies:
             raise ValueError("Chưa chọn ca chụp.")
+        all_studies = payload.get("allStudies")
+        if not isinstance(all_studies, list) or not all_studies:
+            all_studies = studies
         output_root = Path(str(payload.get("outputRoot") or self.output_root)).expanduser().resolve()
         output_root.mkdir(parents=True, exist_ok=True)
         quality = max(70, min(int(payload.get("quality", 100)), 100))
+        patient_id = str(payload.get("patientId") or studies[0].get("patient_id") or "").strip()
+        patient_name = str(payload.get("patientName") or studies[0].get("patient_name") or "").strip()
+        hospital = str(payload.get("hospital") or studies[0].get("hospital_key") or "").strip().lower()
+        hospital_name = dcom_pipeline.HOSPITALS.get(hospital, {}).get("name", hospital)
+        if not patient_id or not hospital:
+            raise ValueError("Thiếu mã bệnh nhân hoặc bệnh viện cho lượt tải theo RIS.")
+        for study in all_studies:
+            study_pid = str(study.get("patient_id") or patient_id)
+            study_hospital = str(study.get("hospital_key") or hospital)
+            if (
+                dcom_pipeline._identity_token(study_pid) != dcom_pipeline._identity_token(patient_id)
+                or dcom_pipeline._identity_token(study_hospital) != dcom_pipeline._identity_token(hospital)
+            ):
+                raise ValueError("Danh sách tải chứa study không cùng bệnh nhân/bệnh viện.")
 
         def target() -> dict:
             total = dcom_pipeline.download_studies_list(
@@ -840,9 +892,32 @@ class WebController:
                 save_png=bool(payload.get("savePng")),
                 contrast_mode=str(payload.get("contrastMode") or dcom_pipeline.CLINICAL),
                 should_stop=self.job.stop_event.is_set,
+                patient_id=patient_id,
+                patient_name=patient_name,
+                hospital_key=hospital,
+                hospital_name=hospital_name,
             )
-            archive = self.catalog.open(output_root)
-            return {"downloaded": total, "archive": archive}
+            patient_folder, _manifest = dcom_pipeline.find_patient_archive(
+                output_root, patient_id, hospital,
+            )
+            if patient_folder is None:
+                raise ValueError("Không tìm thấy folder bệnh nhân sau khi tải.")
+            archive = self.catalog.open(patient_folder)
+            patient = dcom_pipeline.patient_archive_status(
+                output_root,
+                patient_id=patient_id,
+                patient_name=patient_name,
+                hospital_key=hospital,
+                hospital_name=hospital_name,
+                studies=all_studies,
+            )
+            return {
+                "downloaded": total,
+                "archive": archive,
+                "patient": patient,
+                "patientFolder": str(patient_folder),
+                "studies": all_studies,
+            }
 
         self.job.start("download", target)
         return self.job.snapshot()
@@ -856,9 +931,12 @@ class WebController:
         output_root.mkdir(parents=True, exist_ok=True)
 
         def target() -> dict:
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            link_token = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
+            direct_root = output_root / f"LINK_{stamp}_{link_token}"
             _, _, jpg_dir = dcom_pipeline.run_pipeline(
                 url=url,
-                out_base=output_root,
+                out_base=direct_root,
                 log=self.job.log,
                 headless=not bool(payload.get("showBrowser")),
                 quality=max(70, min(int(payload.get("quality", 100)), 100)),
@@ -866,8 +944,8 @@ class WebController:
                 contrast_mode=str(payload.get("contrastMode") or dcom_pipeline.CLINICAL),
                 should_stop=self.job.stop_event.is_set,
             )
-            archive = self.catalog.open(jpg_dir if Path(jpg_dir).exists() else output_root)
-            return {"archive": archive}
+            archive = self.catalog.open(jpg_dir if Path(jpg_dir).exists() else direct_root)
+            return {"archive": archive, "output": str(direct_root)}
 
         self.job.start("direct-download", target)
         return self.job.snapshot()

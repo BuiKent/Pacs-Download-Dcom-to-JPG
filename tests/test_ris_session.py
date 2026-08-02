@@ -105,6 +105,7 @@ class RisSessionTests(unittest.TestCase):
             "results": [{
                 "studyIUID": "1.2.3",
                 "patientId": "2606001174",
+                "patientName": "Nguyễn Văn A",
                 "modalityDicom": "MR",
                 "studyDescription": "MR BRAIN",
                 "date": "2026-07-28",
@@ -136,6 +137,8 @@ class RisSessionTests(unittest.TestCase):
         self.assertEqual(1, login.call_count)
         self.assertEqual("1.2.3", first[0]["study_uid"])
         self.assertEqual("1.2.3", second[0]["study_uid"])
+        self.assertEqual("2606001174", first[0]["patient_id"])
+        self.assertEqual("Nguyễn Văn A", first[0]["patient_name"])
         self.assertNotIn("storage_state", context_options[0])
         self.assertEqual(
             "SESSION",

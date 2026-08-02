@@ -152,6 +152,17 @@ button:disabled { opacity: .35; cursor: default; }
 .study-item { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid #17232e; font-size: 11px; }
 .study-item span, .study-item small { display: block; min-width: 0; }
 .study-item small { color: #7890a2; margin-top: 2px; }
+.study-state { display: inline-block; margin-top: 5px; padding: 2px 6px; border-radius: 999px; font-style: normal; font-size: 10px; }
+.study-state.new { color: #9ee6bd; background: #123523; }
+.study-state.downloaded { color: #a8bad0; background: #24313e; }
+.study-state.incomplete { color: #ffd594; background: #3c2b13; }
+.patient-status:empty { display: none; }
+.patient-alert { display: grid; gap: 3px; margin: 7px 0; padding: 8px; border: 1px solid #28506a; border-radius: 6px; background: #0c1d28; font-size: 11px; }
+.patient-alert span, .patient-alert small { color: #91a9ba; overflow-wrap: anywhere; }
+.patient-alert.existing { border-color: #326445; background: #10251a; }
+.patient-alert.warning { border-color: #8a6b2d; background: #30250f; }
+.patient-alert.danger { border-color: #7b3c43; background: #30171b; }
+.patient-alert.danger span { color: #ffc2c2; }
 .muted { display: block; padding: 12px; color: #607587; font-size: 11px; }
 .download-options { display: flex; gap: 12px; align-items: center; color: #94a9ba; font-size: 11px; }
 .download-options input[type="number"] { width: 55px; }
