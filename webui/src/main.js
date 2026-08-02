@@ -191,32 +191,32 @@ function render() {
       <header class="app-header">
         <div class="brand">
           <span class="brand-mark">D</span>
-          <span><b>DCom DICOM/JPG PACS</b><small>OFFLINE · v1.1</small></span>
+          <span><b>DICOM/JPG Downloader & Viewer</b><small>OFFLINE · v1.1</small></span>
         </div>
         <div class="series-selects">
           <label>Series
             <select data-field="series">${state.archive.series.map((item) =>
-              `<option value="${item.id}" ${item.id === state.selectedId ? "selected" : ""}>
+    `<option value="${item.id}" ${item.id === state.selectedId ? "selected" : ""}>
                 ${escapeHtml(item.description)} · ${item.sliceCount} lát
               </option>`).join("")}
             </select>
           </label>
           ${state.mode === "compare" ? `<label>So sánh với
             <select data-field="compare">${state.archive.series.map((item) =>
-              `<option value="${item.id}" ${item.id === state.compareId ? "selected" : ""}>
+      `<option value="${item.id}" ${item.id === state.compareId ? "selected" : ""}>
                 ${escapeHtml(item.description)} · ${item.sliceCount} lát
               </option>`).join("")}
             </select></label>` : ""}
         </div>
         <div class="header-actions">
           ${iconButton(
-            "toggle-download",
-            state.downloadOpen ? "⇤" : "⇥",
-            state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim",
-            state.downloadOpen,
-            false,
-            "Tải phim",
-          )}
+        "toggle-download",
+        state.downloadOpen ? "⇤" : "⇥",
+        state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim",
+        state.downloadOpen,
+        false,
+        "Tải phim",
+      )}
           ${iconButton("choose-archive", icons.folder, "Mở folder DICOM hoặc JPG/PNG trong viewer")}
           ${iconButton("refresh-archive", "⟳", "Quét lại thư mục hiện tại", false, !state.archive.root)}
           <button class="soft-button" data-action="classic" title="Khởi động lại bằng --classic">Classic</button>
@@ -232,7 +232,7 @@ function render() {
         <div class="source-divider"><span>hoặc tải từ PACS / link viewer</span></div>
         <div class="hospital-row">
           ${(state.bootstrap?.hospitals || []).map((item, index) =>
-            `<label><input type="radio" name="hospital" value="${item.id}" ${index === 0 ? "checked" : ""}>
+        `<label><input type="radio" name="hospital" value="${item.id}" ${index === 0 ? "checked" : ""}>
               ${escapeHtml(item.name)}</label>`).join("")}
         </div>
         <label class="field">Mã bệnh nhân
@@ -271,8 +271,8 @@ function render() {
           ${state.mode !== "volume3d" ? `<label class="window-preset-control">
             Hiển thị
             <select data-field="window-preset" title="${series?.sourceType === "dicom"
-              ? "Cửa sổ hiển thị trên pixel DICOM gốc"
-              : "Preset thị giác trên dữ liệu ảnh 8-bit"}">
+        ? "Cửa sổ hiển thị trên pixel DICOM gốc"
+        : "Preset thị giác trên dữ liệu ảnh 8-bit"}">
               <option value="full" ${state.windowPreset === "full" ? "selected" : ""}>${series?.sourceType === "dicom" ? "DICOM mặc định" : "Toàn dải"}</option>
               <option value="soft" ${state.windowPreset === "soft" ? "selected" : ""}>${series?.sourceType === "dicom" ? "Cửa sổ rộng" : "Mô mềm JPG"}</option>
               <option value="contrast" ${state.windowPreset === "contrast" ? "selected" : ""}>${series?.sourceType === "dicom" ? "Cửa sổ hẹp" : "Tương phản cao"}</option>
@@ -299,8 +299,8 @@ function render() {
         </div>
         <section id="workspace" class="workspace-grid">
           ${state.archive.series.length
-            ? `<div class="viewer-loading">${state.busyViewer ? "Đang dựng khung xem…" : ""}</div>`
-            : `<div class="empty-state"><b>Mở folder DICOM hoặc JPG/PNG</b>
+      ? `<div class="viewer-loading">${state.busyViewer ? "Đang dựng khung xem…" : ""}</div>`
+      : `<div class="empty-state"><b>Mở folder DICOM hoặc JPG/PNG</b>
               <span>DICOM được đọc trực tiếp với pixel gốc; không tạo JPG trung gian. Geometry hợp lệ sẽ bật MPR/3D.</span>
               <div class="empty-actions"><button class="primary" data-action="choose-archive">Mở folder trong viewer</button></div></div>`}
         </section>
@@ -832,7 +832,7 @@ async function boot() {
 }
 
 boot().catch((error) => {
-  app.innerHTML = `<div class="fatal-error"><b>Không khởi động được DCom JPG PACS</b>
+  app.innerHTML = `<div class="fatal-error"><b>Không khởi động được DICOM/JPG Downloader & Viewer</b>
     <pre>${escapeHtml(error.stack || error.message)}</pre>
     <button class="primary" id="fatal-reload">Tải lại</button></div>`;
   // The local API forbids inline handlers, so the listener is attached here.

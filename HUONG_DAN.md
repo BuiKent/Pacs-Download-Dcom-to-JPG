@@ -1,4 +1,4 @@
-# DCom JPG PACS v1.1
+# DICOM/JPG Downloader & Viewer v1.1
 
 > Giao diện mặc định dùng WebView2/Cornerstone3D. Nếu cần giao diện cũ, chạy
 > `Dicom_Downloader_App.exe --classic` hoặc `python dcom_web_app.py --classic`.

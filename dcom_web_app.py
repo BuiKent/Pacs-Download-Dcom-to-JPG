@@ -431,7 +431,7 @@ def launch_web(
     _write_smoke_stage(smoke_result, result, "server-started")
     native_api = NativeApi(controller)
     window = webview.create_window(
-        "DCom JPG PACS",
+        "DICOM/JPG Downloader & Viewer",
         url=url,
         js_api=native_api,
         width=1500,

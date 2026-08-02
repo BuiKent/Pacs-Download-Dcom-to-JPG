@@ -1,4 +1,4 @@
-# DCom JPG PACS v1.1.0
+# DICOM/JPG Downloader & Viewer v1.1.0
 
 Ngày phát hành: 30/07/2026
 

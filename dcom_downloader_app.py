@@ -110,7 +110,7 @@ I18N_EN = {
     "Tương phản": "Contrast",
     "Lưu ảnh...": "Save image...",
     "Chưa có ảnh. Tải xong sẽ tự nạp, hoặc bấm nút 📂.": "No images yet. Will auto-load after download, or click the 📂 button.",
-    "DICOM Downloader & Viewer": "DICOM Downloader & Viewer",
+    "DICOM/JPG Downloader & Viewer": "DICOM/JPG Downloader & Viewer",
     "Superkent.bui@gmail.com": "Superkent.bui@gmail.com",
     "Xác nhận thoát": "Confirm Exit",
     "Đang có tiến trình tải / chuyển đổi ảnh đang chạy.\nBạn có chắc chắn muốn hủy và thoát ứng dụng không?": "A download/conversion process is currently running.\nAre you sure you want to cancel and exit the application?",
@@ -378,8 +378,8 @@ class App:
         ttk.Checkbutton = patch_widget(ttk.Checkbutton)
         ttk.LabelFrame = patch_widget(ttk.LabelFrame)
 
-        root.title(self._t("DICOM Downloader & Viewer"))
-        self._t_widgets.append((root, "title", "DICOM Downloader & Viewer"))
+        root.title(self._t("DICOM/JPG Downloader & Viewer"))
+        self._t_widgets.append((root, "title", "DICOM/JPG Downloader & Viewer"))
         screen_w = root.winfo_screenwidth()
         screen_h = root.winfo_screenheight()
         initial_w = min(1360, max(1024, screen_w - 24))
