@@ -58,6 +58,7 @@ class _FakePlaywrightContext:
 class RisSessionTests(unittest.TestCase):
     def tearDown(self):
         dcom_pipeline.clear_ris_session_cache()
+        dcom_pipeline._ENDPOINT_PROBE_CACHE.clear()
         dcom_pipeline._CHROME_UNAVAILABLE = False
 
     def test_session_cache_is_memory_only_copied_and_expires(self):
@@ -78,6 +79,72 @@ class RisSessionTests(unittest.TestCase):
         expired_at = 102.0 + dcom_pipeline._RIS_SESSION_TTL_SECONDS + 1
         with patch("dcom_pipeline.time.monotonic", return_value=expired_at):
             self.assertIsNone(dcom_pipeline._get_ris_session_state("dhy"))
+
+    def test_lan_endpoint_is_preferred_and_falls_back_when_unreachable(self):
+        info = dcom_pipeline.HOSPITALS["dhy"]
+        self.assertEqual(
+            ["http://192.168.50.105", "https://dhy.cdhaviet.vn"],
+            dcom_pipeline._hospital_base_urls(info),
+        )
+
+        with patch("dcom_pipeline._endpoint_is_reachable", return_value=True) as probe:
+            self.assertEqual(
+                "http://192.168.50.105",
+                dcom_pipeline._pick_hospital_base_url(info, log=lambda _m: None),
+            )
+        probe.assert_called_once_with("http://192.168.50.105")
+
+        with patch("dcom_pipeline._endpoint_is_reachable", return_value=False):
+            self.assertEqual(
+                "https://dhy.cdhaviet.vn",
+                dcom_pipeline._pick_hospital_base_url(info, log=lambda _m: None),
+            )
+
+        # Viện chỉ có một đường thì không tốn một lượt dò nào.
+        with patch("dcom_pipeline._endpoint_is_reachable") as never:
+            self.assertEqual(
+                "https://rad.vduh.org",
+                dcom_pipeline._pick_hospital_base_url(
+                    dcom_pipeline.HOSPITALS["vduh"], log=lambda _m: None,
+                ),
+            )
+        never.assert_not_called()
+
+    def test_login_url_is_derived_from_the_chosen_endpoint(self):
+        self.assertEqual(
+            "http://192.168.50.105/ris/account/login",
+            dcom_pipeline._ris_login_url("http://192.168.50.105"),
+        )
+        self.assertEqual(
+            "https://dhy.cdhaviet.vn/ris/account/login",
+            dcom_pipeline._ris_login_url("https://dhy.cdhaviet.vn/"),
+        )
+
+    def test_sessions_are_kept_per_endpoint_not_per_hospital(self):
+        """Cookie của đường LAN không dùng được cho đường công cộng."""
+        dcom_pipeline._store_ris_session_state(
+            "dhy", {"cookies": [{"name": "sid", "value": "LAN"}]}, "http://192.168.50.105",
+        )
+        dcom_pipeline._store_ris_session_state(
+            "dhy", {"cookies": [{"name": "sid", "value": "WAN"}]}, "https://dhy.cdhaviet.vn",
+        )
+        self.assertEqual(
+            "LAN",
+            dcom_pipeline._get_ris_session_state("dhy", "http://192.168.50.105")["cookies"][0]["value"],
+        )
+        self.assertEqual(
+            "WAN",
+            dcom_pipeline._get_ris_session_state("dhy", "https://dhy.cdhaviet.vn")["cookies"][0]["value"],
+        )
+        dcom_pipeline.clear_ris_session_cache("dhy")
+        self.assertIsNone(dcom_pipeline._get_ris_session_state("dhy", "http://192.168.50.105"))
+        self.assertIsNone(dcom_pipeline._get_ris_session_state("dhy", "https://dhy.cdhaviet.vn"))
+
+    def test_dai_hoc_y_is_the_default_hospital(self):
+        keys = list(dcom_pipeline.HOSPITALS)
+        self.assertEqual("dhy", keys[0])
+        defaults = [k for k, v in dcom_pipeline.HOSPITALS.items() if v.get("is_default")]
+        self.assertEqual(["dhy"], defaults)
 
     def test_patient_id_validation_is_fail_closed_on_explicit_mismatch(self):
         self.assertTrue(
@@ -126,6 +193,8 @@ class RisSessionTests(unittest.TestCase):
             patch("dcom_pipeline._perform_ris_login", return_value=True) as login,
             patch("dcom_pipeline._page_is_ris_login", return_value=False),
             patch("dcom_pipeline._query_ris_studies", return_value=api_result),
+            # Không đụng mạng thật trong test: coi như đang ở ngoài viện.
+            patch("dcom_pipeline._endpoint_is_reachable", return_value=False),
         ):
             first = dcom_pipeline.search_patient_studies(
                 "dhy", "2606001174", log=lambda _message: None,

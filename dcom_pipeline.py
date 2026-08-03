@@ -618,6 +618,20 @@ def download_all(
     return stats
 
 
+# Vật thể DICOM KHÔNG chứa điểm ảnh: báo cáo có cấu trúc (SR — vd "Dose SR" của
+# máy CT), trạng thái hiển thị, ảnh khóa, tài liệu, vùng phân đoạn, dữ liệu xạ
+# trị. Không chuyển được sang JPG, và có PACS còn trả 500 khi bị hỏi tới. Tính
+# chúng vào tổng số ảnh sẽ khiến một ca đã tải đủ bị gắn "thiếu ảnh" vĩnh viễn.
+_NON_IMAGE_MODALITIES = frozenset({
+    "SR", "PR", "KO", "DOC", "AU", "SEG", "REG", "FID", "PLAN",
+    "RTSTRUCT", "RTPLAN", "RTRECORD", "STAND",
+})
+
+
+def _is_non_image_modality(modality: Any) -> bool:
+    return str(modality or "").strip().upper() in _NON_IMAGE_MODALITIES
+
+
 def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
                      stop: Callable[[], bool], passes: int = 3) -> None:
     """Tải song song và LÀM LẠI phần hỏng, rồi ghi lại số còn hỏng.
@@ -874,11 +888,17 @@ def _download_via_dicomweb(captured, save_body, stats,
 
     log(f"DICOMweb: {len(series)} series. Đang liệt kê ảnh...")
     tasks = []  # (seriesUID, sopInstanceUID, số frame theo QIDO)
+    skipped_non_image = []
     for s in series:
         if stop():
             break
         suid = V(s, "0020000E")
         if not suid:
+            continue
+        if _is_non_image_modality(V(s, "00080060")):
+            skipped_non_image.append(
+                f"{V(s, '00200011') or '?'} - {V(s, '0008103E') or V(s, '00080060')}"
+            )
             continue
         try:
             insts = get_json(f"{rs_base}/studies/{study}/series/{suid}/instances")
@@ -898,8 +918,14 @@ def _download_via_dicomweb(captured, save_body, stats,
                     nf = 1
                 tasks.append((suid, iuid, max(1, nf), i))
 
+    if skipped_non_image:
+        log(f"  Bỏ qua {len(skipped_non_image)} series không phải ảnh "
+            f"({', '.join(skipped_non_image)}) — không có dữ liệu điểm ảnh nên không "
+            f"tính vào tổng số ảnh của ca.")
+
     total = len(tasks)
-    log(f"DICOMweb: {len(series)} series, {total} ảnh. Đang tải trực tiếp (6 luồng song song)...")
+    log(f"DICOMweb: {len(series) - len(skipped_non_image)} series ảnh, {total} ảnh. "
+        f"Đang tải trực tiếp (6 luồng song song)...")
 
     def try_wadouri(suid, iuid, nf, meta_in):
         params = {k: v for k, v in wtmpl.items()
@@ -1826,22 +1852,86 @@ def _dec_cred(s: str, key: int = 0x57) -> str:
     return bytes([b ^ key for b in base64.b64decode(s)]).decode("utf-8")
 
 
+# `base_urls` xếp theo THỨ TỰ ƯU TIÊN: đường đầu tiên còn kết nối được sẽ được
+# dùng. Đặt địa chỉ LAN trong viện lên trước vì đi thẳng trong mạng nội bộ,
+# nhanh hơn và không phụ thuộc đường ra Internet; ngoài viện thì địa chỉ đó
+# không tới được nên tự động rơi xuống đường công cộng. Cùng một tài khoản.
+# Bệnh viện đứng đầu dict là bệnh viện được chọn sẵn trên giao diện.
 HOSPITALS = {
+    "dhy": {
+        "name": "BV Đại học Y Hà Nội",
+        "base_urls": ["http://192.168.50.105", "https://dhy.cdhaviet.vn"],
+        "username_enc": "NSQ7JDM/Lg==",
+        "password_enc": "Ez8uF2ZlZGNi",
+        "is_default": True,
+    },
     "vduh": {
         "name": "BV Việt Đức",
-        "base_url": "https://rad.vduh.org",
-        "login_url": "https://rad.vduh.org/ris/account/login",
+        "base_urls": ["https://rad.vduh.org"],
         "username_enc": "NSQ7JA==",
         "password_enc": "FSEhPjIjMyI0F2Vj",
     },
-    "dhy": {
-        "name": "BV Đại học Y Hà Nội",
-        "base_url": "https://dhy.cdhaviet.vn",
-        "login_url": "https://dhy.cdhaviet.vn/ris/account/login",
-        "username_enc": "NSQ7JDM/Lg==",
-        "password_enc": "Ez8uF2ZlZGNi",
-    },
 }
+
+_RIS_LOGIN_PATH = "/ris/account/login"
+# Nhớ kết quả dò đường trong thời gian ngắn để không phải dò lại cho từng ca,
+# nhưng vẫn đủ ngắn để vừa cắm VPN/mạng viện là nhận ra ngay.
+_ENDPOINT_PROBE_TTL_SECONDS = 60
+_ENDPOINT_PROBE_LOCK = threading.Lock()
+_ENDPOINT_PROBE_CACHE: dict[str, tuple[float, bool]] = {}
+
+
+def _hospital_base_urls(info: dict) -> list[str]:
+    urls = info.get("base_urls") or ([info["base_url"]] if info.get("base_url") else [])
+    return [str(u).rstrip("/") for u in urls if u]
+
+
+def _ris_login_url(base_url: str) -> str:
+    return f"{str(base_url).rstrip('/')}{_RIS_LOGIN_PATH}"
+
+
+def _endpoint_is_reachable(base_url: str, timeout: float = 1.5) -> bool:
+    """Bắt tay TCP thử với máy chủ. Nhanh và dứt khoát hơn là chờ trình duyệt."""
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    host = parsed.hostname
+    if not host:
+        return False
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    now = time.monotonic()
+    cache_key = f"{host}:{port}"
+    with _ENDPOINT_PROBE_LOCK:
+        hit = _ENDPOINT_PROBE_CACHE.get(cache_key)
+        if hit and now - hit[0] <= _ENDPOINT_PROBE_TTL_SECONDS:
+            return hit[1]
+    try:
+        socket.create_connection((host, port), timeout=timeout).close()
+        ok = True
+    except Exception:
+        ok = False
+    with _ENDPOINT_PROBE_LOCK:
+        _ENDPOINT_PROBE_CACHE[cache_key] = (time.monotonic(), ok)
+    return ok
+
+
+def _pick_hospital_base_url(info: dict, log: LogFn = _default_log) -> str:
+    """Chọn đường vào PACS theo thứ tự ưu tiên trong `base_urls`.
+
+    Đường cuối luôn được trả về khi không đường nào tới được, để thông báo lỗi
+    sau đó nói đúng địa chỉ công cộng mà người dùng có thể tự mở thử.
+    """
+    endpoints = _hospital_base_urls(info)
+    if not endpoints:
+        raise RuntimeError(f"Bệnh viện '{info.get('name')}' chưa khai báo địa chỉ PACS.")
+    for index, base_url in enumerate(endpoints[:-1]):
+        if _endpoint_is_reachable(base_url):
+            if index or len(endpoints) > 1:
+                log(f"Dùng đường mạng nội bộ của viện: {base_url}")
+            return base_url
+        log(f"Không vào được {base_url} (ngoài mạng viện?) — chuyển sang đường tiếp theo.")
+    return endpoints[-1]
 
 
 _RIS_SESSION_TTL_SECONDS = 30 * 60
@@ -1849,17 +1939,28 @@ _RIS_SESSION_LOCK = threading.Lock()
 _RIS_SESSION_STATES: dict[str, dict] = {}
 
 
+def _ris_session_key(hospital_key: str, base_url: str = "") -> str:
+    """Khóa phiên gắn với ĐÚNG địa chỉ đã đăng nhập.
+
+    Một bệnh viện có thể vào bằng địa chỉ LAN hoặc địa chỉ công cộng; cookie của
+    host này không dùng được cho host kia, nên phải giữ riêng từng phiên.
+    """
+    return f"{str(hospital_key or '').lower()}|{str(base_url or '').rstrip('/').lower()}"
+
+
 def clear_ris_session_cache(hospital_key: Optional[str] = None) -> None:
     """Xóa phiên RIS trong RAM; cookie/token không bao giờ được ghi xuống ổ đĩa."""
     with _RIS_SESSION_LOCK:
         if hospital_key is None:
             _RIS_SESSION_STATES.clear()
-        else:
-            _RIS_SESSION_STATES.pop(hospital_key.lower(), None)
+            return
+        prefix = f"{hospital_key.lower()}|"
+        for key in [k for k in _RIS_SESSION_STATES if k.startswith(prefix)]:
+            _RIS_SESSION_STATES.pop(key, None)
 
 
-def _get_ris_session_state(hospital_key: str) -> Optional[dict]:
-    key = hospital_key.lower()
+def _get_ris_session_state(hospital_key: str, base_url: str = "") -> Optional[dict]:
+    key = _ris_session_key(hospital_key, base_url)
     now = time.monotonic()
     with _RIS_SESSION_LOCK:
         entry = _RIS_SESSION_STATES.get(key)
@@ -1872,9 +1973,9 @@ def _get_ris_session_state(hospital_key: str) -> Optional[dict]:
         return copy.deepcopy(entry["storage_state"])
 
 
-def _store_ris_session_state(hospital_key: str, storage_state: dict) -> None:
+def _store_ris_session_state(hospital_key: str, storage_state: dict, base_url: str = "") -> None:
     with _RIS_SESSION_LOCK:
-        _RIS_SESSION_STATES[hospital_key.lower()] = {
+        _RIS_SESSION_STATES[_ris_session_key(hospital_key, base_url)] = {
             "storage_state": copy.deepcopy(storage_state),
             "last_used": time.monotonic(),
         }
@@ -2034,7 +2135,8 @@ def resolve_study_viewer_url(
     if not uid:
         raise RuntimeError("Study thiếu StudyInstanceUID nên không xin được link viewer.")
 
-    base_url = info["base_url"]
+    base_url = _pick_hospital_base_url(info, log)
+    login_url = _ris_login_url(base_url)
     wrapper_url = f"{base_url}/ris/vrViewer?studyUID={uid}&viewType=VIEWERV2"
     username = _dec_cred(info["username_enc"]) if "username_enc" in info else info.get("username", "")
     password = _dec_cred(info["password_enc"]) if "password_enc" in info else info.get("password", "")
@@ -2047,7 +2149,7 @@ def resolve_study_viewer_url(
             viewport={"width": 1600, "height": 1000},
             ignore_https_errors=True,
         )
-        cached = _get_ris_session_state(hospital_key)
+        cached = _get_ris_session_state(hospital_key, base_url)
         if cached:
             options["storage_state"] = cached
         context = browser.new_context(**options)
@@ -2057,7 +2159,7 @@ def resolve_study_viewer_url(
             if _page_is_ris_login(page):
                 clear_ris_session_cache(hospital_key)
                 if not _perform_ris_login(
-                    page, info["login_url"], reading_url, username, password,
+                    page, login_url, reading_url, username, password,
                 ):
                     raise RuntimeError("Không đăng nhập được RIS để xin link viewer.")
                 page.goto(wrapper_url, wait_until="domcontentloaded", timeout=30000)
@@ -2066,7 +2168,7 @@ def resolve_study_viewer_url(
                 raise RuntimeError(
                     "RIS không trả về khung viewer sau 15 giây (mạng chậm hoặc PACS bận)."
                 )
-            _store_ris_session_state(hospital_key, context.storage_state())
+            _store_ris_session_state(hospital_key, context.storage_state(), base_url)
             return viewer_url
         except Exception as exc:
             friendly = _server_unreachable_message(exc, info["name"], base_url)
@@ -2177,13 +2279,13 @@ def search_patient_studies(
         log(f"❌ Không hỗ trợ bệnh viện '{hospital_key}'. Chỉ hỗ trợ: vduh, dhy")
         return []
 
-    base_url = info["base_url"]
-    login_url = info["login_url"]
+    base_url = _pick_hospital_base_url(info, log)
+    login_url = _ris_login_url(base_url)
     username = _dec_cred(info["username_enc"]) if "username_enc" in info else info.get("username", "")
     password = _dec_cred(info["password_enc"]) if "password_enc" in info else info.get("password", "")
 
     reading_url = f"{base_url}/ris/study/reading"
-    cached_state = _get_ris_session_state(hospital_key)
+    cached_state = _get_ris_session_state(hospital_key, base_url)
     if cached_state:
         log(f"Đang tái sử dụng phiên RIS {info['name']} trong bộ nhớ...")
     else:
@@ -2235,7 +2337,7 @@ def search_patient_studies(
                 if api_result.get("authFailed"):
                     raise RuntimeError("RIS tiếp tục từ chối phiên sau khi đăng nhập lại.")
 
-            _store_ris_session_state(hospital_key, context.storage_state())
+            _store_ris_session_state(hospital_key, context.storage_state(), base_url)
             if session_reused:
                 log(f"✓ Đã dùng lại phiên RIS {info['name']} — không cần đăng nhập lại.")
             else:

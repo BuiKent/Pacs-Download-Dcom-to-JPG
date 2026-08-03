@@ -234,7 +234,7 @@ function render() {
         <div class="hospital-row">
           ${(state.bootstrap?.hospitals || []).map((item, index) =>
         `<label><input type="radio" name="hospital" value="${item.id}"
-          ${state.patient?.hospitalKey ? (item.id === state.patient.hospitalKey ? "checked" : "") : (index === 0 ? "checked" : "")}>
+          ${state.patient?.hospitalKey ? (item.id === state.patient.hospitalKey ? "checked" : "") : ((item.isDefault ?? (index === 0)) ? "checked" : "")}>
               ${escapeHtml(item.name)}</label>`).join("")}
         </div>
         <label class="field">Mã bệnh nhân

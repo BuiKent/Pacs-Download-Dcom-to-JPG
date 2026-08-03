@@ -418,6 +418,13 @@ class ViewerLinkFreshnessTests(unittest.TestCase):
             )
         )
 
+    def test_non_image_objects_do_not_count_as_missing_images(self):
+        """Dose SR không có điểm ảnh — tính nó vào tổng sẽ gắn 'thiếu ảnh' vĩnh viễn."""
+        for modality in ("SR", "sr", " PR ", "KO", "SEG", "RTSTRUCT"):
+            self.assertTrue(dcom_pipeline._is_non_image_modality(modality), modality)
+        for modality in ("CT", "MR", "CR", "US", "XA", "NM", "PT", "", None):
+            self.assertFalse(dcom_pipeline._is_non_image_modality(modality), modality)
+
     def test_stats_completeness_rules(self):
         self.assertFalse(dcom_pipeline.DownloadStats(dicom=4, expected=348).is_complete())
         self.assertTrue(dcom_pipeline.DownloadStats(dicom=348, expected=348).is_complete())

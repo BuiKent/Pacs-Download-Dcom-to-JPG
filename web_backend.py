@@ -747,7 +747,11 @@ class WebController:
             "job": self.job.snapshot(),
             "outputRoot": str(self.output_root),
             "hospitals": [
-                {"id": key, "name": value["name"]}
+                {
+                    "id": key,
+                    "name": value["name"],
+                    "isDefault": bool(value.get("is_default")),
+                }
                 for key, value in dcom_pipeline.HOSPITALS.items()
             ],
         }

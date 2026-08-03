@@ -3381,7 +3381,7 @@ volumeActor.getProperty().${r}()
         <div class="source-divider"><span>hoặc tải từ PACS / link viewer</span></div>
         <div class="hospital-row">
           ${(B.bootstrap?.hospitals||[]).map((r,i)=>`<label><input type="radio" name="hospital" value="${r.id}"
-          ${B.patient?.hospitalKey?r.id===B.patient.hospitalKey?"checked":"":i===0?"checked":""}>
+          ${B.patient?.hospitalKey?r.id===B.patient.hospitalKey?"checked":"":r.isDefault??i===0?"checked":""}>
               ${Xe(r.name)}</label>`).join("")}
         </div>
         <label class="field">Mã bệnh nhân
