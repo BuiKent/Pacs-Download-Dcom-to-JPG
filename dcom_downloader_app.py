@@ -1154,6 +1154,7 @@ class App:
                 )
                 patient_folder, _manifest = pipe.find_patient_archive(out_base, pid, hosp)
                 if patient_folder:
+                    hosp_name = pipe.HOSPITALS.get(hosp, {}).get("name", hosp)
                     self.msg_q.put(("patientfolder", (str(patient_folder), f"{hosp_name} - BN: {pid}")))
                 self.msg_q.put(("done", True))
             except Exception:
