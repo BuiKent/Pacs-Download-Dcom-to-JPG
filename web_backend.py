@@ -114,6 +114,8 @@ class DicomHeader:
     rescale_intercept: float
     window_center: Optional[float]
     window_width: Optional[float]
+    study_date: str = ""
+    study_desc: str = ""
 
 
 def _read_dicom_header(path: Path) -> Optional[DicomHeader]:
@@ -141,6 +143,12 @@ def _read_dicom_header(path: Path) -> Optional[DicomHeader]:
     window_width_value = getattr(ds, "WindowWidth", None)
     window_center = _dicom_number(window_center_value, math.nan)
     window_width = _dicom_number(window_width_value, math.nan)
+    
+    study_date = str(getattr(ds, "StudyDate", "") or "").strip()
+    if study_date and len(study_date) == 8 and study_date.isdigit():
+        study_date = f"{study_date[:4]}-{study_date[4:6]}-{study_date[6:]}"
+    study_desc = str(getattr(ds, "StudyDescription", "") or "").strip()
+
     return DicomHeader(
         path=path,
         series_uid=series_uid,
@@ -166,6 +174,8 @@ def _read_dicom_header(path: Path) -> Optional[DicomHeader]:
         rescale_intercept=_dicom_number(getattr(ds, "RescaleIntercept", None), 0.0),
         window_center=window_center if math.isfinite(window_center) else None,
         window_width=window_width if math.isfinite(window_width) and window_width > 0 else None,
+        study_date=study_date,
+        study_desc=study_desc,
     )
 
 
@@ -441,6 +451,7 @@ class SeriesRecord:
     modality: str = "UNKNOWN"
     source_type: str = "image"
     pixel_data: Optional[dict] = None
+    study_group: str = ""
 
     def public_dict(self) -> dict:
         data = {
@@ -453,6 +464,7 @@ class SeriesRecord:
             "description": (self.manifest or {}).get("series_description", self.name),
             "modality": self.modality,
             "sourceType": self.source_type,
+            "studyGroup": self.study_group,
         }
         if self.pixel_data:
             data["pixelData"] = self.pixel_data
@@ -535,6 +547,13 @@ class ArchiveCatalog:
             digest = hashlib.sha256(f"dicom:{root}:{uid}".casefold().encode("utf-8")).hexdigest()[:20]
             common = Path(os.path.commonpath([str(item.path.parent) for item in headers]))
             modality = "MR" if first.modality == "MRI" else first.modality
+            
+            parts = []
+            if first.study_date: parts.append(first.study_date)
+            parts.append(modality if modality in {"CT", "MR"} else first.modality)
+            if first.study_desc: parts.append(first.study_desc)
+            study_group = " - ".join(parts) if parts else "Không rõ ca chụp"
+
             records[digest] = SeriesRecord(
                 series_id=digest,
                 name=f"Series {first.series_number or '?'} - {first.description}",
@@ -545,6 +564,7 @@ class ArchiveCatalog:
                 mpr_reason=reason,
                 modality=modality if modality in {"CT", "MR"} else "UNKNOWN",
                 source_type="dicom",
+                study_group=study_group,
                 pixel_data={
                     "rows": first.rows,
                     "columns": first.columns,
@@ -631,6 +651,15 @@ class ArchiveCatalog:
             digest = hashlib.sha256(str(folder).casefold().encode("utf-8")).hexdigest()[:20]
             ready, reason = validate_mpr_manifest(folder, manifest)
             relative_name = str(folder.relative_to(root)) if folder != root else folder.name
+            
+            study_group = ""
+            if " - " in folder.name:
+                parts = folder.name.rsplit(" - ", 1)
+                if len(parts) == 2 and re.match(r'^[a-f0-9]+$', parts[1]):
+                    study_group = parts[0]
+            if not study_group:
+                study_group = "Không rõ ca chụp"
+
             records[digest] = SeriesRecord(
                 series_id=digest,
                 name=relative_name,
@@ -640,6 +669,7 @@ class ArchiveCatalog:
                 mpr_ready=ready,
                 mpr_reason=reason,
                 modality=self._modality(folder, root, manifest),
+                study_group=study_group,
             )
         if log:
             log(f"Đã quét {scanned} thư mục, tìm thấy {len(records)} series ảnh.")

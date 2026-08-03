@@ -183,6 +183,39 @@ function renderUtilityTools(series) {
   ].join("");
 }
 
+function formatGroupLabel(groupKey) {
+  if (!groupKey || groupKey === "Không rõ ca chụp") return "📁 Ca chụp chưa phân loại";
+  const parts = groupKey.split(" - ");
+  if (parts.length >= 2) {
+    const dateStr = parts[0];
+    const modality = parts[1];
+    const desc = parts.slice(2).join(" - ");
+    let dateFmt = dateStr;
+    const dp = dateStr.split("-");
+    if (dp.length === 3) dateFmt = `${dp[2]}/${dp[1]}`;
+    const extra = [modality, desc].filter(Boolean).join(" ");
+    return `📁 Ngày ${dateFmt} (${extra})`;
+  }
+  return `📁 ${groupKey}`;
+}
+
+function renderSeriesOptions(archive, selectedId) {
+  const groups = {};
+  for (const item of archive.series) {
+    const groupKey = item.studyGroup || "Khác";
+    if (!groups[groupKey]) groups[groupKey] = [];
+    groups[groupKey].push(item);
+  }
+  return Object.entries(groups).map(([groupKey, items]) => {
+    const options = items.map((item) =>
+      `<option value="${item.id}" ${item.id === selectedId ? "selected" : ""}>
+        ▪ ${escapeHtml(item.description)} · ${item.sliceCount} lát
+      </option>`
+    ).join("");
+    return `<optgroup label="${escapeHtml(formatGroupLabel(groupKey))}">${options}</optgroup>`;
+  }).join("");
+}
+
 function render() {
   const series = selectedSeries();
   const safety = seriesSafetyNotice(series);
@@ -196,18 +229,10 @@ function render() {
         </div>
         <div class="series-selects">
           <label>Series
-            <select data-field="series">${state.archive.series.map((item) =>
-    `<option value="${item.id}" ${item.id === state.selectedId ? "selected" : ""}>
-                ${escapeHtml(item.description)} · ${item.sliceCount} lát
-              </option>`).join("")}
-            </select>
+            <select data-field="series">${renderSeriesOptions(state.archive, state.selectedId)}</select>
           </label>
           ${state.mode === "compare" ? `<label>So sánh với
-            <select data-field="compare">${state.archive.series.map((item) =>
-      `<option value="${item.id}" ${item.id === state.compareId ? "selected" : ""}>
-                ${escapeHtml(item.description)} · ${item.sliceCount} lát
-              </option>`).join("")}
-            </select></label>` : ""}
+            <select data-field="compare">${renderSeriesOptions(state.archive, state.compareId)}</select></label>` : ""}
         </div>
         <div class="header-actions">
           ${iconButton(
