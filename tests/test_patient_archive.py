@@ -129,6 +129,8 @@ class PatientArchiveTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp, patch(
             "dcom_pipeline.run_pipeline", side_effect=fake_run_pipeline,
+        ), patch(
+            "dcom_pipeline.resolve_study_viewer_url", return_value="https://viewer.test/s?session=1",
         ):
             root = Path(tmp)
             item = study("1.2.840.113619.2.1.100")
@@ -149,6 +151,7 @@ class PatientArchiveTests(unittest.TestCase):
             self.assertEqual(calls[0][0], calls[1][0])
             patient_dirs = [path for path in root.iterdir() if path.is_dir()]
             self.assertEqual(1, len(patient_dirs))
+
 
     def test_legacy_classic_folder_is_indexed_and_reused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -278,6 +281,149 @@ class PatientArchiveTests(unittest.TestCase):
                 )
             with self.assertRaisesRegex(ValueError, "nhiều bệnh nhân"):
                 ArchiveCatalog().open(root)
+
+
+class ViewerLinkFreshnessTests(unittest.TestCase):
+    """Ba lỗi làm mất ảnh khi tải theo mã BN — mỗi lỗi một test."""
+
+    @staticmethod
+    def _kwargs(root: Path, items: list[dict], logs: list[str]) -> dict:
+        first = items[0]
+        return dict(
+            studies=items,
+            out_base=root,
+            patient_id=first["patient_id"],
+            patient_name=first["patient_name"],
+            hospital_key=first["hospital_key"],
+            hospital_name=first["hospital_name"],
+            log=logs.append,
+        )
+
+    def test_search_does_not_hand_out_perishable_links(self):
+        """Tìm kiếm không được cấp sẵn link viewer — link phải xin lúc tải."""
+        source = Path("dcom_pipeline.py").read_text(encoding="utf-8")
+        block = source.split("def search_patient_studies(")[1].split("\ndef ")[0]
+        self.assertNotIn("iframes[0]", block)
+        self.assertNotIn("vrViewer?studyUID=", block)
+
+    def test_link_is_minted_per_study_at_download_time(self):
+        minted = []
+
+        def fake_resolve(hospital_key, study_uid, **_kwargs):
+            minted.append(study_uid)
+            return f"https://viewer.test/v?session=fresh-{len(minted)}"
+
+        used = []
+
+        def fake_run_pipeline(**kwargs):
+            used.append(kwargs["url"])
+            Path(kwargs["out_base"], "DICOM").mkdir(parents=True, exist_ok=True)
+            return (
+                dcom_pipeline.DownloadStats(dicom=5, expected=5),
+                dcom_pipeline.ConvertStats(converted=5),
+                Path(kwargs["out_base"], "JPG"),
+            )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "dcom_pipeline.resolve_study_viewer_url", side_effect=fake_resolve,
+        ), patch("dcom_pipeline.run_pipeline", side_effect=fake_run_pipeline):
+            logs: list[str] = []
+            items = [study("1.2.3.10"), study("1.2.3.11")]
+            dcom_pipeline.download_studies_list(**self._kwargs(Path(tmp), items, logs))
+
+            self.assertEqual(["1.2.3.10", "1.2.3.11"], minted)
+            self.assertEqual(
+                ["https://viewer.test/v?session=fresh-1", "https://viewer.test/v?session=fresh-2"],
+                used,
+            )
+
+    def test_study_is_skipped_when_no_viewer_link_can_be_minted(self):
+        """Không xin được link thì KHÔNG được tải bằng link wrapper vô dụng."""
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "dcom_pipeline.resolve_study_viewer_url",
+            side_effect=RuntimeError("RIS không trả về khung viewer"),
+        ), patch("dcom_pipeline.run_pipeline") as run_pipeline:
+            logs: list[str] = []
+            root = Path(tmp)
+            items = [study("1.2.3.20")]
+            dcom_pipeline.download_studies_list(**self._kwargs(root, items, logs))
+
+            run_pipeline.assert_not_called()
+            folder, manifest = dcom_pipeline.find_patient_archive(root, "2605032022", "vduh")
+            self.assertIsNotNone(folder)
+            self.assertEqual("incomplete", manifest["studies"]["1.2.3.20"]["status"])
+            self.assertTrue(any("BỎ QUA CA 1" in line for line in logs), logs)
+
+    def test_partial_download_is_never_reported_as_complete(self):
+        """Tải 4/348 ảnh phải là CHƯA ĐỦ, không phải 'đã tải xong'."""
+
+        def fake_run_pipeline(**kwargs):
+            Path(kwargs["out_base"], "DICOM").mkdir(parents=True, exist_ok=True)
+            return (
+                dcom_pipeline.DownloadStats(dicom=4, expected=348, failed=344),
+                dcom_pipeline.ConvertStats(converted=4),
+                Path(kwargs["out_base"], "JPG"),
+            )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "dcom_pipeline.resolve_study_viewer_url", return_value="https://viewer.test/v?session=x",
+        ), patch("dcom_pipeline.run_pipeline", side_effect=fake_run_pipeline):
+            logs: list[str] = []
+            root = Path(tmp)
+            items = [study("1.2.3.30")]
+            dcom_pipeline.download_studies_list(**self._kwargs(root, items, logs))
+
+            folder, manifest = dcom_pipeline.find_patient_archive(root, "2605032022", "vduh")
+            self.assertEqual("incomplete", manifest["studies"]["1.2.3.30"]["status"])
+            self.assertFalse(any("ĐÃ TẢI XONG" in line for line in logs), logs)
+            self.assertTrue(any("CHƯA ĐỦ ẢNH (4/348)" in line for line in logs), logs)
+
+    def test_wrapper_url_is_rejected_instead_of_downloaded(self):
+        item = study("1.2.3.40")
+        item["hospital_key"] = ""  # không đủ thông tin để xin link mới
+        item["direct_url"] = "https://rad.vduh.org/ris/vrViewer?studyUID=1.2.3.40&viewType=VIEWERV2"
+        with self.assertRaises(RuntimeError) as ctx:
+            dcom_pipeline._viewer_url_for_study(item, "", lambda _m: None, True)
+        self.assertIn("wrapper", str(ctx.exception).lower())
+
+    def test_ris_shell_pages_are_not_mistaken_for_the_viewer(self):
+        """Sau khi đăng nhập lại, page.url hay đứng ở trang RIS — không phải khung ảnh."""
+        for bad in (
+            "https://dhy.cdhaviet.vn/ris/account/login",
+            "https://dhy.cdhaviet.vn/ris/study/reading",
+            "https://dhy.cdhaviet.vn/ris/vrViewer?studyUID=1&viewType=VIEWERV2",
+            "about:blank",
+            "",
+        ):
+            self.assertFalse(dcom_pipeline._looks_like_viewer_url(bad), bad)
+        for good in (
+            "https://dhyv2.cdhavn.com/viewer?session=54be8d3a&mobile_support=1",
+            "https://rad.vduh.org/viewer/index.html?share=abc",
+        ):
+            self.assertTrue(dcom_pipeline._looks_like_viewer_url(good), good)
+
+    def test_network_outage_is_not_reported_as_a_patient_id_problem(self):
+        outage = dcom_pipeline._server_unreachable_message(
+            Exception("Page.goto: net::ERR_CONNECTION_TIMED_OUT at https://dhy.cdhaviet.vn/ris/account/login"),
+            "BV Đại học Y Hà Nội",
+            "https://dhy.cdhaviet.vn",
+        )
+        self.assertIsNotNone(outage)
+        self.assertIn("KHÔNG KẾT NỐI ĐƯỢC", outage)
+        self.assertIn("KHÔNG phải lỗi mã bệnh nhân", outage)
+        # Lỗi khác thì để nguyên, không được nuốt thành "lỗi mạng".
+        self.assertIsNone(
+            dcom_pipeline._server_unreachable_message(
+                ValueError("RIS không xác nhận đăng nhập thành công."), "X", "https://x",
+            )
+        )
+
+    def test_stats_completeness_rules(self):
+        self.assertFalse(dcom_pipeline.DownloadStats(dicom=4, expected=348).is_complete())
+        self.assertTrue(dcom_pipeline.DownloadStats(dicom=348, expected=348).is_complete())
+        # Không biết manifest thì chỉ kết luận "có ảnh".
+        self.assertTrue(dcom_pipeline.DownloadStats(dicom=1).is_complete())
+        self.assertFalse(dcom_pipeline.DownloadStats().is_complete())
 
 
 if __name__ == "__main__":

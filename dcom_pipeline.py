@@ -337,9 +337,24 @@ class DownloadStats:
     png: int = 0
     duplicates: int = 0
     series_seen: set = field(default_factory=set)
+    # Số ảnh MANIFEST CỦA VIEWER khai báo cho study này (0 = không biết, vd chế
+    # độ mô phỏng). `failed` là số ảnh đã thử hết số lần mà vẫn không lấy được.
+    expected: int = 0
+    failed: int = 0
 
     def total(self) -> int:
         return self.dicom + self.jpg + self.png
+
+    def is_complete(self) -> bool:
+        """Đủ ảnh hay không — dùng để quyết định gắn nhãn 'xong' cho 1 ca.
+
+        Không biết manifest thì chỉ dám kết luận 'có ảnh', KHÔNG kết luận 'đủ':
+        đó là lý do chỗ gọi phải đọc `expected` trước khi báo hoàn tất.
+        """
+        if self.expected <= 0:
+            return self.total() > 0
+        counted = self.dicom if self.dicom else self.total()
+        return counted >= self.expected
 
 
 def download_all(
@@ -403,24 +418,30 @@ def download_all(
     def stop() -> bool:
         return bool(should_stop and should_stop())
 
-    def save_body(body: bytes, _depth: int = 0) -> None:
+    def save_body(body: bytes, _depth: int = 0) -> bool:
         """Lưu 1 ảnh (nhận diện theo NỘI DUNG, không phụ thuộc endpoint), tự loại
-        trùng theo SHA-1. An toàn khi gọi từ nhiều luồng."""
+        trùng theo SHA-1. An toàn khi gọi từ nhiều luồng.
+
+        Trả về True nếu ảnh đã nằm trên đĩa (mới lưu hoặc đã có sẵn) — chỗ gọi
+        dựa vào đây để biết ảnh nào cần tải lại, thay vì nuốt lỗi.
+        """
         if not body:
-            return
+            return False
         data = _maybe_base64_decode(body)
         ext = _guess_ext(data)
         if ext is None:
             # WADO-RS thường gói DICOM trong multipart/related — bóc rồi thử lại
             if _depth == 0:
-                for _pct, part in _multipart_parts(data):
-                    save_body(part, 1)
-            return
+                # Lưu HẾT các phần rồi mới tổng kết — `any(...)` sẽ đoản mạch và
+                # làm rơi những ảnh nằm sau phần đầu tiên lưu thành công.
+                saved = [save_body(part, 1) for _pct, part in _multipart_parts(data)]
+                return any(saved)
+            return False
         h = hashlib.sha1(data).hexdigest()
         with save_lock:
             if h in seen_hashes:
                 stats.duplicates += 1
-                return
+                return True
             seen_hashes.add(h)
             if ext == "dcm":
                 stats.dicom += 1; idx = stats.dicom
@@ -523,6 +544,19 @@ def download_all(
         except Exception:
             pass
 
+        # Link wrapper của RIS đòi cookie đăng nhập mà trình tải không có. Nói
+        # thẳng ra thay vì chạy tiếp rồi thu về vài ảnh của trang đăng nhập.
+        try:
+            if _is_ris_wrapper_url(url) and _page_is_ris_login(page):
+                log("!!! Link này là TRANG WRAPPER của RIS và đang hiện màn hình ĐĂNG NHẬP. "
+                    "Trình tải không có cookie phiên nên không thấy ảnh. Hãy dùng chức năng "
+                    "'Tìm theo mã BN' (app tự xin link viewer), hoặc mở link trên trình duyệt "
+                    "rồi copy đúng link viewer bên trong.")
+                browser.close()
+                return stats
+        except Exception:
+            pass
+
         # Chờ manifest (hoặc 1 ảnh mẫu) xuất hiện (tối đa ~12s)
         log("Đang dò manifest của viewer...")
         for _ in range(24):
@@ -584,6 +618,57 @@ def download_all(
     return stats
 
 
+def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
+                     stop: Callable[[], bool], passes: int = 3) -> None:
+    """Tải song song và LÀM LẠI phần hỏng, rồi ghi lại số còn hỏng.
+
+    Mạng bệnh viện chập chờn nên vài ảnh lỗi lẻ là chuyện thường; im lặng bỏ qua
+    chúng chính là kiểu mất ảnh nguy hiểm nhất với dùng lâm sàng. Ở đây mỗi ảnh
+    hỏng được giữ lại thử tiếp, số còn hỏng cuối cùng vào `stats.failed`.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    def attempt(task) -> bool:
+        if stop():
+            return True  # dừng theo lệnh người dùng, không tính là ảnh hỏng
+        try:
+            return bool(fetch(task))
+        except Exception:
+            return False
+
+    pending = list(tasks)
+    for round_no in range(1, max(1, passes) + 1):
+        if not pending or stop():
+            break
+        if round_no > 1:
+            log(f"  ↻ Tải lại {len(pending)} ảnh bị hỏng (lượt {round_no}/{passes})...")
+            time.sleep(1.5)
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            results = list(ex.map(attempt, pending))
+        pending = [task for task, ok in zip(pending, results) if not ok]
+
+    stats.failed = 0 if stop() else len(pending)
+
+
+def _report_download_result(stats: DownloadStats, expected: int, log: LogFn,
+                            stop: Callable[[], bool]) -> None:
+    """Kết luận đủ/thiếu. Thiếu thì phải nói THẲNG là thiếu."""
+    expected = int(expected or 0)
+    stats.expected = max(stats.expected, expected)
+    if stop():
+        log(f"  ⏹ Đã dừng theo yêu cầu: {stats.dicom}/{expected or '?'} ảnh.")
+        return
+    if expected and stats.dicom >= expected:
+        log(f"  ✓ Đã đủ theo manifest: {stats.dicom}/{expected} ảnh.")
+    elif expected:
+        log(f"  ❌ THIẾU ẢNH: mới có {stats.dicom}/{expected} "
+            f"(còn hỏng {stats.failed} sau khi đã thử lại). Ca này sẽ bị đánh dấu "
+            f"CHƯA ĐỦ để tải bù, KHÔNG tính là hoàn tất.")
+    else:
+        log(f"  ⚠ Viewer không khai báo tổng số ảnh — đã lấy {stats.total()} ảnh, "
+            f"không thể tự đối chiếu đủ/thiếu.")
+
+
 def _download_via_manifest(captured, save_body, stats,
                            log: LogFn, stop: Callable[[], bool]) -> None:
     """
@@ -595,7 +680,6 @@ def _download_via_manifest(captured, save_body, stats,
     import ssl
     import urllib.request
     from urllib.parse import urlparse, parse_qs, urlencode
-    from concurrent.futures import ThreadPoolExecutor
 
     sslctx = ssl.create_default_context()
     sslctx.check_hostname = False
@@ -654,24 +738,12 @@ def _download_via_manifest(captured, save_body, stats,
     log(f"Manifest: {len(series_list)} series, ~{total_expected} ảnh. "
         f"Đang tải trực tiếp {len(tasks)} ảnh (6 luồng song song)...")
 
-    def fetch_one(u):
-        if stop():
-            return
-        try:
-            with urllib.request.urlopen(u, timeout=45, context=sslctx) as r:
-                save_body(r.read())
-        except Exception:
-            pass
+    def fetch_one(u) -> bool:
+        with urllib.request.urlopen(u, timeout=45, context=sslctx) as r:
+            return save_body(r.read())
 
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        list(ex.map(fetch_one, tasks))
-
-    if total_expected and stats.dicom >= total_expected:
-        log(f"  ✓ Đã đủ theo manifest: {stats.dicom}/{total_expected} ảnh.")
-    else:
-        miss = max(0, total_expected - stats.dicom)
-        log(f"  ⚠ Tải được {stats.dicom}/{total_expected} ảnh — thiếu {miss} "
-            f"(có thể do mạng/timeout; chạy lại sẽ bù, ảnh trùng tự bỏ).")
+    _run_fetch_tasks(tasks, fetch_one, stats, log, stop)
+    _report_download_result(stats, total_expected or len(tasks), log, stop)
 
 
 def _download_via_vrpacs(captured, save_body, stats,
@@ -685,7 +757,6 @@ def _download_via_vrpacs(captured, save_body, stats,
     import json
     import ssl
     import urllib.request
-    from concurrent.futures import ThreadPoolExecutor
 
     try:
         j = json.loads(captured["vrpacs"].decode("utf-8", "replace"))
@@ -723,25 +794,13 @@ def _download_via_vrpacs(captured, save_body, stats,
     log(f"Manifest (vrpacs): {n_series} series, {len(tasks)} ảnh. "
         f"Đang tải trực tiếp (6 luồng song song)...")
 
-    def fetch_one(u):
-        if stop():
-            return
-        try:
-            req = urllib.request.Request(u, headers={"Cookie": cj} if cj else {})
-            with urllib.request.urlopen(req, timeout=45, context=sslctx) as r:
-                save_body(r.read())
-        except Exception:
-            pass
+    def fetch_one(u) -> bool:
+        req = urllib.request.Request(u, headers={"Cookie": cj} if cj else {})
+        with urllib.request.urlopen(req, timeout=45, context=sslctx) as r:
+            return save_body(r.read())
 
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        list(ex.map(fetch_one, tasks))
-
-    total = len(tasks)
-    if total and stats.dicom >= total:
-        log(f"  ✓ Đã đủ theo manifest: {stats.dicom}/{total} ảnh.")
-    else:
-        log(f"  ⚠ Tải được {stats.dicom}/{total} ảnh — thiếu {max(0,total-stats.dicom)} "
-            f"(có thể do mạng/timeout; chạy lại sẽ bù, ảnh trùng tự bỏ).")
+    _run_fetch_tasks(tasks, fetch_one, stats, log, stop)
+    _report_download_result(stats, len(tasks), log, stop)
 
 
 def _download_via_dicomweb(captured, save_body, stats,
@@ -759,7 +818,6 @@ def _download_via_dicomweb(captured, save_body, stats,
     import ssl
     import urllib.request
     from urllib.parse import urlparse, parse_qs, urlencode
-    from concurrent.futures import ThreadPoolExecutor
 
     qp = urlparse(captured["qido_series"])
     rs_base = f"{qp.scheme}://{qp.netloc}{qp.path.split('/studies/')[0]}"
@@ -898,9 +956,7 @@ def _download_via_dicomweb(captured, save_body, stats,
 
     fetchers = {"wadouri": try_wadouri, "wadors": try_wadors, "frames": try_frames}
 
-    def fetch_one(task):
-        if stop():
-            return
+    def fetch_one(task) -> bool:
         suid, iuid, nf, meta_in = task
         for name in list(order):
             try:
@@ -908,18 +964,13 @@ def _download_via_dicomweb(captured, save_body, stats,
                     if order[0] != name:  # nhớ cách vừa thành công cho các ảnh sau
                         order.remove(name)
                         order.insert(0, name)
-                    return
+                    return True
             except Exception:
                 continue
+        return False
 
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        list(ex.map(fetch_one, tasks))
-
-    if total and stats.dicom >= total:
-        log(f"  ✓ Đã đủ theo manifest: {stats.dicom}/{total} ảnh.")
-    else:
-        log(f"  ⚠ Tải được {stats.dicom}/{total} ảnh — thiếu {max(0,total-stats.dicom)} "
-            f"(có thể do mạng/timeout; chạy lại sẽ bù, ảnh trùng tự bỏ).")
+    _run_fetch_tasks(tasks, fetch_one, stats, log, stop)
+    _report_download_result(stats, total, log, stop)
 
 
 def _drive_viewer(page, log: LogFn, stats: DownloadStats,
@@ -1882,6 +1933,150 @@ def _perform_ris_login(
     return not _page_is_ris_login(page)
 
 
+_RIS_WRAPPER_RE = re.compile(r"/ris/vr_?viewer", re.I)
+# Các trang "vỏ" của RIS (đăng nhập, danh sách đọc...). Chúng KHÔNG chứa ảnh;
+# nếu đăng nhập lại giữa chừng thì page.url rất dễ đang đứng ở đây.
+_RIS_SHELL_RE = re.compile(r"/ris/(account|study|home|dashboard)(/|$|\?)", re.I)
+
+
+_NET_UNREACHABLE_MARKERS = (
+    "ERR_CONNECTION_TIMED_OUT", "ERR_CONNECTION_REFUSED", "ERR_CONNECTION_RESET",
+    "ERR_NAME_NOT_RESOLVED", "ERR_INTERNET_DISCONNECTED", "ERR_ADDRESS_UNREACHABLE",
+    "ERR_NETWORK_CHANGED", "ERR_PROXY_CONNECTION_FAILED",
+)
+
+
+def _server_unreachable_message(exc: Exception, hospital_name: str, base_url: str) -> Optional[str]:
+    """Đổi lỗi mạng thô của trình duyệt thành câu người dùng hiểu được.
+
+    Máy chủ PACS chỉ mở trong mạng nội bộ/VPN bệnh viện, nên mất kết nối là
+    chuyện thường gặp. Nếu để nguyên 'net::ERR_CONNECTION_TIMED_OUT' thì rất dễ
+    bị hiểu nhầm thành 'app hỏng' hoặc 'sai mã bệnh nhân'.
+    """
+    text = str(exc or "")
+    if not any(marker in text for marker in _NET_UNREACHABLE_MARKERS):
+        return None
+    return (
+        f"❌ KHÔNG KẾT NỐI ĐƯỢC tới máy chủ PACS {hospital_name} ({base_url}).\n"
+        f"   Đây KHÔNG phải lỗi mã bệnh nhân và cũng không phải lỗi ứng dụng.\n"
+        f"   Thường do: chưa vào mạng nội bộ / VPN của bệnh viện, hoặc PACS đang "
+        f"bảo trì. Kiểm tra bằng cách mở {base_url} trên trình duyệt: nếu trình "
+        f"duyệt cũng không vào được thì phải xử lý mạng trước."
+    )
+
+
+def _is_ris_wrapper_url(url: str) -> bool:
+    """Link 'vrViewer' của RIS — chỉ mở được khi trình duyệt CÒN cookie đăng nhập.
+
+    Trình tải luôn chạy trên context trắng (không cookie), nên đưa link này cho
+    nó là cầm chắc rơi vào trang login rồi ra 0–vài ảnh mà không ai biết.
+    """
+    return bool(_RIS_WRAPPER_RE.search(str(url or "")))
+
+
+def _looks_like_viewer_url(url: str) -> bool:
+    u = str(url or "").strip()
+    if not u.lower().startswith(("http://", "https://")):
+        return False  # loại about:blank, srcdoc, javascript:, src rỗng
+    if _is_ris_wrapper_url(u) or _RIS_SHELL_RE.search(u):
+        return False
+    return True
+
+
+def _pick_viewer_frame_url(page, timeout_ms: int = 15000) -> Optional[str]:
+    """Chờ iframe viewer có src THẬT rồi chọn đúng khung ảnh.
+
+    Bản cũ chờ cứng 3 giây rồi lấy mù `iframes[0]`: mạng chậm là hụt, mà trang
+    wrapper còn chèn cả frame rỗng/ẩn nên `[0]` chưa chắc là khung ảnh.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while True:
+        try:
+            srcs = page.evaluate(
+                "() => Array.from(document.querySelectorAll('iframe')).map(f => f.src || '')"
+            ) or []
+        except Exception:
+            srcs = []
+        candidates = [s for s in srcs if _looks_like_viewer_url(s)]
+        if candidates:
+            # Khung mang token phiên/study mới là khung ảnh thật.
+            candidates.sort(
+                key=lambda s: 0 if re.search(r"(session|share|token|study)=", s, re.I) else 1
+            )
+            return candidates[0]
+        current = page.url or ""
+        if _looks_like_viewer_url(current):
+            return current  # RIS chuyển thẳng sang viewer, không qua iframe
+        if time.monotonic() >= deadline:
+            return None
+        page.wait_for_timeout(400)
+
+
+def resolve_study_viewer_url(
+    hospital_key: str,
+    study_uid: str,
+    log: LogFn = _default_log,
+    headless: bool = True,
+) -> str:
+    """Xin link viewer MỚI cho một study, ngay trước lúc tải nó.
+
+    Link viewer RIS trả về là vé dùng-ngay (mang token phiên sống rất ngắn).
+    Cấp sẵn từ lúc tìm kiếm rồi để dành tới lúc người dùng bấm tải chính là
+    nguyên nhân của những ca "chỉ tải được vài ảnh" — token đã chết giữa chừng.
+    Không lấy được link thì NÉM LỖI, thà báo hỏng còn hơn tải ra một ca thiếu.
+    """
+    from playwright.sync_api import sync_playwright
+
+    info = HOSPITALS.get(str(hospital_key or "").lower())
+    if not info:
+        raise RuntimeError(f"Không hỗ trợ bệnh viện '{hospital_key}'.")
+    uid = str(study_uid or "").strip()
+    if not uid:
+        raise RuntimeError("Study thiếu StudyInstanceUID nên không xin được link viewer.")
+
+    base_url = info["base_url"]
+    wrapper_url = f"{base_url}/ris/vrViewer?studyUID={uid}&viewType=VIEWERV2"
+    username = _dec_cred(info["username_enc"]) if "username_enc" in info else info.get("username", "")
+    password = _dec_cred(info["password_enc"]) if "password_enc" in info else info.get("password", "")
+    reading_url = f"{base_url}/ris/study/reading"
+
+    with sync_playwright() as p:
+        browser = _launch_chromium(p, headless, log)
+        options = dict(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            viewport={"width": 1600, "height": 1000},
+            ignore_https_errors=True,
+        )
+        cached = _get_ris_session_state(hospital_key)
+        if cached:
+            options["storage_state"] = cached
+        context = browser.new_context(**options)
+        page = context.new_page()
+        try:
+            page.goto(wrapper_url, wait_until="domcontentloaded", timeout=30000)
+            if _page_is_ris_login(page):
+                clear_ris_session_cache(hospital_key)
+                if not _perform_ris_login(
+                    page, info["login_url"], reading_url, username, password,
+                ):
+                    raise RuntimeError("Không đăng nhập được RIS để xin link viewer.")
+                page.goto(wrapper_url, wait_until="domcontentloaded", timeout=30000)
+            viewer_url = _pick_viewer_frame_url(page)
+            if not viewer_url:
+                raise RuntimeError(
+                    "RIS không trả về khung viewer sau 15 giây (mạng chậm hoặc PACS bận)."
+                )
+            _store_ris_session_state(hospital_key, context.storage_state())
+            return viewer_url
+        except Exception as exc:
+            friendly = _server_unreachable_message(exc, info["name"], base_url)
+            if friendly:
+                raise RuntimeError(friendly) from exc
+            raise
+        finally:
+            browser.close()
+
+
 def _query_ris_studies(page, patient_id: str) -> dict:
     """Truy vấn RIS trong page đã xác thực và phân biệt rõ lỗi hết phiên."""
     return page.evaluate(
@@ -2100,26 +2295,16 @@ def search_patient_studies(
 
             log(f"-> Tìm thấy {len(studies_to_process)} ca chụp (MRI / CT) cho bệnh nhân {patient_id}.")
 
+            # KHÔNG xin link viewer ở đây. Link viewer mang token phiên sống rất
+            # ngắn; xin sẵn lúc này rồi để người dùng xem/chọn xong mới tải thì
+            # token đã chết -> ca tải ra thiếu ảnh. Link được xin lại ngay trước
+            # lúc tải từng ca, trong `download_studies_list`.
             for idx, st in enumerate(studies_to_process, 1):
                 if should_stop and should_stop():
                     log(">>> Đã nhận lệnh dừng!")
                     break
 
                 uid = st["uid"]
-                wrapper_url = f"{base_url}/ris/vrViewer?studyUID={uid}&viewType=VIEWERV2"
-                vpage = context.new_page()
-                direct_url = wrapper_url
-                try:
-                    vpage.goto(wrapper_url, timeout=20000, wait_until="domcontentloaded")
-                    vpage.wait_for_timeout(3000)
-                    iframes = vpage.evaluate("() => Array.from(document.querySelectorAll('iframe')).map(f => f.src)")
-                    if iframes and iframes[0]:
-                        direct_url = iframes[0]
-                except Exception as e:
-                    log(f"  ⚠️ Lỗi lấy link trực tiếp cho ca {idx}: {e}")
-                finally:
-                    vpage.close()
-
                 studies_found.append({
                     "study_uid": uid,
                     "patient_id": st.get("patient_id") or patient_id,
@@ -2130,11 +2315,13 @@ def search_patient_studies(
                     "date": st['date'],
                     "modality": st['modality'],
                     "desc": st['desc'],
-                    "direct_url": direct_url,
+                    # Rỗng là CỐ Ý: link được xin mới ngay trước lúc tải ca này.
+                    "direct_url": "",
                 })
 
         except Exception as e:
-            log(f"❌ Lỗi trong quá trình kết nối/tìm kiếm trên RIS: {e}")
+            unreachable = _server_unreachable_message(e, info["name"], base_url)
+            log(unreachable or f"❌ Lỗi trong quá trình kết nối/tìm kiếm trên RIS: {e}")
         finally:
             browser.close()
 
@@ -2153,6 +2340,31 @@ def search_patient_studies(
     return studies_found
 
 
+def _viewer_url_for_study(study: dict, hospital_key: str, log: LogFn, headless: bool) -> str:
+    """Link tải cho MỘT ca: ưu tiên xin mới từ RIS, và chặn link không dùng được.
+
+    Thà ném lỗi để ca đó hiện rõ là hỏng, còn hơn đưa cho trình tải một link
+    wrapper/đã nguội rồi thu về vài ảnh mà vẫn báo thành công.
+    """
+    uid = str(study.get("study_uid") or "").strip()
+    hosp = str(study.get("hospital_key") or hospital_key or "").strip().lower()
+    if uid and hosp in HOSPITALS:
+        log("      Đang xin link viewer MỚI từ RIS (dùng ngay, không để nguội)...")
+        return resolve_study_viewer_url(hosp, uid, log=log, headless=headless)
+
+    stored = str(study.get("direct_url") or "").strip()
+    if not stored:
+        raise RuntimeError(
+            "Ca này không có link viewer, cũng không đủ thông tin (bệnh viện + StudyUID) để xin link mới."
+        )
+    if _is_ris_wrapper_url(stored):
+        raise RuntimeError(
+            "Link đang trỏ vào trang wrapper của RIS — trang này đòi cookie đăng nhập "
+            "mà trình tải không có, mở ra sẽ chỉ thấy màn hình đăng nhập."
+        )
+    return stored
+
+
 def download_studies_list(
     studies: list[dict],
     out_base: Path,
@@ -2168,7 +2380,12 @@ def download_studies_list(
     hospital_name: str = "",
 ) -> int:
     """
-    Tải trực tiếp danh sách các ca phim đã có sẵn `direct_url` (không cần đăng nhập RIS lại lần 2).
+    Tải danh sách ca phim đã chọn.
+
+    Với ca đến từ RIS (có `hospital_key` + `study_uid`), link viewer được XIN MỚI
+    ngay trước khi tải từng ca, vì link RIS mang token phiên sống rất ngắn. Ca
+    nào không lấy được link thì bị bỏ qua và ghi 'chưa đủ' trong hồ sơ, chứ
+    không tải bằng link hỏng rồi báo là xong.
     """
     if not studies:
         log("⚠️ Danh sách ca phim rỗng.")
@@ -2200,6 +2417,19 @@ def download_studies_list(
             log(f"Bệnh nhân đã có trong kho; phim mới sẽ được thêm vào: {patient_folder}")
 
     total_downloaded = 0
+    unfinished: list[str] = []
+
+    def mark(st: dict, st_out_dir: Path, *, complete: bool, image_count: int) -> None:
+        if not managed_patient:
+            return
+        try:
+            record_patient_study(
+                patient_folder, st, st_out_dir,
+                complete=complete, image_count=image_count,
+            )
+        except Exception as exc:
+            log(f"      ⚠ Không ghi được trạng thái ca vào hồ sơ: {exc}")
+
     for idx, st in enumerate(studies, 1):
         if should_stop and should_stop():
             log(">>> Đã nhận lệnh dừng tải hàng loạt!")
@@ -2207,9 +2437,19 @@ def download_studies_list(
 
         st_out_dir = patient_folder / study_archive_folder_name(st)
         resume_study = st_out_dir.exists()
+        label = f"Ca {idx} ({st.get('date') or '?'} - {st.get('modality') or '?'})"
         log("\n" + "-" * 60)
         log(f"[{idx}/{len(studies)}] BẮT ĐẦU TẢI CA {idx}: StudyUID={st['study_uid']}")
-        log(f"      Link Viewer: {st['direct_url']}")
+
+        try:
+            viewer_url = _viewer_url_for_study(st, hospital_key, log, headless)
+        except Exception as e:
+            log(f"❌ BỎ QUA CA {idx} — không lấy được link viewer: {e}")
+            mark(st, st_out_dir, complete=False, image_count=0)
+            unfinished.append(f"{label}: không lấy được link viewer")
+            continue
+
+        log(f"      Link Viewer: {viewer_url}")
         log(f"      Lưu tại: {st_out_dir}")
         if resume_study:
             log("      Study đã có dữ liệu cục bộ; chuyển sang chế độ tải tiếp và bỏ file trùng.")
@@ -2217,7 +2457,7 @@ def download_studies_list(
 
         try:
             dl, cv, jpg_dir = run_pipeline(
-                url=st["direct_url"],
+                url=viewer_url,
                 out_base=st_out_dir,
                 log=log,
                 headless=headless,
@@ -2229,32 +2469,34 @@ def download_studies_list(
             )
             downloaded = dl.total() if dl else 0
             total_downloaded += downloaded
-            complete = bool(downloaded and not (should_stop and should_stop()))
-            if managed_patient:
-                record_patient_study(
-                    patient_folder,
-                    st,
-                    st_out_dir,
-                    complete=complete,
-                    image_count=downloaded,
-                )
-            log(f"✓ ĐÃ TẢI XONG CA {idx}: {jpg_dir}")
+            stopped = bool(should_stop and should_stop())
+            # "Xong" nghĩa là ĐỦ so với manifest của viewer, không phải "có tải
+            # được cái gì đó". Đây chính là chỗ trước kia báo xong cho cả ca 4/348.
+            complete = bool(dl and dl.is_complete() and not stopped)
+            mark(st, st_out_dir, complete=complete, image_count=downloaded)
+            if complete:
+                log(f"✓ ĐÃ TẢI XONG CA {idx}: {jpg_dir}")
+            elif stopped:
+                log(f"⏹ CA {idx} DỪNG GIỮA CHỪNG ({downloaded} ảnh) — đánh dấu CHƯA ĐỦ.")
+                unfinished.append(f"{label}: dừng giữa chừng ({downloaded} ảnh)")
+            else:
+                expected = getattr(dl, "expected", 0) or "?"
+                log(f"⚠ CA {idx} CHƯA ĐỦ ẢNH ({downloaded}/{expected}) — đánh dấu CHƯA ĐỦ. "
+                    f"Bấm tải lại ca này để bù, ảnh trùng tự bỏ.")
+                unfinished.append(f"{label}: thiếu ảnh ({downloaded}/{expected})")
         except Exception as e:
-            if managed_patient:
-                try:
-                    record_patient_study(
-                        patient_folder,
-                        st,
-                        st_out_dir,
-                        complete=False,
-                        image_count=0,
-                    )
-                except Exception:
-                    pass
+            mark(st, st_out_dir, complete=False, image_count=0)
             log(f"❌ Lỗi khi tải ca {idx}: {e}")
+            unfinished.append(f"{label}: lỗi khi tải ({e})")
 
     log("\n" + "=" * 70)
-    log(f"HOÀN TẤT TẢI PHIM BỆNH NHÂN! Tổng số ca đã tải: {len(studies)}")
+    done = len(studies) - len(unfinished)
+    if unfinished:
+        log(f"KẾT THÚC: {done}/{len(studies)} ca đủ ảnh. CÁC CA CẦN TẢI LẠI:")
+        for line in unfinished:
+            log(f"   • {line}")
+    else:
+        log(f"HOÀN TẤT TẢI PHIM BỆNH NHÂN! Tất cả {len(studies)} ca đều đủ ảnh.")
     log(f"Thư mục lưu: {patient_folder}")
     log("=" * 70)
     return total_downloaded
