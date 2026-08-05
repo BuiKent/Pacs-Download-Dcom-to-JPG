@@ -7,12 +7,15 @@ the application falls back to the classic UI automatically.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
+from ctypes import wintypes
 from pathlib import Path
 
 from web_backend import LocalApiServer, WebController
@@ -21,6 +24,53 @@ from web_backend import LocalApiServer, WebController
 def resource_path(relative: str) -> Path:
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     return base / relative
+
+
+CF_UNICODETEXT = 13
+CLIPBOARD_TEXT_LIMIT = 4096
+
+
+def _clipboard_text() -> str:
+    """Read the Windows clipboard as text, or "" when it holds none.
+
+    Another process can hold the clipboard open; that is an ordinary race for a
+    convenience feature, so every failure degrades to an empty string rather
+    than surfacing as an error in the page.
+    """
+    if not sys.platform.startswith("win"):
+        return ""
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    except (OSError, AttributeError):
+        return ""
+    user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.GetClipboardData.argtypes = [wintypes.UINT]
+    user32.GetClipboardData.restype = wintypes.HANDLE
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = wintypes.LPVOID
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+        return ""
+    if not user32.OpenClipboard(None):
+        return ""
+    try:
+        handle = user32.GetClipboardData(CF_UNICODETEXT)
+        if not handle:
+            return ""
+        pointer = kernel32.GlobalLock(handle)
+        if not pointer:
+            return ""
+        try:
+            value = ctypes.c_wchar_p(pointer).value or ""
+        finally:
+            kernel32.GlobalUnlock(handle)
+    except OSError:
+        return ""
+    finally:
+        user32.CloseClipboard()
+    return value.strip()[:CLIPBOARD_TEXT_LIMIT]
 
 
 # A viewport can hold a live actor, report itself rendered and still show a
@@ -114,6 +164,20 @@ class NativeApi:
             return None
         path = result[0] if isinstance(result, (list, tuple)) else result
         return self._controller.set_output_root(str(path))
+
+    def read_clipboard(self):
+        """Report clipboard text that matches a viewer link or a patient code.
+
+        WebView2 refuses ``navigator.clipboard.readText()`` without a user
+        gesture, so the classic app's auto-paste convenience reads the Windows
+        clipboard natively. Only the two recognised shapes are returned, so
+        unrelated clipboard content never reaches the page.
+        """
+        text = _clipboard_text()
+        return {
+            "url": text if text.casefold().startswith(("http://", "https://", "www.")) else "",
+            "patientId": text if re.fullmatch(r"[A-Za-z0-9]{1,64}", text) else "",
+        }
 
     def open_in_explorer(self, path: str):
         target = Path(path).expanduser().resolve(strict=True)

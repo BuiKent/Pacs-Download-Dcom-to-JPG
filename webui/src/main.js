@@ -1,5 +1,6 @@
 import "./styles.css";
 import { api, configureApi } from "./api.js";
+import { getLanguage, setLanguage, t, tf, translateLog } from "./i18n.js";
 import {
   applyWindowPreset,
   captureActiveViewport,
@@ -53,6 +54,10 @@ const state = {
   cine: false,
   mprPrimary: "axial",
   windowPreset: "full",
+  history: [],
+  // The last folder a direct link filled. A retry has to merge into it instead
+  // of creating a second folder for the same study.
+  lastDirectUrl: "",
 };
 let viewerQueue = Promise.resolve();
 let viewerRequestId = 0;
@@ -87,6 +92,7 @@ const icons = {
   capture: "▧",
   save: "💾",
   volume: "㎖",
+  history: "🕘",
 };
 
 function selectedSeries() {
@@ -119,72 +125,87 @@ function iconButton(id, icon, title, active = false, disabled = false, label = "
 function renderInteractionTools(series) {
   if (state.mode === "volume3d") {
     return [
-      iconButton("tool-crosshair", icons.crosshair, "Định vị MPR", state.tool === "crosshair"),
-      iconButton("tool-rotate3d", icons.rotate3d, "Xoay 3D", state.tool === "rotate3d"),
-      iconButton("tool-pan", icons.pan, "Di chuyển", state.tool === "pan"),
-      iconButton("tool-zoom", icons.zoom, "Thu/phóng", state.tool === "zoom"),
+      iconButton("tool-crosshair", icons.crosshair, t("Định vị MPR"), state.tool === "crosshair"),
+      iconButton("tool-rotate3d", icons.rotate3d, t("Xoay 3D"), state.tool === "rotate3d"),
+      iconButton("tool-pan", icons.pan, t("Di chuyển"), state.tool === "pan"),
+      iconButton("tool-zoom", icons.zoom, t("Thu/phóng"), state.tool === "zoom"),
     ].join("");
   }
   if (state.mode === "mpr") {
     return [
-      iconButton("tool-crosshair", icons.crosshair, "Định vị MPR", state.tool === "crosshair"),
-      iconButton("tool-window", icons.window, "Sáng/tương phản", state.tool === "window"),
-      iconButton("tool-pan", icons.pan, "Di chuyển", state.tool === "pan"),
-      iconButton("tool-zoom", icons.zoom, "Thu/phóng", state.tool === "zoom"),
-      iconButton("tool-length", icons.length, "Đo chiều dài (mm)", state.tool === "length"),
-      iconButton("tool-angle", icons.angle, "Đo góc", state.tool === "angle"),
-      iconButton("tool-ellipse", icons.ellipse, "ROI ellipse", state.tool === "ellipse"),
-      iconButton("tool-freehand", icons.freehand, "ROI tự do", state.tool === "freehand"),
+      iconButton("tool-crosshair", icons.crosshair, t("Định vị MPR"), state.tool === "crosshair"),
+      iconButton("tool-window", icons.window, t("Sáng/tương phản"), state.tool === "window"),
+      iconButton("tool-pan", icons.pan, t("Di chuyển"), state.tool === "pan"),
+      iconButton("tool-zoom", icons.zoom, t("Thu/phóng"), state.tool === "zoom"),
+      iconButton("tool-length", icons.length, t("Đo chiều dài (mm)"), state.tool === "length"),
+      iconButton("tool-angle", icons.angle, t("Đo góc"), state.tool === "angle"),
+      iconButton("tool-ellipse", icons.ellipse, t("ROI ellipse"), state.tool === "ellipse"),
+      iconButton("tool-freehand", icons.freehand, t("ROI tự do"), state.tool === "freehand"),
     ].join("");
   }
   return [
-    iconButton("tool-window", icons.window, "Sáng/tương phản", state.tool === "window"),
-    iconButton("tool-pan", icons.pan, "Di chuyển", state.tool === "pan"),
-    iconButton("tool-zoom", icons.zoom, "Thu/phóng", state.tool === "zoom"),
-    iconButton("tool-length", icons.length, series?.geometry ? "Đo chiều dài (mm)" : "Đo chiều dài (pixel)", state.tool === "length"),
-    iconButton("tool-angle", icons.angle, "Đo góc", state.tool === "angle"),
-    iconButton("tool-ellipse", icons.ellipse, "ROI ellipse", state.tool === "ellipse"),
-    iconButton("tool-freehand", icons.freehand, "ROI tự do", state.tool === "freehand"),
+    iconButton("tool-window", icons.window, t("Sáng/tương phản"), state.tool === "window"),
+    iconButton("tool-pan", icons.pan, t("Di chuyển"), state.tool === "pan"),
+    iconButton("tool-zoom", icons.zoom, t("Thu/phóng"), state.tool === "zoom"),
+    iconButton("tool-length", icons.length,
+      t(series?.geometry ? "Đo chiều dài (mm)" : "Đo chiều dài (pixel)"), state.tool === "length"),
+    iconButton("tool-angle", icons.angle, t("Đo góc"), state.tool === "angle"),
+    iconButton("tool-ellipse", icons.ellipse, t("ROI ellipse"), state.tool === "ellipse"),
+    iconButton("tool-freehand", icons.freehand, t("ROI tự do"), state.tool === "freehand"),
   ].join("");
 }
 
 function renderUtilityTools(series) {
   const viewportActions = [
-    iconButton("reset", icons.reset, state.mode === "mpr"
+    iconButton("reset", icons.reset, t(state.mode === "mpr"
       ? "Đặt lại ba mặt phẳng"
       : state.mode === "volume3d"
         ? "Đặt lại góc nhìn"
-        : "Đặt lại hiển thị"),
-    iconButton("clear-annotations", icons.clearAnnotations, "Xóa tất cả đo dài, đo góc và ROI"),
-    iconButton("rotate-clockwise", icons.rotateClockwise, "Xoay khung đang chọn 90° theo chiều kim đồng hồ"),
-    iconButton("flip-horizontal", icons.flipHorizontal, "Lật ngang khung đang chọn"),
+        : "Đặt lại hiển thị")),
+    iconButton("clear-annotations", icons.clearAnnotations, t("Xóa tất cả đo dài, đo góc và ROI")),
+    iconButton("rotate-clockwise", icons.rotateClockwise, t("Xoay khung đang chọn 90° theo chiều kim đồng hồ")),
+    iconButton("flip-horizontal", icons.flipHorizontal, t("Lật ngang khung đang chọn")),
   ];
   if (state.mode === "volume3d") {
     return [
       ...viewportActions,
-      iconButton("capture", icons.capture, "Lưu ảnh 3D"),
+      iconButton("capture", icons.capture, t("Lưu ảnh 3D")),
     ].join("");
   }
   if (state.mode === "mpr") {
     return [
       ...viewportActions,
-      iconButton("capture", icons.capture, "Lưu ảnh"),
-      iconButton("save-annotations", icons.save, "Lưu đo/ROI"),
-      iconButton("roi-volume", icons.volume, "Tính thể tích ROI", false, !series?.mprReady),
+      iconButton("capture", icons.capture, t("Lưu ảnh")),
+      iconButton("save-annotations", icons.save, t("Lưu đo/ROI")),
+      iconButton("roi-volume", icons.volume, t("Tính thể tích ROI"), false, !series?.mprReady),
     ].join("");
   }
   return [
     ...viewportActions,
-    iconButton("invert", icons.invert, "Đảo màu"),
-    iconButton("cine", state.cine ? "Ⅱ" : icons.cine, state.cine ? "Dừng chạy phim" : "Chạy phim", state.cine, state.mode !== "single"),
-    iconButton("capture", icons.capture, "Lưu ảnh"),
-    iconButton("save-annotations", icons.save, "Lưu đo/ROI"),
-    iconButton("roi-volume", icons.volume, "Tính thể tích ROI", false, !series?.mprReady),
+    iconButton("invert", icons.invert, t("Đảo màu")),
+    iconButton("cine", state.cine ? "Ⅱ" : icons.cine,
+      t(state.cine ? "Dừng chạy phim" : "Chạy phim"), state.cine, state.mode !== "single"),
+    iconButton("capture", icons.capture, t("Lưu ảnh")),
+    iconButton("save-annotations", icons.save, t("Lưu đo/ROI")),
+    iconButton("roi-volume", icons.volume, t("Tính thể tích ROI"), false, !series?.mprReady),
   ].join("");
 }
 
+function renderHistoryOptions() {
+  if (!state.history.length) {
+    return `<option value="" disabled selected>${escapeHtml(t("Chưa có lịch sử"))}</option>`;
+  }
+  const options = state.history.map((item, index) => {
+    const name = String(item.folder).split(/[\\/]/).filter(Boolean).pop() || item.folder;
+    const suffix = item.exists ? "" : ` ${t("(thư mục không còn)")}`;
+    return `<option value="${index}" ${item.exists ? "" : "disabled"}
+      title="${escapeHtml(item.folder)}">${escapeHtml(`${item.time}  •  ${name}${suffix}`)}</option>`;
+  }).join("");
+  return `<option value="" selected>${escapeHtml(t("Lịch sử"))}…</option>${options}`;
+}
+
 function formatGroupLabel(groupKey) {
-  if (!groupKey || groupKey === "Không rõ ca chụp") return "📁 Ca chụp chưa phân loại";
+  if (!groupKey || groupKey === "Không rõ ca chụp") return t("📁 Ca chụp chưa phân loại");
   const parts = groupKey.split(" - ");
   if (parts.length >= 2) {
     const dateStr = parts[0];
@@ -194,7 +215,9 @@ function formatGroupLabel(groupKey) {
     const dp = dateStr.split("-");
     if (dp.length === 3) dateFmt = `${dp[2]}/${dp[1]}`;
     const extra = [modality, desc].filter(Boolean).join(" ");
-    return `📁 Ngày ${dateFmt} (${extra})`;
+    return getLanguage() === "en"
+      ? `📁 ${dateFmt} (${extra})`
+      : `📁 Ngày ${dateFmt} (${extra})`;
   }
   return `📁 ${groupKey}`;
 }
@@ -209,7 +232,7 @@ function renderSeriesOptions(archive, selectedId) {
   return Object.entries(groups).map(([groupKey, items]) => {
     const options = items.map((item) =>
       `<option value="${item.id}" ${item.id === selectedId ? "selected" : ""}>
-        ▪ ${escapeHtml(item.description)} · ${item.sliceCount} lát
+        ▪ ${escapeHtml(item.description)} · ${item.sliceCount} ${escapeHtml(t("lát"))}
       </option>`
     ).join("");
     return `<optgroup label="${escapeHtml(formatGroupLabel(groupKey))}">${options}</optgroup>`;
@@ -228,90 +251,109 @@ function render() {
           <span><b>DICOM/JPG Downloader & Viewer</b><small>OFFLINE · v1.1</small></span>
         </div>
         <div class="series-selects">
-          <label>Series
+          <label>${escapeHtml(t("Series"))}
             <select data-field="series">${renderSeriesOptions(state.archive, state.selectedId)}</select>
           </label>
-          ${state.mode === "compare" ? `<label>So sánh với
+          ${state.mode === "compare" ? `<label>${escapeHtml(t("So sánh với"))}
             <select data-field="compare">${renderSeriesOptions(state.archive, state.compareId)}</select></label>` : ""}
         </div>
         <div class="header-actions">
           ${iconButton(
         "toggle-download",
         state.downloadOpen ? "⇤" : "⇥",
-        state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim",
+        t(state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim"),
         state.downloadOpen,
         false,
-        "Tải phim",
+        t("Tải phim"),
       )}
-          ${iconButton("choose-archive", icons.folder, "Mở folder DICOM hoặc JPG/PNG trong viewer")}
-          ${iconButton("refresh-archive", "⟳", "Quét lại thư mục hiện tại", false, !state.archive.root)}
-          <button class="soft-button" data-action="classic" title="Khởi động lại bằng --classic">Classic</button>
+          ${iconButton("choose-archive", icons.folder, t("Mở folder DICOM hoặc JPG/PNG trong viewer"))}
+          ${iconButton("refresh-archive", "⟳", t("Quét lại thư mục hiện tại"), false, !state.archive.root)}
+          <button class="soft-button" data-action="toggle-language"
+            title="${escapeHtml(t("Chuyển sang tiếng Anh"))}">${getLanguage() === "en" ? "VI" : "EN"}</button>
+          <button class="soft-button" data-action="classic"
+            title="${escapeHtml(t("Khởi động lại bằng --classic"))}">Classic</button>
         </div>
       </header>
 
       <aside class="download-panel">
-        <div class="panel-title"><b>TẢI MRI / CT</b><button data-action="toggle-download">×</button></div>
+        <div class="panel-title"><b>${escapeHtml(t("TẢI MRI / CT"))}</b>
+          <button data-action="toggle-download" title="${escapeHtml(t("Thu gọn khu tải phim"))}">×</button></div>
+        <label class="field history-field">${icons.history} ${escapeHtml(t("Lịch sử"))}
+          <select data-field="history" title="${escapeHtml(t("Mở lại thư mục đã tải hoặc đã xem"))}"
+            ${state.history.length ? "" : "disabled"}>${renderHistoryOptions()}</select>
+        </label>
         <section class="dicom-source-card">
-          <div><b>CHUYỂN DICOM → JPG</b><small>Tính năng xuất JPG riêng; không dùng để mở DICOM trong viewer.</small></div>
-          <button class="primary" data-action="import-dicom-folder">Chuyển folder DICOM sang JPG</button>
+          <div><b>${escapeHtml(t("CHUYỂN DICOM → JPG"))}</b>
+            <small>${escapeHtml(t("Tính năng xuất JPG riêng; không dùng để mở DICOM trong viewer."))}</small></div>
+          <button data-action="import-dicom-folder">${escapeHtml(t("Chuyển folder DICOM sang JPG"))}</button>
         </section>
-        <div class="source-divider"><span>hoặc tải từ PACS / link viewer</span></div>
+        <div class="source-divider"><span>${escapeHtml(t("hoặc tải từ PACS / link viewer"))}</span></div>
         <div class="hospital-row">
           ${(state.bootstrap?.hospitals || []).map((item, index) =>
         `<label><input type="radio" name="hospital" value="${item.id}"
           ${state.patient?.hospitalKey ? (item.id === state.patient.hospitalKey ? "checked" : "") : ((item.isDefault ?? (index === 0)) ? "checked" : "")}>
               ${escapeHtml(item.name)}</label>`).join("")}
         </div>
-        <label class="field">Mã bệnh nhân
-          <div class="inline-field"><input id="patient-id" autocomplete="off" value="${escapeHtml(state.patient?.patientId || "")}"><button data-action="search">Tìm ca</button></div>
+        <label class="field">${escapeHtml(t("Mã bệnh nhân"))}
+          <div class="inline-field"><input id="patient-id" autocomplete="off" value="${escapeHtml(state.patient?.patientId || "")}">
+            <button data-action="search" title="${escapeHtml(t("Tìm các ca MRI/CT của mã bệnh nhân này trên RIS"))}">${escapeHtml(t("Tìm ca"))}</button></div>
         </label>
         <div class="patient-status">${renderPatientStatus()}</div>
         <div class="study-list">${renderStudies()}</div>
-        <label class="field">Hoặc dán link viewer
-          <textarea id="direct-url" rows="2" spellcheck="false"></textarea>
-        </label>
-        <div class="download-options">
-          <label>JPG <input id="quality" type="number" min="70" max="100" value="100"></label>
-          <label><input id="show-browser" type="checkbox"> Hiện trình duyệt tải</label>
-        </div>
-        <label class="field">Thư mục lưu
-          <div class="inline-field"><input id="output-root" value="${escapeHtml(state.bootstrap?.outputRoot || "")}" readonly>
-            <button data-action="choose-output">…</button></div>
-        </label>
         <div class="download-actions">
           <button class="primary" data-action="download-selected"
-            ${state.studies.some((item) => item.local_status !== "downloaded") && !state.patient?.nameConflict ? "" : "disabled"}>Tải ca đã chọn</button>
-          <button data-action="download-direct">Tải link</button>
-          <button class="danger" data-action="stop-job">Dừng</button>
+            title="${escapeHtml(t("Tải các ca đang tích ở danh sách trên"))}"
+            ${state.studies.some((item) => item.local_status !== "downloaded") && !state.patient?.nameConflict ? "" : "disabled"}>${escapeHtml(t("Tải ca đã chọn"))}</button>
+          <button class="danger" data-action="stop-job"
+            title="${escapeHtml(t("Dừng an toàn tác vụ đang chạy"))}">${escapeHtml(t("Dừng"))}</button>
         </div>
-        <pre class="job-log">${escapeHtml((state.bootstrap?.job?.logs || []).slice(-80).join("\n"))}</pre>
+        <label class="field">${escapeHtml(t("Hoặc dán link viewer"))}
+          <textarea id="direct-url" rows="2" spellcheck="false">${escapeHtml(state.lastDirectUrl)}</textarea>
+        </label>
+        <div class="link-actions">
+          <button data-action="download-direct"
+            title="${escapeHtml(t("Tải mới từ link đã dán vào một folder riêng"))}">${escapeHtml(t("Tải link"))}</button>
+          <button data-action="download-retry"
+            title="${escapeHtml(t("Thử lại link vừa dán và gộp vào folder cũ, bỏ qua ảnh đã có"))}">${escapeHtml(t("Thử lại"))}</button>
+        </div>
+        <div class="download-options">
+          <label title="${escapeHtml(t("Chất lượng JPG (70-100)"))}">JPG
+            <input id="quality" type="number" min="70" max="100" value="100"></label>
+          <label><input id="show-browser" type="checkbox"> ${escapeHtml(t("Hiện trình duyệt tải"))}</label>
+        </div>
+        <label class="field">${escapeHtml(t("Thư mục lưu"))}
+          <div class="inline-field"><input id="output-root" value="${escapeHtml(state.bootstrap?.outputRoot || "")}" readonly>
+            <button data-action="choose-output" title="${escapeHtml(t("Đổi thư mục lưu"))}">…</button></div>
+        </label>
+        <pre class="job-log">${escapeHtml((state.bootstrap?.job?.logs || []).slice(-80).map(translateLog).join("\n"))}</pre>
+        <div class="panel-credit">Superkent.bui@gmail.com</div>
       </aside>
 
       <main class="viewer-main">
         <nav class="toolbar mode-${state.mode}">
           <div class="tool-cluster layout-tools">
-            ${iconButton("mode-single", icons.single, "Một khung ảnh", state.mode === "single")}
-            ${iconButton("mode-compare", icons.compare, "So sánh hai series cạnh nhau", state.mode === "compare")}
-            ${iconButton("mode-montage6", icons.montage6, "Xem tuần tự 6 lát", state.mode === "montage6", false, "6")}
-            ${iconButton("mode-montage8", icons.montage8, "Xem tuần tự 8 lát", state.mode === "montage8", false, "8")}
-            ${iconButton("mode-mpr", icons.mpr, mprDisabled ? series?.mprReason || "Series không đủ MPR" : "MPR ba mặt phẳng", state.mode === "mpr", mprDisabled)}
-            ${iconButton("mode-volume3d", icons.volume3d, mprDisabled ? series?.mprReason || "Series không đủ 3D" : "Dựng volume 3D toàn màn hình", state.mode === "volume3d", mprDisabled, "3D")}
+            ${iconButton("mode-single", icons.single, t("Một khung ảnh"), state.mode === "single")}
+            ${iconButton("mode-compare", icons.compare, t("So sánh hai series cạnh nhau"), state.mode === "compare")}
+            ${iconButton("mode-montage6", icons.montage6, t("Xem tuần tự 6 lát"), state.mode === "montage6", false, "6")}
+            ${iconButton("mode-montage8", icons.montage8, t("Xem tuần tự 8 lát"), state.mode === "montage8", false, "8")}
+            ${iconButton("mode-mpr", icons.mpr, mprDisabled ? series?.mprReason || t("Series không đủ MPR") : t("MPR ba mặt phẳng"), state.mode === "mpr", mprDisabled)}
+            ${iconButton("mode-volume3d", icons.volume3d, mprDisabled ? series?.mprReason || t("Series không đủ 3D") : t("Dựng volume 3D toàn màn hình"), state.mode === "volume3d", mprDisabled, "3D")}
           </div>
           ${state.mode !== "volume3d" ? `<label class="window-preset-control">
-            Hiển thị
-            <select data-field="window-preset" title="${series?.sourceType === "dicom"
+            ${escapeHtml(t("Hiển thị"))}
+            <select data-field="window-preset" title="${escapeHtml(t(series?.sourceType === "dicom"
         ? "Cửa sổ hiển thị trên pixel DICOM gốc"
-        : "Preset thị giác trên dữ liệu ảnh 8-bit"}">
-              <option value="full" ${state.windowPreset === "full" ? "selected" : ""}>${series?.sourceType === "dicom" ? "DICOM mặc định" : "Toàn dải"}</option>
-              <option value="soft" ${state.windowPreset === "soft" ? "selected" : ""}>${series?.sourceType === "dicom" ? "Cửa sổ rộng" : "Mô mềm JPG"}</option>
-              <option value="contrast" ${state.windowPreset === "contrast" ? "selected" : ""}>${series?.sourceType === "dicom" ? "Cửa sổ hẹp" : "Tương phản cao"}</option>
+        : "Preset thị giác trên dữ liệu ảnh 8-bit"))}">
+              <option value="full" ${state.windowPreset === "full" ? "selected" : ""}>${escapeHtml(t(series?.sourceType === "dicom" ? "DICOM mặc định" : "Toàn dải"))}</option>
+              <option value="soft" ${state.windowPreset === "soft" ? "selected" : ""}>${escapeHtml(t(series?.sourceType === "dicom" ? "Cửa sổ rộng" : "Mô mềm JPG"))}</option>
+              <option value="contrast" ${state.windowPreset === "contrast" ? "selected" : ""}>${escapeHtml(t(series?.sourceType === "dicom" ? "Cửa sổ hẹp" : "Tương phản cao"))}</option>
             </select>
           </label>` : ""}
           <span class="toolbar-divider"></span>
           <div class="tool-cluster interaction-tools">${renderInteractionTools(series)}</div>
           <span class="toolbar-spacer"></span>
           <div class="tool-cluster utility-tools">${renderUtilityTools(series)}</div>
-          ${iconButton("shortcuts", "⌨", "Xem danh sách phím tắt")}
+          ${iconButton("shortcuts", "⌨", t("Xem danh sách phím tắt"))}
         </nav>
 
         <div class="series-strip">
@@ -319,19 +361,19 @@ function render() {
             data-series-id="${item.id}" title="${escapeHtml(item.mprReason || item.description)}">
             <span>${item.mprReady ? "3D" : "2D"}</span>
             <b>${escapeHtml(item.description)}</b>
-            <small>${item.sliceCount} lát</small>
+            <small>${item.sliceCount} ${escapeHtml(t("lát"))}</small>
           </button>`).join("")}
         </div>
 
         <div class="safety-notice ${safety?.level || ""}" ${safety ? "" : "hidden"}>
-          <b>An toàn hiển thị</b><span>${escapeHtml(safety?.text || "")}</span>
+          <b>${escapeHtml(t("An toàn hiển thị"))}</b><span>${escapeHtml(safety ? t(safety.text) : "")}</span>
         </div>
         <section id="workspace" class="workspace-grid">
           ${state.archive.series.length
-      ? `<div class="viewer-loading">${state.busyViewer ? "Đang dựng khung xem…" : ""}</div>`
-      : `<div class="empty-state"><b>Mở folder DICOM hoặc JPG/PNG</b>
-              <span>DICOM được đọc trực tiếp với pixel gốc; không tạo JPG trung gian. Geometry hợp lệ sẽ bật MPR/3D.</span>
-              <div class="empty-actions"><button class="primary" data-action="choose-archive">Mở folder trong viewer</button></div></div>`}
+      ? `<div class="viewer-loading">${state.busyViewer ? escapeHtml(t("Đang dựng khung xem…")) : ""}</div>`
+      : `<div class="empty-state"><b>${escapeHtml(t("Mở folder DICOM hoặc JPG/PNG"))}</b>
+              <span>${escapeHtml(t("DICOM được đọc trực tiếp với pixel gốc; không tạo JPG trung gian. Geometry hợp lệ sẽ bật MPR/3D."))}</span>
+              <div class="empty-actions"><button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder trong viewer"))}</button></div></div>`}
         </section>
         <footer class="status-bar">
           <span class="status-dot ${state.busyViewer ? "busy" : ""}"></span>
@@ -346,7 +388,7 @@ function render() {
 }
 
 function renderStudies() {
-  if (!state.studies.length) return '<span class="muted">Chưa tìm ca chụp.</span>';
+  if (!state.studies.length) return `<span class="muted">${escapeHtml(t("Chưa tìm ca chụp."))}</span>`;
   return state.studies.map((study, index) => `
     <label class="study-item">
       <input type="checkbox" data-study-index="${index}"
@@ -354,11 +396,11 @@ function renderStudies() {
         ${state.patient?.nameConflict ? "disabled" : ""}>
       <span><b>${escapeHtml(study.modality)} · ${escapeHtml(study.date)}</b>
         <small>${escapeHtml(study.desc || study.study_uid)}</small>
-        <em class="study-state ${escapeHtml(study.local_status || "new")}">${{
+        <em class="study-state ${escapeHtml(study.local_status || "new")}">${escapeHtml(t({
           downloaded: "Đã tải",
           incomplete: "Tải chưa hoàn tất",
           new: "Phim mới",
-        }[study.local_status] || "Phim mới"}</em></span>
+        }[study.local_status] || "Phim mới"))}</em></span>
     </label>`).join("");
 }
 
@@ -366,21 +408,26 @@ function renderPatientStatus() {
   const patient = state.patient;
   if (!patient) return "";
   if (patient.nameConflict) {
-    return `<div class="patient-alert danger"><b>Không tự động gộp bệnh nhân</b>
-      <span>Mã ${escapeHtml(patient.patientId)} đã lưu tên “${escapeHtml(patient.storedPatientName)}”,
-      nhưng RIS trả “${escapeHtml(patient.patientName)}”. Hãy kiểm tra lại.</span></div>`;
+    return `<div class="patient-alert danger"><b>${escapeHtml(t("Không tự động gộp bệnh nhân"))}</b>
+      <span>${escapeHtml(tf(
+        "Mã {} đã lưu tên “{}”, nhưng RIS trả “{}”. Hãy kiểm tra lại.",
+        patient.patientId, patient.storedPatientName, patient.patientName,
+      ))}</span></div>`;
   }
   if (!patient.patientName) {
     return `<div class="patient-alert warning"><b>${escapeHtml(patient.patientId)} · ${escapeHtml(patient.hospitalName)}</b>
-      <span>RIS chưa trả tên bệnh nhân. App vẫn có thể tải nhưng folder sẽ ghi CHUA_RO_TEN; hãy kiểm tra tên trên RIS/DICOM.</span></div>`;
+      <span>${escapeHtml(t("RIS chưa trả tên bệnh nhân. App vẫn có thể tải nhưng folder sẽ ghi CHUA_RO_TEN; hãy kiểm tra tên trên RIS/DICOM."))}</span></div>`;
   }
   const identity = [patient.patientId, patient.patientName, patient.hospitalName]
     .filter(Boolean).map(escapeHtml).join(" · ");
   const summary = patient.exists
-    ? `Đã có trong kho · ${patient.downloadedStudies} ca đã tải · ${patient.newStudies} ca mới · ${patient.incompleteStudies} ca chưa hoàn tất`
-    : `${patient.newStudies} ca chưa có trong kho; app sẽ tạo một folder bệnh nhân.`;
+    ? tf(
+      "Đã có trong kho · {} ca đã tải · {} ca mới · {} ca chưa hoàn tất",
+      patient.downloadedStudies, patient.newStudies, patient.incompleteStudies,
+    )
+    : tf("{} ca chưa có trong kho; app sẽ tạo một folder bệnh nhân.", patient.newStudies);
   const legacy = patient.legacyStudiesDetected
-    ? ` · Đã nhận diện ${patient.legacyStudiesDetected} ca từ folder Classic cũ`
+    ? ` · ${tf("Đã nhận diện {} ca từ folder Classic cũ", patient.legacyStudiesDetected)}`
     : "";
   return `<div class="patient-alert ${patient.exists ? "existing" : "new"}">
     <b>${identity}</b><span>${summary}${legacy}</span>
@@ -406,6 +453,11 @@ function bindEvents() {
   app.querySelector("[data-field='compare']")?.addEventListener("change", (event) => {
     state.compareId = event.target.value;
     renderViewer();
+  });
+  app.querySelector("[data-field='history']")?.addEventListener("change", (event) => {
+    const entry = state.history[Number(event.target.value)];
+    event.target.selectedIndex = 0;
+    if (entry) openHistoryEntry(entry);
   });
   app.querySelector("[data-field='window-preset']")?.addEventListener("change", async (event) => {
     state.windowPreset = event.target.value;
@@ -436,6 +488,38 @@ function syncDownloadButton() {
     || !app.querySelector("[data-study-index]:checked");
 }
 
+async function openHistoryEntry(entry) {
+  try {
+    // Re-opening restores the link that filled the folder, so a retry after a
+    // restart still knows which link to resume.
+    state.lastDirectUrl = entry.url || "";
+    const field = app.querySelector("#direct-url");
+    if (field) field.value = state.lastDirectUrl;
+    state.bootstrap.job = await api("/api/history/open", {
+      method: "POST",
+      body: JSON.stringify({ folder: entry.folder }),
+    });
+    setStatus(t("Đang mở lại thư mục từ lịch sử…"));
+    startJobPolling();
+  } catch (error) {
+    setStatus(humanError(error), true);
+  }
+}
+
+async function refreshHistory() {
+  try {
+    const result = await api("/api/history");
+    state.history = Array.isArray(result?.history) ? result.history : [];
+    const select = app.querySelector("[data-field='history']");
+    if (select) {
+      select.innerHTML = renderHistoryOptions();
+      select.disabled = !state.history.length;
+    }
+  } catch (_) {
+    // History is a convenience; a failed refresh must not disturb the session.
+  }
+}
+
 async function action(name) {
   try {
     if (name === "toggle-download") {
@@ -445,28 +529,55 @@ async function action(name) {
       if (toggle) {
         toggle.classList.toggle("active", state.downloadOpen);
         toggle.setAttribute("aria-expanded", state.downloadOpen ? "true" : "false");
-        toggle.title = state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim";
+        toggle.title = t(state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim");
         const icon = toggle.querySelector("span");
         if (icon) icon.textContent = state.downloadOpen ? "⇤" : "⇥";
       }
       return;
     }
+    if (name === "toggle-language") {
+      // The download panel keeps live text (link, patient code, job log), so
+      // the fields are carried across the re-render instead of being reset.
+      const url = app.querySelector("#direct-url")?.value ?? state.lastDirectUrl;
+      const patientId = app.querySelector("#patient-id")?.value ?? "";
+      const quality = app.querySelector("#quality")?.value ?? "100";
+      const showBrowser = app.querySelector("#show-browser")?.checked ?? false;
+      setLanguage(getLanguage() === "en" ? "vi" : "en");
+      state.lastDirectUrl = url;
+      render();
+      const patientField = app.querySelector("#patient-id");
+      if (patientField) patientField.value = patientId;
+      const qualityField = app.querySelector("#quality");
+      if (qualityField) qualityField.value = quality;
+      const browserField = app.querySelector("#show-browser");
+      if (browserField) browserField.checked = showBrowser;
+      setStatus(state.status);
+      await api("/api/settings/language", {
+        method: "POST",
+        body: JSON.stringify({ language: getLanguage() }),
+      });
+      // render() replaced #workspace, so the Cornerstone canvases went with it.
+      // The layout has to be rebuilt exactly as a mode change does, otherwise
+      // the viewer is left blank after switching language.
+      await renderViewer();
+      return;
+    }
     if (name === "choose-archive") {
-      if (!window.pywebview?.api) throw new Error("Chọn thư mục cần chạy trong ứng dụng WebView2.");
+      if (!window.pywebview?.api) throw new Error(t("Chọn thư mục cần chạy trong ứng dụng WebView2."));
       const job = await window.pywebview.api.choose_archive();
       if (job) {
         state.bootstrap.job = job;
-        setStatus("Đang nhận diện DICOM hoặc JPG/PNG trong folder…");
+        setStatus(t("Đang nhận diện DICOM hoặc JPG/PNG trong folder…"));
         startJobPolling();
       }
       return;
     }
     if (name === "import-dicom-folder") {
-      if (!window.pywebview?.api) throw new Error("Nhập DICOM local cần chạy trong ứng dụng WebView2.");
+      if (!window.pywebview?.api) throw new Error(t("Nhập DICOM local cần chạy trong ứng dụng WebView2."));
       const job = await window.pywebview.api.choose_dicom_folder(downloadOptions());
       if (job) {
         state.bootstrap.job = job;
-        setStatus("Đang đọc và chuyển folder DICOM local…");
+        setStatus(t("Đang đọc và chuyển folder DICOM local…"));
         startJobPolling();
       }
       return;
@@ -480,7 +591,7 @@ async function action(name) {
         const field = app.querySelector("#output-root");
         if (field) field.value = result.outputRoot;
         renderStudyList();
-        setStatus("Đã đổi kho lưu; hãy tìm lại mã bệnh nhân để đối chiếu phim cũ/mới.");
+        setStatus(t("Đã đổi kho lưu; hãy tìm lại mã bệnh nhân để đối chiếu phim cũ/mới."));
       }
       return;
     }
@@ -489,7 +600,7 @@ async function action(name) {
         method: "POST",
         body: JSON.stringify({ path: state.archive.root }),
       });
-      setStatus("Đang quét lại thư mục phim trong nền…");
+      setStatus(t("Đang quét lại thư mục phim trong nền…"));
       startJobPolling();
       return;
     }
@@ -504,10 +615,10 @@ async function action(name) {
       return;
     }
     if (name === "download-selected") {
-      if (state.patient?.nameConflict) throw new Error("Tên bệnh nhân không khớp; app đã chặn tự động gộp.");
+      if (state.patient?.nameConflict) throw new Error(t("Tên bệnh nhân không khớp; app đã chặn tự động gộp."));
       const studies = [...app.querySelectorAll("[data-study-index]:checked")]
         .map((item) => state.studies[Number(item.dataset.studyIndex)]);
-      if (!studies.length) throw new Error("Không có phim mới/chưa hoàn tất được chọn để tải.");
+      if (!studies.length) throw new Error(t("Không có phim mới/chưa hoàn tất được chọn để tải."));
       await api("/api/download", {
         method: "POST",
         body: JSON.stringify({
@@ -522,10 +633,20 @@ async function action(name) {
       startJobPolling();
       return;
     }
-    if (name === "download-direct") {
+    if (name === "download-direct" || name === "download-retry") {
+      const url = app.querySelector("#direct-url").value.trim();
+      if (!url) throw new Error(t("Chưa có link viewer để tải."));
+      state.lastDirectUrl = url;
       await api("/api/download/direct", {
         method: "POST",
-        body: JSON.stringify({ url: app.querySelector("#direct-url").value.trim(), ...downloadOptions() }),
+        body: JSON.stringify({
+          url,
+          // A retry merges into the folder the first attempt created and skips
+          // slices already on disk; these viewer links expire fast, so
+          // re-downloading everything is often not even possible.
+          resume: name === "download-retry",
+          ...downloadOptions(),
+        }),
       });
       startJobPolling();
       return;
@@ -555,7 +676,7 @@ async function action(name) {
       return;
     }
     if (name === "shortcuts") {
-      setStatus(SHORTCUT_HINT);
+      setStatus(t(SHORTCUT_HINT));
       return;
     }
     if (name === "reset") {
@@ -568,15 +689,15 @@ async function action(name) {
     if (name === "clear-annotations") {
       const count = await clearActiveMeasurements();
       setStatus(count
-        ? `Đã xóa ${count} phép đo/ROI.`
-        : "Khung xem hiện tại không có phép đo/ROI để xóa.");
+        ? tf("Đã xóa {} phép đo/ROI.", count)
+        : t("Khung xem hiện tại không có phép đo/ROI để xóa."));
     }
     if (name === "rotate-clockwise") {
-      if (!rotateActiveViewportClockwise()) throw new Error("Chưa chọn khung ảnh để xoay.");
+      if (!rotateActiveViewportClockwise()) throw new Error(t("Chưa chọn khung ảnh để xoay."));
       window.__viewerDiagnostics = viewerDiagnostics();
     }
     if (name === "flip-horizontal") {
-      if (!flipActiveViewportHorizontal()) throw new Error("Chưa chọn khung ảnh để lật.");
+      if (!flipActiveViewportHorizontal()) throw new Error(t("Chưa chọn khung ảnh để lật."));
       window.__viewerDiagnostics = viewerDiagnostics();
     }
     if (name === "invert") invertView();
@@ -589,23 +710,26 @@ async function action(name) {
       if (button) {
         button.classList.toggle("active", state.cine);
         button.querySelector("span").textContent = state.cine ? "Ⅱ" : icons.cine;
-        button.title = state.cine ? "Dừng chạy phim" : "Chạy phim";
+        button.title = t(state.cine ? "Dừng chạy phim" : "Chạy phim");
       }
     }
     if (name === "capture") {
       const pane = await captureActiveViewport();
-      setStatus(`Đã lưu ảnh PNG của khung "${pane}".`);
+      setStatus(tf('Đã lưu ảnh PNG của khung "{}".', pane));
     }
     if (name === "save-annotations") {
       const count = await saveAnnotations();
-      setStatus(`Đã lưu ${count} phép đo/ROI.`);
+      setStatus(tf("Đã lưu {} phép đo/ROI.", count));
     }
     if (name === "roi-volume") {
       const volume = roiVolumeMl();
-      setStatus(`Thể tích ROI thủ công: ${volume.toFixed(2)} mL (tổng diện tích lát × khoảng cách lát).`);
+      setStatus(tf(
+        "Thể tích ROI thủ công: {} mL (tổng diện tích lát × khoảng cách lát).",
+        volume.toFixed(2),
+      ));
     }
     if (name === "classic") {
-      if (!window.pywebview?.api) throw new Error("Chế độ classic chỉ có trong ứng dụng desktop.");
+      if (!window.pywebview?.api) throw new Error(t("Chế độ classic chỉ có trong ứng dụng desktop."));
       await window.pywebview.api.restart_classic();
     }
   } catch (error) {
@@ -638,9 +762,9 @@ const ERROR_HINTS = [
 ];
 
 function humanError(error) {
-  const raw = error?.message || String(error);
+  const raw = translateLog(error?.message || String(error));
   const hint = ERROR_HINTS.find(([pattern]) => pattern.test(raw));
-  return hint ? `${hint[1]} (chi tiết: ${raw})` : raw;
+  return hint ? `${t(hint[1])} (${t("chi tiết")}: ${raw})` : raw;
 }
 
 function downloadOptions() {
@@ -676,10 +800,10 @@ function renderViewer() {
   const requestedWorkspace = document.querySelector("#workspace");
   if (!requestedWorkspace) return viewerQueue;
   const immediateLoadingText = mode === "mpr"
-    ? `Đang dựng MPR từ ${series.sliceCount} lát…`
+    ? tf("Đang dựng MPR từ {} lát…", series.sliceCount)
     : mode === "volume3d"
-      ? `Đang dựng mô hình 3D từ ${series.sliceCount} lát…`
-      : "Đang mở ảnh…";
+      ? tf("Đang dựng mô hình 3D từ {} lát…", series.sliceCount)
+      : t("Đang mở ảnh…");
   state.busyViewer = true;
   window.__viewerReadyMode = "";
   requestedWorkspace.dataset.loadingText = immediateLoadingText;
@@ -697,10 +821,10 @@ function renderViewer() {
     state.busyViewer = true;
     window.__viewerReadyMode = "";
     const loadingText = mode === "mpr"
-      ? `Đang dựng MPR từ ${series.sliceCount} lát…`
+      ? tf("Đang dựng MPR từ {} lát…", series.sliceCount)
       : mode === "volume3d"
-        ? `Đang dựng mô hình 3D từ ${series.sliceCount} lát…`
-        : "Đang mở ảnh…";
+        ? tf("Đang dựng mô hình 3D từ {} lát…", series.sliceCount)
+        : t("Đang mở ảnh…");
     workspace.dataset.loadingText = loadingText;
     workspace.classList.add("busy");
     app.querySelector(".status-dot")?.classList.add("busy");
@@ -709,7 +833,7 @@ function renderViewer() {
       // Rebuilding a layout drops every in-memory annotation, so measurements
       // are written to the series folder first instead of being lost silently.
       const saved = await persistActiveAnnotations();
-      if (saved === -1) setStatus("Không lưu được phép đo trước khi đổi khung xem.", true);
+      if (saved === -1) setStatus(t("Không lưu được phép đo trước khi đổi khung xem."), true);
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       if (requestId !== viewerRequestId || !workspace.isConnected) return;
       let applied = state.tool;
@@ -745,9 +869,9 @@ function renderViewer() {
         message: error?.message || String(error),
         stack: error?.stack || "",
       };
-      workspace.innerHTML = `<div class="empty-state error"><b>Không mở được khung xem</b>
+      workspace.innerHTML = `<div class="empty-state error"><b>${escapeHtml(t("Không mở được khung xem"))}</b>
         <span>${escapeHtml(message)}</span>
-        <button class="primary" data-action="retry-viewer">Thử lại</button></div>`;
+        <button class="primary" data-action="retry-viewer">${escapeHtml(t("Thử lại"))}</button></div>`;
       workspace.querySelector("[data-action='retry-viewer']")
         ?.addEventListener("click", () => renderViewer());
       setStatus(message, true);
@@ -874,6 +998,7 @@ async function pollJob() {
       window.clearInterval(jobPoll);
       jobPoll = null;
       applyArchive(archive);
+      refreshHistory();
       return;
     }
   }
@@ -881,24 +1006,58 @@ async function pollJob() {
     window.clearInterval(jobPoll);
     jobPoll = null;
     applyArchive(job.result || { root: "", series: [] });
+    refreshHistory();
     return;
   }
   const log = app.querySelector(".job-log");
   if (log) {
-    log.textContent = (job.logs || []).slice(-80).join("\n");
+    log.textContent = (job.logs || []).slice(-80).map(translateLog).join("\n");
     log.scrollTop = log.scrollHeight;
   }
   // The viewer owns the status bar while it is building a layout.
-  if (!state.busyViewer) setStatus(job.message || job.status);
+  if (!state.busyViewer) setStatus(translateLog(job.message || job.status));
   if (["complete", "error", "stopped"].includes(job.status)) {
     window.clearInterval(jobPoll);
     jobPoll = null;
+    // Any finished job may have added a folder worth remembering.
+    refreshHistory();
+  }
+}
+
+/** Fill the link and patient-code fields from the clipboard, as the classic app does.
+ *
+ * WebView2 refuses `navigator.clipboard.readText()` without a user gesture, so
+ * the native bridge reports only the two shapes worth pasting. A field the user
+ * is typing in is never overwritten.
+ */
+async function autoPasteFromClipboard() {
+  if (!window.pywebview?.api?.read_clipboard) return;
+  let clip = null;
+  try {
+    clip = await window.pywebview.api.read_clipboard();
+  } catch (_) {
+    return;
+  }
+  if (!clip) return;
+  const urlField = app.querySelector("#direct-url");
+  if (clip.url && urlField && document.activeElement !== urlField && urlField.value.trim() !== clip.url) {
+    urlField.value = clip.url;
+    state.lastDirectUrl = clip.url;
+  }
+  const patientField = app.querySelector("#patient-id");
+  if (clip.patientId && patientField && document.activeElement !== patientField
+    && patientField.value.trim() !== clip.patientId) {
+    patientField.value = clip.patientId;
   }
 }
 
 async function boot() {
-  if (!hasSessionToken) throw new Error("Thiếu token phiên local.");
+  if (!hasSessionToken) throw new Error(t("Thiếu token phiên local."));
   state.bootstrap = await api("/api/bootstrap");
+  setLanguage(state.bootstrap.language || "vi");
+  state.history = Array.isArray(state.bootstrap.history) ? state.bootstrap.history : [];
+  state.lastDirectUrl = state.bootstrap.lastDirectUrl || "";
+  state.status = "Đang khởi động...";
   state.archive = state.bootstrap.archive;
   state.selectedId = state.archive.series[0]?.id || "";
   state.compareId = state.archive.series[1]?.id || state.selectedId;
@@ -925,15 +1084,19 @@ async function boot() {
   // Releasing the GPU contexts on close keeps a WebView2 restart from
   // inheriting a page that still holds them.
   window.addEventListener("pagehide", disposeViewer);
-  state.status = "Sẵn sàng. Nhấn ⌨ trên thanh công cụ để xem phím tắt.";
+  // Copying a viewer link or patient code in another window and coming back is
+  // the normal workflow, so returning focus is when the paste is wanted.
+  window.addEventListener("focus", autoPasteFromClipboard);
+  state.status = t("Sẵn sàng. Nhấn ⌨ trên thanh công cụ để xem phím tắt.");
   render();
+  autoPasteFromClipboard();
   await renderViewer();
 }
 
 boot().catch((error) => {
-  app.innerHTML = `<div class="fatal-error"><b>Không khởi động được DICOM/JPG Downloader & Viewer</b>
+  app.innerHTML = `<div class="fatal-error"><b>${escapeHtml(t("Không khởi động được DICOM/JPG Downloader & Viewer"))}</b>
     <pre>${escapeHtml(error.stack || error.message)}</pre>
-    <button class="primary" id="fatal-reload">Tải lại</button></div>`;
+    <button class="primary" id="fatal-reload">${escapeHtml(t("Tải lại"))}</button></div>`;
   // The local API forbids inline handlers, so the listener is attached here.
   document.querySelector("#fatal-reload")?.addEventListener("click", () => location.reload());
 });

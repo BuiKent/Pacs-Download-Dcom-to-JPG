@@ -48,12 +48,12 @@ button { cursor: pointer; }
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
-  background: linear-gradient(145deg, #00a3ff, #0068bc);
-  font-weight: 800;
-  box-shadow: 0 0 18px #008ee055;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid #1d5f8c;
+  background: #123a55;
+  font-weight: 700;
 }
 
 .brand b, .brand small { display: block; }
@@ -87,6 +87,9 @@ button { cursor: pointer; }
   color: #bcd0df;
   background: #14202b;
 }
+/* A fixed width keeps the header from shifting when VI/EN swap places. */
+.soft-button { min-width: 62px; padding: 0 10px; }
+.soft-button:hover { color: #eaf4fb; background: #1b2b39; }
 
 .download-panel {
   position: relative;
@@ -100,28 +103,36 @@ button { cursor: pointer; }
 
 .panel-title { display: flex; justify-content: space-between; align-items: center; color: #8fd3ff; }
 .panel-title button { color: #7890a2; border: 0; background: transparent; font-size: 22px; }
+/* A secondary export tool, so it reads as a quiet panel rather than competing
+   with the primary download action below it. */
 .dicom-source-card {
   display: grid;
-  gap: 10px;
+  gap: 9px;
   margin: 12px 0;
-  padding: 11px;
+  padding: 10px;
   color: #dff5ff;
-  border: 1px solid #176c94;
+  border: 1px solid #253a4b;
   border-radius: 8px;
-  background: linear-gradient(145deg, #0c2635, #0b1923);
-  box-shadow: inset 0 0 20px #008ec21a;
+  background: #0c151e;
 }
 .dicom-source-card b, .dicom-source-card small { display: block; }
-.dicom-source-card b { color: #7bd9ff; font-size: 11px; letter-spacing: .5px; }
-.dicom-source-card small { margin-top: 4px; color: #9bb9ca; font-size: 10px; line-height: 1.4; }
-.dicom-source-card button { min-height: 35px; border-radius: 6px; color: #fff; }
+.dicom-source-card b { color: #9fc4da; font-size: 11px; letter-spacing: .5px; }
+.dicom-source-card small { margin-top: 4px; color: #83a0b3; font-size: 10px; line-height: 1.4; }
+.dicom-source-card button {
+  min-height: 34px;
+  border: 1px solid #304a60;
+  border-radius: 6px;
+  color: #d6e9f6;
+  background: #152533;
+}
+.dicom-source-card button:hover { background: #1b2f40; }
 .source-divider { display: flex; align-items: center; gap: 8px; color: #627c8e; font-size: 9px; }
 .source-divider::before, .source-divider::after { content: ""; flex: 1; height: 1px; background: #20313e; }
 .source-divider span { white-space: nowrap; }
 .hospital-row { display: flex; gap: 10px; margin: 12px 0; font-size: 12px; }
 .hospital-row label { flex: 1; }
 .field { display: block; margin: 10px 0; color: #94a9ba; font-size: 11px; }
-.field input, .field textarea {
+.field input, .field textarea, .field select {
   width: 100%;
   margin-top: 5px;
   padding: 8px;
@@ -131,6 +142,8 @@ button { cursor: pointer; }
   background: #101923;
   resize: vertical;
 }
+.field select:disabled { color: #5d7385; }
+.history-field { margin-top: 8px; }
 .inline-field { display: flex; gap: 6px; }
 .inline-field button, .download-actions button, .empty-state button {
   border: 1px solid #304a60;
@@ -166,8 +179,26 @@ button:disabled { opacity: .35; cursor: default; }
 .muted { display: block; padding: 12px; color: #607587; font-size: 11px; }
 .download-options { display: flex; gap: 12px; align-items: center; color: #94a9ba; font-size: 11px; }
 .download-options input[type="number"] { width: 55px; }
-.download-actions { display: grid; grid-template-columns: 1fr 1fr 60px; gap: 6px; margin: 10px 0; }
+/* The RIS download is the primary action; Stop stays narrow beside it. */
+.download-actions { display: grid; grid-template-columns: 1fr 72px; gap: 6px; margin: 10px 0; }
 .download-actions button { min-height: 34px; }
+/* Link download and its retry are peers, so they share the row evenly. */
+.link-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0 12px; }
+.link-actions button {
+  min-height: 32px;
+  border: 1px solid #304a60;
+  border-radius: 6px;
+  color: #d6e9f6;
+  background: #152533;
+}
+.link-actions button:hover { background: #1b2f40; }
+.panel-credit {
+  margin-top: 10px;
+  color: #5d7385;
+  font-size: 10px;
+  font-style: italic;
+  text-align: right;
+}
 .job-log {
   min-height: 150px;
   max-height: 260px;

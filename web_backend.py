@@ -31,6 +31,11 @@ import mpr_engine
 APP_VERSION = "1.1.0"
 IMG_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 ANNOTATIONS_NAME = "viewer-annotations.json"
+# The classic Tk app writes the same file. Sharing it means a user who switches
+# between the two UIs keeps one download history instead of two partial ones.
+HISTORY_FILE = Path.home() / ".dcom_downloader_history.json"
+HISTORY_MAX = 30
+SUPPORTED_LANGUAGES = ("vi", "en")
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -762,20 +767,159 @@ class JobState:
         threading.Thread(target=run, name=f"dcom-{kind}", daemon=True).start()
 
 
+class HistoryStore:
+    """Recently downloaded/opened folders, shared with the classic Tk app.
+
+    Every entry is ``{folder, url, time}`` exactly as the classic app writes it,
+    so the two UIs can read each other's history. Writing history must never be
+    able to fail a download, so all I/O errors here are swallowed.
+    """
+
+    def __init__(self, path: Path = HISTORY_FILE, limit: int = HISTORY_MAX):
+        self.path = Path(path)
+        self.limit = limit
+        self._lock = threading.RLock()
+        self._entries: list[dict] = []
+        self.reload()
+
+    def reload(self) -> list[dict]:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            data = []
+        entries = [
+            {
+                "folder": str(item.get("folder")),
+                "url": str(item.get("url") or ""),
+                "time": str(item.get("time") or ""),
+            }
+            for item in (data if isinstance(data, list) else [])
+            if isinstance(item, dict) and item.get("folder")
+        ]
+        with self._lock:
+            self._entries = entries[: self.limit]
+            return list(self._entries)
+
+    def snapshot(self) -> list[dict]:
+        with self._lock:
+            return [
+                {**item, "exists": Path(item["folder"]).is_dir()}
+                for item in self._entries
+            ]
+
+    def add(self, folder: Any, url: str = "") -> list[dict]:
+        folder = str(folder)
+        key = folder.casefold()
+        with self._lock:
+            previous = next(
+                (item for item in self._entries if item["folder"].casefold() == key), None
+            )
+            if previous:
+                self._entries.remove(previous)
+                # Re-opening a folder from history must not erase the link that
+                # was used to fill it; only a fresh link replaces the old one.
+                url = url or previous.get("url", "")
+            self._entries.insert(
+                0,
+                {
+                    "folder": folder,
+                    "url": url or "",
+                    "time": time.strftime("%d/%m %H:%M"),
+                },
+            )
+            del self._entries[self.limit:]
+            entries = list(self._entries)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_suffix(".json.tmp")
+            temporary.write_text(
+                json.dumps(entries, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
+            temporary.replace(self.path)
+        except Exception:
+            pass
+        return self.snapshot()
+
+    def url_for(self, folder: Any) -> str:
+        key = str(folder).casefold()
+        with self._lock:
+            match = next(
+                (item for item in self._entries if item["folder"].casefold() == key), None
+            )
+            return match.get("url", "") if match else ""
+
+
 class WebController:
     def __init__(self) -> None:
         self.catalog = ArchiveCatalog()
         self.job = JobState()
-        self.output_root = Path.home() / "DCom JPG PACS"
         app_data = Path(os.environ.get("LOCALAPPDATA") or Path.home())
         self.annotation_root = app_data / "DCom JPG PACS" / "viewer-annotations"
+        self.settings_path = app_data / "DCom JPG PACS" / "settings.json"
+        self.history = HistoryStore()
+        settings = self._read_settings()
+        self.language = settings.get("language", "vi")
+        self.output_root = Path(settings.get("outputRoot") or (Path.home() / "DCom JPG PACS"))
+
+    def _read_settings(self) -> dict:
+        try:
+            value = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(value, dict):
+            return {}
+        language = str(value.get("language") or "vi")
+        return {
+            "language": language if language in SUPPORTED_LANGUAGES else "vi",
+            "outputRoot": str(value.get("outputRoot") or ""),
+        }
+
+    def _write_settings(self) -> None:
+        # A settings write must never break the session that triggered it.
+        try:
+            self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.settings_path.with_suffix(".json.tmp")
+            temporary.write_text(
+                json.dumps(
+                    {"language": self.language, "outputRoot": str(self.output_root)},
+                    ensure_ascii=False,
+                    indent=1,
+                ),
+                encoding="utf-8",
+            )
+            temporary.replace(self.settings_path)
+        except Exception:
+            pass
+
+    def set_language(self, language: str) -> dict:
+        value = str(language or "").casefold()
+        if value not in SUPPORTED_LANGUAGES:
+            raise ValueError("Ngôn ngữ không được hỗ trợ.")
+        self.language = value
+        self._write_settings()
+        return {"language": self.language}
+
+    def history_snapshot(self) -> list[dict]:
+        return self.history.snapshot()
+
+    def start_history_open(self, folder: str) -> dict:
+        target = Path(str(folder or "")).expanduser()
+        if not target.is_dir():
+            raise ValueError(f"Thư mục không còn tồn tại:\n{target}")
+        return self.start_archive_scan(str(target))
 
     def bootstrap(self) -> dict:
+        # One snapshot: it serialises every series, so building it twice would
+        # double the work on a large archive for no gain.
+        archive = self.catalog.snapshot()
         return {
             "version": APP_VERSION,
-            "archive": self.catalog.snapshot(),
+            "archive": archive,
             "job": self.job.snapshot(),
             "outputRoot": str(self.output_root),
+            "language": self.language,
+            "history": self.history_snapshot(),
+            "lastDirectUrl": self.history.url_for(archive.get("root", "")),
             "hospitals": [
                 {
                     "id": key,
@@ -793,11 +937,15 @@ class WebController:
         root = str(Path(path).expanduser().resolve(strict=True))
 
         def target() -> dict:
-            return self.catalog.open(
+            archive = self.catalog.open(
                 root,
                 log=self.job.log,
                 should_stop=self.job.stop_event.is_set,
             )
+            # A folder that was only browsed is worth remembering too; the
+            # classic app records those the same way.
+            self.history.add(root)
+            return archive
 
         self.job.start("archive", target)
         return self.job.snapshot()
@@ -835,6 +983,7 @@ class WebController:
                 log=self.job.log,
                 should_stop=self.job.stop_event.is_set,
             )
+            self.history.add(destination)
             return {
                 "archive": archive,
                 "source": str(source),
@@ -850,6 +999,7 @@ class WebController:
         root = Path(path).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
         self.output_root = root
+        self._write_settings()
         return {"outputRoot": str(root)}
 
     def start_search(self, payload: dict) -> dict:
@@ -937,6 +1087,7 @@ class WebController:
             if patient_folder is None:
                 raise ValueError("Không tìm thấy folder bệnh nhân sau khi tải.")
             archive = self.catalog.open(patient_folder)
+            self.history.add(patient_folder)
             patient = dcom_pipeline.patient_archive_status(
                 output_root,
                 patient_id=patient_id,
@@ -956,6 +1107,27 @@ class WebController:
         self.job.start("download", target)
         return self.job.snapshot()
 
+    @staticmethod
+    def _direct_download_root(output_root: Path, url: str, resume: bool) -> tuple[Path, bool]:
+        """Pick the folder a direct link downloads into.
+
+        A retry must merge into the folder the first attempt created, otherwise
+        the already-downloaded slices are re-fetched into a second folder and
+        the study ends up split. The link token is derived from the URL, so the
+        previous attempt for the same link is recoverable even though its
+        timestamp is not.
+        """
+        link_token = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
+        if resume:
+            existing = sorted(
+                (item for item in output_root.glob(f"LINK_*_{link_token}") if item.is_dir()),
+                key=lambda item: item.name,
+            )
+            if existing:
+                return existing[-1], True
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        return output_root / f"LINK_{stamp}_{link_token}", False
+
     def start_direct_download(self, payload: dict) -> dict:
         url = str(payload.get("url") or "").strip()
         parsed = urlparse(url)
@@ -963,11 +1135,14 @@ class WebController:
             raise ValueError("Link viewer không hợp lệ.")
         output_root = Path(str(payload.get("outputRoot") or self.output_root)).expanduser().resolve()
         output_root.mkdir(parents=True, exist_ok=True)
+        requested_resume = bool(payload.get("resume"))
 
         def target() -> dict:
-            stamp = time.strftime("%Y%m%d_%H%M%S")
-            link_token = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
-            direct_root = output_root / f"LINK_{stamp}_{link_token}"
+            direct_root, resumed = self._direct_download_root(output_root, url, requested_resume)
+            if requested_resume and not resumed:
+                self.job.log(
+                    "Không tìm thấy folder cũ của link này; sẽ tải mới vào folder riêng."
+                )
             _, _, jpg_dir = dcom_pipeline.run_pipeline(
                 url=url,
                 out_base=direct_root,
@@ -977,9 +1152,14 @@ class WebController:
                 save_png=bool(payload.get("savePng")),
                 contrast_mode=str(payload.get("contrastMode") or dcom_pipeline.CLINICAL),
                 should_stop=self.job.stop_event.is_set,
+                resume=resumed,
             )
             archive = self.catalog.open(jpg_dir if Path(jpg_dir).exists() else direct_root)
-            return {"archive": archive, "output": str(direct_root)}
+            # The link is stored with the folder so a later retry from history
+            # can reuse it; these viewer links expire fast, but an expired link
+            # is still better than none when the user wants to edit and resend.
+            self.history.add(direct_root, url)
+            return {"archive": archive, "output": str(direct_root), "resumed": resumed}
 
         self.job.start("direct-download", target)
         return self.job.snapshot()
@@ -1122,6 +1302,8 @@ class LocalApiServer:
                     return owner.controller.catalog.snapshot()
                 if path == "/api/job":
                     return owner.controller.job.snapshot()
+                if path == "/api/history":
+                    return {"history": owner.controller.history_snapshot()}
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/manifest", path)
                 if match:
                     record = owner.controller.catalog.get(match.group(1))
@@ -1148,6 +1330,10 @@ class LocalApiServer:
                     return owner.controller.start_direct_download(payload)
                 if path == "/api/job/stop":
                     return owner.controller.stop()
+                if path == "/api/history/open":
+                    return owner.controller.start_history_open(str(payload.get("folder") or ""))
+                if path == "/api/settings/language":
+                    return owner.controller.set_language(str(payload.get("language") or ""))
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/annotations", path)
                 if match:
                     return owner.controller.save_annotations(match.group(1), payload)
