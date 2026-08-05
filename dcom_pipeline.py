@@ -458,6 +458,7 @@ def download_all(
             (raw_jpg_dir / f"img_{idx:05d}.jpg").write_bytes(data)
         else:
             (raw_jpg_dir / f"img_{idx:05d}.png").write_bytes(data)
+        return True
 
     # Thu thập manifest của các dòng viewer đã biết:
     #   • VradViewer  -> StudyData/GetStudies (+ 1 URL ảnh thật làm khuôn)
