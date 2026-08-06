@@ -536,10 +536,6 @@ function renderPatientStatus() {
       patient.patientId, patient.storedPatientName, patient.patientName,
     ))}</span></div>`;
   }
-  if (!patient.patientName) {
-    return `<div class="patient-alert warning"><b>${escapeHtml(patient.patientId)} · ${escapeHtml(patient.hospitalName)}</b>
-      <span>${escapeHtml(t("RIS chưa trả tên bệnh nhân. App vẫn có thể tải nhưng folder sẽ ghi CHUA_RO_TEN; hãy kiểm tra tên trên RIS/DICOM."))}</span></div>`;
-  }
   const identity = [patient.patientId, patient.patientName, patient.hospitalName]
     .filter(Boolean).map(escapeHtml).join(" · ");
   const summary = patient.exists

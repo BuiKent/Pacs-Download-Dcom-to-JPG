@@ -368,6 +368,9 @@ button:disabled { opacity: .35; cursor: default; }
   background: #05090d;
   font: 10px/1.45 Consolas, monospace;
   white-space: pre-wrap;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
 }
 
 .viewer-main {
