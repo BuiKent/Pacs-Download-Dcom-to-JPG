@@ -286,8 +286,11 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
         expected_decode = "dicom-direct" if diagnostics.get("sourceType") == "dicom" else "worker"
         if diagnostics.get("decodePath") != expected_decode:
             raise RuntimeError(f"Unexpected decode path: {result['mpr']}")
-        if len(result["mpr"].get("toolLabels", [])) != 8:
+        # MPR: crosshair, window, pan, zoom + length, angle, ellipse, freehand, text.
+        if len(result["mpr"].get("toolLabels", [])) != 9:
             raise RuntimeError(f"MPR contextual toolbar is incomplete: {result['mpr']}")
+        # 3D: orbit, crosshair, pan, zoom. Measurement tools cannot act on a
+        # volume render, so they are absent by design.
         if len(result["volume3d"].get("toolLabels", [])) != 4:
             raise RuntimeError(f"3D contextual toolbar is incomplete: {result['volume3d']}")
         for key, count in (("montage6", 6), ("montage8", 8)):

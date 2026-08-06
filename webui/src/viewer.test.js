@@ -73,10 +73,12 @@ describe("viewer shell", () => {
     // Crosshairs need two linked viewports; a single stack pane must fall back.
     expect(toolFallback("crosshair", 1, false)).toBe("window");
     expect(toolFallback("crosshair", 3, false)).toBe("crosshair");
-    // TrackballRotate needs a 3D viewport.
-    expect(toolFallback("rotate3d", 4, false)).toBe("window");
-    expect(toolFallback("rotate3d", 4, true)).toBe("rotate3d");
+    // The 3D orbit needs a 3D viewport.
+    expect(toolFallback("orbit3d", 4, false)).toBe("window");
+    expect(toolFallback("orbit3d", 4, true)).toBe("orbit3d");
     expect(toolFallback("length", 1, false)).toBe("length");
+    // Text notes are plain annotations and work in any 2D layout.
+    expect(toolFallback("text", 1, false)).toBe("text");
     expect(toolFallback("nonsense", 3, true)).toBe("window");
   });
 

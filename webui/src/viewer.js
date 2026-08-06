@@ -11,6 +11,7 @@ import {
 } from "@cornerstonejs/core";
 import {
   AngleTool,
+  ArrowAnnotateTool,
   CrosshairsTool,
   EllipticalROITool,
   Enums as ToolEnums,
@@ -57,6 +58,7 @@ const toolClasses = [
   AngleTool,
   EllipticalROITool,
   PlanarFreehandROITool,
+  ArrowAnnotateTool,
   CrosshairsTool,
   TrackballRotateTool,
 ];
@@ -69,15 +71,20 @@ const toolByMode = {
   angle: AngleTool.toolName,
   ellipse: EllipticalROITool.toolName,
   freehand: PlanarFreehandROITool.toolName,
+  text: ArrowAnnotateTool.toolName,
   crosshair: CrosshairsTool.toolName,
-  rotate3d: TrackballRotateTool.toolName,
+  orbit3d: TrackballRotateTool.toolName,
 };
 
+// What the "clear" button removes and what counts as user-made mark-up. Text
+// notes belong here: they are drawn on the same annotation layer and would
+// otherwise be impossible to remove from the toolbar.
 const measurementToolNames = new Set([
   LengthTool.toolName,
   AngleTool.toolName,
   EllipticalROITool.toolName,
   PlanarFreehandROITool.toolName,
+  ArrowAnnotateTool.toolName,
 ]);
 
 let initialized = false;
@@ -606,6 +613,87 @@ export async function initViewer(callbacks = {}) {
   initialized = true;
 }
 
+/** Ask for the text of a note, using an in-page prompt.
+ *
+ * ArrowAnnotateTool defaults to `window.prompt`, which WebView2 can suppress
+ * outright and which cannot be localised. This dialog is plain DOM so it works
+ * under the local API's strict CSP (no inline handlers, no external assets).
+ */
+function askForText(initial = "") {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "text-prompt-backdrop";
+    const box = document.createElement("form");
+    box.className = "text-prompt";
+    const label = document.createElement("label");
+    label.textContent = TEXT_PROMPT_LABEL;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.maxLength = 120;
+    input.value = initial;
+    const actions = document.createElement("div");
+    actions.className = "text-prompt-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = TEXT_PROMPT_CANCEL;
+    const confirm = document.createElement("button");
+    confirm.type = "submit";
+    confirm.className = "primary";
+    confirm.textContent = TEXT_PROMPT_CONFIRM;
+
+    let settled = false;
+    const close = (value) => {
+      if (settled) return;
+      settled = true;
+      backdrop.remove();
+      resolve(value);
+    };
+    box.addEventListener("submit", (event) => {
+      event.preventDefault();
+      close(input.value.trim() || null);
+    });
+    cancel.addEventListener("click", () => close(null));
+    backdrop.addEventListener("mousedown", (event) => {
+      if (event.target === backdrop) close(null);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") close(null);
+      // The viewer binds single letters to tools; typing a note must not fire them.
+      event.stopPropagation();
+    });
+
+    label.append(input);
+    actions.append(cancel, confirm);
+    box.append(label, actions);
+    backdrop.append(box);
+    document.body.append(backdrop);
+    input.focus();
+    input.select();
+  });
+}
+
+// Set from the UI so the dialog follows the selected language.
+let TEXT_PROMPT_LABEL = "Nội dung ghi chú";
+let TEXT_PROMPT_CONFIRM = "Thêm";
+let TEXT_PROMPT_CANCEL = "Bỏ";
+
+export function configureTextPrompt({ label, confirm, cancel }) {
+  TEXT_PROMPT_LABEL = label || TEXT_PROMPT_LABEL;
+  TEXT_PROMPT_CONFIRM = confirm || TEXT_PROMPT_CONFIRM;
+  TEXT_PROMPT_CANCEL = cancel || TEXT_PROMPT_CANCEL;
+}
+
+function configureTextAnnotations(group) {
+  // A note with no text is invisible mark-up the user cannot select or delete,
+  // so an empty answer discards the annotation instead of creating one.
+  group.setToolConfiguration(ArrowAnnotateTool.toolName, {
+    getTextCallback: (done) => { askForText("").then(done); },
+    changeTextCallback: (data, event, done) => {
+      askForText(data?.data?.text || "").then(done);
+    },
+  });
+}
+
 export function registerSeries(series) {
   seriesRegistry.set(series.id, series);
 }
@@ -695,6 +783,7 @@ function createToolGroup(viewportIds, mode = "stack") {
   for (const ToolClass of allowed) {
     toolGroup.addTool(ToolClass.toolName);
   }
+  if (allowed.includes(ArrowAnnotateTool)) configureTextAnnotations(toolGroup);
   for (const viewportId of viewportIds) {
     toolGroup.addViewport(viewportId, ENGINE_ID);
   }
@@ -903,18 +992,27 @@ export function rotateActiveViewportClockwise() {
 }
 
 /** Mirrors only the pane selected by the pointer around its vertical axis. */
-export function flipActiveViewportHorizontal() {
+function flipActiveViewport(axis) {
   const viewport = activeViewport();
   if (!viewport || typeof viewport.getCamera !== "function"
     || typeof viewport.setCamera !== "function") {
     return null;
   }
-  const flipHorizontal = !Boolean(viewport.getCamera()?.flipHorizontal);
+  const camera = viewport.getCamera() || {};
   // Cornerstone's camera setter handles both directions of the toggle for
   // stack, orthographic volume and 3D volume viewports.
-  viewport.setCamera({ flipHorizontal });
+  const next = { [axis]: !Boolean(camera[axis]) };
+  viewport.setCamera(next);
   viewport.render();
-  return { flipHorizontal };
+  return next;
+}
+
+export function flipActiveViewportHorizontal() {
+  return flipActiveViewport("flipHorizontal");
+}
+
+export function flipActiveViewportVertical() {
+  return flipActiveViewport("flipVertical");
 }
 
 function imageIds(series) {
@@ -1308,7 +1406,7 @@ function applyBrainPreset(viewport, series) {
   property.setInterpolationTypeToLinear();
 }
 
-export async function show3d(container, series, tool = "rotate3d") {
+export async function show3d(container, series, tool = "orbit3d") {
   if (!series.mprReady) throw new Error(series.mprReason);
   destroyCurrent();
   activeSeries = series;
@@ -1397,7 +1495,7 @@ export function viewerDiagnostics() {
  */
 export function toolFallback(mode, viewportCount = activeElements.length, hasVolume3d = false) {
   if (mode === "crosshair" && viewportCount < 2) return "window";
-  if (mode === "rotate3d" && !hasVolume3d) return "window";
+  if (mode === "orbit3d" && !hasVolume3d) return "window";
   if (!toolByMode[mode]) return "window";
   return mode;
 }
@@ -1473,12 +1571,27 @@ export async function applyWindowPreset(name) {
 }
 
 export function invertView() {
-  if (!engineIsLive()) return;
-  for (const viewport of renderingEngine.getStackViewports() || []) {
+  if (!engineIsLive()) return 0;
+  // Every 2D pane, not just stacks: MPR and the orthographic panes of the 3D
+  // layout are volume viewports and were silently skipped before. The 3D
+  // volume-rendered pane has no VOI to invert, so it reports no properties.
+  let inverted = 0;
+  for (const viewport of renderingEngine.getViewports() || []) {
+    if (typeof viewport.getProperties !== "function"
+      || typeof viewport.setProperties !== "function") {
+      continue;
+    }
     const properties = viewport.getProperties();
-    viewport.setProperties({ invert: !properties.invert });
-    viewport.render();
+    if (!properties || !("invert" in properties)) continue;
+    try {
+      viewport.setProperties({ invert: !properties.invert });
+      viewport.render();
+      inverted += 1;
+    } catch (_) {
+      // A pane that refuses an inverted VOI is skipped, not fatal.
+    }
   }
+  return inverted;
 }
 
 /**

@@ -8,7 +8,9 @@ import {
   clearActiveMeasurements,
   defaultWindowPreset,
   disposeViewer,
+  configureTextPrompt,
   flipActiveViewportHorizontal,
+  flipActiveViewportVertical,
   initViewer,
   invertView,
   persistActiveAnnotations,
@@ -65,9 +67,11 @@ const state = {
 let viewerQueue = Promise.resolve();
 let viewerRequestId = 0;
 
+// Icons that carry a real meaning are drawn, not borrowed from Unicode: "↺" and
+// "↻" were near-identical for reset and rotate, and no glyph reads as "flip" or
+// "orbit". Each SVG below follows the shape used by mainstream DICOM viewers.
 const icons = {
   crosshair: "⊕",
-  rotate3d: "⟳",
   folder: "📂",
   current: "⌂",
   single: "▣",
@@ -86,11 +90,46 @@ const icons = {
   angle: "∠",
   ellipse: "◯",
   freehand: "✎",
-  reset: "↺",
-  rotateClockwise: "↻",
-  flipHorizontal: "↔",
+  // A note anchored to a point: the arrow marks the finding, the bar is text.
+  text: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M3 21 10 14"></path>
+    <path d="M10 9v5h5"></path>
+    <path d="M13 3h8"></path>
+    <path d="M13 7h8"></path>
+  </svg>`,
+  // Two mirrored triangles across a dashed axis — the international flip mark.
+  flipHorizontal: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M12 3v18" stroke-dasharray="2 2.5"></path>
+    <path d="M9.5 6 3 12l6.5 6z" fill="currentColor" stroke="none"></path>
+    <path d="M14.5 6 21 12l-6.5 6z"></path>
+  </svg>`,
+  flipVertical: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M3 12h18" stroke-dasharray="2 2.5"></path>
+    <path d="M6 9.5 12 3l6 6.5z" fill="currentColor" stroke="none"></path>
+    <path d="M6 14.5 12 21l6-6.5z"></path>
+  </svg>`,
+  // A square turning: unmistakably "rotate the image", never "undo".
+  rotateClockwise: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <rect x="3" y="11" width="10" height="10" rx="1.5"></rect>
+    <path d="M13 6h4a4 4 0 0 1 4 4v1"></path>
+    <path d="M10.5 3.5 13 6l-2.5 2.5"></path>
+  </svg>`,
+  // A full circular arrow: the standard "restore defaults" mark.
+  reset: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M20 12a8 8 0 1 1-2.6-5.9"></path>
+    <path d="M20 3v5h-5"></path>
+  </svg>`,
+  // A sphere with an orbit ring — the convention for free 3D rotation.
+  orbit3d: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="12" cy="12" r="5"></circle>
+    <ellipse cx="12" cy="12" rx="10.2" ry="4.4" transform="rotate(-27 12 12)"></ellipse>
+  </svg>`,
+  // Half-dark disc: the same mark photo tools use for invert/negative.
+  invert: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="12" cy="12" r="8.5"></circle>
+    <path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"></path>
+  </svg>`,
   clearAnnotations: "×",
-  invert: "◑",
   cine: "▶",
   capture: "▧",
   save: "💾",
@@ -125,73 +164,68 @@ function iconButton(id, icon, title, active = false, disabled = false, label = "
   </button>`;
 }
 
+/* The toolbar reads left to right in the order a study is actually worked:
+   what the mouse does (navigate → measure → annotate), then what happens to the
+   view (orient → reset), then the mark-up, then the output. */
 function renderInteractionTools(series) {
+  const navigate = {
+    crosshair: iconButton("tool-crosshair", icons.crosshair, t("Định vị MPR"), state.tool === "crosshair"),
+    orbit3d: iconButton("tool-orbit3d", icons.orbit3d, t("Xoay khối 3D tự do"), state.tool === "orbit3d"),
+    window: iconButton("tool-window", icons.window, t("Sáng/tương phản"), state.tool === "window"),
+    pan: iconButton("tool-pan", icons.pan, t("Di chuyển"), state.tool === "pan"),
+    zoom: iconButton("tool-zoom", icons.zoom, t("Thu/phóng"), state.tool === "zoom"),
+  };
   if (state.mode === "volume3d") {
-    return [
-      iconButton("tool-crosshair", icons.crosshair, t("Định vị MPR"), state.tool === "crosshair"),
-      iconButton("tool-rotate3d", icons.rotate3d, t("Xoay 3D"), state.tool === "rotate3d"),
-      iconButton("tool-pan", icons.pan, t("Di chuyển"), state.tool === "pan"),
-      iconButton("tool-zoom", icons.zoom, t("Thu/phóng"), state.tool === "zoom"),
-    ].join("");
+    return [navigate.orbit3d, navigate.crosshair, navigate.pan, navigate.zoom].join("");
   }
-  if (state.mode === "mpr") {
-    return [
-      iconButton("tool-crosshair", icons.crosshair, t("Định vị MPR"), state.tool === "crosshair"),
-      iconButton("tool-window", icons.window, t("Sáng/tương phản"), state.tool === "window"),
-      iconButton("tool-pan", icons.pan, t("Di chuyển"), state.tool === "pan"),
-      iconButton("tool-zoom", icons.zoom, t("Thu/phóng"), state.tool === "zoom"),
-      iconButton("tool-length", icons.length, t("Đo chiều dài (mm)"), state.tool === "length"),
-      iconButton("tool-angle", icons.angle, t("Đo góc"), state.tool === "angle"),
-      iconButton("tool-ellipse", icons.ellipse, t("ROI ellipse"), state.tool === "ellipse"),
-      iconButton("tool-freehand", icons.freehand, t("ROI tự do"), state.tool === "freehand"),
-    ].join("");
-  }
-  return [
-    iconButton("tool-window", icons.window, t("Sáng/tương phản"), state.tool === "window"),
-    iconButton("tool-pan", icons.pan, t("Di chuyển"), state.tool === "pan"),
-    iconButton("tool-zoom", icons.zoom, t("Thu/phóng"), state.tool === "zoom"),
+  const measure = [
     iconButton("tool-length", icons.length,
-      t(series?.geometry ? "Đo chiều dài (mm)" : "Đo chiều dài (pixel)"), state.tool === "length"),
+      t(state.mode === "mpr" || series?.geometry ? "Đo chiều dài (mm)" : "Đo chiều dài (pixel)"),
+      state.tool === "length"),
     iconButton("tool-angle", icons.angle, t("Đo góc"), state.tool === "angle"),
     iconButton("tool-ellipse", icons.ellipse, t("ROI ellipse"), state.tool === "ellipse"),
     iconButton("tool-freehand", icons.freehand, t("ROI tự do"), state.tool === "freehand"),
-  ].join("");
+    iconButton("tool-text", icons.text, t("Ghi chú chữ lên ảnh"), state.tool === "text"),
+  ];
+  const head = state.mode === "mpr"
+    ? [navigate.crosshair, navigate.window, navigate.pan, navigate.zoom]
+    : [navigate.window, navigate.pan, navigate.zoom];
+  return [...head, ...measure].join("");
 }
 
 function renderUtilityTools(series) {
-  const viewportActions = [
+  // Orientation acts on the pane under the cursor in every layout.
+  const orientation = [
+    iconButton("rotate-clockwise", icons.rotateClockwise,
+      t("Xoay khung đang chọn 90° theo chiều kim đồng hồ")),
+    iconButton("flip-horizontal", icons.flipHorizontal, t("Lật ngang khung đang chọn")),
+    iconButton("flip-vertical", icons.flipVertical, t("Lật dọc khung đang chọn")),
+    iconButton("invert", icons.invert, t("Đảo màu")),
     iconButton("reset", icons.reset, t(state.mode === "mpr"
       ? "Đặt lại ba mặt phẳng"
       : state.mode === "volume3d"
         ? "Đặt lại góc nhìn"
         : "Đặt lại hiển thị")),
-    iconButton("clear-annotations", icons.clearAnnotations, t("Xóa tất cả đo dài, đo góc và ROI")),
-    iconButton("rotate-clockwise", icons.rotateClockwise, t("Xoay khung đang chọn 90° theo chiều kim đồng hồ")),
-    iconButton("flip-horizontal", icons.flipHorizontal, t("Lật ngang khung đang chọn")),
   ];
   if (state.mode === "volume3d") {
-    return [
-      ...viewportActions,
-      iconButton("capture", icons.capture, t("Lưu ảnh 3D")),
-    ].join("");
+    // A 3D volume render carries no annotations, so only the view controls and
+    // the capture apply here.
+    return [...orientation, iconButton("capture", icons.capture, t("Lưu ảnh 3D"))].join("");
   }
-  if (state.mode === "mpr") {
-    return [
-      ...viewportActions,
-      iconButton("capture", icons.capture, t("Lưu ảnh")),
-      iconButton("save-annotations", icons.save, t("Lưu đo/ROI")),
-      iconButton("roi-volume", icons.volume, t("Tính thể tích ROI"), false, !series?.mprReady),
-    ].join("");
-  }
-  return [
-    ...viewportActions,
-    iconButton("invert", icons.invert, t("Đảo màu")),
+  const markup = [
+    iconButton("clear-annotations", icons.clearAnnotations,
+      t("Xóa mọi phép đo, ROI và ghi chú")),
+    iconButton("save-annotations", icons.save, t("Lưu đo/ROI/ghi chú")),
+    iconButton("roi-volume", icons.volume, t("Tính thể tích ROI"), false, !series?.mprReady),
+  ];
+  const output = [
     iconButton("cine", state.cine ? "Ⅱ" : icons.cine,
       t(state.cine ? "Dừng chạy phim" : "Chạy phim"), state.cine, state.mode !== "single"),
     iconButton("capture", icons.capture, t("Lưu ảnh")),
-    iconButton("save-annotations", icons.save, t("Lưu đo/ROI")),
-    iconButton("roi-volume", icons.volume, t("Tính thể tích ROI"), false, !series?.mprReady),
-  ].join("");
+  ];
+  // Cine only means anything on a single stack; MPR drops it rather than
+  // showing a control that can never be used.
+  return [...orientation, ...markup, ...(state.mode === "mpr" ? output.slice(1) : output)].join("");
 }
 
 function renderHistoryOptions() {
@@ -571,6 +605,7 @@ async function action(name) {
       const quality = app.querySelector("#quality")?.value ?? "100";
       const showBrowser = app.querySelector("#show-browser")?.checked ?? false;
       setLanguage(getLanguage() === "en" ? "vi" : "en");
+      applyTextPromptLanguage();
       state.lastDirectUrl = url;
       render();
       const patientField = app.querySelector("#patient-id");
@@ -737,7 +772,15 @@ async function action(name) {
       if (!flipActiveViewportHorizontal()) throw new Error(t("Chưa chọn khung ảnh để lật."));
       window.__viewerDiagnostics = viewerDiagnostics();
     }
-    if (name === "invert") invertView();
+    if (name === "flip-vertical") {
+      if (!flipActiveViewportVertical()) throw new Error(t("Chưa chọn khung ảnh để lật."));
+      window.__viewerDiagnostics = viewerDiagnostics();
+    }
+    if (name === "invert") {
+      // The 3D volume-rendered pane has no window to invert; saying so beats
+      // a button that looks like it did nothing.
+      if (!invertView()) throw new Error(t("Khung đang xem không đảo màu được."));
+    }
     if (name === "cine") {
       state.cine = toggleCine(selectedSeries(), (index) => {
         state.sliceText = `${index + 1}/${selectedSeries().sliceCount}`;
@@ -774,11 +817,11 @@ async function action(name) {
   }
 }
 
-const DEFAULT_TOOLS = { volume3d: "rotate3d", mpr: "crosshair" };
+const DEFAULT_TOOLS = { volume3d: "orbit3d", mpr: "crosshair" };
 
 function defaultToolForMode(mode, currentTool) {
   if (DEFAULT_TOOLS[mode]) return DEFAULT_TOOLS[mode];
-  return currentTool === "rotate3d" || currentTool === "crosshair" ? "window" : currentTool;
+  return currentTool === "orbit3d" || currentTool === "crosshair" ? "window" : currentTool;
 }
 
 function syncToolHighlight() {
@@ -944,8 +987,8 @@ function updateStatusOnly() {
 }
 
 const SHORTCUT_HINT = "Phím tắt: ←/→ hoặc PgUp/PgDn đổi lát · Home/End lát đầu/cuối · 1 sáng · 2 pan"
-  + " · 3 zoom · 4 đo dài · 5 góc · 6 ROI ellipse · 7 ROI tự do · C định vị · R đặt lại · I đảo màu"
-  + " · Space chạy phim · S lưu đo · P lưu ảnh.";
+  + " · 3 zoom · 4 đo dài · 5 góc · 6 ROI ellipse · 7 ROI tự do · 8 ghi chú chữ · C định vị"
+  + " · R đặt lại · I đảo màu · Space chạy phim · S lưu đo · P lưu ảnh.";
 
 const SHORTCUT_TOOLS = {
   1: "window",
@@ -955,6 +998,7 @@ const SHORTCUT_TOOLS = {
   5: "angle",
   6: "ellipse",
   7: "freehand",
+  8: "text",
 };
 
 function isTypingTarget(target) {
@@ -1174,10 +1218,20 @@ async function autoPasteFromClipboard() {
   }
 }
 
+/** Keep the viewer's own text-note dialog in the selected language. */
+function applyTextPromptLanguage() {
+  configureTextPrompt({
+    label: t("Nội dung ghi chú"),
+    confirm: t("Thêm"),
+    cancel: t("Bỏ"),
+  });
+}
+
 async function boot() {
   if (!hasSessionToken) throw new Error(t("Thiếu token phiên local."));
   state.bootstrap = await api("/api/bootstrap");
   setLanguage(state.bootstrap.language || "vi");
+  applyTextPromptLanguage();
   state.history = Array.isArray(state.bootstrap.history) ? state.bootstrap.history : [];
   state.lastDirectUrl = state.bootstrap.lastDirectUrl || "";
   state.status = "Đang khởi động...";

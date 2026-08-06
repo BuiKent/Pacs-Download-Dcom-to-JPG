@@ -102,7 +102,15 @@ const EN = {
   "Xương": "Bone",
   "Xương thái dương": "Temporal bone",
   "Định vị MPR": "MPR crosshair",
-  "Xoay 3D": "Rotate 3D",
+  "Xoay khối 3D tự do": "Orbit the 3D volume",
+  "Ghi chú chữ lên ảnh": "Add a text note",
+  "Nội dung ghi chú": "Note text",
+  "Thêm": "Add",
+  "Bỏ": "Cancel",
+  "Lật dọc khung đang chọn": "Flip the active pane vertically",
+  "Xóa mọi phép đo, ROI và ghi chú": "Clear every measurement, ROI and note",
+  "Lưu đo/ROI/ghi chú": "Save measurements, ROIs and notes",
+  "Khung đang xem không đảo màu được.": "The current pane cannot be inverted.",
   "Di chuyển": "Pan",
   "Thu/phóng": "Zoom",
   "Sáng/tương phản": "Window level",
@@ -194,8 +202,8 @@ const EN = {
     "The GPU renderer failed. Restart the application; if it repeats, update your graphics driver.",
   "chi tiết": "details",
 
-  "Phím tắt: ←/→ hoặc PgUp/PgDn đổi lát · Home/End lát đầu/cuối · 1 sáng · 2 pan · 3 zoom · 4 đo dài · 5 góc · 6 ROI ellipse · 7 ROI tự do · C định vị · R đặt lại · I đảo màu · Space chạy phim · S lưu đo · P lưu ảnh.":
-    "Shortcuts: ←/→ or PgUp/PgDn change slice · Home/End first/last slice · 1 window · 2 pan · 3 zoom · 4 length · 5 angle · 6 ellipse ROI · 7 freehand ROI · C crosshair · R reset · I invert · Space cine · S save measurements · P save image.",
+  "Phím tắt: ←/→ hoặc PgUp/PgDn đổi lát · Home/End lát đầu/cuối · 1 sáng · 2 pan · 3 zoom · 4 đo dài · 5 góc · 6 ROI ellipse · 7 ROI tự do · 8 ghi chú chữ · C định vị · R đặt lại · I đảo màu · Space chạy phim · S lưu đo · P lưu ảnh.":
+    "Shortcuts: ←/→ or PgUp/PgDn change slice · Home/End first/last slice · 1 window · 2 pan · 3 zoom · 4 length · 5 angle · 6 ellipse ROI · 7 freehand ROI · 8 text note · C crosshair · R reset · I invert · Space cine · S save measurements · P save image.",
 };
 
 export function t(text) {
