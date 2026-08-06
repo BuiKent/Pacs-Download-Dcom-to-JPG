@@ -2,6 +2,14 @@ import "./styles.css";
 import { api, configureApi } from "./api.js";
 import { getLanguage, setLanguage, t, tf, translateLog } from "./i18n.js";
 import {
+  hasCompleteSeriesSelection,
+  initialiseStudySelections,
+  rememberSeriesSelections,
+  restoreSeriesSelections,
+  selectedStudies as chosenStudies,
+  seriesSelections as buildSeriesSelections,
+} from "./download-selection.js";
+import {
   applyWindowPreset,
   availableWindowPresets,
   captureActiveViewport,
@@ -57,6 +65,9 @@ const state = {
   downloadOpen: true,
   studies: [],
   patient: null,
+  downloadAllFiles: true,
+  seriesInventory: [],
+  rememberedSeriesSelections: {},
   status: "Đang khởi động...",
   sliceText: "",
   busyViewer: false,
@@ -444,7 +455,12 @@ function render() {
         <div class="download-options">
           <label title="${escapeHtml(t("Chất lượng JPG (70-100)"))}">JPG
             <input id="quality" type="number" min="70" max="100" value="100"></label>
+          <label><input id="download-all-files" type="checkbox" ${state.downloadAllFiles ? "checked" : ""}>
+            ${escapeHtml(t("Tải tất cả file"))}</label>
           <label><input id="show-browser" type="checkbox"> ${escapeHtml(t("Hiện trình duyệt tải"))}</label>
+        </div>
+        <div id="series-picker" class="series-picker ${state.downloadAllFiles ? "hidden" : ""}">
+          ${renderSeriesPicker()}
         </div>
         <label class="field">${escapeHtml(t("Thư mục lưu"))}
           <div class="inline-field"><input id="output-root" value="${escapeHtml(state.bootstrap?.outputRoot || "")}" readonly>
@@ -514,7 +530,7 @@ function renderStudies() {
   return state.studies.map((study, index) => `
     <label class="study-item">
       <input type="checkbox" data-study-index="${index}"
-        ${study.local_status === "downloaded" || state.patient?.nameConflict ? "" : "checked"}
+        ${study.selected && !state.patient?.nameConflict ? "checked" : ""}
         ${state.patient?.nameConflict ? "disabled" : ""}>
       <span><b>${escapeHtml(study.modality)} · ${escapeHtml(study.date)}</b>
         <small>${escapeHtml(study.desc || study.study_uid)}</small>
@@ -524,6 +540,41 @@ function renderStudies() {
     new: "Phim mới",
   }[study.local_status] || "Phim mới"))}</em></span>
     </label>`).join("");
+}
+
+function renderSeriesPicker() {
+  const actions = `
+    <div class="series-picker-actions">
+      <button data-action="discover-series">${escapeHtml(t("Quét danh sách series"))}</button>
+      ${state.seriesInventory.length ? `
+        <button data-action="select-series-all">${escapeHtml(t("Chọn tất cả series"))}</button>
+        <button data-action="deselect-series-all">${escapeHtml(t("Bỏ chọn tất cả series"))}</button>` : ""}
+    </div>`;
+  if (!state.seriesInventory.length) {
+    return `${actions}<small class="series-picker-hint">${escapeHtml(t(
+      "Bỏ chế độ tải tất cả, sau đó quét để chọn T1, T2, FLAIR hoặc series cụ thể.",
+    ))}</small>`;
+  }
+  return `${actions}${state.seriesInventory.map((group, groupIndex) => `
+    <section class="series-choice-group">
+      <b>${escapeHtml([
+      group.studyDate,
+      group.studyDescription,
+    ].filter(Boolean).join(" · ") || t("Link viewer"))}</b>
+      ${(group.series || []).map((series, seriesIndex) => `
+        <label class="series-choice">
+          <input type="checkbox" data-series-group="${groupIndex}" data-series-choice="${seriesIndex}"
+            ${series.selected === false ? "" : "checked"}>
+          <span>
+            ${series.sequenceHint ? `<strong>${escapeHtml(series.sequenceHint)}</strong>` : ""}
+            <b>${escapeHtml(series.description || series.id)}</b>
+            <small>${escapeHtml([
+      series.number ? `#${series.number}` : "",
+      series.imageCount ? `${series.imageCount} ${t("ảnh")}` : "",
+    ].filter(Boolean).join(" · "))}</small>
+          </span>
+        </label>`).join("")}
+    </section>`).join("")}`;
 }
 
 function renderPatientStatus() {
@@ -598,15 +649,82 @@ function bindEvents() {
     });
   });
   app.querySelectorAll("[data-study-index]").forEach((item) => {
-    item.addEventListener("change", syncDownloadButton);
+    item.addEventListener("change", () => updateStudySelection(item));
   });
+  app.querySelector("#download-all-files")?.addEventListener("change", (event) => {
+    state.downloadAllFiles = event.target.checked;
+    app.querySelector("#series-picker")?.classList.toggle("hidden", state.downloadAllFiles);
+    syncDownloadButton();
+  });
+  app.querySelector("#direct-url")?.addEventListener("input", () => {
+    if (state.seriesInventory.some((group) => group.studyUid === "direct")) {
+      state.seriesInventory = [];
+      delete state.rememberedSeriesSelections.direct;
+      renderSeriesPickerOnly();
+    }
+  });
+  app.querySelectorAll("input[name='hospital']").forEach((item) => {
+    item.addEventListener("change", () => {
+      state.seriesInventory = [];
+      state.rememberedSeriesSelections = {};
+      renderSeriesPickerOnly();
+    });
+  });
+  bindSeriesPickerEvents();
+  syncDownloadButton();
+}
+
+function bindSeriesPickerEvents() {
+  app.querySelectorAll("[data-series-group][data-series-choice]").forEach((item) => {
+    item.addEventListener("change", () => {
+      const series = state.seriesInventory[Number(item.dataset.seriesGroup)]
+        ?.series?.[Number(item.dataset.seriesChoice)];
+      if (series) series.selected = item.checked;
+      state.rememberedSeriesSelections = rememberSeriesSelections(
+        state.seriesInventory,
+        state.rememberedSeriesSelections,
+      );
+      syncDownloadButton();
+    });
+  });
+}
+
+function renderSeriesPickerOnly() {
+  const picker = app.querySelector("#series-picker");
+  if (!picker) return;
+  picker.classList.toggle("hidden", state.downloadAllFiles);
+  picker.innerHTML = renderSeriesPicker();
+  picker.querySelectorAll("[data-action]").forEach((element) => {
+    element.addEventListener("click", () => action(element.dataset.action));
+  });
+  bindSeriesPickerEvents();
+}
+
+function selectedSeriesSelections() {
+  return buildSeriesSelections(state.seriesInventory);
+}
+
+function updateStudySelection(element) {
+  state.rememberedSeriesSelections = rememberSeriesSelections(
+    state.seriesInventory,
+    state.rememberedSeriesSelections,
+  );
+  const study = state.studies[Number(element.dataset.studyIndex)];
+  if (!study) return;
+  study.selected = element.checked;
+  const selectedUids = new Set(chosenStudies(state.studies).map((item) => item.study_uid));
+  state.seriesInventory = state.seriesInventory.filter((group) => selectedUids.has(group.studyUid));
+  renderSeriesPickerOnly();
   syncDownloadButton();
 }
 
 function syncDownloadButton() {
   const button = app.querySelector("[data-action='download-selected']");
+  const hasSeriesSelection = state.downloadAllFiles
+    || hasCompleteSeriesSelection(state.studies, state.seriesInventory);
   if (button) button.disabled = Boolean(state.patient?.nameConflict)
-    || !app.querySelector("[data-study-index]:checked");
+    || !chosenStudies(state.studies).length
+    || !hasSeriesSelection;
 }
 
 async function openHistoryEntry(entry) {
@@ -688,6 +806,11 @@ async function action(name) {
       const target = CLIPBOARD_FIELDS.find((item) => name === `clear-${item.id}`);
       const field = target && app.querySelector(`#${target.id}`);
       if (field) await clearClipboardField(field, target.kind);
+      if (target?.kind === "url") {
+        state.seriesInventory = state.seriesInventory.filter((group) => group.studyUid !== "direct");
+        delete state.rememberedSeriesSelections.direct;
+        renderSeriesPickerOnly();
+      }
       return;
     }
     if (name === "choose-archive") {
@@ -716,9 +839,12 @@ async function action(name) {
         state.bootstrap.outputRoot = result.outputRoot;
         state.studies = [];
         state.patient = null;
+        state.seriesInventory = [];
+        state.rememberedSeriesSelections = {};
         const field = app.querySelector("#output-root");
         if (field) field.value = result.outputRoot;
         renderStudyList();
+        renderSeriesPickerOnly();
         setStatus(t("Đã đổi kho lưu; hãy tìm lại mã bệnh nhân để đối chiếu phim cũ/mới."));
       }
       return;
@@ -737,15 +863,59 @@ async function action(name) {
       const hospital = app.querySelector("input[name='hospital']:checked")?.value;
       state.studies = [];
       state.patient = null;
+      state.seriesInventory = [];
+      state.rememberedSeriesSelections = {};
       renderStudyList();
+      renderSeriesPickerOnly();
       await api("/api/search", { method: "POST", body: JSON.stringify({ patientId, hospital }) });
+      startJobPolling();
+      return;
+    }
+    if (name === "select-series-all" || name === "deselect-series-all") {
+      const selected = name === "select-series-all";
+      state.seriesInventory.forEach((group) => {
+        (group.series || []).forEach((series) => { series.selected = selected; });
+      });
+      state.rememberedSeriesSelections = rememberSeriesSelections(
+        state.seriesInventory,
+        state.rememberedSeriesSelections,
+      );
+      renderSeriesPickerOnly();
+      syncDownloadButton();
+      return;
+    }
+    if (name === "discover-series") {
+      const studies = chosenStudies(state.studies);
+      const url = app.querySelector("#direct-url")?.value.trim() || "";
+      if (state.studies.length && !studies.length) {
+        throw new Error(t("Hãy tích ít nhất một ngày chụp trước khi quét series."));
+      }
+      if (!state.studies.length && !url) {
+        throw new Error(t("Hãy chọn ca chụp hoặc nhập link viewer trước khi quét series."));
+      }
+      state.rememberedSeriesSelections = rememberSeriesSelections(
+        state.seriesInventory,
+        state.rememberedSeriesSelections,
+      );
+      state.seriesInventory = [];
+      renderSeriesPickerOnly();
+      await api("/api/series/discover", {
+        method: "POST",
+        body: JSON.stringify({
+          studies,
+          url: studies.length ? "" : url,
+          hospital: state.patient?.hospitalKey
+            || app.querySelector("input[name='hospital']:checked")?.value,
+          showBrowser: app.querySelector("#show-browser").checked,
+        }),
+      });
+      setStatus(t("Đang quét danh sách series; chưa tải file ảnh…"));
       startJobPolling();
       return;
     }
     if (name === "download-selected") {
       if (state.patient?.nameConflict) throw new Error(t("Tên bệnh nhân không khớp; app đã chặn tự động gộp."));
-      const studies = [...app.querySelectorAll("[data-study-index]:checked")]
-        .map((item) => state.studies[Number(item.dataset.studyIndex)]);
+      const studies = chosenStudies(state.studies);
       if (!studies.length) throw new Error(t("Không có phim mới/chưa hoàn tất được chọn để tải."));
       await api("/api/download", {
         method: "POST",
@@ -755,6 +925,7 @@ async function action(name) {
           patientName: state.patient?.patientName,
           hospital: state.patient?.hospitalKey,
           allStudies: state.studies,
+          seriesSelections: state.downloadAllFiles ? undefined : selectedSeriesSelections(),
           ...downloadOptions(),
         }),
       });
@@ -764,6 +935,9 @@ async function action(name) {
     if (name === "download-direct" || name === "download-retry") {
       const url = app.querySelector("#direct-url").value.trim();
       if (!url) throw new Error(t("Chưa có link viewer để tải."));
+      if (!state.downloadAllFiles && !(selectedSeriesSelections().direct || []).length) {
+        throw new Error(t("Chưa quét hoặc chưa chọn series cho link viewer."));
+      }
       state.lastDirectUrl = url;
       await api("/api/download/direct", {
         method: "POST",
@@ -773,6 +947,9 @@ async function action(name) {
           // slices already on disk; these viewer links expire fast, so
           // re-downloading everything is often not even possible.
           resume: name === "download-retry",
+          selectedSeriesIds: state.downloadAllFiles
+            ? undefined
+            : selectedSeriesSelections().direct || [],
           ...downloadOptions(),
         }),
       });
@@ -935,6 +1112,7 @@ function downloadOptions() {
     outputRoot: state.bootstrap.outputRoot,
     quality: Number(app.querySelector("#quality").value || 100),
     showBrowser: app.querySelector("#show-browser").checked,
+    downloadAllFiles: state.downloadAllFiles,
   };
 }
 
@@ -1132,7 +1310,7 @@ function renderStudyList() {
   const patient = app.querySelector(".patient-status");
   if (patient) patient.innerHTML = renderPatientStatus();
   app.querySelectorAll("[data-study-index]").forEach((item) => {
-    item.addEventListener("change", syncDownloadButton);
+    item.addEventListener("change", () => updateStudySelection(item));
   });
   syncDownloadButton();
 }
@@ -1141,11 +1319,31 @@ async function pollJob() {
   const job = await api("/api/job");
   state.bootstrap.job = job;
   if (job.kind === "search" && job.status === "complete") {
-    state.studies = Array.isArray(job.result) ? job.result : job.result?.studies || [];
+    const foundStudies = Array.isArray(job.result) ? job.result : job.result?.studies || [];
     state.patient = Array.isArray(job.result) ? null : job.result?.patient || null;
+    state.studies = initialiseStudySelections(
+      foundStudies,
+      Boolean(state.patient?.nameConflict),
+    );
     // Only the study list changed. A full render() would replace #workspace and
     // throw away the layout, camera and measurements the user is working with.
     renderStudyList();
+  }
+  if (job.kind === "series-discovery" && job.status === "complete") {
+    const groups = Array.isArray(job.result?.groups) ? job.result.groups : [];
+    state.seriesInventory = restoreSeriesSelections(
+      groups,
+      state.rememberedSeriesSelections,
+    );
+    window.clearInterval(jobPoll);
+    jobPoll = null;
+    renderSeriesPickerOnly();
+    syncDownloadButton();
+    setStatus(tf(
+      "Đã quét {} nhóm series; hãy bỏ tích những series không muốn tải.",
+      state.seriesInventory.length,
+    ));
+    return;
   }
   if (["download", "direct-download", "local-import"].includes(job.kind) && job.status === "complete") {
     const archive = job.result?.archive;

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   hasCompleteSeriesSelection,
   initialiseStudySelections,
@@ -13,6 +14,19 @@ const studies = [
   { study_uid: "study-a", date: "2026-07-01", local_status: "new" },
   { study_uid: "study-b", date: "2026-08-01", local_status: "incomplete" },
 ];
+
+const mainSource = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+
+describe("download-all UI contract", () => {
+  it("keeps the default-on checkbox wired to discovery and both download paths", () => {
+    expect(mainSource).toContain('downloadAllFiles: true');
+    expect(mainSource).toContain('id="download-all-files"');
+    expect(mainSource).toContain('data-action="discover-series"');
+    expect(mainSource).toContain('downloadAllFiles: state.downloadAllFiles');
+    expect(mainSource).toContain('selectedSeriesIds: state.downloadAllFiles');
+    expect(mainSource).toContain('seriesSelections: state.downloadAllFiles');
+  });
+});
 
 describe("patient study selection", () => {
   it("defaults new/incomplete studies once and then preserves user edits", () => {
