@@ -122,11 +122,12 @@ const icons = {
     <path d="M6 9.5 12 3l6 6.5z" fill="currentColor" stroke="none"></path>
     <path d="M6 14.5 12 21l6-6.5z"></path>
   </svg>`,
-  // A square turning: unmistakably "rotate the image", never "undo".
+  // A square caught mid-turn inside the arrow: "rotate the image", never "undo".
+  // The tilted square is what separates this from the plain circular arrow of reset.
   rotateClockwise: `<svg viewBox="0 0 24 24" aria-hidden="true">
-    <rect x="3" y="11" width="10" height="10" rx="1.5"></rect>
-    <path d="M13 6h4a4 4 0 0 1 4 4v1"></path>
-    <path d="M10.5 3.5 13 6l-2.5 2.5"></path>
+    <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path>
+    <path d="M21 3v5h-5"></path>
+    <rect x="8.5" y="8.5" width="7" height="7" rx="1" transform="rotate(45 12 12)"></rect>
   </svg>`,
   // A full circular arrow: the standard "restore defaults" mark.
   reset: `<svg viewBox="0 0 24 24" aria-hidden="true">
