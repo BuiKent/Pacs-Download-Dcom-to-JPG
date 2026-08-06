@@ -312,9 +312,10 @@ function render() {
           ${state.patient?.hospitalKey ? (item.id === state.patient.hospitalKey ? "checked" : "") : ((item.isDefault ?? (index === 0)) ? "checked" : "")}>
               ${escapeHtml(item.name)}</label>`).join("")}
         </div>
-        <label class="field">${escapeHtml(t("Mã bệnh nhân"))}
-          <div class="inline-field"><input id="patient-id" autocomplete="off" value="${escapeHtml(state.patient?.patientId || "")}">
-            <button data-action="search" title="${escapeHtml(t("Tìm các ca MRI/CT của mã bệnh nhân này trên RIS"))}">${escapeHtml(t("Tìm ca"))}</button></div>
+        <label class="field" style="display: flex; align-items: center; gap: 8px; flex-direction: row;">
+          <span style="white-space: nowrap;">${escapeHtml(t("Mã bệnh nhân"))}</span>
+          <div class="inline-field" style="flex: 1;"><input id="patient-id" autocomplete="off" style="margin-top: 0;" value="${escapeHtml(state.patient?.patientId || "")}">
+            <button data-action="search">${escapeHtml(t("Tìm ca"))}</button></div>
         </label>
         <div class="patient-status">${renderPatientStatus()}</div>
         <div class="study-list">${renderStudies()}</div>
@@ -325,8 +326,8 @@ function render() {
           <button class="danger" data-action="stop-job"
             title="${escapeHtml(t("Dừng an toàn tác vụ đang chạy"))}">${escapeHtml(t("Dừng"))}</button>
         </div>
-        <label class="field">${escapeHtml(t("Hoặc dán link viewer"))}
-          <textarea id="direct-url" rows="2" spellcheck="false">${escapeHtml(state.lastDirectUrl)}</textarea>
+        <label class="field">Link viewer
+          <input id="direct-url" type="text" spellcheck="false" value="${escapeHtml(state.lastDirectUrl)}">
         </label>
         <div class="link-actions">
           <button data-action="download-direct"
