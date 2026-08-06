@@ -196,7 +196,7 @@ function renderUtilityTools(series) {
 
 function renderHistoryOptions() {
   if (!state.history.length) {
-    return `<option value="" disabled selected>${escapeHtml(t("Chưa có lịch sử"))}</option>`;
+    return `<option value="" disabled selected hidden>${icons.history} ${escapeHtml(t("Chưa có lịch sử"))}</option>`;
   }
   const options = state.history.map((item, index) => {
     const name = String(item.folder).split(/[\\/]/).filter(Boolean).pop() || item.folder;
@@ -204,7 +204,7 @@ function renderHistoryOptions() {
     return `<option value="${index}" ${item.exists ? "" : "disabled"}
       title="${escapeHtml(item.folder)}">${escapeHtml(`${item.time}  •  ${name}${suffix}`)}</option>`;
   }).join("");
-  return `<option value="" selected>${escapeHtml(t("Lịch sử"))}…</option>${options}`;
+  return `<option value="" disabled selected hidden>${icons.history} ${escapeHtml(t("Lịch sử"))}…</option>${options}`;
 }
 
 function formatGroupLabel(groupKey) {
@@ -298,7 +298,7 @@ function render() {
       <aside class="download-panel">
         <div class="panel-title"><b>${escapeHtml(t("TẢI MRI / CT"))}</b>
           <button data-action="toggle-download" title="${escapeHtml(t("Thu gọn khu tải phim"))}">×</button></div>
-        <label class="field history-field">${icons.history} ${escapeHtml(t("Lịch sử"))}
+        <label class="field history-field">
           <select data-field="history" title="${escapeHtml(t("Mở lại thư mục đã tải hoặc đã xem"))}"
             ${state.history.length ? "" : "disabled"}>${renderHistoryOptions()}</select>
         </label>
