@@ -129,8 +129,55 @@ button { cursor: pointer; }
 }
 .field select:disabled { color: #5d7385; }
 .history-field { margin-top: 8px; }
+
+/* The title sits in the box's own border, so the label and its field read as
+   one card. A real fieldset/legend lets the browser cut the border gap. */
+.boxed-field {
+  min-width: 0;
+  margin: 14px 0 10px;
+  padding: 2px 8px 8px;
+  border: 1px solid #2a3b4c;
+  border-radius: 7px;
+  background: #101923;
+}
+.boxed-field > legend { padding: 0 5px; color: #94a9ba; font-size: 10px; }
+.boxed-field:focus-within { border-color: #34688f; }
+.boxed-field input {
+  margin-top: 0;
+  padding: 6px 4px;
+  border: 0;
+  background: transparent;
+}
+.boxed-field input:focus { outline: none; }
+
+/* Holds the inline × so it floats over the right edge of its own field. */
+.clearable { position: relative; display: block; flex: 1; min-width: 0; }
+.clearable > input { width: 100%; padding-right: 24px; }
+.clear-field {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: #7890a2;
+  background: transparent;
+  font-size: 15px;
+  line-height: 1;
+}
+.clear-field:hover { color: #ffd0d0; background: #2a1c20; }
+.clear-field[hidden] { display: none; }
 .inline-field { display: flex; gap: 6px; }
-.inline-field button, .download-actions button, .empty-state button {
+/* A bordered field with its action button beside it, not inside the card. */
+.field-row { display: flex; align-items: center; gap: 6px; }
+.field-row > .boxed-field { flex: 1; }
+.field-row > button { min-height: 34px; padding: 0 12px; }
+.inline-field button, .field-row > button, .download-actions button, .empty-state button {
   border: 1px solid #304a60;
   border-radius: 6px;
   color: #d6e9f6;

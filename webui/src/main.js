@@ -312,11 +312,18 @@ function render() {
           ${state.patient?.hospitalKey ? (item.id === state.patient.hospitalKey ? "checked" : "") : ((item.isDefault ?? (index === 0)) ? "checked" : "")}>
               ${escapeHtml(item.name)}</label>`).join("")}
         </div>
-        <label class="field" style="display: flex; align-items: center; gap: 8px; flex-direction: row;">
-          <span style="white-space: nowrap;">${escapeHtml(t("Mã bệnh nhân"))}</span>
-          <div class="inline-field" style="flex: 1;"><input id="patient-id" autocomplete="off" style="margin-top: 0;" value="${escapeHtml(state.patient?.patientId || "")}">
-            <button data-action="search">${escapeHtml(t("Tìm ca"))}</button></div>
-        </label>
+        <div class="field-row">
+          <fieldset class="boxed-field">
+            <legend>${escapeHtml(t("Mã bệnh nhân"))}</legend>
+            <span class="clearable">
+              <input id="patient-id" autocomplete="off" value="${escapeHtml(state.patient?.patientId || "")}">
+              <button class="clear-field" data-action="clear-patient-id" tabindex="-1"
+                title="${escapeHtml(t("Xóa mã bệnh nhân"))}" aria-label="${escapeHtml(t("Xóa mã bệnh nhân"))}">×</button>
+            </span>
+          </fieldset>
+          <button data-action="search"
+            title="${escapeHtml(t("Tìm các ca MRI/CT của mã bệnh nhân này trên RIS"))}">${escapeHtml(t("Tìm ca"))}</button>
+        </div>
         <div class="patient-status">${renderPatientStatus()}</div>
         <div class="study-list">${renderStudies()}</div>
         <div class="download-actions">
@@ -326,9 +333,14 @@ function render() {
           <button class="danger" data-action="stop-job"
             title="${escapeHtml(t("Dừng an toàn tác vụ đang chạy"))}">${escapeHtml(t("Dừng"))}</button>
         </div>
-        <label class="field">Link viewer
-          <input id="direct-url" type="text" spellcheck="false" value="${escapeHtml(state.lastDirectUrl)}">
-        </label>
+        <fieldset class="boxed-field">
+          <legend>${escapeHtml(t("Link viewer"))}</legend>
+          <span class="clearable">
+            <input id="direct-url" type="text" spellcheck="false" value="${escapeHtml(state.lastDirectUrl)}">
+            <button class="clear-field" data-action="clear-direct-url" tabindex="-1"
+              title="${escapeHtml(t("Xóa link viewer"))}" aria-label="${escapeHtml(t("Xóa link viewer"))}">×</button>
+          </span>
+        </fieldset>
         <div class="link-actions">
           <button data-action="download-direct"
             title="${escapeHtml(t("Tải mới từ link đã dán vào một folder riêng"))}">${escapeHtml(t("Tải link"))}</button>
@@ -479,6 +491,7 @@ function bindEvents() {
     await applyWindowPreset(state.windowPreset);
     window.__viewerDiagnostics = viewerDiagnostics();
   });
+  installClipboardFields();
   app.querySelectorAll("[data-series-id]").forEach((element) => {
     element.addEventListener("click", () => {
       state.selectedId = element.dataset.seriesId;
@@ -575,6 +588,12 @@ async function action(name) {
       // The layout has to be rebuilt exactly as a mode change does, otherwise
       // the viewer is left blank after switching language.
       await renderViewer();
+      return;
+    }
+    if (name === "clear-patient-id" || name === "clear-direct-url") {
+      const target = CLIPBOARD_FIELDS.find((item) => name === `clear-${item.id}`);
+      const field = target && app.querySelector(`#${target.id}`);
+      if (field) await clearClipboardField(field, target.kind);
       return;
     }
     if (name === "choose-archive") {
@@ -1042,30 +1061,107 @@ async function pollJob() {
   }
 }
 
-/** Fill the link and patient-code fields from the clipboard, as the classic app does.
- *
- * WebView2 refuses `navigator.clipboard.readText()` without a user gesture, so
- * the native bridge reports only the two shapes worth pasting. A field the user
- * is typing in is never overwritten.
- */
-async function autoPasteFromClipboard() {
-  if (!window.pywebview?.api?.read_clipboard) return;
-  let clip = null;
+// The two fields that accept a clipboard value, each with the only shape it
+// takes. WebView2 refuses `navigator.clipboard.readText()` without a user
+// gesture, so the native bridge reports those shapes and nothing else.
+const CLIPBOARD_FIELDS = [
+  { id: "patient-id", kind: "patientId" },
+  { id: "direct-url", kind: "url" },
+];
+
+async function clipboardValueFor(kind) {
+  if (!window.pywebview?.api?.read_clipboard) return "";
   try {
-    clip = await window.pywebview.api.read_clipboard();
+    return (await window.pywebview.api.read_clipboard())?.[kind] || "";
   } catch (_) {
-    return;
+    // Another process can hold the clipboard open; auto-paste simply skips.
+    return "";
   }
-  if (!clip) return;
-  const urlField = app.querySelector("#direct-url");
-  if (clip.url && urlField && document.activeElement !== urlField && urlField.value.trim() !== clip.url) {
-    urlField.value = clip.url;
-    state.lastDirectUrl = clip.url;
+}
+
+function syncClearButton(field) {
+  const button = app.querySelector(`[data-action="clear-${field.id}"]`);
+  if (button) button.hidden = !field.value;
+}
+
+/** Put a matching clipboard value into `field`.
+ *
+ * The classic app replaced the field whenever the clipboard differed, which is
+ * what makes copy-then-click feel immediate; that behaviour is kept here. The
+ * one refusal is a value the user just cleared with ×, which would otherwise
+ * come straight back and make the button look broken.
+ */
+async function fillFromClipboard(field, kind) {
+  const value = await clipboardValueFor(kind);
+  if (!value || value === field.value.trim()) return false;
+  if (field.dataset.dismissed === value) return false;
+  field.value = value;
+  if (kind === "url") state.lastDirectUrl = value;
+  syncClearButton(field);
+  return true;
+}
+
+async function clearClipboardField(field, kind) {
+  field.value = "";
+  if (kind === "url") state.lastDirectUrl = "";
+  // Record what the clipboard holds before focusing, otherwise the focus
+  // handler would immediately paste back the value just cleared.
+  const clip = await clipboardValueFor(kind);
+  if (clip) field.dataset.dismissed = clip;
+  syncClearButton(field);
+  field.focus();
+}
+
+function installClipboardField(field, kind) {
+  let selectOnRelease = false;
+  const acceptClipboard = async (alwaysSelect) => {
+    const pasted = await fillFromClipboard(field, kind);
+    // Select after a paste so the value can be replaced by typing; on focus,
+    // select even without one so leftover content is highlighted.
+    if ((pasted || alwaysSelect) && document.activeElement === field) field.select();
+  };
+  field.addEventListener("focus", () => {
+    selectOnRelease = true;
+    field.select();
+    acceptClipboard(true);
+  });
+  field.addEventListener("mousedown", () => {
+    // The classic app re-read the clipboard on every click, not only on the
+    // first focus. Clicking an already-focused field keeps the caret where the
+    // user put it unless a new value actually arrived.
+    if (document.activeElement === field) acceptClipboard(false);
+  });
+  field.addEventListener("mouseup", (event) => {
+    // A click focuses the field and then places the caret, which would drop the
+    // selection made on focus. Keeping it means the leftover value can be
+    // replaced by typing straight away.
+    if (!selectOnRelease) return;
+    selectOnRelease = false;
+    event.preventDefault();
+  });
+  field.addEventListener("blur", () => { selectOnRelease = false; });
+  field.addEventListener("input", () => {
+    // Typing makes the value the user's own, so a value dismissed earlier stops
+    // being relevant and the clipboard may fill this field again.
+    delete field.dataset.dismissed;
+    if (kind === "url") state.lastDirectUrl = field.value;
+    syncClearButton(field);
+  });
+  syncClearButton(field);
+}
+
+function installClipboardFields() {
+  for (const { id, kind } of CLIPBOARD_FIELDS) {
+    const field = app.querySelector(`#${id}`);
+    if (field) installClipboardField(field, kind);
   }
-  const patientField = app.querySelector("#patient-id");
-  if (clip.patientId && patientField && document.activeElement !== patientField
-    && patientField.value.trim() !== clip.patientId) {
-    patientField.value = clip.patientId;
+}
+
+/** Fill both fields on window focus, as the classic app does. */
+async function autoPasteFromClipboard() {
+  for (const { id, kind } of CLIPBOARD_FIELDS) {
+    const field = app.querySelector(`#${id}`);
+    if (field) await fillFromClipboard(field, kind);
   }
 }
 
