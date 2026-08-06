@@ -205,6 +205,32 @@ class MprPackageTests(unittest.TestCase):
             normal_folders = [p for p in jpg.iterdir() if not mpr_engine.read_manifest(p)]
             self.assertEqual(1, len(normal_folders))
             self.assertEqual(2, len(list(normal_folders[0].glob("IM_*.jpg"))))
+            self.assertEqual("Series_2_Ax T2 FLAIR", normal_folders[0].name)
+
+
+class SeriesFolderNamerTests(unittest.TestCase):
+    def test_name_is_readable_and_stable_per_series(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            namer = mpr_engine.SeriesFolderNamer(Path(tmp))
+            first = namer.name_for(3, "Ax T2 FLAIR FS", "1.2.3.1")
+            self.assertEqual("Series_3_Ax T2 FLAIR FS", first)
+            self.assertEqual(first, namer.name_for(3, "Ax T2 FLAIR FS", "1.2.3.1"))
+
+    def test_second_series_with_the_same_name_gets_the_uid_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            namer = mpr_engine.SeriesFolderNamer(Path(tmp))
+            first = namer.name_for(3, "Ax T2", "1.2.3.1")
+            second = namer.name_for(3, "Ax T2", "1.2.3.2")
+            self.assertEqual("Series_3_Ax T2", first)
+            self.assertEqual(mpr_engine.series_folder_name(3, "Ax T2", "1.2.3.2"), second)
+
+    def test_folder_from_an_older_build_is_reused_not_duplicated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            legacy = mpr_engine.series_folder_name(3, "Ax T2", "1.2.3.1")
+            (root / legacy).mkdir()
+            namer = mpr_engine.SeriesFolderNamer(root)
+            self.assertEqual(legacy, namer.name_for(3, "Ax T2", "1.2.3.1"))
 
 
 if __name__ == "__main__":

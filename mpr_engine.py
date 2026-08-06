@@ -55,15 +55,16 @@ def _safe_name(value) -> str:
     return text[:80] or "Unknown"
 
 
-def series_folder_name(
+def _series_uid_text(series_uid, series_number, description) -> str:
+    return _text(series_uid) or f"fallback:{series_number}:{description}"
+
+
+def series_folder_base_name(
     series_number,
     description,
-    series_uid: str,
     kind: Optional[str] = None,
 ) -> str:
-    """Return a readable, collision-safe folder name for one DICOM series."""
-    uid_text = _text(series_uid) or f"fallback:{series_number}:{description}"
-    uid_token = hashlib.sha1(uid_text.encode("utf-8")).hexdigest()[:10]
+    """Return the readable folder name for one DICOM series, with no UID token."""
     kind_token = {
         "T1_POST_CONTRAST": "T1_POST",
         "T1_PRE_CONTRAST": "T1_PRE",
@@ -75,8 +76,70 @@ def series_folder_name(
     ]
     if kind_token:
         parts.append(kind_token)
-    parts.append(uid_token)
     return "_".join(parts)
+
+
+def series_folder_name(
+    series_number,
+    description,
+    series_uid: str,
+    kind: Optional[str] = None,
+) -> str:
+    """Readable name plus a UID token — the disambiguated form of the name.
+
+    Only used when two different series would otherwise land in the same
+    folder; see `SeriesFolderNamer`.
+    """
+    uid_text = _series_uid_text(series_uid, series_number, description)
+    uid_token = hashlib.sha1(uid_text.encode("utf-8")).hexdigest()[:10]
+    return f"{series_folder_base_name(series_number, description, kind)}_{uid_token}"
+
+
+class SeriesFolderNamer:
+    """Hand out one folder name per series inside a single JPG directory.
+
+    Names stay readable ("Series_3_Ax T2 FLAIR FS"); the UID token is appended
+    only when a second, different series would collide with a name already
+    taken. A folder written by an older build — which always carried the token
+    — keeps its name so a resumed download merges into it instead of writing a
+    second copy next to it.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = Path(root)
+        self._by_uid: dict[str, str] = {}
+        self._claimed: set[str] = set()
+
+    def name_for(
+        self,
+        series_number,
+        description,
+        series_uid: str,
+        kind: Optional[str] = None,
+    ) -> str:
+        uid_text = _series_uid_text(series_uid, series_number, description)
+        cached = self._by_uid.get(uid_text)
+        if cached is not None:
+            return cached
+        plain = series_folder_base_name(series_number, description, kind)
+        tokened = series_folder_name(series_number, description, uid_text, kind)
+        if (self.root / tokened).is_dir():
+            chosen = tokened
+        elif plain.casefold() in self._claimed:
+            chosen = tokened
+        else:
+            chosen = plain
+        self._by_uid[uid_text] = chosen
+        self._claimed.add(chosen.casefold())
+        return chosen
+
+    def name_for_candidate(self, candidate: "MprCandidate") -> str:
+        return self.name_for(
+            candidate.series_number,
+            candidate.description,
+            candidate.series_uid,
+            candidate.kind,
+        )
 
 
 @dataclass(frozen=True)
@@ -471,11 +534,12 @@ def convert_mpr_candidate(
     quality: int = 100,
     log: Callable[[str], None] = print,
     should_stop: Optional[Callable[[], bool]] = None,
+    folder_name: Optional[str] = None,
 ) -> tuple[int, Path]:
     """Convert the selected series and return (written_image_count, manifest_path)."""
     from PIL import Image
 
-    series_folder = Path(jpg_dir) / candidate.folder_name
+    series_folder = Path(jpg_dir) / (folder_name or candidate.folder_name)
     series_folder.mkdir(parents=True, exist_ok=True)
     low, high = _global_intensity_range(candidate)
     ordered_files: list[dict] = []

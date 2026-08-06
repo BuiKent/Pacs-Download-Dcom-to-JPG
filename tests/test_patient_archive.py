@@ -114,6 +114,38 @@ class PatientArchiveTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertIn("2026-08-02 - MR - MR BRAIN - ", first)
 
+    def test_study_folder_name_stays_readable_until_two_studies_collide(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            first = study("1.2.3.100")
+            second = study("1.2.3.200")
+
+            first_name = dcom_pipeline.resolve_study_folder_name(folder, first)
+            self.assertEqual("2026-08-02 - MR - MR BRAIN", first_name)
+
+            (folder / first_name).mkdir()
+            dcom_pipeline._write_patient_manifest(folder, {
+                "format": dcom_pipeline.PATIENT_MANIFEST_FORMAT,
+                "studies": {},
+            })
+            dcom_pipeline.record_patient_study(
+                folder, first, folder / first_name, complete=True, image_count=3,
+            )
+
+            # Same date/modality/description, different study: needs the token.
+            second_name = dcom_pipeline.resolve_study_folder_name(folder, second)
+            self.assertEqual(dcom_pipeline.study_archive_folder_name(second), second_name)
+            # The first study keeps the folder it was already written into.
+            self.assertEqual(first_name, dcom_pipeline.resolve_study_folder_name(folder, first))
+
+    def test_study_folder_written_by_an_older_build_is_resumed_not_duplicated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            item = study("1.2.3.100")
+            legacy = dcom_pipeline.study_archive_folder_name(item)
+            (folder / legacy).mkdir()
+            self.assertEqual(legacy, dcom_pipeline.resolve_study_folder_name(folder, item))
+
     def test_repeat_download_reuses_patient_and_resumes_existing_study(self):
         calls = []
 

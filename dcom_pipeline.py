@@ -1185,15 +1185,51 @@ def _study_date_token(value: Any) -> str:
     return _safe_name(value or "KHONG_RO_NGAY")
 
 
-def study_archive_folder_name(study: dict) -> str:
-    """Readable study folder name with a full-UID-derived collision token."""
-    uid = str(study.get("study_uid") or study.get("uid") or "").strip()
-    uid_token = hashlib.sha1(uid.encode("utf-8")).hexdigest()[:10]
+def study_folder_base_name(study: dict) -> str:
+    """Readable study folder name, without the UID collision token."""
     modality = _safe_name(study.get("modality") or "UNKNOWN")[:12]
     description = _safe_name(study.get("desc") or "KHONG_RO_MO_TA")[:40]
+    return f"{_study_date_token(study.get('date'))} - {modality} - {description}"
+
+
+def study_archive_folder_name(study: dict) -> str:
+    """Readable study folder name with a full-UID-derived collision token.
+
+    Only used to disambiguate; see `resolve_study_folder_name`.
+    """
+    uid = str(study.get("study_uid") or study.get("uid") or "").strip()
+    uid_token = hashlib.sha1(uid.encode("utf-8")).hexdigest()[:10]
     # Keep the UID token at the end; truncating the whole string would remove
     # the part that actually prevents two similarly named studies colliding.
-    return f"{_study_date_token(study.get('date'))} - {modality} - {description} - {uid_token}"
+    return f"{study_folder_base_name(study)} - {uid_token}"
+
+
+def resolve_study_folder_name(patient_folder: Path, study: dict) -> str:
+    """Pick this study's folder name inside a patient archive.
+
+    Readable by default; the UID token is appended only when another study
+    already owns that name. A folder written by an older build always carried
+    the token, so it is reused as-is and a resumed download merges into it.
+    """
+    patient_folder = Path(patient_folder)
+    uid = str(study.get("study_uid") or study.get("uid") or "").strip()
+    known = (_read_patient_manifest(patient_folder) or {}).get("studies") or {}
+    entry = known.get(uid) if uid else None
+    if isinstance(entry, dict) and str(entry.get("folder") or "").strip():
+        return str(entry["folder"])
+
+    plain = study_folder_base_name(study)
+    tokened = study_archive_folder_name(study)
+    if (patient_folder / tokened).is_dir():
+        return tokened
+    taken = {
+        str(item.get("folder") or "").casefold()
+        for key, item in known.items()
+        if isinstance(item, dict) and key != uid
+    }
+    if plain.casefold() in taken or (patient_folder / plain).is_dir():
+        return tokened
+    return plain
 
 
 def _read_patient_manifest(folder: Path) -> Optional[dict]:
@@ -1619,10 +1655,11 @@ def convert_all(
     mpr_candidates = []
     converted_mpr_uids: set[str] = set()
     mpr_series_names: list[str] = []
+    namer = mpr_engine.SeriesFolderNamer(jpg_dir)
 
     # Keep every eligible T1 3D series (post-contrast and pre-contrast).  The
-    # SeriesInstanceUID-backed folder name prevents same-name series from
-    # overwriting each other.
+    # namer keeps the folder names readable and only falls back to a
+    # SeriesInstanceUID token when two series would otherwise collide.
     try:
         mpr_candidates = mpr_engine.select_mpr_candidates(dicom_dir)
     except Exception as e:
@@ -1639,6 +1676,7 @@ def convert_all(
             f"{candidate.description} - {len(candidate.slices)} l\u00e1t - {label} - "
             f"UID {candidate.series_uid}."
         )
+        candidate_folder = namer.name_for_candidate(candidate)
         try:
             count, _ = mpr_engine.convert_mpr_candidate(
                 candidate,
@@ -1646,6 +1684,7 @@ def convert_all(
                 quality=100,
                 log=log,
                 should_stop=should_stop,
+                folder_name=candidate_folder,
             )
             stats.converted += count
             stats.mpr_converted += count
@@ -1659,7 +1698,7 @@ def convert_all(
             # Keep the failed series available to the normal JPG path.
             log(f"MPR-JPG l\u1ed7i cho {candidate.description} ({e}); chuy\u1ec3n series n\u00e0y theo lu\u1ed3ng JPG th\u01b0\u1eddng.")
             try:
-                folder = jpg_dir / candidate.folder_name
+                folder = jpg_dir / candidate_folder
                 for partial in folder.glob("MPR_*.jpg"):
                     partial.unlink()
                 manifest = folder / mpr_engine.MANIFEST_NAME
@@ -1696,7 +1735,7 @@ def convert_all(
             series_desc = _safe_name(getattr(ds, "SeriesDescription", "UnknownSeries"))
             instance_number = getattr(ds, "InstanceNumber", stats.converted + 1)
 
-            series_folder = jpg_dir / mpr_engine.series_folder_name(
+            series_folder = jpg_dir / namer.name_for(
                 series_number, series_desc, series_uid,
             )
             series_folder.mkdir(exist_ok=True)
@@ -2538,7 +2577,7 @@ def download_studies_list(
             log(">>> Đã nhận lệnh dừng tải hàng loạt!")
             break
 
-        st_out_dir = patient_folder / study_archive_folder_name(st)
+        st_out_dir = patient_folder / resolve_study_folder_name(patient_folder, st)
         resume_study = st_out_dir.exists()
         label = f"Ca {idx} ({st.get('date') or '?'} - {st.get('modality') or '?'})"
         log("\n" + "-" * 60)

@@ -283,11 +283,9 @@ function render() {
             ${state.history.length ? "" : "disabled"}>${renderHistoryOptions()}</select>
         </label>
         <section class="dicom-source-card">
-          <div><b>${escapeHtml(t("CHUYỂN DICOM → JPG"))}</b>
-            <small>${escapeHtml(t("Tính năng xuất JPG riêng; không dùng để mở DICOM trong viewer."))}</small></div>
-          <button data-action="import-dicom-folder">${escapeHtml(t("Chuyển folder DICOM sang JPG"))}</button>
+          <button data-action="import-dicom-folder"
+            title="${escapeHtml(t("Tính năng xuất JPG riêng; không dùng để mở DICOM trong viewer."))}">${escapeHtml(t("Chuyển Dcom → JPG"))}</button>
         </section>
-        <div class="source-divider"><span>${escapeHtml(t("hoặc tải từ PACS / link viewer"))}</span></div>
         <div class="hospital-row">
           ${(state.bootstrap?.hospitals || []).map((item, index) =>
         `<label><input type="radio" name="hospital" value="${item.id}"

@@ -33,11 +33,9 @@ const EN = {
 
   // Download panel
   "TẢI MRI / CT": "DOWNLOAD MRI / CT",
-  "CHUYỂN DICOM → JPG": "CONVERT DICOM → JPG",
   "Tính năng xuất JPG riêng; không dùng để mở DICOM trong viewer.":
     "A separate JPG export feature; not the way to open DICOM in the viewer.",
-  "Chuyển folder DICOM sang JPG": "Convert a DICOM folder to JPG",
-  "hoặc tải từ PACS / link viewer": "or download from PACS / a viewer link",
+  "Chuyển Dcom → JPG": "Convert DICOM → JPG",
   "Mã bệnh nhân": "Patient code",
   "Tìm ca": "Find studies",
   "Tìm các ca MRI/CT của mã bệnh nhân này trên RIS": "Search RIS for this patient's MRI/CT studies",

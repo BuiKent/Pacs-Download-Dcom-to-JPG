@@ -105,30 +105,15 @@ button { cursor: pointer; }
 .panel-title button { color: #7890a2; border: 0; background: transparent; font-size: 22px; }
 /* A secondary export tool, so it reads as a quiet panel rather than competing
    with the primary download action below it. */
-.dicom-source-card {
-  display: grid;
-  gap: 9px;
-  margin: 12px 0;
-  padding: 10px;
-  color: #dff5ff;
-  border: 1px solid #253a4b;
-  border-radius: 8px;
-  background: #0c151e;
-}
-.dicom-source-card b, .dicom-source-card small { display: block; }
-.dicom-source-card b { color: #9fc4da; font-size: 11px; letter-spacing: .5px; }
-.dicom-source-card small { margin-top: 4px; color: #83a0b3; font-size: 10px; line-height: 1.4; }
+.dicom-source-card { display: grid; margin: 10px 0; }
 .dicom-source-card button {
   min-height: 34px;
+  color: #d6e9f6;
   border: 1px solid #304a60;
   border-radius: 6px;
-  color: #d6e9f6;
   background: #152533;
 }
 .dicom-source-card button:hover { background: #1b2f40; }
-.source-divider { display: flex; align-items: center; gap: 8px; color: #627c8e; font-size: 9px; }
-.source-divider::before, .source-divider::after { content: ""; flex: 1; height: 1px; background: #20313e; }
-.source-divider span { white-space: nowrap; }
 .hospital-row { display: flex; gap: 10px; margin: 12px 0; font-size: 12px; }
 .hospital-row label { flex: 1; }
 .field { display: block; margin: 10px 0; color: #94a9ba; font-size: 11px; }
