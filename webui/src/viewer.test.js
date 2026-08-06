@@ -14,6 +14,7 @@ import {
   rescaledDicomPixels,
   seriesSafetyNotice,
   seriesSupportsHounsfield,
+  syncedCompareIndices,
   toolFallback,
   volumeTransferRange,
   windowPresetRange,
@@ -80,6 +81,46 @@ describe("viewer shell", () => {
     // Text notes are plain annotations and work in any 2D layout.
     expect(toolFallback("text", 1, false)).toBe("text");
     expect(toolFallback("nonsense", 3, true)).toBe("window");
+  });
+
+  it("keeps compared panes in lockstep when they start aligned", () => {
+    // Freshly opened: all panes on the same slice, so they run 1-1-1, 2-2-2.
+    const counts = [121, 121, 121];
+    expect(syncedCompareIndices([0, 0, 0], 0, 1, counts)).toEqual([1, 1, 1]);
+    expect(syncedCompareIndices([0, 0, 0], 0, 5, counts)).toEqual([5, 5, 5]);
+    // Any pane may drive the others.
+    expect(syncedCompareIndices([0, 0, 0], 2, 3, counts)).toEqual([3, 3, 3]);
+  });
+
+  it("preserves the offset captured when the lock was switched on", () => {
+    // The user unlocked, scrolled the middle pane to n = 40, and re-locked at
+    // [10, 40, 10]. From then on the panes must move together *keeping* the gap.
+    const counts = [121, 121, 121];
+    const anchor = [10, 40, 10];
+    expect(syncedCompareIndices(anchor, 1, 40, counts)).toEqual([10, 40, 10]);
+    expect(syncedCompareIndices(anchor, 1, 41, counts)).toEqual([11, 41, 11]);
+    expect(syncedCompareIndices(anchor, 1, 45, counts)).toEqual([15, 45, 15]);
+    // Driving from a different pane keeps the same relationship.
+    expect(syncedCompareIndices(anchor, 0, 12, counts)).toEqual([12, 42, 12]);
+    // Scrolling backwards past the anchor works too.
+    expect(syncedCompareIndices(anchor, 1, 35, counts)).toEqual([5, 35, 5]);
+  });
+
+  it("clamps a shorter series without losing the anchor", () => {
+    // Pane C only has 20 slices; it stops at its end while the others continue.
+    const counts = [121, 121, 20];
+    const anchor = [10, 10, 10];
+    expect(syncedCompareIndices(anchor, 0, 25, counts)).toEqual([25, 25, 19]);
+    // Coming back, pane C resumes from the anchor rather than from its clamp.
+    expect(syncedCompareIndices(anchor, 0, 12, counts)).toEqual([12, 12, 12]);
+    expect(syncedCompareIndices(anchor, 0, 0, counts)).toEqual([0, 0, 0]);
+    // Never below the first slice.
+    expect(syncedCompareIndices([5, 0, 5], 0, 0, counts)).toEqual([0, 0, 0]);
+  });
+
+  it("supports two panes as well as three", () => {
+    expect(syncedCompareIndices([3, 8], 0, 4, [50, 50])).toEqual([4, 9]);
+    expect(syncedCompareIndices([3, 8], 1, 7, [50, 50])).toEqual([2, 7]);
   });
 
   it("attributes each measurement to the series it was drawn on", () => {

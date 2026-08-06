@@ -532,6 +532,7 @@ button:disabled { opacity: .35; cursor: default; }
   grid-template: repeat(2, minmax(0, 1fr)) / repeat(2, minmax(0, 1fr));
 }
 .workspace-grid.mode-compare { grid-template: 1fr / repeat(2, minmax(0, 1fr)); }
+.workspace-grid.mode-compare3 { grid-template: 1fr / repeat(3, minmax(0, 1fr)); }
 .workspace-grid.mode-montage6 { grid-template: repeat(2, minmax(0, 1fr)) / repeat(3, minmax(0, 1fr)); }
 .workspace-grid.mode-montage8 { grid-template: repeat(2, minmax(0, 1fr)) / repeat(4, minmax(0, 1fr)); }
 .workspace-grid.mode-mpr {

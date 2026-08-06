@@ -6,9 +6,11 @@ import {
   availableWindowPresets,
   captureActiveViewport,
   clearActiveMeasurements,
+  compareScrollSyncState,
   defaultWindowPreset,
   disposeViewer,
   configureTextPrompt,
+  setCompareScrollSync,
   flipActiveViewportHorizontal,
   flipActiveViewportVertical,
   initViewer,
@@ -47,7 +49,9 @@ const state = {
   bootstrap: null,
   archive: { root: "", series: [] },
   selectedId: "",
-  compareId: "",
+  // Series shown beside the primary one; index 0 is pane B, index 1 is pane C.
+  compareIds: ["", ""],
+  scrollSync: true,
   mode: "single",
   tool: "window",
   downloadOpen: true,
@@ -76,6 +80,16 @@ const icons = {
   current: "⌂",
   single: "▣",
   compare: "▥",
+  compare3: "▤",
+  // Two panes locked to one another: scrolling either keeps the offset.
+  scrollSync: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <rect x="2.5" y="4" width="7.5" height="16" rx="1.5"></rect>
+    <rect x="14" y="4" width="7.5" height="16" rx="1.5"></rect>
+    <path d="M10.2 9.5h3.6"></path>
+    <path d="M12.4 8 14 9.5 12.4 11"></path>
+    <path d="M13.8 14.5h-3.6"></path>
+    <path d="M11.6 13 10 14.5l1.6 1.5"></path>
+  </svg>`,
   montage6: "▦",
   montage8: "▦",
   mpr: "✣",
@@ -141,8 +155,37 @@ function selectedSeries() {
   return state.archive.series.find((item) => item.id === state.selectedId) || null;
 }
 
-function compareSeries() {
-  return state.archive.series.find((item) => item.id === state.compareId) || null;
+const COMPARE_PANES = { compare: 2, compare3: 3 };
+
+function isCompareMode(mode = state.mode) {
+  return Boolean(COMPARE_PANES[mode]);
+}
+
+/** The series for the secondary panes, one entry per extra pane. */
+function compareSeriesList(mode = state.mode) {
+  const extra = (COMPARE_PANES[mode] || 1) - 1;
+  return Array.from({ length: extra }, (_, slot) => (
+    state.archive.series.find((item) => item.id === state.compareIds[slot]) || null
+  ));
+}
+
+/** Give every comparison slot a series, preferring ones not already shown. */
+function fillCompareSlots(mode = state.mode) {
+  const extra = (COMPARE_PANES[mode] || 1) - 1;
+  const taken = [state.selectedId];
+  for (let slot = 0; slot < extra; slot += 1) {
+    const current = state.compareIds[slot];
+    const usable = current && state.archive.series.some((item) => item.id === current);
+    if (usable && !taken.includes(current)) {
+      taken.push(current);
+      continue;
+    }
+    const next = state.archive.series.find((item) => !taken.includes(item.id))
+      || state.archive.series.find((item) => item.id !== state.selectedId)
+      || state.archive.series[0];
+    state.compareIds[slot] = next?.id || state.selectedId;
+    taken.push(state.compareIds[slot]);
+  }
 }
 
 function escapeHtml(value) {
@@ -218,6 +261,14 @@ function renderUtilityTools(series) {
     iconButton("save-annotations", icons.save, t("Lưu đo/ROI/ghi chú")),
     iconButton("roi-volume", icons.volume, t("Tính thể tích ROI"), false, !series?.mprReady),
   ];
+  // Only the comparison layouts can lock panes together.
+  const compareTools = isCompareMode()
+    ? [iconButton("scroll-sync", icons.scrollSync,
+      t(state.scrollSync
+        ? "Đang khoá cuộn theo vị trí — bấm để cuộn từng khung riêng"
+        : "Cuộn từng khung riêng — bấm để khoá theo độ lệch hiện tại"),
+      state.scrollSync)]
+    : [];
   const output = [
     iconButton("cine", state.cine ? "Ⅱ" : icons.cine,
       t(state.cine ? "Dừng chạy phim" : "Chạy phim"), state.cine, state.mode !== "single"),
@@ -225,7 +276,12 @@ function renderUtilityTools(series) {
   ];
   // Cine only means anything on a single stack; MPR drops it rather than
   // showing a control that can never be used.
-  return [...orientation, ...markup, ...(state.mode === "mpr" ? output.slice(1) : output)].join("");
+  return [
+    ...compareTools,
+    ...orientation,
+    ...markup,
+    ...(state.mode === "mpr" ? output.slice(1) : output),
+  ].join("");
 }
 
 function renderHistoryOptions() {
@@ -308,8 +364,12 @@ function render() {
           <label>${escapeHtml(t("Series"))}
             <select data-field="series">${renderSeriesOptions(state.archive, state.selectedId)}</select>
           </label>
-          ${state.mode === "compare" ? `<label>${escapeHtml(t("So sánh với"))}
-            <select data-field="compare">${renderSeriesOptions(state.archive, state.compareId)}</select></label>` : ""}
+          ${compareSeriesList().map((_series, slot) => `<label>${escapeHtml(
+        slot === 0 ? t("So sánh với") : t("Và với"),
+      )}
+            <select data-field="compare" data-slot="${slot}">${
+        renderSeriesOptions(state.archive, state.compareIds[slot])
+      }</select></label>`).join("")}
         </div>
         <div class="header-actions">
           ${iconButton(
@@ -398,7 +458,8 @@ function render() {
         <nav class="toolbar mode-${state.mode}">
           <div class="tool-cluster layout-tools">
             ${iconButton("mode-single", icons.single, t("Một khung ảnh"), state.mode === "single")}
-            ${iconButton("mode-compare", icons.compare, t("So sánh hai series cạnh nhau"), state.mode === "compare")}
+            ${iconButton("mode-compare", icons.compare, t("So sánh hai series cạnh nhau"), state.mode === "compare", false, "2")}
+            ${iconButton("mode-compare3", icons.compare3, t("So sánh ba series cạnh nhau"), state.mode === "compare3", false, "3")}
             ${iconButton("mode-montage6", icons.montage6, t("Xem tuần tự 6 lát"), state.mode === "montage6", false, "6")}
             ${iconButton("mode-montage8", icons.montage8, t("Xem tuần tự 8 lát"), state.mode === "montage8", false, "8")}
             ${iconButton("mode-mpr", icons.mpr, mprDisabled ? series?.mprReason || t("Series không đủ MPR") : t("MPR ba mặt phẳng"), state.mode === "mpr", mprDisabled)}
@@ -511,9 +572,11 @@ function bindEvents() {
     render();
     renderViewer();
   });
-  app.querySelector("[data-field='compare']")?.addEventListener("change", (event) => {
-    state.compareId = event.target.value;
-    renderViewer();
+  app.querySelectorAll("[data-field='compare']").forEach((element) => {
+    element.addEventListener("change", (event) => {
+      state.compareIds[Number(event.target.dataset.slot)] = event.target.value;
+      renderViewer();
+    });
   });
   app.querySelector("[data-field='history']")?.addEventListener("change", (event) => {
     const entry = state.history[Number(event.target.value)];
@@ -730,8 +793,10 @@ async function action(name) {
       state.mode = mode;
       state.tool = defaultToolForMode(mode, state.tool);
       state.cine = false;
-      if (state.mode === "compare" && !state.compareId) {
-        state.compareId = state.archive.series.find((item) => item.id !== state.selectedId)?.id || state.selectedId;
+      if (isCompareMode()) {
+        fillCompareSlots();
+        // A fresh comparison starts locked, so the panes move 1-1-1, 2-2-2.
+        state.scrollSync = true;
       }
       render();
       await renderViewer();
@@ -742,6 +807,25 @@ async function action(name) {
       // claim a tool the current layout refused.
       state.tool = setTool(name.slice(5));
       syncToolHighlight();
+      return;
+    }
+    if (name === "scroll-sync") {
+      // Switching on captures wherever the panes currently sit, so a deliberate
+      // offset between series is preserved instead of being snapped away.
+      state.scrollSync = setCompareScrollSync(!state.scrollSync);
+      const button = app.querySelector("[data-action='scroll-sync']");
+      if (button) {
+        button.classList.toggle("active", state.scrollSync);
+        button.setAttribute("aria-pressed", state.scrollSync ? "true" : "false");
+        button.title = t(state.scrollSync
+          ? "Đang khoá cuộn theo vị trí — bấm để cuộn từng khung riêng"
+          : "Cuộn từng khung riêng — bấm để khoá theo độ lệch hiện tại");
+      }
+      const anchor = compareScrollSyncState().anchor;
+      setStatus(state.scrollSync
+        ? tf("Đã khoá cuộn theo vị trí hiện tại: {}.",
+          (anchor || []).map((index) => index + 1).join(" · "))
+        : t("Đã bỏ khoá: mỗi khung cuộn riêng."));
       return;
     }
     if (name === "shortcuts") {
@@ -777,9 +861,12 @@ async function action(name) {
       window.__viewerDiagnostics = viewerDiagnostics();
     }
     if (name === "invert") {
-      // The 3D volume-rendered pane has no window to invert; saying so beats
-      // a button that looks like it did nothing.
-      if (!invertView()) throw new Error(t("Khung đang xem không đảo màu được."));
+      // Every live pane inverts, including the volume-rendered one. The guard
+      // is for a layout that has no invertible pane at all, so the button
+      // reports that instead of appearing to do nothing.
+      const panes = invertView();
+      window.__viewerDiagnostics = viewerDiagnostics();
+      if (!panes) throw new Error(t("Khung đang xem không đảo màu được."));
     }
     if (name === "cine") {
       state.cine = toggleCine(selectedSeries(), (index) => {
@@ -861,9 +948,7 @@ function applyArchive(archive) {
   if (!archive.series.some((item) => item.id === state.selectedId)) {
     state.selectedId = archive.series[0]?.id || "";
   }
-  if (!archive.series.some((item) => item.id === state.compareId)) {
-    state.compareId = archive.series.find((item) => item.id !== state.selectedId)?.id || state.selectedId;
-  }
+  fillCompareSlots("compare3");
   state.mode = "single";
   state.tool = "window";
   state.windowPreset = defaultWindowPreset(selectedSeries());
@@ -874,7 +959,7 @@ function applyArchive(archive) {
 function renderViewer() {
   const series = selectedSeries();
   const mode = state.mode;
-  const comparison = compareSeries();
+  const comparison = compareSeriesList();
   if (!series) return viewerQueue;
   const requestId = ++viewerRequestId;
   const requestedWorkspace = document.querySelector("#workspace");
@@ -1237,7 +1322,10 @@ async function boot() {
   state.status = "Đang khởi động...";
   state.archive = state.bootstrap.archive;
   state.selectedId = state.archive.series[0]?.id || "";
-  state.compareId = state.archive.series[1]?.id || state.selectedId;
+  state.compareIds = [
+    state.archive.series[1]?.id || state.selectedId,
+    state.archive.series[2]?.id || state.archive.series[1]?.id || state.selectedId,
+  ];
   for (const series of state.archive.series) registerSeries(series);
   await initViewer({
     onStatus: (message, progress) => {

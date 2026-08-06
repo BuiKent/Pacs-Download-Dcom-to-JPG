@@ -19,6 +19,14 @@ const EN = {
   "DICOM/JPG Downloader & Viewer": "DICOM/JPG Downloader & Viewer",
   Series: "Series",
   "So sánh với": "Compare with",
+  "Và với": "And with",
+  "So sánh ba series cạnh nhau": "Compare three series side by side",
+  "Đang khoá cuộn theo vị trí — bấm để cuộn từng khung riêng":
+    "Scroll is locked by position — click to scroll each pane on its own",
+  "Cuộn từng khung riêng — bấm để khoá theo độ lệch hiện tại":
+    "Each pane scrolls on its own — click to lock them at the current offset",
+  "Đã khoá cuộn theo vị trí hiện tại: {}.": "Scroll locked at the current position: {}.",
+  "Đã bỏ khoá: mỗi khung cuộn riêng.": "Unlocked: each pane scrolls on its own.",
   "Thu gọn khu tải phim": "Collapse download panel",
   "Mở khu tải phim": "Expand download panel",
   "Tải phim": "Download",

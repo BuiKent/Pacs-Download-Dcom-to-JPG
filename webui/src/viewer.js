@@ -711,6 +711,9 @@ function engineIsLive() {
 }
 
 function destroyCurrent() {
+  // The listeners die with the elements; clearing the anchor stops a stale
+  // layout's pane list from being consulted by the next one.
+  compareSync = { enabled: false, anchor: null, viewportIds: [], sliceCounts: [] };
   stopCine();
   loadGeneration += 1;
   resizeObserver?.disconnect();
@@ -1060,6 +1063,89 @@ async function setupStackViewport(viewportId, series, index = 0, prefetch = true
   }
 }
 
+/**
+ * Where every compared pane should sit when one of them is scrolled.
+ *
+ * The anchor is the set of indices captured when synchronisation was switched
+ * on, not slice 0: panes deliberately scrolled apart must keep that gap. With
+ * an anchor of [x, n, y], moving the middle pane to n+1 gives [x+1, n+1, y+1].
+ * A pane that reaches the end of its own series clamps without corrupting the
+ * anchor, so scrolling back restores the original relationship.
+ */
+export function syncedCompareIndices(anchor, sourcePane, sourceIndex, sliceCounts) {
+  const delta = sourceIndex - (anchor[sourcePane] ?? 0);
+  return anchor.map((base, pane) => {
+    if (pane === sourcePane) return sourceIndex;
+    const limit = Math.max(0, (sliceCounts[pane] || 1) - 1);
+    return Math.max(0, Math.min(base + delta, limit));
+  });
+}
+
+// Anchor and wiring for the comparison layouts. Rebuilt on every layout change.
+let compareSync = { enabled: false, anchor: null, viewportIds: [], sliceCounts: [] };
+
+function readCompareIndices() {
+  return compareSync.viewportIds.map((viewportId) => (
+    renderingEngine?.getStackViewport(viewportId)?.getCurrentImageIdIndex() ?? 0
+  ));
+}
+
+/** Turn position-locked scrolling on or off; returns the state actually in force. */
+export function setCompareScrollSync(enabled) {
+  if (!enabled || compareSync.viewportIds.length < 2) {
+    compareSync.enabled = false;
+    compareSync.anchor = null;
+    return false;
+  }
+  // Capture where the panes are *now*: that offset is what the user is asking
+  // to preserve by pressing the button.
+  compareSync.anchor = readCompareIndices();
+  compareSync.enabled = true;
+  return true;
+}
+
+export function compareScrollSyncState() {
+  return { enabled: compareSync.enabled, anchor: compareSync.anchor?.slice() || null };
+}
+
+function installCompareSynchronization(seriesList, viewportIds) {
+  compareSync = {
+    enabled: false,
+    anchor: null,
+    viewportIds,
+    sliceCounts: seriesList.map((item) => item?.sliceCount || 1),
+  };
+  let synchronizing = false;
+  viewportIds.forEach((viewportId, sourcePane) => {
+    const element = document.getElementById(viewportId);
+    if (!element) return;
+    element.addEventListener(CoreEnums.Events.STACK_NEW_IMAGE, async (event) => {
+      if (!compareSync.enabled || !compareSync.anchor || synchronizing) return;
+      const indices = syncedCompareIndices(
+        compareSync.anchor,
+        sourcePane,
+        event.detail.imageIdIndex,
+        compareSync.sliceCounts,
+      );
+      synchronizing = true;
+      try {
+        // Cornerstone emits STACK_NEW_IMAGE just before committing the index;
+        // yielding lets the source pane settle before the others follow.
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+        await Promise.all(viewportIds.map(async (targetId, targetPane) => {
+          if (targetPane === sourcePane) return;
+          const viewport = renderingEngine?.getStackViewport(targetId);
+          if (!viewport || viewport.getCurrentImageIdIndex() === indices[targetPane]) return;
+          await viewport.setImageIdIndex(indices[targetPane]);
+        }));
+        renderingEngine?.renderViewports(viewportIds);
+      } finally {
+        synchronizing = false;
+      }
+    });
+  });
+}
+
 function installMontageSynchronization(series, viewportIds) {
   let synchronizing = false;
   viewportIds.forEach((viewportId, paneIndex) => {
@@ -1091,37 +1177,40 @@ function installMontageSynchronization(series, viewportIds) {
   });
 }
 
-export async function showStacks(container, series, mode, secondarySeries = null, tool = currentTool) {
+export const COMPARE_MODES = Object.freeze({ compare: 2, compare3: 3 });
+
+export async function showStacks(container, series, mode, comparison = null, tool = currentTool) {
   destroyCurrent();
   activeSeries = series;
-  activeSeriesList = secondarySeries && secondarySeries.id !== series.id
-    ? [series, secondarySeries]
+  const paneCount = COMPARE_MODES[mode] || 0;
+  // Every pane shows a series; a slot the user has not chosen yet repeats the
+  // primary rather than leaving a dead viewport.
+  const compared = paneCount
+    ? [series, ...(Array.isArray(comparison) ? comparison : [comparison])]
+      .slice(0, paneCount)
+      .map((item) => item || series)
     : [series];
+  while (paneCount && compared.length < paneCount) compared.push(series);
+  activeSeriesList = [...new Map(compared.map((item) => [item.id, item])).values()];
   activeMode = mode;
-  registerSeries(series);
-  if (secondarySeries) registerSeries(secondarySeries);
+  for (const item of activeSeriesList) registerSeries(item);
   // Stack measurements need real DICOM spacing, otherwise Cornerstone falls
   // back to pixel units while the status bar promises millimetres.
-  await ensureManifest(series);
-  if (secondarySeries) await ensureManifest(secondarySeries);
+  for (const item of activeSeriesList) await ensureManifest(item);
   container.innerHTML = "";
   setWorkspaceMode(container, mode);
   createRenderingEngine();
 
   const viewports = [];
-  if (mode === "compare") {
-    const left = viewportElement(container, "stack-a", series.name, "", series.id);
-    const right = viewportElement(
-      container,
-      "stack-b",
-      secondarySeries?.name || "Chọn series B",
-      "",
-      secondarySeries?.id || "",
-    );
-    viewports.push(
-      { viewportId: "stack-a", type: CoreEnums.ViewportType.STACK, element: left },
-      { viewportId: "stack-b", type: CoreEnums.ViewportType.STACK, element: right },
-    );
+  if (paneCount) {
+    compared.forEach((item, index) => {
+      const id = `stack-${String.fromCharCode(97 + index)}`;
+      viewports.push({
+        viewportId: id,
+        type: CoreEnums.ViewportType.STACK,
+        element: viewportElement(container, id, item.name, "", item.id),
+      });
+    });
   } else {
     const count = mode === "montage6" ? 6 : mode === "montage8" ? 8 : 1;
     for (let index = 0; index < count; index += 1) {
@@ -1135,13 +1224,18 @@ export async function showStacks(container, series, mode, secondarySeries = null
   }
   renderingEngine.setViewports(viewports);
   createToolGroup(viewports.map((item) => item.viewportId));
-  if (mode === "compare") {
-    await Promise.all([
-      setupStackViewport("stack-a", series, Math.floor(series.sliceCount / 2)),
-      secondarySeries
-        ? setupStackViewport("stack-b", secondarySeries, Math.floor(secondarySeries.sliceCount / 2))
-        : Promise.resolve(),
-    ]);
+  if (paneCount) {
+    // The panes open on the same slice number so the default relationship is
+    // 1-1-1, 2-2-2. The shortest series decides, so no pane starts out of range.
+    const shortest = Math.min(...compared.map((item) => item.sliceCount || 1));
+    const start = Math.floor(shortest / 2);
+    await Promise.all(compared.map((item, index) => (
+      setupStackViewport(viewports[index].viewportId, item, start)
+    )));
+    installCompareSynchronization(compared, viewports.map((item) => item.viewportId));
+    // Locked scrolling is the useful default; the button exists to break the
+    // lock, scroll one pane, and re-lock on the new offset.
+    setCompareScrollSync(true);
   } else {
     const count = viewports.length;
     const shouldPrefetch = mode === "single";
@@ -1159,10 +1253,7 @@ export async function showStacks(container, series, mode, secondarySeries = null
   }
   installResizeObserver(container);
   const applied = setTool(tool);
-  await restoreAnnotations(series);
-  if (secondarySeries && secondarySeries.id !== series.id) {
-    await restoreAnnotations(secondarySeries);
-  }
+  for (const item of activeSeriesList) await restoreAnnotations(item);
   onStatus(series.geometry
     ? "Đo chiều dài/ROI theo mm. Chuột giữa: pan · chuột phải: zoom · lăn: đổi lát."
     : "Series JPG không có hình học: chỉ xem/zoom/pan; không dùng kết quả đo vật lý.");
@@ -1480,12 +1571,19 @@ export function viewerDiagnostics() {
     tool: currentTool,
     decodePath,
     lastDecodeStats,
-    viewports: (engineIsLive() ? renderingEngine.getViewports() || [] : []).map((viewport) => ({
-      id: viewport.id,
-      actors: viewport.getActors?.().length || 0,
-      imageIndex: viewport.getCurrentImageIdIndex?.() ?? null,
-      voiRange: viewport.getProperties?.().voiRange || null,
-    })),
+    viewports: (engineIsLive() ? renderingEngine.getViewports() || [] : []).map((viewport) => {
+      const properties = viewport.getProperties?.() || {};
+      return {
+        id: viewport.id,
+        actors: viewport.getActors?.().length || 0,
+        imageIndex: viewport.getCurrentImageIdIndex?.() ?? null,
+        voiRange: properties.voiRange || null,
+        // Exposed so a gate can prove invert actually reached every 2D pane
+        // rather than only that the button raised no error.
+        invert: Boolean(properties.invert),
+        supportsInvert: "invert" in properties,
+      };
+    }),
   };
 }
 
