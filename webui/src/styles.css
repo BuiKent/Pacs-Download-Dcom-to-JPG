@@ -259,7 +259,7 @@ button:disabled { opacity: .35; cursor: default; }
 .patient-alert.danger { border-color: #7b3c43; background: #30171b; }
 .patient-alert.danger span { color: #ffc2c2; }
 .muted { display: block; padding: 12px; color: #607587; font-size: 11px; }
-.download-options { display: flex; gap: 12px; align-items: center; color: var(--label-fg); font-size: 11px; }
+.download-options { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; color: var(--label-fg); font-size: 11px; }
 .download-options input[type="number"] {
   width: 62px;
   height: var(--control-height-sm);
@@ -269,6 +269,42 @@ button:disabled { opacity: .35; cursor: default; }
   border-radius: var(--control-radius);
   background: var(--field-bg);
 }
+.series-picker {
+  margin-top: 7px;
+  padding: 8px;
+  border: 1px solid var(--field-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-bg) 82%, var(--accent-bg) 18%);
+  max-height: 270px;
+  overflow: auto;
+}
+.series-picker.hidden { display: none; }
+.series-picker-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
+.series-picker-actions button { font-size: 10px; padding: 5px 7px; }
+.series-picker-hint { color: var(--label-muted); line-height: 1.35; display: block; }
+.series-choice-group { display: grid; gap: 4px; margin-top: 8px; }
+.series-choice-group > b { color: var(--label-fg); font-size: 11px; }
+.series-choice {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 6px;
+  align-items: start;
+  padding: 5px;
+  border-radius: 6px;
+  background: var(--field-bg);
+  cursor: pointer;
+}
+.series-choice > span { display: grid; min-width: 0; gap: 2px; }
+.series-choice strong {
+  width: fit-content;
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: #55bfff;
+  background: color-mix(in srgb, var(--accent-bg) 18%, transparent);
+  font-size: 9px;
+}
+.series-choice b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.series-choice small { color: var(--label-muted); font-size: 9px; }
 /* The RIS download is the primary action; Stop stays narrow beside it. */
 .download-actions { display: grid; grid-template-columns: 1fr 72px; gap: 6px; margin: 10px 0; }
 /* Link download and its retry are peers, so they share the row evenly. */

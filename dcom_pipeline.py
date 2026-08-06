@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import io
 import json
 import os
 import re
@@ -237,6 +238,19 @@ def ensure_browser(log: LogFn = _default_log) -> None:
 _BROWSER_ARGS = ["--dns-over-https-mode=off", "--disable-features=DnsOverHttps,AsyncDns"]
 _BROWSER_STATE_LOCK = threading.Lock()
 _CHROME_UNAVAILABLE = False
+_BROWSER_NOTICES_LOGGED: set[str] = set()
+
+
+def _log_browser_notice_once(log: LogFn, browser_name: str) -> None:
+    """Keep the job log useful: browser startup is not an RIS login event."""
+    with _BROWSER_STATE_LOCK:
+        if browser_name in _BROWSER_NOTICES_LOGGED:
+            return
+        _BROWSER_NOTICES_LOGGED.add(browser_name)
+    log(
+        f"Công cụ nền: {browser_name} "
+        "(dòng này chỉ báo trình duyệt tự động, không báo đăng nhập)."
+    )
 
 
 def _installed_chrome_paths() -> list[Path]:
@@ -278,7 +292,7 @@ def _launch_chromium(p, headless: bool, log: LogFn):
     if not skip_chrome:
         try:
             b = p.chromium.launch(headless=headless, channel="chrome", args=_BROWSER_ARGS)
-            log("Dùng trình duyệt có sẵn trên máy: Google Chrome (chạy ngầm).")
+            _log_browser_notice_once(log, "Google Chrome")
             return b
         except Exception as exc:
             chrome_error = exc
@@ -291,7 +305,7 @@ def _launch_chromium(p, headless: bool, log: LogFn):
                     executable_path=str(chrome_path),
                     args=_BROWSER_ARGS,
                 )
-                log(f"Dùng Google Chrome tại {chrome_path} (chạy ngầm).")
+                _log_browser_notice_once(log, "Google Chrome")
                 return b
             except Exception as exc:
                 chrome_error = exc
@@ -307,7 +321,7 @@ def _launch_chromium(p, headless: bool, log: LogFn):
     try:
         if sys.platform == "darwin" and hasattr(p, "webkit"):
             b = p.webkit.launch(headless=headless)
-            log("Dùng trình duyệt có sẵn trên máy: Safari / WebKit (chạy ngầm).")
+            _log_browser_notice_once(log, "Safari / WebKit")
             return b
     except Exception:
         pass
@@ -315,7 +329,7 @@ def _launch_chromium(p, headless: bool, log: LogFn):
     # 3. Thử Microsoft Edge (có sẵn mặc định trên Windows)
     try:
         b = p.chromium.launch(headless=headless, channel="msedge", args=_BROWSER_ARGS)
-        log("Dùng trình duyệt có sẵn trên máy: Microsoft Edge (chạy ngầm).")
+        _log_browser_notice_once(log, "Microsoft Edge")
         return b
     except Exception as exc:
         log(f"Microsoft Edge không khởi động được: {_short_browser_error(exc)}")
@@ -330,6 +344,145 @@ def _launch_chromium(p, headless: bool, log: LogFn):
 #  BƯỚC 1: Tải ảnh từ viewer
 # --------------------------------------------------------------------------- #
 
+def _series_value(item: dict, *keys: str) -> Any:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, "", []):
+            return value
+    return ""
+
+
+def _sequence_hint(description: Any) -> str:
+    """Return a conservative display hint; the exact PACS description stays visible."""
+    text = unicodedata.normalize("NFKD", str(description or "")).upper()
+    compact = re.sub(r"[^A-Z0-9+]+", " ", text)
+    if re.search(r"\b(ADC)\b", compact):
+        return "ADC"
+    if re.search(r"\b(DWI|DIFF|TRACEW)\b", compact) or "B1000" in compact:
+        return "DWI"
+    if re.search(r"\b(SWI|SWAN|T2 STAR|T2STAR)\b", compact):
+        return "SWI"
+    if re.search(r"\b(FLAIR)\b", compact):
+        return "T2 FLAIR"
+    if re.search(r"\b(T1|MPRAGE|BRAVO|SPGR)\b", compact):
+        post = bool(
+            re.search(r"(POST|CE|GAD|CONTRAST|C\+|\+C|ENH)", compact)
+            or re.search(r"\bT1W?\s*C\b", compact)
+        )
+        return "T1 sau tiêm" if post else "T1"
+    if re.search(r"\b(T2)\b", compact):
+        return "T2"
+    if re.search(r"\b(PERF|DSC|DCE|ASL)\b", compact):
+        return "Tưới máu"
+    if re.search(r"\b(TOF|MRA|MRV|ANGIO)\b", compact):
+        return "Mạch máu"
+    return "Khác"
+
+
+def _normalise_series_choice(raw: dict, source: str, index: int) -> dict:
+    uid = str(_series_value(
+        raw, "SeriesInsUID", "SeriesInstanceUID", "seriesInstanceUID",
+        "seriesUid", "seriesUID", "seriesId", "id",
+    ) or "").strip()
+    identifier = uid or f"{source}:{index}"
+    number = str(_series_value(
+        raw, "SeriesNumber", "SeriesNo", "SeriesNum", "seriesNumber", "seriesNo",
+    ) or "").strip()
+    description = str(_series_value(
+        raw, "SeriesDescription", "SeriesDesc", "Description", "seriesDescription",
+        "description", "seriesName", "name", "ProtocolName", "protocolName",
+    ) or "").strip() or f"Series {number or index + 1}"
+    modality = str(_series_value(raw, "Modality", "modality", "modalityDicom") or "").strip().upper()
+    count = _series_value(
+        raw, "ImageCount", "imageCount", "numberOfImages", "instanceCount", "NumberOfImages",
+    )
+    if not count and isinstance(raw.get("imageIds"), list):
+        count = len(raw["imageIds"])
+    try:
+        image_count = max(0, int(count or 0))
+    except (TypeError, ValueError):
+        image_count = 0
+    return {
+        "id": identifier,
+        "seriesUid": uid,
+        "number": number,
+        "description": description,
+        "modality": modality,
+        "imageCount": image_count,
+        "sequenceHint": _sequence_hint(description),
+        "source": source,
+    }
+
+
+def _vrad_series_choices(body: bytes) -> list[dict]:
+    payload = json.loads(body.decode("utf-8", "replace"))
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    study = data[0] if isinstance(data, list) and data else data
+    raw_series = study.get("SeriesList", []) if isinstance(study, dict) else []
+    return [_normalise_series_choice(item, "vrad", index) for index, item in enumerate(raw_series)]
+
+
+def _vrpacs_series_choices(body: bytes) -> list[dict]:
+    payload = json.loads(body.decode("utf-8", "replace"))
+    data = payload.get("data", {}) if isinstance(payload, dict) else {}
+    studies = data.get("studyList", []) if isinstance(data, dict) else []
+    raw_series = [series for study in studies for series in (study.get("seriesList", []) or [])]
+    return [_normalise_series_choice(item, "vrpacs", index) for index, item in enumerate(raw_series)]
+
+
+def _dicom_json_value(item: dict, tag: str) -> Any:
+    values = (item.get(tag, {}) or {}).get("Value", [None])
+    return values[0] if values else ""
+
+
+def _dicomweb_series_choices(body: bytes) -> list[dict]:
+    payload = json.loads(body.decode("utf-8", "replace"))
+    if not isinstance(payload, list):
+        return []
+    choices = []
+    for index, item in enumerate(payload):
+        raw = {
+            "SeriesInstanceUID": _dicom_json_value(item, "0020000E"),
+            "SeriesNumber": _dicom_json_value(item, "00200011"),
+            "SeriesDescription": _dicom_json_value(item, "0008103E"),
+            "Modality": _dicom_json_value(item, "00080060"),
+            "ImageCount": _dicom_json_value(item, "00201209"),
+        }
+        if raw["SeriesInstanceUID"] and not _is_non_image_modality(raw["Modality"]):
+            choices.append(_normalise_series_choice(raw, "dicomweb", index))
+    return choices
+
+
+def _dicom_storage_info(data: bytes, digest: str) -> tuple[str, str]:
+    """Build stable readable series/file names without decoding pixel data."""
+    try:
+        import pydicom
+
+        ds = pydicom.dcmread(
+            io.BytesIO(data),
+            stop_before_pixels=True,
+            force=True,
+            specific_tags=[
+                "StudyInstanceUID", "SeriesInstanceUID", "SeriesNumber", "SeriesDescription",
+                "InstanceNumber", "SOPInstanceUID",
+            ],
+        )
+        study_uid = str(getattr(ds, "StudyInstanceUID", "") or "").strip()
+        uid = str(getattr(ds, "SeriesInstanceUID", "") or "").strip()
+        number = str(getattr(ds, "SeriesNumber", "") or "").strip() or "NA"
+        description = _safe_name(getattr(ds, "SeriesDescription", "") or "UnknownSeries")[:64]
+        series_key = uid or f"{study_uid}:{number}:{description}"
+        uid_token = hashlib.sha1((series_key or digest).encode("utf-8")).hexdigest()[:8]
+        folder = f"Series_{_safe_name(number)}_{description}_{uid_token}"
+        instance = str(getattr(ds, "InstanceNumber", "") or "").strip()
+        sop = str(getattr(ds, "SOPInstanceUID", "") or "").strip()
+        sop_token = hashlib.sha1((sop or digest).encode("utf-8")).hexdigest()[:10]
+        instance_token = f"{int(instance):05d}" if instance.lstrip("-").isdigit() else _safe_name(instance or "NA")
+        return folder, f"IM_{instance_token}_{sop_token}_{digest[:6]}.dcm"
+    except Exception:
+        return f"Series_UNKNOWN_{digest[:8]}", f"IM_NA_{digest[:10]}.dcm"
+
+
 @dataclass
 class DownloadStats:
     dicom: int = 0
@@ -341,6 +494,7 @@ class DownloadStats:
     # độ mô phỏng). `failed` là số ảnh đã thử hết số lần mà vẫn không lấy được.
     expected: int = 0
     failed: int = 0
+    completed_tasks: int = 0
 
     def total(self) -> int:
         return self.dicom + self.jpg + self.png
@@ -353,7 +507,7 @@ class DownloadStats:
         """
         if self.expected <= 0:
             return self.total() > 0
-        counted = self.dicom if self.dicom else self.total()
+        counted = self.completed_tasks or (self.dicom if self.dicom else self.total())
         return counted >= self.expected
 
 
@@ -366,6 +520,7 @@ def download_all(
     max_slices_per_series: int = 600,
     should_stop: Optional[Callable[[], bool]] = None,
     resume: bool = False,
+    selected_series_ids: Optional[list[str]] = None,
 ) -> DownloadStats:
     """
     Tải toàn bộ ảnh của study. Hai chế độ, tự chọn:
@@ -388,13 +543,19 @@ def download_all(
     raw_jpg_dir.mkdir(parents=True, exist_ok=True)
 
     stats = DownloadStats()
+    selected_series = (
+        {str(value) for value in selected_series_ids if str(value).strip()}
+        if selected_series_ids is not None else None
+    )
+    if selected_series_ids is not None and not selected_series:
+        raise ValueError("Chế độ tải chọn lọc cần ít nhất một series.")
     seen_hashes: set[str] = set()
     save_lock = threading.Lock()
 
     # Chế độ "thử lại/gộp": nạp sẵn ảnh đã có trong folder để KHÔNG ghi đè và KHÔNG
     # tải trùng — chỉ bổ sung ảnh mới. Hữu ích khi lần trước mất mạng/dò hụt.
     if resume:
-        for f in sorted(dicom_dir.glob("*.dcm")):
+        for f in sorted(dicom_dir.rglob("*.dcm")):
             try:
                 seen_hashes.add(hashlib.sha1(f.read_bytes()).hexdigest())
                 stats.dicom += 1
@@ -451,7 +612,10 @@ def download_all(
                 stats.png += 1; idx = stats.png
             n = stats.total()
         if ext == "dcm":
-            (dicom_dir / f"img_{idx:05d}.dcm").write_bytes(data)
+            series_folder, filename = _dicom_storage_info(data, h)
+            destination = dicom_dir / series_folder / filename
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(data)
             if n % 25 == 0:
                 log(f"  ...đã tải {n} ảnh (DICOM: {stats.dicom})")
         elif ext == "jpg":
@@ -464,8 +628,10 @@ def download_all(
     #   • VradViewer  -> StudyData/GetStudies (+ 1 URL ảnh thật làm khuôn)
     #   • vrpacs/telerad -> vrpacs-file/get-share-patient-image
     captured = {"getstudies": None, "template_url": None, "vrpacs": None,
-                "qido_series": None, "wado_tmpl": None, "host": None, "cookies": None,
+                "qido_series": None, "qido_series_body": None,
+                "wado_tmpl": None, "host": None, "cookies": None,
                 "api_headers": None, "session_error": None}
+    capture_bodies = selected_series is None
 
     def _want_capture(resp) -> bool:
         u = resp.url
@@ -494,6 +660,10 @@ def download_all(
             if (captured["qido_series"] is None 
                     and u.split("?")[0].rstrip("/").endswith("/series")):
                 captured["qido_series"] = u
+                try:
+                    captured["qido_series_body"] = response.body()
+                except Exception:
+                    pass
                 # giữ lại "giấy thông hành" viewer dùng (Authorization, X-...)
                 # để tải trực tiếp ngoài trình duyệt bằng đúng quyền đó
                 try:
@@ -511,7 +681,8 @@ def download_all(
                 if (captured["wado_tmpl"] is None and ct.startswith("application/dicom")
                         and "json" not in ct and ("wado" in u.lower() or "objectuid" in u.lower())):
                     captured["wado_tmpl"] = u
-                save_body(response.body())  # bắt thụ động (bonus + an toàn cho fallback)
+                if capture_bodies:
+                    save_body(response.body())  # bắt thụ động (bonus + an toàn cho fallback)
         except Exception:
             pass  # không để lỗi 1 response làm hỏng cả phiên
 
@@ -596,8 +767,12 @@ def download_all(
             browser.close()
         else:
             log("Không thấy manifest → chế độ MÔ PHỎNG (cuộn/click), chỉ xử lý xung ĐANG HIỂN THỊ.")
+            capture_bodies = True
             page.wait_for_timeout(1500)
-            _drive_viewer(page, log, stats, max_slices_per_series, stop)
+            _drive_viewer(
+                page, log, stats, max_slices_per_series, stop,
+                selected_series_ids=selected_series,
+            )
             log(f"Chờ {settle_ms/1000:.0f}s để bắt nốt ảnh còn lại...")
             try:
                 page.wait_for_load_state("networkidle", timeout=settle_ms)
@@ -608,15 +783,153 @@ def download_all(
     # Tải trực tiếp (ngoài trình duyệt, bằng HTTP) nếu có manifest
     if used_manifest and not stop():
         if captured["getstudies"] and captured["template_url"]:
-            _download_via_manifest(captured, save_body, stats, log, stop)      # VradViewer
+            _download_via_manifest(
+                captured, save_body, stats, log, stop, selected_series,
+            )      # VradViewer
         elif captured["vrpacs"]:
-            _download_via_vrpacs(captured, save_body, stats, log, stop)        # vrpacs/telerad
+            _download_via_vrpacs(
+                captured, save_body, stats, log, stop, selected_series,
+            )        # vrpacs/telerad
         elif captured["qido_series"]:
-            _download_via_dicomweb(captured, save_body, stats, log, stop)      # OHIF/DICOMweb
+            _download_via_dicomweb(
+                captured, save_body, stats, log, stop, selected_series,
+            )      # OHIF/DICOMweb
 
     log(f"Tải xong. Tổng ảnh: {stats.total()} "
         f"(DICOM {stats.dicom}, JPG {stats.jpg}, PNG {stats.png}, trùng bỏ {stats.duplicates}).")
     return stats
+
+
+def discover_viewer_series(
+    url: str,
+    log: LogFn = _default_log,
+    headless: bool = True,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> dict:
+    """Open a viewer read-only and return the selectable series inventory."""
+    from playwright.sync_api import sync_playwright
+
+    captured = {
+        "getstudies": None,
+        "vrpacs": None,
+        "qido_series_body": None,
+        "session_error": None,
+    }
+
+    def stop() -> bool:
+        return bool(should_stop and should_stop())
+
+    def on_response(response) -> None:
+        try:
+            response_url = response.url
+            if (captured["session_error"] is None and response.status >= 400
+                    and re.search(r"/(session|share)s?/[0-9a-fA-F\-]{8,}", response_url)):
+                captured["session_error"] = str(response.status)
+            if "StudyData/GetStudies" in response_url and captured["getstudies"] is None:
+                captured["getstudies"] = response.body()
+            elif "get-share-patient-image" in response_url and captured["vrpacs"] is None:
+                captured["vrpacs"] = response.body()
+            elif (captured["qido_series_body"] is None
+                  and response_url.split("?")[0].rstrip("/").endswith("/series")):
+                captured["qido_series_body"] = response.body()
+        except Exception:
+            pass
+
+    browser = None
+    with sync_playwright() as playwright:
+        browser = _launch_chromium(playwright, headless, log)
+        context = browser.new_context(
+            viewport={"width": 1600, "height": 1000},
+            ignore_https_errors=True,
+        )
+        page = context.new_page()
+        page.on("response", on_response)
+        log("      Bước 2/2: Đang đọc danh sách series từ viewer (chưa tải file ảnh)...")
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        except Exception as exc:
+            log(f"  Cảnh báo khi mở viewer: {exc}")
+
+        for _ in range(30):
+            if stop() or any((
+                captured["getstudies"], captured["vrpacs"],
+                captured["qido_series_body"], captured["session_error"],
+            )):
+                break
+            page.wait_for_timeout(400)
+
+        if stop():
+            browser.close()
+            return {"source": "stopped", "series": [], "selectable": False}
+        if captured["session_error"]:
+            code = captured["session_error"]
+            browser.close()
+            raise ValueError(f"Link viewer hết hạn hoặc session bị từ chối (HTTP {code}).")
+
+        source = ""
+        choices: list[dict] = []
+        try:
+            if captured["getstudies"]:
+                source = "vrad"
+                choices = _vrad_series_choices(captured["getstudies"])
+            elif captured["vrpacs"]:
+                source = "vrpacs"
+                choices = _vrpacs_series_choices(captured["vrpacs"])
+            elif captured["qido_series_body"]:
+                source = "dicomweb"
+                choices = _dicomweb_series_choices(captured["qido_series_body"])
+        except Exception as exc:
+            log(f"Không đọc được danh sách series từ manifest: {exc}")
+
+        if not choices:
+            source = "viewer"
+            try:
+                page.wait_for_selector(
+                    ".seriesThumb, .serieslist_panel_list, .seriesBox",
+                    timeout=12000,
+                )
+            except Exception:
+                pass
+            try:
+                panels = page.query_selector_all(
+                    ".serieslist_panel_list, .verlist, .seriesThumb_container"
+                )
+                for panel in panels:
+                    for _ in range(8):
+                        page.evaluate("(el) => el.scrollTop = el.scrollHeight", panel)
+                        page.wait_for_timeout(120)
+            except Exception:
+                pass
+            thumbs = page.query_selector_all(".seriesThumb:visible")
+            for index, thumb in enumerate(thumbs):
+                description = ""
+                number = ""
+                count = 0
+                try:
+                    element = thumb.query_selector(
+                        ".series_description_text, .series_number_text"
+                    )
+                    description = (element.inner_text() or "").strip() if element else ""
+                    number_element = thumb.query_selector(".series_number_text")
+                    number = (number_element.inner_text() or "").strip() if number_element else ""
+                    count_element = thumb.query_selector(".series_imagecount_text")
+                    count_text = (count_element.inner_text() or "") if count_element else ""
+                    match = re.search(r"\d+", count_text)
+                    count = int(match.group()) if match else 0
+                except Exception:
+                    pass
+                choices.append(_normalise_series_choice({
+                    "id": f"viewer:{index}",
+                    "SeriesNumber": number,
+                    "SeriesDescription": description or f"Series {index + 1}",
+                    "ImageCount": count,
+                }, "viewer", index))
+
+        browser.close()
+        if not choices:
+            raise ValueError("Viewer không cung cấp manifest và không tìm thấy thumbnail series để chọn.")
+        log(f"Đã quét {len(choices)} series; chưa tải file ảnh nào.")
+        return {"source": source, "series": choices, "selectable": True}
 
 
 # Vật thể DICOM KHÔNG chứa điểm ảnh: báo cáo có cấu trúc (SR — vd "Dose SR" của
@@ -651,6 +964,7 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
         except Exception:
             return False
 
+    original_count = len(tasks)
     pending = list(tasks)
     for round_no in range(1, max(1, passes) + 1):
         if not pending or stop():
@@ -663,6 +977,7 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
         pending = [task for task, ok in zip(pending, results) if not ok]
 
     stats.failed = 0 if stop() else len(pending)
+    stats.completed_tasks = max(stats.completed_tasks, original_count - len(pending))
 
 
 def _report_download_result(stats: DownloadStats, expected: int, log: LogFn,
@@ -673,10 +988,11 @@ def _report_download_result(stats: DownloadStats, expected: int, log: LogFn,
     if stop():
         log(f"  ⏹ Đã dừng theo yêu cầu: {stats.dicom}/{expected or '?'} ảnh.")
         return
-    if expected and stats.dicom >= expected:
-        log(f"  ✓ Đã đủ theo manifest: {stats.dicom}/{expected} ảnh.")
+    completed = stats.completed_tasks or stats.dicom
+    if expected and completed >= expected:
+        log(f"  ✓ Đã đủ theo manifest: {completed}/{expected} ảnh.")
     elif expected:
-        log(f"  ❌ THIẾU ẢNH: mới có {stats.dicom}/{expected} "
+        log(f"  ❌ THIẾU ẢNH: mới có {completed}/{expected} "
             f"(còn hỏng {stats.failed} sau khi đã thử lại). Ca này sẽ bị đánh dấu "
             f"CHƯA ĐỦ để tải bù, KHÔNG tính là hoàn tất.")
     else:
@@ -685,7 +1001,8 @@ def _report_download_result(stats: DownloadStats, expected: int, log: LogFn,
 
 
 def _download_via_manifest(captured, save_body, stats,
-                           log: LogFn, stop: Callable[[], bool]) -> None:
+                           log: LogFn, stop: Callable[[], bool],
+                           selected_series: Optional[set[str]] = None) -> None:
     """
     Tải trực tiếp MỌI ảnh dựa trên manifest VradViewer (StudyData/GetStudies) +
     1 URL ảnh thật làm khuôn tham số. Không click/cuộn, biết trước số ảnh và đối
@@ -729,7 +1046,12 @@ def _download_via_manifest(captured, save_body, stats,
 
     tasks = []
     total_expected = 0
-    for s in series_list:
+    selected_count = 0
+    for series_index, s in enumerate(series_list):
+        choice = _normalise_series_choice(s, "vrad", series_index)
+        if selected_series is not None and choice["id"] not in selected_series:
+            continue
+        selected_count += 1
         total_expected += int(s.get("ImageCount", 0) or 0)
         base = tmpl_base or s.get("ImageBaseUrl")  # ưu tiên host công khai từ URL thật
         if not base:
@@ -750,8 +1072,14 @@ def _download_via_manifest(captured, save_body, stats,
                 params["expires"] = str(exp)
             tasks.append(base + "?" + urlencode(params))
 
-    log(f"Manifest: {len(series_list)} series, ~{total_expected} ảnh. "
-        f"Đang tải trực tiếp {len(tasks)} ảnh (6 luồng song song)...")
+    if selected_series is not None and selected_count == 0:
+        raise ValueError("Không còn tìm thấy series đã chọn trong manifest VradViewer mới.")
+    if selected_series is None:
+        log(f"Manifest: {selected_count} series, ~{total_expected} ảnh. "
+            f"Đang tải trực tiếp {len(tasks)} ảnh (6 luồng song song)...")
+    else:
+        log(f"Manifest: {selected_count} series đã chọn/{len(series_list)} series, ~{total_expected} ảnh. "
+            f"Đang tải trực tiếp {len(tasks)} ảnh (6 luồng song song)...")
 
     def fetch_one(u) -> bool:
         with urllib.request.urlopen(u, timeout=45, context=sslctx) as r:
@@ -762,7 +1090,8 @@ def _download_via_manifest(captured, save_body, stats,
 
 
 def _download_via_vrpacs(captured, save_body, stats,
-                         log: LogFn, stop: Callable[[], bool]) -> None:
+                         log: LogFn, stop: Callable[[], bool],
+                         selected_series: Optional[set[str]] = None) -> None:
     """
     Tải trực tiếp mọi ảnh từ manifest của viewer vrpacs/telerad
     (vrpacs-file/get-share-patient-image). Mỗi ảnh là 1 imageId dạng
@@ -793,14 +1122,20 @@ def _download_via_vrpacs(captured, save_body, stats,
             return s
         return host + "/" + s.lstrip("/")
 
-    tasks, n_series = [], 0
+    tasks, n_series, series_index = [], 0, 0
     for st in studies:
         for se in (st.get("seriesList", []) or []):
+            choice = _normalise_series_choice(se, "vrpacs", series_index)
+            series_index += 1
+            if selected_series is not None and choice["id"] not in selected_series:
+                continue
             n_series += 1
             for iid in (se.get("imageIds", []) or []):
                 if iid:
                     tasks.append(to_url(iid))
 
+    if selected_series is not None and n_series == 0:
+        raise ValueError("Không còn tìm thấy series đã chọn trong manifest vrpacs mới.")
     cj = "; ".join(f'{c.get("name")}={c.get("value")}' for c in (captured.get("cookies") or []))
     sslctx = ssl.create_default_context()
     sslctx.check_hostname = False
@@ -819,7 +1154,8 @@ def _download_via_vrpacs(captured, save_body, stats,
 
 
 def _download_via_dicomweb(captured, save_body, stats,
-                           log: LogFn, stop: Callable[[], bool]) -> None:
+                           log: LogFn, stop: Callable[[], bool],
+                           selected_series: Optional[set[str]] = None) -> None:
     """
     Tải trực tiếp mọi ảnh từ viewer chuẩn DICOMweb (OHIF / dcm4chee / Orthanc /
     static-wado như PACS BV Đa khoa Hà Tĩnh...). QIDO-RS liệt kê series +
@@ -890,17 +1226,21 @@ def _download_via_dicomweb(captured, save_body, stats,
     log(f"DICOMweb: {len(series)} series. Đang liệt kê ảnh...")
     tasks = []  # (seriesUID, sopInstanceUID, số frame theo QIDO)
     skipped_non_image = []
+    image_series_count = 0
     for s in series:
         if stop():
             break
         suid = V(s, "0020000E")
         if not suid:
             continue
+        if selected_series is not None and str(suid) not in selected_series:
+            continue
         if _is_non_image_modality(V(s, "00080060")):
             skipped_non_image.append(
                 f"{V(s, '00200011') or '?'} - {V(s, '0008103E') or V(s, '00080060')}"
             )
             continue
+        image_series_count += 1
         try:
             insts = get_json(f"{rs_base}/studies/{study}/series/{suid}/instances")
         except Exception:
@@ -924,8 +1264,11 @@ def _download_via_dicomweb(captured, save_body, stats,
             f"({', '.join(skipped_non_image)}) — không có dữ liệu điểm ảnh nên không "
             f"tính vào tổng số ảnh của ca.")
 
+    if selected_series is not None and image_series_count == 0:
+        raise ValueError("Không còn tìm thấy series đã chọn trong manifest DICOMweb mới.")
     total = len(tasks)
-    log(f"DICOMweb: {len(series) - len(skipped_non_image)} series ảnh, {total} ảnh. "
+    selected_label = " series ảnh đã chọn" if selected_series is not None else " series ảnh"
+    log(f"DICOMweb: {image_series_count}{selected_label}, {total} ảnh. "
         f"Đang tải trực tiếp (6 luồng song song)...")
 
     def try_wadouri(suid, iuid, nf, meta_in):
@@ -1001,7 +1344,8 @@ def _download_via_dicomweb(captured, save_body, stats,
 
 
 def _drive_viewer(page, log: LogFn, stats: DownloadStats,
-                  max_slices: int, stop: Callable[[], bool]) -> None:
+                  max_slices: int, stop: Callable[[], bool],
+                  selected_series_ids: Optional[set[str]] = None) -> None:
     """Bấm qua từng series và cuộn hết lát cắt để ép viewer tải ảnh."""
     # Chờ danh sách series
     try:
@@ -1071,6 +1415,8 @@ def _drive_viewer(page, log: LogFn, stats: DownloadStats,
         if idx >= len(thumbs):
             break
         thumb = thumbs[idx]
+        if selected_series_ids is not None and f"viewer:{idx}" not in selected_series_ids:
+            continue
 
         # Đọc số ảnh của series (nếu có) để biết cuộn bao nhiêu
         expected = max_slices
@@ -1402,13 +1748,17 @@ def patient_archive_status(
         or bool(legacy_id and _identity_token(legacy_id) != _identity_token(patient_id))
     )
     known = (manifest or {}).get("studies") or (_legacy_study_index(folder) if folder else {})
-    new_count = downloaded_count = incomplete_count = 0
+    new_count = downloaded_count = incomplete_count = selected_count = 0
     for study in studies:
         uid = str(study.get("study_uid") or "")
         entry = known.get(uid) if uid else None
         if isinstance(entry, dict) and entry.get("status") == "complete":
             study["local_status"] = "downloaded"
             downloaded_count += 1
+        elif isinstance(entry, dict) and entry.get("status") == "selected":
+            study["local_status"] = "selected"
+            study["selected_series"] = list(entry.get("selectedSeries") or [])
+            selected_count += 1
         elif isinstance(entry, dict):
             study["local_status"] = "incomplete"
             incomplete_count += 1
@@ -1426,6 +1776,7 @@ def patient_archive_status(
         "storedPatientName": stored_name,
         "newStudies": new_count,
         "downloadedStudies": downloaded_count,
+        "selectedStudies": selected_count,
         "incompleteStudies": incomplete_count,
         "legacyStudiesDetected": sum(
             1 for entry in known.values()
@@ -1507,6 +1858,8 @@ def record_patient_study(
     *,
     complete: bool,
     image_count: int,
+    selected_series_ids: Optional[list[str]] = None,
+    selection_complete: bool = False,
 ) -> None:
     manifest = _read_patient_manifest(patient_folder)
     if manifest is None:
@@ -1515,7 +1868,16 @@ def record_patient_study(
     if not uid:
         raise ValueError("Study thiếu StudyInstanceUID.")
     previous = manifest["studies"].get(uid) or {}
-    status = "complete" if complete else previous.get("status", "incomplete")
+    selected = sorted({
+        *(str(value) for value in (previous.get("selectedSeries") or []) if str(value)),
+        *(str(value) for value in (selected_series_ids or []) if str(value)),
+    })
+    if complete or previous.get("status") == "complete":
+        status = "complete"
+    elif selection_complete:
+        status = "selected"
+    else:
+        status = previous.get("status", "incomplete")
     manifest["studies"][uid] = {
         "studyUid": uid,
         "date": study.get("date") or "",
@@ -1524,7 +1886,8 @@ def record_patient_study(
         "folder": str(Path(study_folder).relative_to(patient_folder)),
         "status": status,
         "imageCount": max(int(image_count or 0), int(previous.get("imageCount") or 0)),
-        "downloadedAt": _now_local() if complete else previous.get("downloadedAt", ""),
+        "downloadedAt": _now_local() if (complete or selection_complete) else previous.get("downloadedAt", ""),
+        "selectedSeries": selected,
     }
     manifest["updatedAt"] = _now_local()
     _write_patient_manifest(patient_folder, manifest)
@@ -1887,7 +2250,7 @@ def _jpg_folder_name(dicom_dir: Path) -> str:
         return "JPG"
 
     date = age = desc = modality = ""
-    for p in sorted(Path(dicom_dir).glob("*.dcm"))[:40]:
+    for p in sorted(Path(dicom_dir).rglob("*.dcm"))[:40]:
         try:
             ds = pydicom.dcmread(str(p), stop_before_pixels=True, force=True)
             date = date or str(getattr(ds, "StudyDate", "") or "")
@@ -1925,6 +2288,7 @@ def run_pipeline(
     contrast_mode: str = CLINICAL,
     should_stop: Optional[Callable[[], bool]] = None,
     resume: bool = False,
+    selected_series_ids: Optional[list[str]] = None,
 ):
     out_base = Path(out_base)
     dicom_dir = out_base / "DICOM"
@@ -1933,7 +2297,8 @@ def run_pipeline(
     log("=" * 60)
     log("BƯỚC 1/2: Tải ảnh từ viewer" + (" (THỬ LẠI — gộp vào folder cũ)" if resume else ""))
     dl = download_all(url, dicom_dir, log=log, headless=headless,
-                      should_stop=should_stop, resume=resume)
+                      should_stop=should_stop, resume=resume,
+                      selected_series_ids=selected_series_ids)
     if should_stop and should_stop():
         return dl, None, jpg_dir
     if dl.dicom == 0 and dl.jpg == 0:
@@ -2042,7 +2407,10 @@ def _pick_hospital_base_url(info: dict, log: LogFn = _default_log) -> str:
             if index or len(endpoints) > 1:
                 log(f"Dùng đường mạng nội bộ của viện: {base_url}")
             return base_url
-        log(f"Không vào được {base_url} (ngoài mạng viện?) — chuyển sang đường tiếp theo.")
+        log(
+            f"Đường nội bộ {base_url} không khả dụng; "
+            "tự chuyển sang cổng PACS công cộng."
+        )
     return endpoints[-1]
 
 
@@ -2269,12 +2637,20 @@ def resolve_study_viewer_url(
         try:
             page.goto(wrapper_url, wait_until="domcontentloaded", timeout=30000)
             if _page_is_ris_login(page):
+                if cached:
+                    log("      Phiên RIS cũ đã hết hạn; app đang tự đăng nhập lại một lần.")
+                else:
+                    log("      Chưa có phiên RIS hợp lệ; app đang tự đăng nhập một lần.")
                 clear_ris_session_cache(hospital_key)
                 if not _perform_ris_login(
                     page, login_url, reading_url, username, password,
                 ):
                     raise RuntimeError("Không đăng nhập được RIS để xin link viewer.")
                 page.goto(wrapper_url, wait_until="domcontentloaded", timeout=30000)
+            elif cached:
+                log("      ✓ Đã dùng lại phiên RIS; không đăng nhập lại.")
+            else:
+                log("      ✓ Viewer mở trực tiếp; không cần đăng nhập RIS.")
             viewer_url = _pick_viewer_frame_url(page)
             if not viewer_url:
                 raise RuntimeError(
@@ -2563,7 +2939,10 @@ def _viewer_url_for_study(study: dict, hospital_key: str, log: LogFn, headless: 
     uid = str(study.get("study_uid") or "").strip()
     hosp = str(study.get("hospital_key") or hospital_key or "").strip().lower()
     if uid and hosp in HOSPITALS:
-        log("      Đang xin link viewer MỚI từ RIS (dùng ngay, không để nguội)...")
+        log(
+            "      Bước 1/2: Tạo vé viewer tạm thời cho StudyUID đã chọn "
+            "(không tìm lại mã bệnh nhân)..."
+        )
         return resolve_study_viewer_url(hosp, uid, log=log, headless=headless)
 
     stored = str(study.get("direct_url") or "").strip()
@@ -2592,6 +2971,7 @@ def download_studies_list(
     patient_name: str = "",
     hospital_key: str = "",
     hospital_name: str = "",
+    selected_series_by_study: Optional[dict[str, list[str]]] = None,
 ) -> int:
     """
     Tải danh sách ca phim đã chọn.
@@ -2633,13 +3013,23 @@ def download_studies_list(
     total_downloaded = 0
     unfinished: list[str] = []
 
-    def mark(st: dict, st_out_dir: Path, *, complete: bool, image_count: int) -> None:
+    def mark(
+        st: dict,
+        st_out_dir: Path,
+        *,
+        complete: bool,
+        image_count: int,
+        selected_series_ids: Optional[list[str]] = None,
+        selection_complete: bool = False,
+    ) -> None:
         if not managed_patient:
             return
         try:
             record_patient_study(
                 patient_folder, st, st_out_dir,
                 complete=complete, image_count=image_count,
+                selected_series_ids=selected_series_ids,
+                selection_complete=selection_complete,
             )
         except Exception as exc:
             log(f"      ⚠ Không ghi được trạng thái ca vào hồ sơ: {exc}")
@@ -2650,6 +3040,14 @@ def download_studies_list(
             break
 
         st_out_dir = patient_folder / resolve_study_folder_name(patient_folder, st)
+        study_uid = str(st.get("study_uid") or "")
+        selected_series_ids = (
+            list(selected_series_by_study.get(study_uid) or [])
+            if selected_series_by_study is not None else None
+        )
+        if selected_series_by_study is not None and not selected_series_ids:
+            raise ValueError(f"Ca {study_uid or idx} chưa có series nào được chọn.")
+        selective = selected_series_ids is not None
         resume_study = st_out_dir.exists()
         label = f"Ca {idx} ({st.get('date') or '?'} - {st.get('modality') or '?'})"
         log("\n" + "-" * 60)
@@ -2680,6 +3078,7 @@ def download_studies_list(
                 contrast_mode=contrast_mode,
                 should_stop=should_stop,
                 resume=resume_study,
+                selected_series_ids=selected_series_ids,
             )
             downloaded = dl.total() if dl else 0
             total_downloaded += downloaded
@@ -2687,9 +3086,19 @@ def download_studies_list(
             # "Xong" nghĩa là ĐỦ so với manifest của viewer, không phải "có tải
             # được cái gì đó". Đây chính là chỗ trước kia báo xong cho cả ca 4/348.
             complete = bool(dl and dl.is_complete() and not stopped)
-            mark(st, st_out_dir, complete=complete, image_count=downloaded)
+            mark(
+                st,
+                st_out_dir,
+                complete=complete and not selective,
+                image_count=downloaded,
+                selected_series_ids=selected_series_ids,
+                selection_complete=complete and selective,
+            )
             if complete:
-                log(f"✓ ĐÃ TẢI XONG CA {idx}: {jpg_dir}")
+                if selective:
+                    log(f"✓ ĐÃ TẢI XONG {len(selected_series_ids)} SERIES ĐÃ CHỌN CỦA CA {idx}: {jpg_dir}")
+                else:
+                    log(f"✓ ĐÃ TẢI XONG CA {idx}: {jpg_dir}")
             elif stopped:
                 log(f"⏹ CA {idx} DỪNG GIỮA CHỪNG ({downloaded} ảnh) — đánh dấu CHƯA ĐỦ.")
                 unfinished.append(f"{label}: dừng giữa chừng ({downloaded} ảnh)")
@@ -2710,7 +3119,10 @@ def download_studies_list(
         for line in unfinished:
             log(f"   • {line}")
     else:
-        log(f"HOÀN TẤT TẢI PHIM BỆNH NHÂN! Tất cả {len(studies)} ca đều đủ ảnh.")
+        if selected_series_by_study is not None:
+            log(f"HOÀN TẤT TẢI SERIES ĐÃ CHỌN! {len(studies)} ca đều đủ ảnh trong phạm vi đã chọn.")
+        else:
+            log(f"HOÀN TẤT TẢI PHIM BỆNH NHÂN! Tất cả {len(studies)} ca đều đủ ảnh.")
     log(f"Thư mục lưu: {patient_folder}")
     log("=" * 70)
     return total_downloaded

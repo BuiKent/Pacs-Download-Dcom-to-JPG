@@ -101,6 +101,8 @@ bệnh viện và ngày tạo hồ sơ:
   patient-index.json        ← nhận biết ca đã tải/phim mới ở lần tìm sau
   2026-07-28 - MR - MR BRAIN - a1b2c3d4e5/
     DICOM/
+      Series_2_AX T2 FLAIR_<UID-hash>/
+      Series_5_3D AX T1+C_<UID-hash>/
     RAW_JPG/
     2026-07-28 - 45Y - MR BRAIN _ MR/
       Series_..._<UID-hash>/
@@ -111,11 +113,27 @@ Cùng mã BN và bệnh viện sẽ dùng lại folder trên; study đã tải �
 khác, app chặn tự động gộp. Folder Classic cũ dạng `<BV>_BN_<mã>` được nhận diện
 qua DICOM và tạo chỉ mục khi dùng lại.
 
+### Chọn T1/T2/FLAIR trước khi tải
+
+- **Tải tất cả file** được tích mặc định, nên cách tải cũ vẫn chỉ cần một lần bấm.
+- Muốn tải chọn lọc: bỏ tích **Tải tất cả file** → bấm **Quét danh sách series**
+  → giữ lại các series T1, T2, FLAIR, DWI... cần tải → bấm tải.
+- Khi tìm bằng **mã bệnh nhân có nhiều ngày chụp**, có thể bỏ tích ngày không cần;
+  app chỉ quét các ngày còn tích và giữ nguyên lựa chọn này khi giao diện render lại.
+  Danh sách series được nhóm theo từng ngày/`StudyInstanceUID`, không dùng chung
+  lựa chọn của ngày này cho ngày khác.
+- Nhãn T1/T2 là gợi ý để đọc nhanh. App luôn hiển thị mô tả gốc từ PACS và lọc
+  bằng `SeriesInstanceUID`, không dựa riêng vào tên chuỗi.
+- Ca tải chọn lọc được ghi là **Đã tải series đã chọn**, không bị đánh dấu nhầm là
+  đã tải đầy đủ toàn bộ study. Sau này vẫn có thể tích **Tải tất cả file** để bổ sung.
+- Viewer không có manifest sẽ được chọn theo thứ tự thumbnail đang hiển thị; nếu
+  không quét được thumbnail, app báo rõ và không tự tải nhầm series.
+
 Khi tải một link viewer riêng, mỗi lượt được đặt trong folder `LINK_<thời gian>_<hash>`.
 Kết quả bên trong:
 ```
 LINK_.../
-  DICOM/     ← file DICOM gốc tải về
+  DICOM/     ← DICOM gốc, chia Series_<số>_<mô tả>_<UID-hash>/
   RAW_JPG/   ← ảnh JPG viewer trả trực tiếp (nếu có)
   JPG/       ← ẢNH JPG CHẤT LƯỢNG CAO, chia theo từng series  ← DÙNG CÁI NÀY
 ```
@@ -178,8 +196,8 @@ python -c "import dcom_pipeline as p, pathlib; p.convert_all(pathlib.Path('Auto_
   cuộn/click, nhưng **chỉ xử lý các xung ĐANG HIỂN THỊ** (`:visible`) nên không còn
   cảnh "đếm khống 99 xung / lặp xung 0 ảnh", và bắt ảnh **theo nội dung** để hợp
   nhiều loại viewer hơn.
-- Cả hai chế độ đều **tự loại ảnh trùng** (SHA-1) và **tải toàn bộ series** (lọc
-  chọn sau trên đĩa nếu cần).
+- Cả hai chế độ đều **tự loại ảnh trùng** (SHA-1). Mặc định tải toàn bộ; khi bỏ
+  tích **Tải tất cả file**, chỉ những series đã chọn mới được lưu/chuyển JPG.
 
 ## Lưu ý quan trọng
 

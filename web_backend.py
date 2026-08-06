@@ -1041,6 +1041,66 @@ class WebController:
         self.job.start("search", target)
         return self.job.snapshot()
 
+    def start_series_discovery(self, payload: dict) -> dict:
+        studies = payload.get("studies")
+        direct_url = str(payload.get("url") or "").strip()
+        show_browser = bool(payload.get("showBrowser"))
+        hospital = str(payload.get("hospital") or "").strip().lower()
+
+        if not (isinstance(studies, list) and studies) and not direct_url:
+            raise ValueError("Hãy chọn ca chụp hoặc nhập link viewer trước khi quét series.")
+        if direct_url:
+            parsed = urlparse(direct_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("Link viewer không hợp lệ.")
+
+        def target() -> dict:
+            groups = []
+            if isinstance(studies, list) and studies:
+                for index, study in enumerate(studies, 1):
+                    if self.job.stop_event.is_set():
+                        break
+                    study_uid = str(study.get("study_uid") or "").strip()
+                    if not study_uid:
+                        raise ValueError("Có ca chụp thiếu StudyInstanceUID.")
+                    self.job.log(
+                        f"[{index}/{len(studies)}] Đang đọc series ngày "
+                        f"{study.get('date') or '?'} - {study.get('desc') or study_uid}..."
+                    )
+                    viewer_url = dcom_pipeline._viewer_url_for_study(
+                        study, hospital or str(study.get("hospital_key") or ""),
+                        self.job.log, not show_browser,
+                    )
+                    inventory = dcom_pipeline.discover_viewer_series(
+                        viewer_url,
+                        log=self.job.log,
+                        headless=not show_browser,
+                        should_stop=self.job.stop_event.is_set,
+                    )
+                    groups.append({
+                        "studyUid": study_uid,
+                        "studyDate": study.get("date") or "",
+                        "studyDescription": study.get("desc") or "",
+                        **inventory,
+                    })
+            else:
+                inventory = dcom_pipeline.discover_viewer_series(
+                    direct_url,
+                    log=self.job.log,
+                    headless=not show_browser,
+                    should_stop=self.job.stop_event.is_set,
+                )
+                groups.append({
+                    "studyUid": "direct",
+                    "studyDate": "",
+                    "studyDescription": "Link viewer",
+                    **inventory,
+                })
+            return {"groups": groups}
+
+        self.job.start("series-discovery", target)
+        return self.job.snapshot()
+
     def start_download(self, payload: dict) -> dict:
         studies = payload.get("studies")
         if not isinstance(studies, list) or not studies:
@@ -1055,6 +1115,22 @@ class WebController:
         patient_name = str(payload.get("patientName") or studies[0].get("patient_name") or "").strip()
         hospital = str(payload.get("hospital") or studies[0].get("hospital_key") or "").strip().lower()
         hospital_name = dcom_pipeline.HOSPITALS.get(hospital, {}).get("name", hospital)
+        download_all_files = bool(payload.get("downloadAllFiles", True))
+        series_selections = payload.get("seriesSelections")
+        if not download_all_files:
+            if not isinstance(series_selections, dict):
+                raise ValueError("Chưa quét và chọn series cần tải.")
+            normalised_selections = {
+                str(uid): [str(value) for value in values if str(value).strip()]
+                for uid, values in series_selections.items()
+                if isinstance(values, list)
+            }
+            for study in studies:
+                uid = str(study.get("study_uid") or "")
+                if not normalised_selections.get(uid):
+                    raise ValueError(f"Ca {uid or '?'} chưa có series nào được chọn.")
+        else:
+            normalised_selections = None
         if not patient_id or not hospital:
             raise ValueError("Thiếu mã bệnh nhân hoặc bệnh viện cho lượt tải theo RIS.")
         for study in all_studies:
@@ -1080,6 +1156,7 @@ class WebController:
                 patient_name=patient_name,
                 hospital_key=hospital,
                 hospital_name=hospital_name,
+                selected_series_by_study=normalised_selections,
             )
             patient_folder, _manifest = dcom_pipeline.find_patient_archive(
                 output_root, patient_id, hospital,
@@ -1136,6 +1213,16 @@ class WebController:
         output_root = Path(str(payload.get("outputRoot") or self.output_root)).expanduser().resolve()
         output_root.mkdir(parents=True, exist_ok=True)
         requested_resume = bool(payload.get("resume"))
+        download_all_files = bool(payload.get("downloadAllFiles", True))
+        selected_series_ids = payload.get("selectedSeriesIds")
+        if not download_all_files:
+            if not isinstance(selected_series_ids, list):
+                raise ValueError("Chưa quét và chọn series cần tải.")
+            selected_series_ids = [str(value) for value in selected_series_ids if str(value).strip()]
+            if not selected_series_ids:
+                raise ValueError("Hãy chọn ít nhất một series cần tải.")
+        else:
+            selected_series_ids = None
 
         def target() -> dict:
             direct_root, resumed = self._direct_download_root(output_root, url, requested_resume)
@@ -1153,6 +1240,7 @@ class WebController:
                 contrast_mode=str(payload.get("contrastMode") or dcom_pipeline.CLINICAL),
                 should_stop=self.job.stop_event.is_set,
                 resume=resumed,
+                selected_series_ids=selected_series_ids,
             )
             archive = self.catalog.open(jpg_dir if Path(jpg_dir).exists() else direct_root)
             # The link is stored with the folder so a later retry from history
@@ -1324,6 +1412,8 @@ class LocalApiServer:
                     return owner.controller.set_output_root(str(payload.get("path") or ""))
                 if path == "/api/search":
                     return owner.controller.start_search(payload)
+                if path == "/api/series/discover":
+                    return owner.controller.start_series_discovery(payload)
                 if path == "/api/download":
                     return owner.controller.start_download(payload)
                 if path == "/api/download/direct":

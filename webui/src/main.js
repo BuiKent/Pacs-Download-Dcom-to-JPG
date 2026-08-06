@@ -75,40 +75,79 @@ let viewerRequestId = 0;
 // "↻" were near-identical for reset and rotate, and no glyph reads as "flip" or
 // "orbit". Each SVG below follows the shape used by mainstream DICOM viewers.
 const icons = {
-  crosshair: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="22" x2="18" y1="12" y2="12"/><line x1="6" x2="2" y1="12" y2="12"/><line x1="12" x2="12" y1="6" y2="2"/><line x1="12" x2="12" y1="22" y2="18"/></svg>`,
-  folder: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>`,
-  current: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`,
-  single: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>`,
-  compare: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></svg>`,
-  compare3: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>`,
-  scrollSync: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
-  montage6: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>`,
-  montage8: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>`,
-  mpr: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>`,
-  volume3d: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>`,
+  crosshair: "⊕",
+  folder: "📂",
+  current: "⌂",
+  single: "▣",
+  compare: "▥",
+  compare3: "▤",
+  // Two panes locked to one another: scrolling either keeps the offset.
+  scrollSync: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <rect x="2.5" y="4" width="7.5" height="16" rx="1.5"></rect>
+    <rect x="14" y="4" width="7.5" height="16" rx="1.5"></rect>
+    <path d="M10.2 9.5h3.6"></path>
+    <path d="M12.4 8 14 9.5 12.4 11"></path>
+    <path d="M13.8 14.5h-3.6"></path>
+    <path d="M11.6 13 10 14.5l1.6 1.5"></path>
+  </svg>`,
+  montage6: "▦",
+  montage8: "▦",
+  mpr: "✣",
+  volume3d: "◇",
   window: "◐",
-  pan: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M14 7.5a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M10 8a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M6 9a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M18 11v1a8 8 0 1 1-16 0v-2.5"/></svg>`,
-  zoom: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`,
-  length: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></svg>`,
+  pan: "✋",
+  zoom: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="10.5" cy="10.5" r="6.5"></circle>
+    <path d="M15.5 15.5 21 21"></path>
+  </svg>`,
+  length: "╱",
   angle: "∠",
-  ellipse: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/></svg>`,
-  freehand: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>`,
-  text: `<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/></svg>`,
-  flipHorizontal: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 21h8a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2Z"/><path d="M12 2v20"/></svg>`,
-  flipVertical: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v3"/><path d="M21 16v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3"/><path d="M4 12h16"/></svg>`,
+  ellipse: "◯",
+  freehand: "✎",
+  // A note anchored to a point: the arrow marks the finding, the bar is text.
+  text: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M3 21 10 14"></path>
+    <path d="M10 9v5h5"></path>
+    <path d="M13 3h8"></path>
+    <path d="M13 7h8"></path>
+  </svg>`,
+  // Two mirrored triangles across a dashed axis — the international flip mark.
+  flipHorizontal: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M12 3v18" stroke-dasharray="2 2.5"></path>
+    <path d="M9.5 6 3 12l6.5 6z" fill="currentColor" stroke="none"></path>
+    <path d="M14.5 6 21 12l-6.5 6z"></path>
+  </svg>`,
+  flipVertical: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M3 12h18" stroke-dasharray="2 2.5"></path>
+    <path d="M6 9.5 12 3l6 6.5z" fill="currentColor" stroke="none"></path>
+    <path d="M6 14.5 12 21l6-6.5z"></path>
+  </svg>`,
+  // A square turning: unmistakably "rotate the image", never "undo".
   rotateClockwise: `<svg viewBox="0 0 24 24" aria-hidden="true">
     <rect x="3" y="11" width="10" height="10" rx="1.5"></rect>
     <path d="M13 6h4a4 4 0 0 1 4 4v1"></path>
     <path d="M10.5 3.5 13 6l-2.5 2.5"></path>
   </svg>`,
-  reset: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>`,
-  orbit3d: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.1 13A8 8 0 0 1 12 18"/><path d="M19.1 11A8 8 0 0 0 12 6"/><path d="M12 6a8 8 0 0 0-7.1 5"/><path d="M12 18a8 8 0 0 1-7.1-5"/></svg>`,
-  invert: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 18a6 6 0 0 0 0-12v12z"/></svg>`,
-  clearAnnotations: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>`,
-  cine: `<svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>`,
-  capture: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>`,
-  save: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/></svg>`,
-  volume: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 2v7.527a2 2 0 0 1-.211.896L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.069-10.127A2 2 0 0 1 14 9.527V2"/><path d="M8.5 2h7"/><path d="M14 16H5.3"/></svg>`,
+  // A full circular arrow: the standard "restore defaults" mark.
+  reset: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M20 12a8 8 0 1 1-2.6-5.9"></path>
+    <path d="M20 3v5h-5"></path>
+  </svg>`,
+  // A sphere with an orbit ring — the convention for free 3D rotation.
+  orbit3d: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="12" cy="12" r="5"></circle>
+    <ellipse cx="12" cy="12" rx="10.2" ry="4.4" transform="rotate(-27 12 12)"></ellipse>
+  </svg>`,
+  // Half-dark disc: the same mark photo tools use for invert/negative.
+  invert: `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="12" cy="12" r="8.5"></circle>
+    <path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"></path>
+  </svg>`,
+  clearAnnotations: "×",
+  cine: "▶",
+  capture: "▧",
+  save: "💾",
+  volume: "㎖",
   history: "🕘",
 };
 
@@ -326,21 +365,20 @@ function render() {
             <select data-field="series">${renderSeriesOptions(state.archive, state.selectedId)}</select>
           </label>
           ${compareSeriesList().map((_series, slot) => `<label>${escapeHtml(
-        slot === 0 ? t("So sánh với") : t("Và với"),
-      )}
-            <select data-field="compare" data-slot="${slot}">${
-        renderSeriesOptions(state.archive, state.compareIds[slot])
-      }</select></label>`).join("")}
+    slot === 0 ? t("So sánh với") : t("Và với"),
+  )}
+            <select data-field="compare" data-slot="${slot}">${renderSeriesOptions(state.archive, state.compareIds[slot])
+    }</select></label>`).join("")}
         </div>
         <div class="header-actions">
           ${iconButton(
-        "toggle-download",
-        state.downloadOpen ? "⇤" : "⇥",
-        t(state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim"),
-        state.downloadOpen,
-        false,
-        t("Tải phim"),
-      )}
+      "toggle-download",
+      state.downloadOpen ? "⇤" : "⇥",
+      t(state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim"),
+      state.downloadOpen,
+      false,
+      t("Tải phim"),
+    )}
           ${iconButton("choose-archive", icons.folder, t("Mở folder DICOM hoặc JPG/PNG trong viewer"))}
           ${iconButton("refresh-archive", "⟳", t("Quét lại thư mục hiện tại"), false, !state.archive.root)}
           <button class="soft-button" data-action="toggle-language"
@@ -363,7 +401,7 @@ function render() {
         </section>
         <div class="hospital-row">
           ${(state.bootstrap?.hospitals || []).map((item, index) =>
-        `<label><input type="radio" name="hospital" value="${item.id}"
+      `<label><input type="radio" name="hospital" value="${item.id}"
           ${state.patient?.hospitalKey ? (item.id === state.patient.hospitalKey ? "checked" : "") : ((item.isDefault ?? (index === 0)) ? "checked" : "")}>
               ${escapeHtml(item.name)}</label>`).join("")}
         </div>
@@ -480,10 +518,10 @@ function renderStudies() {
       <span><b>${escapeHtml(study.modality)} · ${escapeHtml(study.date)}</b>
         <small>${escapeHtml(study.desc || study.study_uid)}</small>
         <em class="study-state ${escapeHtml(study.local_status || "new")}">${escapeHtml(t({
-          downloaded: "Đã tải",
-          incomplete: "Tải chưa hoàn tất",
-          new: "Phim mới",
-        }[study.local_status] || "Phim mới"))}</em></span>
+    downloaded: "Đã tải",
+    incomplete: "Tải chưa hoàn tất",
+    new: "Phim mới",
+  }[study.local_status] || "Phim mới"))}</em></span>
     </label>`).join("");
 }
 
@@ -493,9 +531,9 @@ function renderPatientStatus() {
   if (patient.nameConflict) {
     return `<div class="patient-alert danger"><b>${escapeHtml(t("Không tự động gộp bệnh nhân"))}</b>
       <span>${escapeHtml(tf(
-        "Mã {} đã lưu tên “{}”, nhưng RIS trả “{}”. Hãy kiểm tra lại.",
-        patient.patientId, patient.storedPatientName, patient.patientName,
-      ))}</span></div>`;
+      "Mã {} đã lưu tên “{}”, nhưng RIS trả “{}”. Hãy kiểm tra lại.",
+      patient.patientId, patient.storedPatientName, patient.patientName,
+    ))}</span></div>`;
   }
   if (!patient.patientName) {
     return `<div class="patient-alert warning"><b>${escapeHtml(patient.patientId)} · ${escapeHtml(patient.hospitalName)}</b>
@@ -837,7 +875,7 @@ async function action(name) {
       const button = app.querySelector("[data-action='cine']");
       if (button) {
         button.classList.toggle("active", state.cine);
-        button.querySelector("span").innerHTML = state.cine ? "Ⅱ" : icons.cine;
+        button.querySelector("span").textContent = state.cine ? "Ⅱ" : icons.cine;
         button.title = t(state.cine ? "Dừng chạy phim" : "Chạy phim");
       }
     }

@@ -60,6 +60,7 @@ class RisSessionTests(unittest.TestCase):
         dcom_pipeline.clear_ris_session_cache()
         dcom_pipeline._ENDPOINT_PROBE_CACHE.clear()
         dcom_pipeline._CHROME_UNAVAILABLE = False
+        dcom_pipeline._BROWSER_NOTICES_LOGGED.clear()
 
     def test_session_cache_is_memory_only_copied_and_expires(self):
         state = {"cookies": [{"name": "sid", "value": "A"}], "origins": []}
@@ -94,11 +95,14 @@ class RisSessionTests(unittest.TestCase):
             )
         probe.assert_called_once_with("http://192.168.50.105")
 
+        fallback_logs = []
         with patch("dcom_pipeline._endpoint_is_reachable", return_value=False):
             self.assertEqual(
                 "https://dhy.cdhaviet.vn",
-                dcom_pipeline._pick_hospital_base_url(info, log=lambda _m: None),
+                dcom_pipeline._pick_hospital_base_url(info, log=fallback_logs.append),
             )
+        self.assertTrue(any("cổng PACS công cộng" in line for line in fallback_logs))
+        self.assertFalse(any("ngoài mạng viện?" in line for line in fallback_logs))
 
         # Viện chỉ có một đường thì không tốn một lượt dò nào.
         with patch("dcom_pipeline._endpoint_is_reachable") as never:
@@ -236,6 +240,9 @@ class RisSessionTests(unittest.TestCase):
         self.assertTrue(
             any("Chrome không khởi động được" in message for message in logs)
         )
+        edge_notices = [message for message in logs if "Công cụ nền: Microsoft Edge" in message]
+        self.assertEqual(1, len(edge_notices))
+        self.assertIn("không báo đăng nhập", edge_notices[0])
 
 
 if __name__ == "__main__":
