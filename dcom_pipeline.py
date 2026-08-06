@@ -1551,31 +1551,103 @@ def _stretch_uint8(arr, low, high):
     return out.astype(np.uint8)
 
 
+def _voi_output_range(ds, windowed):
+    """Dải giá trị mà VOI của pydicom xuất ra, để map sang 8-bit đúng cửa sổ.
+
+    KHÔNG được dùng min/max của ảnh đã cắt cửa sổ: nếu lát cắt không chạm cả hai
+    đầu cửa sổ (lát rìa, ảnh không có khí hoặc không có xương) thì min/max hẹp
+    hơn cửa sổ, và kéo giãn theo chúng sẽ đẩy tương phản lệch khỏi mức lâm sàng
+    — mỗi lát một kiểu.
+    """
+    import numpy as np
+
+    # VOI LUT Sequence: pydicom xuất ra chỉ số bảng tra, dải do bảng quy định.
+    lut = getattr(ds, "VOILUTSequence", None)
+    if lut:
+        try:
+            bits = int(lut[0].LUTDescriptor[2])
+            return 0.0, float(2 ** bits - 1)
+        except Exception:
+            return float(windowed.min()), float(windowed.max())
+
+    center = _dicom_first_number(getattr(ds, "WindowCenter", None))
+    width = _dicom_first_number(getattr(ds, "WindowWidth", None))
+    if center is None or width is None or width <= 0:
+        return None
+
+    # Cửa sổ tuyến tính: pydicom map vào [y_min, y_max] theo PS3.3 C.11.2.1.2.
+    # Phải lặp lại đúng công thức của pydicom — với CT (signed + RescaleIntercept
+    # -1024) dải này KHÔNG phải [0, 2**bits - 1].
+    if "ModalityLUTSequence" in ds:
+        try:
+            bits = int(ds.ModalityLUTSequence[0].LUTDescriptor[2])
+        except Exception:
+            return float(windowed.min()), float(windowed.max())
+        y_min, y_max = 0.0, float(2 ** bits - 1)
+    else:
+        try:
+            bits = int(getattr(ds, "BitsStored", 16) or 16)
+        except (TypeError, ValueError):
+            bits = 16
+        bits = max(1, min(bits, 32))
+        if int(getattr(ds, "PixelRepresentation", 0) or 0) == 0:
+            y_min, y_max = 0.0, float(2 ** bits - 1)
+        else:
+            y_min, y_max = float(-(2 ** (bits - 1))), float(2 ** (bits - 1) - 1)
+
+    slope = _dicom_first_number(getattr(ds, "RescaleSlope", None))
+    intercept = _dicom_first_number(getattr(ds, "RescaleIntercept", None))
+    if slope is not None and intercept is not None:
+        y_min = y_min * slope + intercept
+        y_max = y_max * slope + intercept
+
+    return (y_min, y_max) if y_max > y_min else (y_max, y_min)
+
+
+def _dicom_first_number(value):
+    if value is None:
+        return None
+    if not isinstance(value, (str, bytes)) and hasattr(value, "__len__"):
+        if len(value) == 0:
+            return None
+        value = value[0]
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    import math as _math
+    return result if _math.isfinite(result) else None
+
+
 def _gray_to_uint8(arr, ds, contrast_mode: str):
     """Chuyển 1 khung ảnh xám (đã qua modality LUT) sang 8-bit theo chế độ tương phản."""
     import numpy as np
 
-    arr = arr.astype(np.float32)
-
     if contrast_mode == AUTO:
+        arr = arr.astype(np.float32)
         low, high = np.percentile(arr, (1, 99))
         if high <= low:
             low, high = float(arr.min()), float(arr.max())
         return _stretch_uint8(arr, low, high)
 
-    # CLINICAL: để pydicom áp VOI đúng chuẩn (LUT sequence / sigmoid / linear)
+    # CLINICAL: để pydicom áp VOI đúng chuẩn (LUT sequence / sigmoid / linear).
+    # Giữ nguyên dtype nguyên của `arr`: VOI LUT Sequence dùng giá trị pixel làm
+    # chỉ số tra bảng, nên pydicom cảnh báo "may give incorrect results" khi đầu
+    # vào là float — chỉ số bị cắt phần thập phân, tra nhầm ô bảng.
     try:
         try:
             from pydicom.pixels import apply_voi_lut
         except ImportError:  # pragma: no cover - compatibility with pydicom 2.4
             from pydicom.pixel_data_handlers.util import apply_voi_lut
-        v = apply_voi_lut(arr, ds).astype(np.float32)
-        if float(v.max()) > float(v.min()):
-            return _stretch_uint8(v, float(v.min()), float(v.max()))
+        windowed = apply_voi_lut(arr, ds)
+        bounds = _voi_output_range(ds, windowed)
+        if bounds is not None and bounds[1] > bounds[0]:
+            return _stretch_uint8(windowed.astype(np.float32), bounds[0], bounds[1])
     except Exception:
         pass
 
     # Không có thông tin window (WC/WW, VOI LUT...) -> kéo giãn nhẹ theo percentile
+    arr = arr.astype(np.float32)
     low, high = np.percentile(arr, (0.5, 99.5))
     if high <= low:
         low, high = float(arr.min()), float(arr.max())

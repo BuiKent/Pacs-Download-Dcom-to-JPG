@@ -3,6 +3,7 @@ import { api, configureApi } from "./api.js";
 import { getLanguage, setLanguage, t, tf, translateLog } from "./i18n.js";
 import {
   applyWindowPreset,
+  availableWindowPresets,
   captureActiveViewport,
   clearActiveMeasurements,
   disposeViewer,
@@ -16,6 +17,7 @@ import {
   rotateActiveViewportClockwise,
   saveAnnotations,
   seriesSafetyNotice,
+  seriesSupportsHounsfield,
   setTool,
   show3d,
   showMpr,
@@ -239,8 +241,25 @@ function renderSeriesOptions(archive, selectedId) {
   }).join("");
 }
 
+function windowPresetHint(series) {
+  if (seriesSupportsHounsfield(series)) {
+    return "Cửa sổ Hounsfield chuẩn, tính trực tiếp trên pixel CT gốc";
+  }
+  if (series?.sourceType === "dicom") {
+    // MR has no absolute intensity scale, so no fixed window can be offered.
+    return "Cửa sổ hiển thị trên pixel DICOM gốc, quy chiếu theo WC/WW trong file";
+  }
+  return "Preset thị giác trên dữ liệu ảnh 8-bit";
+}
+
 function render() {
   const series = selectedSeries();
+  // Switching from a CT to an MR series strands any Hounsfield preset, which
+  // that series cannot honour. Fall back before the select is drawn so the
+  // control never shows a preset that is not in force.
+  if (!availableWindowPresets(series).some((item) => item.id === state.windowPreset)) {
+    state.windowPreset = "full";
+  }
   const safety = seriesSafetyNotice(series);
   const mprDisabled = !series?.mprReady;
   app.innerHTML = `
@@ -339,12 +358,8 @@ function render() {
           </div>
           ${state.mode !== "volume3d" ? `<label class="window-preset-control">
             ${escapeHtml(t("Hiển thị"))}
-            <select data-field="window-preset" title="${escapeHtml(t(series?.sourceType === "dicom"
-        ? "Cửa sổ hiển thị trên pixel DICOM gốc"
-        : "Preset thị giác trên dữ liệu ảnh 8-bit"))}">
-              <option value="full" ${state.windowPreset === "full" ? "selected" : ""}>${escapeHtml(t(series?.sourceType === "dicom" ? "DICOM mặc định" : "Toàn dải"))}</option>
-              <option value="soft" ${state.windowPreset === "soft" ? "selected" : ""}>${escapeHtml(t(series?.sourceType === "dicom" ? "Cửa sổ rộng" : "Mô mềm JPG"))}</option>
-              <option value="contrast" ${state.windowPreset === "contrast" ? "selected" : ""}>${escapeHtml(t(series?.sourceType === "dicom" ? "Cửa sổ hẹp" : "Tương phản cao"))}</option>
+            <select data-field="window-preset" title="${escapeHtml(t(windowPresetHint(series)))}">
+              ${availableWindowPresets(series).map((preset) => `<option value="${preset.id}" ${state.windowPreset === preset.id ? "selected" : ""}>${escapeHtml(preset.detail ? `${t(preset.label)} · ${preset.detail}` : t(preset.label))}</option>`).join("")}
             </select>
           </label>` : ""}
           <span class="toolbar-divider"></span>

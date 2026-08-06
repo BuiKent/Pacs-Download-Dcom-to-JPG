@@ -24,6 +24,9 @@ def _write_series(
     contrast_agent: str = "",
     modality: str = "MR",
     extension: str = ".dcm",
+    window: tuple[float, float] | None = None,
+    rescale: tuple[float, float] | None = None,
+    pixel_fill: np.ndarray | None = None,
 ) -> str:
     series_uid = generate_uid()
     study_uid = generate_uid()
@@ -67,11 +70,21 @@ def _write_series(
         ds.BitsStored = 12
         ds.HighBit = 11
         ds.PixelRepresentation = 0
-        pixels = (
-            np.arange(ds.Rows * ds.Columns, dtype=np.uint16).reshape(ds.Rows, ds.Columns)
-            + value_offset
-            + index
-        )
+        if window is not None:
+            ds.WindowCenter = window[0]
+            ds.WindowWidth = window[1]
+        if rescale is not None:
+            ds.RescaleSlope = rescale[0]
+            ds.RescaleIntercept = rescale[1]
+        if pixel_fill is not None:
+            pixels = pixel_fill.astype(np.uint16)
+            ds.Rows, ds.Columns = pixels.shape
+        else:
+            pixels = (
+                np.arange(ds.Rows * ds.Columns, dtype=np.uint16).reshape(ds.Rows, ds.Columns)
+                + value_offset
+                + index
+            )
         ds.PixelData = pixels.tobytes()
         ds.save_as(str(folder / f"{index:04d}{extension}"), enforce_file_format=True)
     return series_uid
@@ -117,6 +130,94 @@ class MprSelectionTests(unittest.TestCase):
             root = Path(tmp)
             _write_series(root, "3D AX T1 BRAVO+c", 100, series_number=9)
             self.assertIsNone(mpr_engine.select_mpr_candidate(root))
+
+
+def _head_ct_phantom() -> tuple[np.ndarray, np.ndarray]:
+    """A 16x20 head-CT-like slice: air, white matter, grey matter, skull."""
+    hu = np.full((16, 20), -1000.0)
+    hu[2:14, 2:18] = 30.0     # white matter
+    hu[5:11, 6:14] = 40.0     # grey matter
+    hu[2:14, 2:4] = 1200.0    # skull
+    hu[2:14, 16:18] = 1200.0
+    return hu, (hu + 1024.0).astype(np.uint16)
+
+
+class MprWindowTests(unittest.TestCase):
+    """The window baked into 8-bit MPR JPGs is irreversible, so it must come
+    from the file's own VOI rather than from the volume's value spread."""
+
+    def _ct_root(self, tmp: str, window: tuple[float, float] | None):
+        root = Path(tmp)
+        _, stored = _head_ct_phantom()
+        _write_series(
+            root, "PLAIN CT VOLUME", 101, series_number=2,
+            modality="CT", window=window, rescale=(1.0, -1024.0),
+            pixel_fill=stored,
+        )
+        candidate = mpr_engine.select_mpr_candidate(root)
+        self.assertIsNotNone(candidate)
+        return candidate
+
+    def test_series_window_comes_from_the_dicom_voi(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = self._ct_root(tmp, window=(40.0, 80.0))
+            low, high, method = mpr_engine._series_intensity_range(candidate)
+            self.assertTrue(method.startswith("dicom_voi_linear"))
+            self.assertIn("101/101", method)
+            # PS3.3 C.11.2.1.2.1 LINEAR: centre - 0.5 +/- (width - 1) / 2.
+            self.assertAlmostEqual(0.0, low)
+            self.assertAlmostEqual(79.0, high)
+
+    def test_brain_contrast_survives_the_dicom_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = self._ct_root(tmp, window=(40.0, 80.0))
+            hu, _ = _head_ct_phantom()
+
+            low, high, _ = mpr_engine._series_intensity_range(candidate)
+            windowed = mpr_engine._to_uint8(hu.astype(np.float32), low, high, False)
+            separation = abs(
+                float(windowed[hu == 40].mean()) - float(windowed[hu == 30].mean())
+            )
+
+            # The old whole-volume percentile spans air to cortical bone, which
+            # flattens grey/white matter to about one grey level.
+            p_low, p_high = mpr_engine._percentile_intensity_range(candidate)
+            flattened = mpr_engine._to_uint8(hu.astype(np.float32), p_low, p_high, False)
+            percentile_separation = abs(
+                float(flattened[hu == 40].mean()) - float(flattened[hu == 30].mean())
+            )
+
+            self.assertLessEqual(percentile_separation, 2.0)
+            self.assertGreater(separation, 20.0)
+
+    def test_series_without_any_voi_falls_back_to_percentile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = self._ct_root(tmp, window=None)
+            _, _, method = mpr_engine._series_intensity_range(candidate)
+            self.assertEqual("series_percentile_0.5_99.5", method)
+
+    def test_manifest_records_the_window_it_baked_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = self._ct_root(tmp, window=(40.0, 80.0))
+            _, manifest_path = mpr_engine.convert_mpr_candidate(
+                candidate, Path(tmp) / "jpg", quality=100, log=lambda _message: None,
+            )
+            manifest = mpr_engine.read_manifest(manifest_path.parent)
+            intensity = manifest["intensity"]
+            self.assertTrue(intensity["method"].startswith("dicom_voi_linear"))
+            self.assertAlmostEqual(79.0, intensity["window_width"])
+            self.assertAlmostEqual(39.5, intensity["window_center"])
+
+    def test_multi_valued_window_takes_the_primary_pair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # CT headers often carry soft-tissue then bone; the first is primary.
+            candidate = self._ct_root(tmp, window=None)
+            path = candidate.slices[0].path
+            ds = pydicom.dcmread(str(path))
+            ds.WindowCenter = [40, 400]
+            ds.WindowWidth = [80, 1800]
+            ds.save_as(str(path), enforce_file_format=True)
+            self.assertEqual((40.0, 80.0, "LINEAR"), mpr_engine._stored_window(path))
 
 
 class MprPackageTests(unittest.TestCase):

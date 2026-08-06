@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  CT_WINDOW_PRESETS,
   STACK_PREFETCH_CONFIG,
   WINDOW_PRESETS,
   annotationBelongsToSeries,
   annotationTargetViewportId,
+  availableWindowPresets,
   isMeasurementAnnotation,
   montageIndices,
   mprPlaneLayout,
   nextViewportRotation,
   seriesSafetyNotice,
+  seriesSupportsHounsfield,
   toolFallback,
   volumeTransferRange,
   windowPresetRange,
@@ -165,5 +168,67 @@ describe("viewer shell", () => {
     // A raw CT volume spans 0..4095, so the physical -160..240 window must be
     // mapped back to stored values 864..1264 before building transfer points.
     expect(volumeTransferRange(ct, [0, 4095])).toEqual([864, 1264]);
+  });
+
+  const calibratedCt = {
+    sourceType: "dicom",
+    modality: "CT",
+    pixelData: {
+      bitsStored: 12,
+      pixelRepresentation: 0,
+      rescaleSlope: 1,
+      rescaleIntercept: -1024,
+      windowCenter: 400,
+      windowWidth: 1800,
+    },
+  };
+  const mr = {
+    sourceType: "dicom",
+    modality: "MR",
+    pixelData: {
+      bitsStored: 12,
+      pixelRepresentation: 0,
+      rescaleSlope: 1,
+      rescaleIntercept: 0,
+      windowCenter: 508,
+      windowWidth: 1067,
+    },
+  };
+
+  it("offers fixed Hounsfield windows only where pixels are calibrated CT", () => {
+    expect(seriesSupportsHounsfield(calibratedCt)).toBe(true);
+    expect(seriesSupportsHounsfield(mr)).toBe(false);
+    expect(seriesSupportsHounsfield({ sourceType: "jpg", modality: "CT" })).toBe(false);
+
+    const ctIds = availableWindowPresets(calibratedCt).map((item) => item.id);
+    expect(ctIds).toContain("ct-brain");
+    expect(ctIds[0]).toBe("full");
+
+    // MR intensity has no absolute scale, so a fixed window would be meaningless.
+    expect(availableWindowPresets(mr).map((item) => item.id))
+      .toEqual(["full", "soft", "contrast"]);
+  });
+
+  it("resolves CT presets to their published Hounsfield bounds", () => {
+    expect(windowPresetRange("ct-brain", calibratedCt)).toEqual({ lower: 0, upper: 80 });
+    expect(windowPresetRange("ct-lung", calibratedCt)).toEqual({ lower: -1350, upper: 150 });
+    expect(windowPresetRange("ct-bone", calibratedCt)).toEqual({ lower: -500, upper: 1300 });
+
+    // The CT window must not be derived from the file's own WC/WW.
+    expect(windowPresetRange("full", calibratedCt)).toEqual({ lower: -500, upper: 1300 });
+
+    // A Hounsfield preset asked of MR must refuse rather than guess.
+    expect(windowPresetRange("ct-brain", mr)).toBeNull();
+    expect(windowPresetRange("nonsense", mr)).toBeNull();
+  });
+
+  it("keeps every CT preset a plausible clinical window", () => {
+    for (const preset of CT_WINDOW_PRESETS) {
+      expect(preset.width).toBeGreaterThan(0);
+      expect(preset.center - preset.width / 2).toBeGreaterThanOrEqual(-2000);
+      expect(preset.center + preset.width / 2).toBeLessThanOrEqual(4000);
+    }
+    expect(new Set(CT_WINDOW_PRESETS.map((item) => item.id)).size)
+      .toBe(CT_WINDOW_PRESETS.length);
   });
 });

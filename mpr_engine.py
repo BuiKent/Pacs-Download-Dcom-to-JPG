@@ -492,7 +492,56 @@ def _pixel_array(path: Path) -> tuple[np.ndarray, object]:
     return np.asarray(arr, dtype=np.float32), ds
 
 
-def _global_intensity_range(candidate: MprCandidate) -> tuple[float, float]:
+def _first_number(value) -> Optional[float]:
+    """First element of a DICOM value that may be single- or multi-valued.
+
+    CT headers often carry a pair such as WindowCenter=[40, 400] (soft tissue
+    then bone).  The first entry is the primary window the operator chose, so
+    that is the one a PACS opens the series with.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, (str, bytes)) and hasattr(value, "__len__"):
+        if len(value) == 0:
+            return None
+        value = value[0]
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _stored_window(path: Path) -> Optional[tuple[float, float, str]]:
+    """Return (center, width, voi_function) from one slice header, if present."""
+    import pydicom
+
+    try:
+        ds = pydicom.dcmread(str(path), stop_before_pixels=True, force=True)
+    except Exception:
+        return None
+    center = _first_number(getattr(ds, "WindowCenter", None))
+    width = _first_number(getattr(ds, "WindowWidth", None))
+    if center is None or width is None or width <= 0:
+        return None
+    return center, width, _norm(getattr(ds, "VOILUTFunction", "")) or "LINEAR"
+
+
+def _window_bounds(center: float, width: float, function: str) -> tuple[float, float]:
+    """Convert a DICOM VOI window to display bounds per PS3.3 C.11.2.1.2."""
+    if function == "LINEAR EXACT":
+        return center - width / 2.0, center + width / 2.0
+    # Plain LINEAR is defined off (width - 1) with a half-unit shift.
+    return center - 0.5 - (width - 1) / 2.0, center - 0.5 + (width - 1) / 2.0
+
+
+def _percentile_intensity_range(candidate: MprCandidate) -> tuple[float, float]:
+    """Last-resort window when no slice carries a VOI setting.
+
+    Only reached for series with no WindowCenter/WindowWidth at all.  On CT this
+    spans air to cortical bone and flattens soft tissue, so it must never be the
+    default — see _series_intensity_range.
+    """
     samples: list[np.ndarray] = []
     for item in candidate.slices:
         arr, _ = _pixel_array(item.path)
@@ -505,6 +554,41 @@ def _global_intensity_range(candidate: MprCandidate) -> tuple[float, float]:
     if high <= low:
         high = low + 1.0
     return float(low), float(high)
+
+
+def _series_intensity_range(candidate: MprCandidate) -> tuple[float, float, str]:
+    """Pick the one window baked into this series' 8-bit JPGs.
+
+    JPG keeps a single window per series, so the choice is irreversible: we use
+    the VOI the modality itself recorded, which is what a PACS shows on open.
+    Values are compared in modality-LUT output space (Hounsfield units on CT),
+    the same space _pixel_array returns, so no rescaling is needed here.
+
+    Per-slice windows can drift across a series, so the median keeps the volume
+    from flickering as it is scrolled.
+    """
+    centers: list[float] = []
+    widths: list[float] = []
+    function = "LINEAR"
+    for item in candidate.slices:
+        stored = _stored_window(item.path)
+        if stored is None:
+            continue
+        center, width, item_function = stored
+        centers.append(center)
+        widths.append(width)
+        function = item_function
+
+    if centers:
+        center = float(np.median(centers))
+        width = float(np.median(widths))
+        low, high = _window_bounds(center, width, function)
+        if math.isfinite(low) and math.isfinite(high) and high > low:
+            coverage = f"{len(centers)}/{len(candidate.slices)}"
+            return low, high, f"dicom_voi_{function.lower().replace(' ', '_')}_{coverage}"
+
+    low, high = _percentile_intensity_range(candidate)
+    return low, high, "series_percentile_0.5_99.5"
 
 
 def _to_uint8(arr: np.ndarray, low: float, high: float, invert: bool) -> np.ndarray:
@@ -541,12 +625,14 @@ def convert_mpr_candidate(
 
     series_folder = Path(jpg_dir) / (folder_name or candidate.folder_name)
     series_folder.mkdir(parents=True, exist_ok=True)
-    low, high = _global_intensity_range(candidate)
+    low, high, window_method = _series_intensity_range(candidate)
     ordered_files: list[dict] = []
 
+    source = "cửa sổ DICOM" if window_method.startswith("dicom_voi") else "percentile (file không có VOI)"
     log(
         f"MPR-JPG: {candidate.description} — {len(candidate.slices)} lát, "
-        f"{candidate.kind}, cửa sổ chung {low:.1f}..{high:.1f}."
+        f"{candidate.kind}, {source} {low:.1f}..{high:.1f} "
+        f"(W={high - low:.0f}, L={(high + low) / 2:.0f})."
     )
     written = 0
     for index, item in enumerate(candidate.slices, start=1):
@@ -589,9 +675,11 @@ def convert_mpr_candidate(
         "image_orientation_patient": list(candidate.orientation),
         "affine": _affine(candidate),
         "intensity": {
-            "method": "series_percentile_0.5_99.5",
+            "method": window_method,
             "low": low,
             "high": high,
+            "window_width": high - low,
+            "window_center": (high + low) / 2.0,
             "bits": 8,
         },
         "jpeg_quality": max(70, min(int(quality), 100)),

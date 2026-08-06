@@ -111,6 +111,77 @@ export const WINDOW_PRESETS = Object.freeze({
   contrast: { lower: 62, upper: 168 },
 });
 
+/**
+ * Standard CT windows, in Hounsfield units.
+ *
+ * These are absolute because CT is absolute: water is 0 HU and air is -1000 HU
+ * by definition, so the same width/centre means the same tissue contrast on
+ * every scanner. Only valid once the modality LUT has been applied — see
+ * seriesSupportsHounsfield.
+ */
+export const CT_WINDOW_PRESETS = Object.freeze([
+  { id: "ct-brain", label: "Não", width: 80, center: 40 },
+  { id: "ct-stroke", label: "Đột quỵ / hố sau", width: 40, center: 40 },
+  { id: "ct-subdural", label: "Máu tụ dưới màng cứng", width: 215, center: 75 },
+  { id: "ct-soft", label: "Mô mềm / ổ bụng", width: 400, center: 50 },
+  { id: "ct-mediastinum", label: "Trung thất", width: 350, center: 50 },
+  { id: "ct-liver", label: "Gan", width: 150, center: 30 },
+  { id: "ct-lung", label: "Phổi", width: 1500, center: -600 },
+  { id: "ct-angio", label: "Mạch (CTA)", width: 600, center: 150 },
+  { id: "ct-bone", label: "Xương", width: 1800, center: 400 },
+  { id: "ct-temporal", label: "Xương thái dương", width: 4000, center: 700 },
+]);
+
+const CT_PRESETS_BY_ID = new Map(CT_WINDOW_PRESETS.map((item) => [item.id, item]));
+
+/**
+ * Relative presets, the only kind MR can have.
+ *
+ * MR signal intensity carries no absolute scale — the same T1 sequence yields
+ * different raw numbers on a different scanner, or on the same scanner on a
+ * different day. So an MR preset can only be expressed against the window the
+ * modality itself recorded, never as a fixed pair of numbers.
+ */
+export const RELATIVE_WINDOW_PRESETS = Object.freeze({
+  full: 1,
+  soft: 1.5,
+  contrast: 0.6,
+});
+
+/** True when pixel values can be read as Hounsfield units. */
+export function seriesSupportsHounsfield(series) {
+  if (series?.sourceType !== "dicom") return false;
+  if (series?.modality !== "CT") return false;
+  const pixel = series.pixelData || {};
+  // The backend defaults a missing rescale to slope 1 / intercept 0, which is
+  // what DICOM implies anyway; this only rejects a rescale that cannot define
+  // a scale at all.
+  return Number.isFinite(pixel.rescaleSlope)
+    && pixel.rescaleSlope !== 0
+    && Number.isFinite(pixel.rescaleIntercept);
+}
+
+/** Presets offered for a series, most useful first. */
+export function availableWindowPresets(series) {
+  const relative = [
+    { id: "full", label: series?.sourceType === "dicom" ? "DICOM mặc định" : "Toàn dải" },
+    { id: "soft", label: series?.sourceType === "dicom" ? "Cửa sổ rộng" : "Mô mềm JPG" },
+    { id: "contrast", label: series?.sourceType === "dicom" ? "Cửa sổ hẹp" : "Tương phản cao" },
+  ];
+  if (!seriesSupportsHounsfield(series)) return relative;
+  return [
+    ...relative.slice(0, 1),
+    // `detail` stays out of the translated label so W/L reads the same in
+    // every language.
+    ...CT_WINDOW_PRESETS.map((item) => ({
+      id: item.id,
+      label: item.label,
+      detail: `W${item.width}/L${item.center}`,
+    })),
+    ...relative.slice(1),
+  ];
+}
+
 function storedDicomRange(series) {
   const pixel = series?.pixelData || {};
   const bits = Math.max(1, Math.min(Number(pixel.bitsStored) || 16, 32));
@@ -127,8 +198,25 @@ function storedDicomRange(series) {
   };
 }
 
+/**
+ * Display range for a preset, in modality-LUT output space (HU on CT).
+ *
+ * Fixed Hounsfield presets are honoured only for calibrated CT; everything else
+ * — MR, and CT without a rescale — falls back to scaling the window the file
+ * itself carries.
+ */
 export function windowPresetRange(name, series = null) {
   if (series?.sourceType !== "dicom") return WINDOW_PRESETS[name] || null;
+
+  const preset = CT_PRESETS_BY_ID.get(name);
+  if (preset) {
+    if (!seriesSupportsHounsfield(series)) return null;
+    return {
+      lower: preset.center - preset.width / 2,
+      upper: preset.center + preset.width / 2,
+    };
+  }
+
   const pixel = series.pixelData || {};
   const fallback = storedDicomRange(series);
   const center = Number.isFinite(pixel.windowCenter)
@@ -137,11 +225,9 @@ export function windowPresetRange(name, series = null) {
   const defaultWidth = Number.isFinite(pixel.windowWidth) && pixel.windowWidth > 0
     ? pixel.windowWidth
     : Math.max(1, fallback.upper - fallback.lower);
-  const width = name === "soft"
-    ? defaultWidth * 1.5
-    : name === "contrast"
-      ? defaultWidth * 0.6
-      : defaultWidth;
+  const scale = RELATIVE_WINDOW_PRESETS[name];
+  if (!Number.isFinite(scale)) return null;
+  const width = defaultWidth * scale;
   if (!Number.isFinite(width) || width <= 0) return null;
   return { lower: center - width / 2, upper: center + width / 2 };
 }
@@ -1098,6 +1184,42 @@ function overlapLength(left, right) {
   return Math.max(0, Math.min(left[1], right[1]) - Math.max(left[0], right[0]));
 }
 
+/**
+ * Re-express a modality-space window in whatever space a volume's scalars live.
+ *
+ * Volumes are built from the raw stored pixels this module decodes, so their
+ * scalars may or may not have been rescaled depending on the loader. Comparing
+ * both candidate ranges against the scalar range the volume actually reports
+ * tells us which one it is — guessing wrong shifts a CT window by the whole
+ * rescale intercept (typically 1024 HU) and blanks the image.
+ */
+function matchRangeToScalars(series, physical, scalarRange) {
+  const actual = Array.isArray(scalarRange) && scalarRange.length === 2
+    ? scalarRange.map(Number)
+    : null;
+  const physicalPair = [physical.lower, physical.upper].sort((a, b) => a - b);
+  if (!actual || !actual.every(Number.isFinite)) return physicalPair;
+  const slope = Number.isFinite(series?.pixelData?.rescaleSlope)
+    && series.pixelData.rescaleSlope !== 0
+    ? series.pixelData.rescaleSlope
+    : 1;
+  const intercept = Number.isFinite(series?.pixelData?.rescaleIntercept)
+    ? series.pixelData.rescaleIntercept
+    : 0;
+  const raw = [
+    (physical.lower - intercept) / slope,
+    (physical.upper - intercept) / slope,
+  ].sort((a, b) => a - b);
+  return overlapLength(raw, actual) > overlapLength(physicalPair, actual) ? raw : physicalPair;
+}
+
+function viewportScalarRange(viewport) {
+  const actor = viewport?.getDefaultActor?.()?.actor;
+  const scalars = actor?.getMapper?.()?.getInputData?.()?.getPointData?.()?.getScalars?.();
+  const range = scalars?.getRange?.();
+  return Array.isArray(range) && range.length === 2 ? range : null;
+}
+
 export function volumeTransferRange(series, scalarRange) {
   const actual = Array.isArray(scalarRange) && scalarRange.length === 2
     ? scalarRange.map(Number)
@@ -1105,21 +1227,7 @@ export function volumeTransferRange(series, scalarRange) {
   if (series?.sourceType !== "dicom") return [0, 255];
   const physical = windowPresetRange("full", series);
   if (!physical) return actual;
-  const slope = Number.isFinite(series.pixelData?.rescaleSlope)
-    && series.pixelData.rescaleSlope !== 0
-    ? series.pixelData.rescaleSlope
-    : 1;
-  const intercept = Number.isFinite(series.pixelData?.rescaleIntercept)
-    ? series.pixelData.rescaleIntercept
-    : 0;
-  const raw = [
-    (physical.lower - intercept) / slope,
-    (physical.upper - intercept) / slope,
-  ].sort((a, b) => a - b);
-  const physicalPair = [physical.lower, physical.upper].sort((a, b) => a - b);
-  const desired = overlapLength(raw, actual) > overlapLength(physicalPair, actual)
-    ? raw
-    : physicalPair;
+  const desired = matchRangeToScalars(series, physical, actual);
   const lower = Math.max(actual[0], desired[0]);
   const upper = Math.min(actual[1], desired[1]);
   return upper > lower ? [lower, upper] : actual;
@@ -1294,9 +1402,20 @@ export function resetView() {
 export async function applyWindowPreset(name) {
   const range = windowPresetRange(name, activeSeries);
   if (!range || !engineIsLive()) return false;
+  const stackIds = new Set((renderingEngine.getStackViewports() || []).map((item) => item.id));
   for (const viewport of renderingEngine.getViewports() || []) {
     if (viewport.id === "volume-3d" || typeof viewport.setProperties !== "function") continue;
-    viewport.setProperties({ voiRange: { ...range } });
+    // Stack viewports run the modality LUT themselves, so voiRange is already
+    // in HU there. Volume viewports read the scalars as loaded, which may still
+    // be raw stored values.
+    let applied = range;
+    if (!stackIds.has(viewport.id)) {
+      const [lower, upper] = matchRangeToScalars(
+        activeSeries, range, viewportScalarRange(viewport),
+      );
+      applied = { lower, upper };
+    }
+    viewport.setProperties({ voiRange: { ...applied } });
     viewport.render();
   }
   // RenderingEngine.render() schedules composition. Do not let the caller mark
