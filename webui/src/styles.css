@@ -134,17 +134,26 @@ button { cursor: pointer; }
    one card. A real fieldset/legend lets the browser cut the border gap. */
 .boxed-field {
   min-width: 0;
-  margin: 14px 0 10px;
-  padding: 2px 8px 8px;
+  margin: 10px 0;
+  padding: 0 6px 3px;
   border: 1px solid #2a3b4c;
-  border-radius: 7px;
+  border-radius: 6px;
   background: #101923;
 }
-.boxed-field > legend { padding: 0 5px; color: #94a9ba; font-size: 10px; }
+/* line-height and the negative margin keep the legend from adding a whole text
+   line to the card, which made it tower over every other control. */
+.boxed-field > legend {
+  margin-left: 2px;
+  margin-bottom: -2px;
+  padding: 0 4px;
+  color: #8fa6b8;
+  font-size: 9px;
+  line-height: 1;
+}
 .boxed-field:focus-within { border-color: #34688f; }
 .boxed-field input {
   margin-top: 0;
-  padding: 6px 4px;
+  padding: 2px;
   border: 0;
   background: transparent;
 }
@@ -152,22 +161,22 @@ button { cursor: pointer; }
 
 /* Holds the inline × so it floats over the right edge of its own field. */
 .clearable { position: relative; display: block; flex: 1; min-width: 0; }
-.clearable > input { width: 100%; padding-right: 24px; }
+.clearable > input { width: 100%; padding-right: 21px; }
 .clear-field {
   position: absolute;
   top: 50%;
-  right: 2px;
+  right: 0;
   transform: translateY(-50%);
   display: grid;
   place-items: center;
-  width: 19px;
-  height: 19px;
+  width: 17px;
+  height: 17px;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: 4px;
   color: #7890a2;
   background: transparent;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1;
 }
 .clear-field:hover { color: #ffd0d0; background: #2a1c20; }

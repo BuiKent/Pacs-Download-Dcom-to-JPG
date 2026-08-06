@@ -1113,7 +1113,11 @@ async function clearClipboardField(field, kind) {
 }
 
 function installClipboardField(field, kind) {
+  // Only a click that *caused* the focus may keep its selection. Arming this on
+  // every focus would swallow the next click after the field was focused by Tab
+  // or by ×, and the caret would refuse to move until a second click.
   let selectOnRelease = false;
+  let pressPoint = null;
   const acceptClipboard = async (alwaysSelect) => {
     const pasted = await fillFromClipboard(field, kind);
     // Select after a paste so the value can be replaced by typing; on focus,
@@ -1121,25 +1125,30 @@ function installClipboardField(field, kind) {
     if ((pasted || alwaysSelect) && document.activeElement === field) field.select();
   };
   field.addEventListener("focus", () => {
-    selectOnRelease = true;
+    selectOnRelease = pressPoint !== null;
     field.select();
     acceptClipboard(true);
   });
-  field.addEventListener("mousedown", () => {
+  field.addEventListener("mousedown", (event) => {
+    pressPoint = { x: event.clientX, y: event.clientY };
     // The classic app re-read the clipboard on every click, not only on the
     // first focus. Clicking an already-focused field keeps the caret where the
     // user put it unless a new value actually arrived.
     if (document.activeElement === field) acceptClipboard(false);
   });
   field.addEventListener("mouseup", (event) => {
-    // A click focuses the field and then places the caret, which would drop the
-    // selection made on focus. Keeping it means the leftover value can be
-    // replaced by typing straight away.
+    const dragged = pressPoint !== null
+      && (Math.abs(event.clientX - pressPoint.x) > 3 || Math.abs(event.clientY - pressPoint.y) > 3);
+    pressPoint = null;
     if (!selectOnRelease) return;
     selectOnRelease = false;
-    event.preventDefault();
+    // A click focuses the field and then places the caret, which would drop the
+    // selection made on focus. Keeping it means the leftover value can be
+    // replaced by typing straight away — but a drag is the user selecting a
+    // range by hand, so that one is left alone.
+    if (!dragged) event.preventDefault();
   });
-  field.addEventListener("blur", () => { selectOnRelease = false; });
+  field.addEventListener("blur", () => { selectOnRelease = false; pressPoint = null; });
   field.addEventListener("input", () => {
     // Typing makes the value the user's own, so a value dismissed earlier stops
     // being relevant and the clipboard may fill this field again.
