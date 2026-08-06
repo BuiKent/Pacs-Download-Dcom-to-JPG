@@ -6,10 +6,12 @@ import {
   annotationBelongsToSeries,
   annotationTargetViewportId,
   availableWindowPresets,
+  defaultWindowPreset,
   isMeasurementAnnotation,
   montageIndices,
   mprPlaneLayout,
   nextViewportRotation,
+  rescaledDicomPixels,
   seriesSafetyNotice,
   seriesSupportsHounsfield,
   toolFallback,
@@ -165,9 +167,13 @@ describe("viewer shell", () => {
         windowWidth: 400,
       },
     };
-    // A raw CT volume spans 0..4095, so the physical -160..240 window must be
-    // mapped back to stored values 864..1264 before building transfer points.
+    // decodeDicomImage now delivers Hounsfield values, so a volume normally
+    // reports a rescaled range. This is the fallback for a loader that did not
+    // rescale: a 0..4095 spread means the -160..240 window has to be mapped
+    // back to stored values 864..1264 before building transfer points.
     expect(volumeTransferRange(ct, [0, 4095])).toEqual([864, 1264]);
+    // The same window against a Hounsfield volume is used as-is.
+    expect(volumeTransferRange(ct, [-1024, 3071])).toEqual([-160, 240]);
   });
 
   const calibratedCt = {
@@ -200,9 +206,16 @@ describe("viewer shell", () => {
     expect(seriesSupportsHounsfield(mr)).toBe(false);
     expect(seriesSupportsHounsfield({ sourceType: "jpg", modality: "CT" })).toBe(false);
 
+    // Brain reading comes first; the file's own window stays available after it.
     const ctIds = availableWindowPresets(calibratedCt).map((item) => item.id);
-    expect(ctIds).toContain("ct-brain");
-    expect(ctIds[0]).toBe("full");
+    expect(ctIds[0]).toBe("ct-brain");
+    expect(ctIds).toContain("full");
+    expect(defaultWindowPreset(calibratedCt)).toBe("ct-brain");
+    expect(defaultWindowPreset(mr)).toBe("full");
+
+    // Body windows are out of scope for this app and must not reappear.
+    expect(ctIds).not.toContain("ct-lung");
+    expect(ctIds).not.toContain("ct-liver");
 
     // MR intensity has no absolute scale, so a fixed window would be meaningless.
     expect(availableWindowPresets(mr).map((item) => item.id))
@@ -211,7 +224,7 @@ describe("viewer shell", () => {
 
   it("resolves CT presets to their published Hounsfield bounds", () => {
     expect(windowPresetRange("ct-brain", calibratedCt)).toEqual({ lower: 0, upper: 80 });
-    expect(windowPresetRange("ct-lung", calibratedCt)).toEqual({ lower: -1350, upper: 150 });
+    expect(windowPresetRange("ct-stroke", calibratedCt)).toEqual({ lower: 20, upper: 60 });
     expect(windowPresetRange("ct-bone", calibratedCt)).toEqual({ lower: -500, upper: 1300 });
 
     // The CT window must not be derived from the file's own WC/WW.
@@ -220,6 +233,45 @@ describe("viewer shell", () => {
     // A Hounsfield preset asked of MR must refuse rather than guess.
     expect(windowPresetRange("ct-brain", mr)).toBeNull();
     expect(windowPresetRange("nonsense", mr)).toBeNull();
+  });
+
+  it("hands the viewport Hounsfield values, not raw stored pixels", () => {
+    // StackViewport applies no modality LUT: it windows getPixelData directly.
+    // Raw pixels plus an HU window offset the display by the whole intercept,
+    // which drives every tissue above the ceiling to pure white.
+    const stored = new Uint16Array([24, 1024, 1054, 1064, 2224]);
+    const result = rescaledDicomPixels(stored, 1, -1024, 24, 2224);
+
+    expect(Array.from(result.pixels)).toEqual([-1000, 0, 30, 40, 1200]);
+    expect(result.min).toBe(-1000);
+    expect(result.max).toBe(1200);
+
+    // An integer type is required: StackViewport re-quantises a Float32Array
+    // whose rescale is non-integral, which would undo the scaling.
+    expect(result.pixels).toBeInstanceOf(Int16Array);
+
+    const brain = windowPresetRange("ct-brain", calibratedCt);
+    const inWindow = Array.from(result.pixels)
+      .filter((value) => value >= brain.lower && value <= brain.upper);
+    expect(inWindow).toEqual([0, 30, 40]);
+  });
+
+  it("leaves pixels untouched when there is nothing to rescale", () => {
+    const stored = new Uint16Array([0, 100, 4095]);
+    const result = rescaledDicomPixels(stored, 1, 0, 0, 4095);
+    expect(result.pixels).toBe(stored);
+    expect([result.min, result.max]).toEqual([0, 4095]);
+  });
+
+  it("widens the output type when Hounsfield values overflow int16", () => {
+    const stored = new Uint16Array([0, 65535]);
+    const wide = rescaledDicomPixels(stored, 1, -1024, 0, 65535);
+    expect(wide.pixels).toBeInstanceOf(Int32Array);
+    expect([wide.min, wide.max]).toEqual([-1024, 64511]);
+
+    const fractional = rescaledDicomPixels(new Uint16Array([0, 100]), 0.5, 0, 0, 100);
+    expect(fractional.pixels).toBeInstanceOf(Float32Array);
+    expect([fractional.min, fractional.max]).toEqual([0, 50]);
   });
 
   it("keeps every CT preset a plausible clinical window", () => {

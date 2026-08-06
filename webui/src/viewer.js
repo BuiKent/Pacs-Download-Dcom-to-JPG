@@ -112,22 +112,20 @@ export const WINDOW_PRESETS = Object.freeze({
 });
 
 /**
- * Standard CT windows, in Hounsfield units.
+ * Standard head-CT windows, in Hounsfield units.
  *
  * These are absolute because CT is absolute: water is 0 HU and air is -1000 HU
  * by definition, so the same width/centre means the same tissue contrast on
  * every scanner. Only valid once the modality LUT has been applied — see
  * seriesSupportsHounsfield.
+ *
+ * Scoped to the brain studies this app is used for. Body windows (lung,
+ * mediastinum, liver, abdomen) are deliberately absent rather than forgotten.
  */
 export const CT_WINDOW_PRESETS = Object.freeze([
   { id: "ct-brain", label: "Não", width: 80, center: 40 },
   { id: "ct-stroke", label: "Đột quỵ / hố sau", width: 40, center: 40 },
   { id: "ct-subdural", label: "Máu tụ dưới màng cứng", width: 215, center: 75 },
-  { id: "ct-soft", label: "Mô mềm / ổ bụng", width: 400, center: 50 },
-  { id: "ct-mediastinum", label: "Trung thất", width: 350, center: 50 },
-  { id: "ct-liver", label: "Gan", width: 150, center: 30 },
-  { id: "ct-lung", label: "Phổi", width: 1500, center: -600 },
-  { id: "ct-angio", label: "Mạch (CTA)", width: 600, center: 150 },
   { id: "ct-bone", label: "Xương", width: 1800, center: 400 },
   { id: "ct-temporal", label: "Xương thái dương", width: 4000, center: 700 },
 ]);
@@ -169,8 +167,9 @@ export function availableWindowPresets(series) {
     { id: "contrast", label: series?.sourceType === "dicom" ? "Cửa sổ hẹp" : "Tương phản cao" },
   ];
   if (!seriesSupportsHounsfield(series)) return relative;
+  // Named tissue windows lead: on a calibrated CT they are the ones actually
+  // used to read the study, and the file's own window is the fallback.
   return [
-    ...relative.slice(0, 1),
     // `detail` stays out of the translated label so W/L reads the same in
     // every language.
     ...CT_WINDOW_PRESETS.map((item) => ({
@@ -178,8 +177,13 @@ export function availableWindowPresets(series) {
       label: item.label,
       detail: `W${item.width}/L${item.center}`,
     })),
-    ...relative.slice(1),
+    ...relative,
   ];
+}
+
+/** Preset a series opens with. */
+export function defaultWindowPreset(series) {
+  return seriesSupportsHounsfield(series) ? "ct-brain" : "full";
 }
 
 function storedDicomRange(series) {
@@ -284,9 +288,11 @@ function metadataProvider(type, imageId) {
     };
   }
   if (type === "modalityLutModule") {
+    // decodeDicomImage already rescales, so the LUT here must be the identity:
+    // reporting the file's slope/intercept again would apply them twice.
     return {
-      rescaleIntercept: series.pixelData?.rescaleIntercept ?? 0,
-      rescaleSlope: series.pixelData?.rescaleSlope ?? 1,
+      rescaleIntercept: 0,
+      rescaleSlope: 1,
       rescaleType: series.modality === "CT" ? "HU" : "US",
     };
   }
@@ -437,6 +443,34 @@ function typedDicomPixels(buffer, pixelType) {
   return new Type(buffer);
 }
 
+/**
+ * Convert stored pixels to modality-LUT output (Hounsfield units on CT).
+ *
+ * StackViewport applies no modality LUT of its own — it windows whatever values
+ * getPixelData returns. Handing it raw stored values while asking for a window
+ * in HU offsets the display by the whole rescale intercept, which on CT paints
+ * every tissue above the window ceiling pure white.
+ *
+ * An integer output type is deliberate: StackViewport re-quantises a
+ * Float32Array whose rescale is non-integral, undoing the scaling we just did.
+ */
+export function rescaledDicomPixels(pixels, slope, intercept, min, max) {
+  if (slope === 1 && intercept === 0) return { pixels, min, max };
+  const lower = Math.min(min * slope + intercept, max * slope + intercept);
+  const upper = Math.max(min * slope + intercept, max * slope + intercept);
+  const integral = Number.isInteger(slope) && Number.isInteger(intercept);
+  let Type = Float32Array;
+  if (integral) {
+    if (lower >= -32768 && upper <= 32767) Type = Int16Array;
+    else if (lower >= -2147483648 && upper <= 2147483647) Type = Int32Array;
+  }
+  const scaled = new Type(pixels.length);
+  for (let index = 0; index < pixels.length; index += 1) {
+    scaled[index] = pixels[index] * slope + intercept;
+  }
+  return { pixels: scaled, min: lower, max: upper };
+}
+
 function dicomCanvas(pixels, width, height, min, max, invert) {
   const display = new Uint8Array(pixels.length);
   const span = Math.max(1, max - min);
@@ -449,24 +483,38 @@ function dicomCanvas(pixels, width, height, min, max, invert) {
 
 async function decodeDicomImage(imageId, parsed, series) {
   const decoded = await apiPixelData(imagePath(parsed.seriesId, parsed.index));
-  const pixels = typedDicomPixels(decoded.buffer, decoded.pixelType);
-  if (pixels.length !== decoded.rows * decoded.columns) {
-    throw new Error(`Pixel DICOM không đầy đủ: ${pixels.length}/${decoded.rows * decoded.columns}.`);
+  const stored = typedDicomPixels(decoded.buffer, decoded.pixelType);
+  if (stored.length !== decoded.rows * decoded.columns) {
+    throw new Error(`Pixel DICOM không đầy đủ: ${stored.length}/${decoded.rows * decoded.columns}.`);
   }
+  const { pixels, min, max } = rescaledDicomPixels(
+    stored, decoded.slope, decoded.intercept, decoded.min, decoded.max,
+  );
   const spacing = series?.geometry?.pixelSpacing || series?.pixelData?.pixelSpacing;
   const invert = decoded.photometric === "MONOCHROME1";
   decodePath = "dicom-direct";
   return {
     imageId,
-    minPixelValue: decoded.min,
-    maxPixelValue: decoded.max,
-    slope: decoded.slope,
-    intercept: decoded.intercept,
+    minPixelValue: min,
+    maxPixelValue: max,
+    // The pixels below are already in modality units, so the rescale must be
+    // declared as applied — otherwise anything downstream applies it twice.
+    slope: 1,
+    intercept: 0,
+    preScale: {
+      enabled: true,
+      scaled: true,
+      scalingParameters: {
+        modality: series?.modality,
+        rescaleSlope: decoded.slope,
+        rescaleIntercept: decoded.intercept,
+      },
+    },
     windowCenter: decoded.windowCenter,
     windowWidth: decoded.windowWidth,
     getPixelData: () => pixels,
     getCanvas: () => dicomCanvas(
-      pixels, decoded.columns, decoded.rows, decoded.min, decoded.max, invert,
+      pixels, decoded.columns, decoded.rows, min, max, invert,
     ),
     rows: decoded.rows,
     columns: decoded.columns,

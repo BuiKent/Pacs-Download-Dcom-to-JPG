@@ -6,6 +6,7 @@ import {
   availableWindowPresets,
   captureActiveViewport,
   clearActiveMeasurements,
+  defaultWindowPreset,
   disposeViewer,
   flipActiveViewportHorizontal,
   initViewer,
@@ -258,7 +259,7 @@ function render() {
   // that series cannot honour. Fall back before the select is drawn so the
   // control never shows a preset that is not in force.
   if (!availableWindowPresets(series).some((item) => item.id === state.windowPreset)) {
-    state.windowPreset = "full";
+    state.windowPreset = defaultWindowPreset(series);
   }
   const safety = seriesSafetyNotice(series);
   const mprDisabled = !series?.mprReady;
@@ -693,8 +694,11 @@ async function action(name) {
       return;
     }
     if (name === "reset") {
-      state.windowPreset = "full";
+      state.windowPreset = defaultWindowPreset(selectedSeries());
       resetView();
+      // resetProperties restores the file's own window, so the preset has to be
+      // re-applied or the select would name a window that is not on screen.
+      await applyWindowPreset(state.windowPreset);
       window.__viewerDiagnostics = viewerDiagnostics();
       const select = app.querySelector("[data-field='window-preset']");
       if (select) select.value = state.windowPreset;
@@ -799,7 +803,7 @@ function applyArchive(archive) {
   }
   state.mode = "single";
   state.tool = "window";
-  state.windowPreset = "full";
+  state.windowPreset = defaultWindowPreset(selectedSeries());
   render();
   renderViewer();
 }
@@ -862,10 +866,10 @@ function renderViewer() {
         state.tool = applied;
         syncToolHighlight();
       }
-      // Cornerstone establishes its default VOI while the stack actor is being
-      // attached. Re-applying an equivalent range in that same transition can
-      // blank a ContextPool stack on WebView2, so only override on an explicit
-      // non-default user preset.
+      // Cornerstone establishes the file's own VOI while the stack actor is
+      // being attached. Re-applying an equivalent range in that same transition
+      // can blank a ContextPool stack on WebView2, so skip only "full", which
+      // is that same window by definition.
       if (mode !== "volume3d" && state.windowPreset !== "full") {
         await applyWindowPreset(state.windowPreset);
       }
