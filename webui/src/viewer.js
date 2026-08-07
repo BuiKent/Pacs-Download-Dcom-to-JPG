@@ -18,6 +18,7 @@ import {
   LengthTool,
   PanTool,
   PlanarFreehandROITool,
+  ReferenceCursors,
   ReferenceLinesTool,
   StackScrollTool,
   ToolGroupManager,
@@ -63,6 +64,7 @@ const toolClasses = [
   CrosshairsTool,
   TrackballRotateTool,
   ReferenceLinesTool,
+  ReferenceCursors,
 ];
 
 const toolByMode = {
@@ -105,6 +107,7 @@ let mprPrimaryPlane = "axial";
 // missing from that set can never be activated, so toolFallback must know it.
 let toolGroupLayout = "stack";
 let referenceLinesEnabled = true;
+let referenceCursorEnabled = true;
 let cineTimer = null;
 let loadGeneration = 0;
 let onStatus = () => {};
@@ -897,6 +900,7 @@ function createToolGroup(viewportIds, mode = "stack") {
     toolGroup.setToolEnabled(ReferenceLinesTool.toolName);
     updateReferenceLineSource();
   }
+  updateReferenceCursor();
 }
 
 function installResizeObserver(container) {
@@ -1544,6 +1548,47 @@ export function referenceLinesState() {
   return referenceLinesEnabled;
 }
 
+/**
+ * Point crosslink: show where the cursor in one pane lands in the others.
+ *
+ * ReferenceCursors tracks the mouse in patient space and draws a marker on
+ * every other viewport whose plane passes within displayThreshold millimetres
+ * of that point. Annotations are keyed by FrameOfReferenceUID, so panes from a
+ * different frame are excluded without an extra guard.
+ *
+ * positionSync stays off on purpose: cross-plane panes are meant to keep their
+ * own slice, and scrolling them to follow the mouse would undo that.
+ *
+ * Passive rather than Active — mouseMove reaches both modes, so the cursor
+ * costs no mouse binding and leaves the chosen tool on the primary button.
+ */
+function updateReferenceCursor() {
+  if (!toolGroup || !toolGroup.hasTool(ReferenceCursors.toolName)) return;
+  // Only meaningful when there is another pane to project the point onto.
+  if (!referenceCursorEnabled || compareSync.viewportIds.length < 2) {
+    toolGroup.setToolDisabled(ReferenceCursors.toolName);
+    return;
+  }
+  toolGroup.setToolConfiguration(ReferenceCursors.toolName, {
+    positionSync: false,
+    disableCursor: false,
+    displayThreshold: 5,
+  });
+  toolGroup.setToolPassive(ReferenceCursors.toolName);
+}
+
+/** Turn the point crosslink on or off; returns the state actually in force. */
+export function setReferenceCursor(enabled) {
+  referenceCursorEnabled = Boolean(enabled);
+  updateReferenceCursor();
+  renderingEngine?.render();
+  return referenceCursorEnabled;
+}
+
+export function referenceCursorState() {
+  return referenceCursorEnabled;
+}
+
 /** Returns info about the currently focused compare pane, or null. */
 export function getActiveCompareInfo() {
   if (!COMPARE_MODES[activeMode] || !activeViewportId) return null;
@@ -1773,9 +1818,10 @@ export async function showStacks(container, series, mode, comparison = null, too
     // Locked scrolling is the useful default; the button exists to break the
     // lock, scroll one pane, and re-lock on the new offset.
     setCompareScrollSync(true);
-    // compareSync is now populated — re-run updateReferenceLineSource so that
-    // reference lines activate immediately instead of waiting for pointerenter.
+    // compareSync is now populated — re-run both cross-viewport helpers so
+    // they activate immediately instead of waiting for pointerenter.
     updateReferenceLineSource();
+    updateReferenceCursor();
   } else {
     const count = viewports.length;
     const shouldPrefetch = mode === "single";
@@ -2124,6 +2170,17 @@ export function viewerDiagnostics() {
         ))
       )).flat(),
     },
+    referenceCursor: (() => {
+      const cursorTool = toolGroup?.getToolInstance?.(ReferenceCursors.toolName);
+      return {
+        requested: referenceCursorEnabled,
+        // "Passive" is the only mode that both receives mouseMove and renders;
+        // anything else means the point crosslink is wired up but inert.
+        toolMode: cursorTool?.mode || "",
+        positionSync: cursorTool?.configuration?.positionSync ?? null,
+        displayThreshold: cursorTool?.configuration?.displayThreshold ?? null,
+      };
+    })(),
     viewports: (engineIsLive() ? renderingEngine.getViewports() || [] : []).map((viewport) => {
       const properties = viewport.getProperties?.() || {};
       return {

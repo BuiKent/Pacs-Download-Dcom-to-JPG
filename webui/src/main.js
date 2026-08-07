@@ -20,6 +20,7 @@ import {
   configureTextPrompt,
   getActiveCompareInfo,
   setCompareScrollSync,
+  setReferenceCursor,
   setReferenceLines,
   flipActiveViewportHorizontal,
   flipActiveViewportVertical,
@@ -64,6 +65,7 @@ const state = {
   compareIds: ["", ""],
   scrollSync: true,
   referenceLines: true,
+  referenceCursor: true,
   mode: "single",
   tool: "window",
   downloadOpen: true,
@@ -98,6 +100,7 @@ const icons = {
   compare3: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>`,
   scrollSync: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
   referenceLines: `<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="3" y1="12" x2="21" y2="12"/><line x1="12" y1="3" x2="12" y2="21"/></svg>`,
+  referenceCursor: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>`,
   montage6: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>`,
   montage8: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>`,
   mpr: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>`,
@@ -203,7 +206,7 @@ function iconButton(id, icon, title, active = false, disabled = false, label = "
   // Mode, tool and cine buttons are stateful, so screen readers need the state
   // that the highlight conveys visually.
   const stateful = /^(mode-|tool-)/.test(id)
-    || ["cine", "scroll-sync", "reference-lines"].includes(id);
+    || ["cine", "scroll-sync", "reference-lines", "reference-cursor"].includes(id);
   return `<button class="icon-button ${active ? "active" : ""} ${label ? "with-label" : ""}" data-action="${id}"
     title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"
     ${stateful ? `aria-pressed="${active ? "true" : "false"}"` : ""} ${disabled ? "disabled" : ""}>
@@ -276,7 +279,12 @@ function renderUtilityTools(series) {
         t(state.referenceLines
           ? "Đường tham chiếu đang bật — bấm để tắt"
           : "Đường tham chiếu đang tắt — bấm để bật"),
-        state.referenceLines)]
+        state.referenceLines),
+      iconButton("reference-cursor", icons.referenceCursor,
+        t(state.referenceCursor
+          ? "Con trỏ tham chiếu đang bật — bấm để tắt"
+          : "Con trỏ tham chiếu đang tắt — bấm để bật"),
+        state.referenceCursor)]
     : [];
   const output = [
     iconButton("cine", state.cine ? "Ⅱ" : icons.cine,
@@ -993,8 +1001,9 @@ async function action(name) {
         fillCompareSlots();
         // A fresh comparison starts locked, so the panes move 1-1-1, 2-2-2.
         state.scrollSync = true;
-        // Reference lines default on for compare; tell the viewer module.
+        // Both cross-viewport aids default on for compare.
         setReferenceLines(state.referenceLines);
+        setReferenceCursor(state.referenceCursor);
       }
       render();
       await renderViewer();
@@ -1050,6 +1059,21 @@ async function action(name) {
       setStatus(t(state.referenceLines
         ? "Đường tham chiếu đã bật."
         : "Đường tham chiếu đã tắt."));
+      return;
+    }
+    if (name === "reference-cursor") {
+      state.referenceCursor = setReferenceCursor(!state.referenceCursor);
+      const button = app.querySelector("[data-action='reference-cursor']");
+      if (button) {
+        button.classList.toggle("active", state.referenceCursor);
+        button.setAttribute("aria-pressed", state.referenceCursor ? "true" : "false");
+        button.title = t(state.referenceCursor
+          ? "Con trỏ tham chiếu đang bật — bấm để tắt"
+          : "Con trỏ tham chiếu đang tắt — bấm để bật");
+      }
+      setStatus(t(state.referenceCursor
+        ? "Con trỏ tham chiếu đã bật: rê chuột trên một khung để thấy đúng điểm đó trên khung kia."
+        : "Con trỏ tham chiếu đã tắt."));
       return;
     }
     if (name === "shortcuts") {

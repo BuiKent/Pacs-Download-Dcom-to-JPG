@@ -34,5 +34,9 @@ Nhánh này tự nhận diện quan hệ hình học của cặp series (`pairMo
 | `blocked` (khác Frame of Reference) | không bắt buộc | pane 2 giữ nguyên lát |
 | `index` (thiếu hình học, ví dụ JPG) | không bắt buộc | pane 2 đi theo số thứ tự lát |
 
+Nhánh này cũng kiểm con trỏ tham chiếu (crosslink theo điểm): tool phải ở chế độ
+`Passive` — chế độ duy nhất vừa nhận `mouseMove` vừa vẽ — và `positionSync` phải
+tắt, nếu không pane còn lại sẽ bị kéo chạy theo chuột.
+
 Gate phát hành đầy đủ (pixel assertion, lặp chuyển MPR/3D) là
 `python dcom_web_app.py --smoke-test`.

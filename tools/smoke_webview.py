@@ -163,6 +163,24 @@ def main() -> int:
                 # healthy archive.
                 pair_mode = (compare["diagnostics"]["referenceLines"]["pairModes"] or ["index"])[0]
                 compare["pairMode"] = pair_mode
+
+                # Point crosslink: the tool has to be Passive, because that is
+                # the only mode that both receives mouseMove and renders. It
+                # must not sync position either — cross-plane panes keep their
+                # own slice on purpose.
+                cursor = compare["diagnostics"].get("referenceCursor") or {}
+                compare["referenceCursor"] = cursor
+                if cursor.get("requested"):
+                    if cursor.get("toolMode") != "Passive":
+                        raise RuntimeError(
+                            f"Con trỏ tham chiếu không ở chế độ Passive nên sẽ không "
+                            f"nhận mouseMove: {cursor}"
+                        )
+                    if cursor.get("positionSync") is not False:
+                        raise RuntimeError(
+                            f"Con trỏ tham chiếu đang bật positionSync, sẽ kéo pane kia "
+                            f"chạy theo chuột: {cursor}"
+                        )
                 if pair_mode == "reference" and compare.get("referenceLines", 0) < 1:
                     raise RuntimeError(f"Cross-plane pair vẽ thiếu Reference Line: {compare}")
                 if pair_mode == "spatial" and compare.get("referenceLines", 0) > 0:
