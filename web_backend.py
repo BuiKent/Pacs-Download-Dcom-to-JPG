@@ -121,6 +121,7 @@ class DicomHeader:
     window_width: Optional[float]
     study_date: str = ""
     study_desc: str = ""
+    number_of_frames: int = 1
 
 
 def _read_dicom_header(path: Path) -> Optional[DicomHeader]:
@@ -133,7 +134,7 @@ def _read_dicom_header(path: Path) -> Optional[DicomHeader]:
         frames = int(getattr(ds, "NumberOfFrames", 1) or 1)
     except Exception:
         return None
-    if rows <= 0 or columns <= 0 or frames != 1:
+    if rows <= 0 or columns <= 0:
         return None
     samples = int(getattr(ds, "SamplesPerPixel", 1) or 1)
     photometric = str(getattr(ds, "PhotometricInterpretation", "MONOCHROME2") or "MONOCHROME2").upper()
@@ -181,6 +182,7 @@ def _read_dicom_header(path: Path) -> Optional[DicomHeader]:
         window_width=window_width if math.isfinite(window_width) and window_width > 0 else None,
         study_date=study_date,
         study_desc=study_desc,
+        number_of_frames=frames,
     )
 
 
@@ -293,7 +295,7 @@ def _direct_dicom_manifest(headers: list[DicomHeader]) -> tuple[Optional[dict], 
         "series_number": first.series_number,
         "study_instance_uid": first.study_uid,
         "series_instance_uid": first.series_uid,
-        "frame_of_reference_uid": first.frame_uid or first.series_uid,
+        "frame_of_reference_uid": first.frame_uid or first.study_uid or first.series_uid,
         "frame_of_reference_synthetic": not bool(first.frame_uid),
         "rows": first.rows,
         "columns": first.columns,
@@ -322,8 +324,12 @@ def _dicom_pixel_payload(path: Path) -> tuple[bytes, dict[str, str]]:
         pixels = np.asarray(ds.pixel_array)
     except Exception as exc:
         raise ValueError(f"Không giải mã được pixel DICOM: {path.name} ({exc})") from exc
+    # Multi-frame DICOM: pixel_array is (frames, rows, columns).
+    # Extract the first frame so the viewer can at least display something.
+    if pixels.ndim == 3 and int(getattr(ds, "SamplesPerPixel", 1) or 1) == 1:
+        pixels = pixels[0]
     if pixels.ndim != 2:
-        raise ValueError("Viewer trực tiếp hiện chỉ hỗ trợ DICOM xám một khung 2D.")
+        raise ValueError("Viewer trực tiếp hiện chỉ hỗ trợ DICOM xám 2D (hoặc multi-frame xám).")
 
     bits = int(getattr(ds, "BitsAllocated", pixels.dtype.itemsize * 8) or pixels.dtype.itemsize * 8)
     signed = int(getattr(ds, "PixelRepresentation", 0) or 0) == 1
@@ -484,7 +490,7 @@ class SeriesRecord:
                 "pixelSpacing": self.manifest["pixel_spacing"],
                 "sliceSpacing": float(self.manifest["slice_spacing"]),
                 "orientation": self.manifest["image_orientation_patient"],
-                "frameOfReferenceUID": self.manifest.get("frame_of_reference_uid") or self.series_id,
+                "frameOfReferenceUID": self.manifest.get("frame_of_reference_uid") or self.manifest.get("study_instance_uid") or self.series_id,
                 "frameOfReferenceSynthetic": self.manifest.get(
                     "frame_of_reference_synthetic",
                     not bool(self.manifest.get("frame_of_reference_uid")),
@@ -551,50 +557,100 @@ class ArchiveCatalog:
 
         records: dict[str, SeriesRecord] = {}
         for uid, headers in groups.items():
-            headers = _ordered_dicom_headers(headers)
-            manifest, ready, reason = _direct_dicom_manifest(headers)
-            first = headers[0]
-            digest = hashlib.sha256(f"dicom:{root}:{uid}".casefold().encode("utf-8")).hexdigest()[:20]
-            common = Path(os.path.commonpath([str(item.path.parent) for item in headers]))
-            modality = "MR" if first.modality == "MRI" else first.modality
-            
-            parts = []
-            if first.study_date: parts.append(first.study_date)
-            parts.append(modality if modality in {"CT", "MR"} else first.modality)
-            if first.study_desc: parts.append(first.study_desc)
-            study_group = " - ".join(parts) if parts else "Không rõ ca chụp"
+            # Separate single-frame from multi-frame within the same series.
+            single_frame = [h for h in headers if h.number_of_frames == 1]
+            multi_frame = [h for h in headers if h.number_of_frames != 1]
 
-            records[digest] = SeriesRecord(
-                series_id=digest,
-                name=f"Series {first.series_number or '?'} - {first.description}",
-                folder=common,
-                images=[item.path for item in headers],
-                manifest=manifest,
-                mpr_ready=ready,
-                mpr_reason=reason,
-                modality=modality if modality in {"CT", "MR"} else "UNKNOWN",
-                source_type="dicom",
-                study_group=study_group,
-                pixel_data={
-                    "rows": first.rows,
-                    "columns": first.columns,
-                    "pixelSpacing": first.pixel_spacing,
-                    "samplesPerPixel": first.samples_per_pixel,
-                    "photometricInterpretation": first.photometric,
-                    "bitsAllocated": first.bits_allocated,
-                    "bitsStored": first.bits_stored,
-                    "highBit": first.high_bit,
-                    "pixelRepresentation": first.pixel_representation,
-                    "rescaleSlope": first.rescale_slope,
-                    "rescaleIntercept": first.rescale_intercept,
-                    "windowCenter": first.window_center,
-                    "windowWidth": first.window_width,
-                },
-            )
+            if single_frame:
+                headers_ordered = _ordered_dicom_headers(single_frame)
+                manifest, ready, reason = _direct_dicom_manifest(headers_ordered)
+                first = headers_ordered[0]
+                digest = hashlib.sha256(f"dicom:{root}:{uid}".casefold().encode("utf-8")).hexdigest()[:20]
+                common = Path(os.path.commonpath([str(item.path.parent) for item in headers_ordered]))
+                modality = "MR" if first.modality == "MRI" else first.modality
+
+                parts = []
+                if first.study_date: parts.append(first.study_date)
+                parts.append(modality if modality in {"CT", "MR"} else first.modality)
+                if first.study_desc: parts.append(first.study_desc)
+                study_group = " - ".join(parts) if parts else "Không rõ ca chụp"
+
+                records[digest] = SeriesRecord(
+                    series_id=digest,
+                    name=f"Series {first.series_number or '?'} - {first.description}",
+                    folder=common,
+                    images=[item.path for item in headers_ordered],
+                    manifest=manifest,
+                    mpr_ready=ready,
+                    mpr_reason=reason,
+                    modality=modality if modality in {"CT", "MR"} else "UNKNOWN",
+                    source_type="dicom",
+                    study_group=study_group,
+                    pixel_data={
+                        "rows": first.rows,
+                        "columns": first.columns,
+                        "pixelSpacing": first.pixel_spacing,
+                        "samplesPerPixel": first.samples_per_pixel,
+                        "photometricInterpretation": first.photometric,
+                        "bitsAllocated": first.bits_allocated,
+                        "bitsStored": first.bits_stored,
+                        "highBit": first.high_bit,
+                        "pixelRepresentation": first.pixel_representation,
+                        "rescaleSlope": first.rescale_slope,
+                        "rescaleIntercept": first.rescale_intercept,
+                        "windowCenter": first.window_center,
+                        "windowWidth": first.window_width,
+                    },
+                )
+
+            # Multi-frame files get their own entry with a clear reason.
+            for mf_header in multi_frame:
+                mf_uid = f"{uid}:mf:{mf_header.sop_uid}"
+                digest = hashlib.sha256(f"dicom:{root}:{mf_uid}".casefold().encode("utf-8")).hexdigest()[:20]
+                modality = "MR" if mf_header.modality == "MRI" else mf_header.modality
+
+                parts = []
+                if mf_header.study_date: parts.append(mf_header.study_date)
+                parts.append(modality if modality in {"CT", "MR"} else mf_header.modality)
+                if mf_header.study_desc: parts.append(mf_header.study_desc)
+                study_group = " - ".join(parts) if parts else "Không rõ ca chụp"
+
+                mf_reason = (
+                    f"DICOM multi-frame: chỉ hiển thị khung 1/{mf_header.number_of_frames}; "
+                    "multi-frame chưa được tách lát — không dựng được MPR/3D."
+                )
+                records[digest] = SeriesRecord(
+                    series_id=digest,
+                    name=f"Series {mf_header.series_number or '?'} - {mf_header.description} (multi-frame)",
+                    folder=mf_header.path.parent,
+                    images=[mf_header.path],
+                    manifest=None,
+                    mpr_ready=False,
+                    mpr_reason=mf_reason,
+                    modality=modality if modality in {"CT", "MR"} else "UNKNOWN",
+                    source_type="dicom",
+                    study_group=study_group,
+                    pixel_data={
+                        "rows": mf_header.rows,
+                        "columns": mf_header.columns,
+                        "pixelSpacing": mf_header.pixel_spacing,
+                        "samplesPerPixel": mf_header.samples_per_pixel,
+                        "photometricInterpretation": mf_header.photometric,
+                        "bitsAllocated": mf_header.bits_allocated,
+                        "bitsStored": mf_header.bits_stored,
+                        "highBit": mf_header.high_bit,
+                        "pixelRepresentation": mf_header.pixel_representation,
+                        "rescaleSlope": mf_header.rescale_slope,
+                        "rescaleIntercept": mf_header.rescale_intercept,
+                        "windowCenter": mf_header.window_center,
+                        "windowWidth": mf_header.window_width,
+                    },
+                )
+
         if log and unsupported:
             log(
                 f"Bỏ qua {unsupported} file nghi DICOM chưa hỗ trợ "
-                "(multi-frame, ảnh màu, metadata thiếu hoặc file hỏng)."
+                "(ảnh màu, metadata thiếu hoặc file hỏng)."
             )
         return records, unsupported, len(paths)
 

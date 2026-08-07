@@ -199,15 +199,25 @@ describe("viewer shell", () => {
   });
 
   describe("spatial slice matching edge cases", () => {
-    it("returns null when real FrameOfReferenceUIDs differ", () => {
-      const s1 = { geometry: { frameOfReferenceUID: "1.2.3", frameOfReferenceSynthetic: false, orientation: [1,0,0,0,1,0], ordered_slices: [{ position: [0, 0, 0] }] } };
-      const s2 = { geometry: { frameOfReferenceUID: "1.2.4", frameOfReferenceSynthetic: false, orientation: [1,0,0,0,1,0], ordered_slices: [{ position: [0, 0, 0] }] } };
+    it("returns null when FrameOfReferenceUIDs differ", () => {
+      const s1 = { geometry: { frameOfReferenceUID: "1.2.3", orientation: [1,0,0,0,1,0], ordered_slices: [{ position: [0, 0, 0] }] } };
+      const s2 = { geometry: { frameOfReferenceUID: "1.2.4", orientation: [1,0,0,0,1,0], ordered_slices: [{ position: [0, 0, 0] }] } };
       expect(findSpatialSliceIndex(s1, 0, s2)).toBeNull();
     });
 
-    it("allows crosslink when FrameOfReferenceUID differs but is synthetic", () => {
-      const s1 = { geometry: { frameOfReferenceUID: "series-a", frameOfReferenceSynthetic: true, orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, 0] }] } };
-      const s2 = { geometry: { frameOfReferenceUID: "series-b", frameOfReferenceSynthetic: true, orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, 0] }] } };
+    it("returns null when synthetic FoR UIDs differ (cross-study)", () => {
+      // Two series from different studies, both missing the DICOM FoR tag.
+      // Backend gives each a synthetic FoR derived from its own study UID.
+      const s1 = { geometry: { frameOfReferenceUID: "study-A", orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, 0] }] } };
+      const s2 = { geometry: { frameOfReferenceUID: "study-B", orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, 0] }] } };
+      expect(findSpatialSliceIndex(s1, 0, s2)).toBeNull();
+    });
+
+    it("allows crosslink when synthetic FoR UIDs match (same study)", () => {
+      // Two series from the same study, both missing the DICOM FoR tag.
+      // Backend gives both the same synthetic FoR derived from study UID.
+      const s1 = { geometry: { frameOfReferenceUID: "study-X", orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, 0] }] } };
+      const s2 = { geometry: { frameOfReferenceUID: "study-X", orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, 0] }] } };
       expect(findSpatialSliceIndex(s1, 0, s2)).toBe(0);
     });
 
@@ -236,6 +246,71 @@ describe("viewer shell", () => {
         },
       };
       expect(findSpatialSliceIndex(axial, 0, sagittal)).toBeNull();
+    });
+
+    describe("why cross-plane sync by slice index does not work", () => {
+      it("findSpatialSliceIndex returns null for orthogonal series, proving no slice-based sync is possible", () => {
+        // Real axial: 10 slices, only Z varies. X and Y are constant.
+        const axial = {
+          geometry: {
+            orientation: [1, 0, 0, 0, 1, 0],
+            sliceSpacing: 5,
+            ordered_slices: Array.from({ length: 10 }, (_, i) => ({
+              position: [0, 0, i * 5],
+            })),
+          },
+        };
+        // Sagittal: orthogonal to axial.
+        const sagittal = {
+          geometry: {
+            orientation: [0, 1, 0, 0, 0, -1],
+            sliceSpacing: 2,
+            ordered_slices: [
+              { position: [-4, 0, 0] },
+              { position: [-2, 0, 0] },
+              { position: [0, 0, 0] },
+              { position: [2, 0, 0] },
+            ],
+          },
+        };
+        // Co-planar guard blocks cross-plane → null for every source slice.
+        // This is correct: projection onto the target normal drops the
+        // axis along which the source varies (Z for axial, X for sagittal),
+        // so any "cross-plane slice index" would be constant and useless.
+        // Reference lines solve this visually instead.
+        for (let i = 0; i < 10; i++) {
+          expect(findSpatialSliceIndex(axial, i, sagittal)).toBeNull();
+        }
+      });
+
+      it("syncedCompareIndices falls back to index-offset for cross-plane pairs", () => {
+        const axial = {
+          sliceCount: 10,
+          geometry: {
+            orientation: [1, 0, 0, 0, 1, 0],
+            sliceSpacing: 5,
+            ordered_slices: Array.from({ length: 10 }, (_, i) => ({
+              position: [0, 0, i * 5],
+            })),
+          },
+        };
+        const sagittal = {
+          sliceCount: 8,
+          geometry: {
+            orientation: [0, 1, 0, 0, 0, -1],
+            sliceSpacing: 3,
+            ordered_slices: Array.from({ length: 8 }, (_, i) => ({
+              position: [i * 3, 0, 0],
+            })),
+          },
+        };
+        // Anchor [0, 0], scroll axial to 5 → sagittal follows by delta.
+        const result = syncedCompareIndices([0, 0], 0, 5, [10, 8], [axial, sagittal]);
+        expect(result).toEqual([5, 5]);
+        // Scroll further → clamped to sagittal max (7).
+        const result2 = syncedCompareIndices([0, 0], 0, 9, [10, 8], [axial, sagittal]);
+        expect(result2).toEqual([9, 7]);
+      });
     });
 
     it("syncs two parallel oblique series correctly (same non-axis normal)", () => {

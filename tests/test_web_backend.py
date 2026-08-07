@@ -11,7 +11,7 @@ from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage, generate_uid
 from PIL import Image
 
-from web_backend import ArchiveCatalog, LocalApiServer, WebController, validate_mpr_manifest
+from web_backend import ArchiveCatalog, LocalApiServer, WebController, validate_mpr_manifest, _dicom_pixel_payload
 
 
 def write_local_dicom(
@@ -126,8 +126,23 @@ class CatalogTests(unittest.TestCase):
             root = Path(tmp)
             write_local_dicom(root / "enhanced.dcm", number_of_frames=3)
 
-            with self.assertRaisesRegex(ValueError, "multi-frame"):
-                ArchiveCatalog().open(root)
+            catalog = ArchiveCatalog().open(root)
+            self.assertEqual(len(catalog["series"]), 1)
+            series = catalog["series"][0]
+            self.assertFalse(series["mprReady"])
+            self.assertIn("khung 1/", series["mprReason"])
+
+    def test_multiframe_dicom_pixel_payload_extracts_first_frame(self):
+        """_dicom_pixel_payload must extract frame 0 from a multi-frame file
+        instead of raising ValueError for ndim==3."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "enhanced.dcm"
+            write_local_dicom(path, number_of_frames=3)
+            body, headers = _dicom_pixel_payload(path)
+            # The first frame is a 4×4 uint16 image → 32 bytes.
+            self.assertEqual(len(body), 4 * 4 * 2)
+            self.assertEqual(headers["X-DCom-Rows"], "4")
+            self.assertEqual(headers["X-DCom-Columns"], "4")
 
     def test_direct_dicom_geometry_enables_mpr_without_jpg_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -322,8 +337,8 @@ class FrameOfReferenceSyntheticTests(unittest.TestCase):
 
     def test_dicom_without_for_tag_is_marked_synthetic(self):
         """Anonymized DICOM missing FrameOfReferenceUID must get
-        frameOfReferenceSynthetic=True so the frontend skips the FoR guard
-        and still allows spatial crosslink."""
+        frameOfReferenceSynthetic=True.  The synthetic FoR UID is derived
+        from the study UID so same-study series share one FoR."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             uid = generate_uid()
@@ -343,7 +358,7 @@ class FrameOfReferenceSyntheticTests(unittest.TestCase):
                 geo["frameOfReferenceSynthetic"],
                 "DICOM without FrameOfReferenceUID must be marked synthetic",
             )
-            # UID should still be present (fallback to series_id)
+            # UID should still be present (fallback to study UID)
             self.assertTrue(geo.get("frameOfReferenceUID"))
 
     def test_dicom_with_real_for_tag_is_not_synthetic(self):
@@ -370,6 +385,96 @@ class FrameOfReferenceSyntheticTests(unittest.TestCase):
                 "DICOM with real FrameOfReferenceUID must NOT be marked synthetic",
             )
             self.assertEqual(fuid, geo["frameOfReferenceUID"])
+
+    def test_same_study_without_for_tag_share_synthetic_for(self):
+        """Two series from the same study, both missing FrameOfReferenceUID,
+        must receive the same synthetic FoR UID (derived from study UID).
+        Two series from different studies must get different FoR UIDs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            study_uid = generate_uid()
+            series_a = generate_uid()
+            series_b = generate_uid()
+            series_c = generate_uid()
+            other_study_uid = generate_uid()
+
+            # Series A + B: same study, no FoR tag
+            for i, sid in enumerate([series_a, series_b]):
+                for j in range(3):
+                    write_local_dicom(
+                        root / f"s{i}_slice-{j:03d}.dcm",
+                        series_uid=sid,
+                        instance_number=j + 1,
+                        position=float(j * 5),
+                        skip_frame_uid=True,
+                    )
+
+            # Series C: different study, no FoR tag
+            for j in range(3):
+                write_local_dicom(
+                    root / f"s2_slice-{j:03d}.dcm",
+                    series_uid=series_c,
+                    instance_number=j + 1,
+                    position=float(j * 5),
+                    skip_frame_uid=True,
+                )
+
+            # Patch study UIDs — write_local_dicom always makes a fresh one,
+            # so we need to force them.
+            import pydicom
+            for dcm_path in root.glob("s0_*.dcm"):
+                ds = pydicom.dcmread(str(dcm_path))
+                ds.StudyInstanceUID = study_uid
+                ds.save_as(str(dcm_path))
+            for dcm_path in root.glob("s1_*.dcm"):
+                ds = pydicom.dcmread(str(dcm_path))
+                ds.StudyInstanceUID = study_uid
+                ds.save_as(str(dcm_path))
+            for dcm_path in root.glob("s2_*.dcm"):
+                ds = pydicom.dcmread(str(dcm_path))
+                ds.StudyInstanceUID = other_study_uid
+                ds.save_as(str(dcm_path))
+
+            snapshot = ArchiveCatalog().open(root)
+            by_id = {s["id"]: s for s in snapshot["series"]}
+            geos = {sid: s.get("geometry", {}) for sid, s in by_id.items()}
+
+            # Find series A and B (same study) vs C (different study)
+            same_study_fors = set()
+            other_study_fors = set()
+            for sid, geo in geos.items():
+                if not geo:
+                    continue
+                # Check which study this series belongs to by examining its
+                # synthetic FoR UID (should equal its study UID).
+                for s in snapshot["series"]:
+                    if s["id"] == sid:
+                        study_group = s.get("studyGroup", "")
+                        break
+                for dcm_path in root.glob("*.dcm"):
+                    ds = pydicom.dcmread(str(dcm_path), stop_before_pixels=True)
+                    if ds.SeriesInstanceUID in (series_a, series_b) and \
+                       geo.get("frameOfReferenceUID"):
+                        same_study_fors.add(geo["frameOfReferenceUID"])
+                    elif ds.SeriesInstanceUID == series_c and \
+                         geo.get("frameOfReferenceUID"):
+                        other_study_fors.add(geo["frameOfReferenceUID"])
+                    break  # only need one match per series
+
+            # Simpler approach: just check all FoR UIDs directly
+            for_uids = [g.get("frameOfReferenceUID") for g in geos.values() if g]
+            self.assertEqual(len(for_uids), 3, "Expected 3 series with geometry")
+            # All three should have FoR UIDs
+            self.assertTrue(all(for_uids))
+
+            # Count unique FoR UIDs: should be exactly 2
+            # (one for the shared study, one for the other study)
+            unique_fors = set(for_uids)
+            self.assertEqual(
+                len(unique_fors), 2,
+                f"Expected 2 unique FoR UIDs (same-study pair + other study), "
+                f"got {len(unique_fors)}: {unique_fors}",
+            )
 
 
 if __name__ == "__main__":

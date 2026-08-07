@@ -18,6 +18,7 @@ import {
   LengthTool,
   PanTool,
   PlanarFreehandROITool,
+  ReferenceLinesTool,
   StackScrollTool,
   ToolGroupManager,
   TrackballRotateTool,
@@ -61,6 +62,7 @@ const toolClasses = [
   ArrowAnnotateTool,
   CrosshairsTool,
   TrackballRotateTool,
+  ReferenceLinesTool,
 ];
 
 const toolByMode = {
@@ -99,6 +101,7 @@ let activeSeriesList = [];
 let activeMode = "single";
 let currentTool = "window";
 let mprPrimaryPlane = "axial";
+let referenceLinesEnabled = true;
 let cineTimer = null;
 let loadGeneration = 0;
 let onStatus = () => {};
@@ -722,7 +725,7 @@ function engineIsLive() {
 function destroyCurrent() {
   // The listeners die with the elements; clearing the anchor stops a stale
   // layout's pane list from being consulted by the next one.
-  compareSync = { enabled: false, anchor: null, viewportIds: [], sliceCounts: [], spatialMode: null };
+  compareSync = emptyCompareSync();
   stopCine();
   loadGeneration += 1;
   resizeObserver?.disconnect();
@@ -809,6 +812,13 @@ function createToolGroup(viewportIds, mode = "stack") {
     toolGroup.setToolActive(StackScrollTool.toolName, {
       bindings: [{ mouseButton: ToolEnums.MouseBindings.Wheel }],
     });
+  }
+  // Reference lines render passively (Enabled state) — they show where one
+  // viewport's current slice intersects another viewport's plane. Only useful
+  // in compare layouts where multiple viewports coexist.
+  if (allowed.includes(ReferenceLinesTool) && referenceLinesEnabled) {
+    toolGroup.setToolEnabled(ReferenceLinesTool.toolName);
+    updateReferenceLineSource();
   }
 }
 
@@ -932,6 +942,8 @@ function markActiveViewport(viewportId) {
   for (const shell of document.querySelectorAll("#workspace .viewport-shell")) {
     shell.classList.toggle("is-active", shell.dataset.viewportId === viewportId);
   }
+  // When focus moves, the reference-line source must follow.
+  updateReferenceLineSource();
 }
 
 export function activeViewport() {
@@ -1113,8 +1125,9 @@ export function computeSliceNormal(orientation) {
  * location of sourceIndex in sourceSeries based on DICOM geometry.
  *
  * Guards:
- * 1. Different *real* FrameOfReferenceUIDs → incompatible coordinate spaces → null.
- *    Synthetic FoR (tag missing from DICOM, backend filled in series UID) is ignored.
+ * 1. Different FrameOfReferenceUIDs → incompatible coordinate spaces → null.
+ *    When the original DICOM tag is missing, the backend fills in the study UID
+ *    so that series from the same study share one synthetic FoR.
  * 2. Cross-plane: if |dot(sourceNormal, targetNormal)| < 0.9 (~25°), there is no
  *    meaningful 1-to-1 slice correspondence → null.
  * 3. Distance threshold (Non-overlapping anatomy): Projects slices onto the target normal.
@@ -1128,13 +1141,12 @@ export function computeSliceNormal(orientation) {
  * target slice by signed distance along the scan axis.
  */
 export function findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries) {
-  // Guard 1: FrameOfReferenceUID — only block when both are *real* DICOM FoR
+  // Guard 1: FrameOfReferenceUID — block when FoR UIDs exist and differ.
+  // Synthetic FoR UIDs are derived from the study UID, so same-study series
+  // already share one FoR and pass naturally; cross-study pairs are blocked.
   const sourceFor = sourceSeries?.geometry?.frameOfReferenceUID;
   const targetFor = targetSeries?.geometry?.frameOfReferenceUID;
-  const sourceSynthetic = sourceSeries?.geometry?.frameOfReferenceSynthetic;
-  const targetSynthetic = targetSeries?.geometry?.frameOfReferenceSynthetic;
-  if (sourceFor && targetFor && sourceFor !== targetFor
-      && !sourceSynthetic && !targetSynthetic) {
+  if (sourceFor && targetFor && sourceFor !== targetFor) {
     return null;
   }
 
@@ -1147,9 +1159,19 @@ export function findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries) {
       sourceNormal[1] * targetNormal[1] +
       sourceNormal[2] * targetNormal[2],
     );
-    if (dot < 0.9) return null; // planes differ by > ~25°
+    if (dot < 0.9) return null; // planes differ by >~25°
   }
 
+  return projectSliceIndex(sourceSeries, sourceIndex, targetSeries, sourceNormal, targetNormal);
+}
+
+
+
+/**
+ * Core projection logic used by findSpatialSliceIndex.  Projects the source
+ * slice position onto the target normal to find the closest target slice.
+ */
+function projectSliceIndex(sourceSeries, sourceIndex, targetSeries, sourceNormal, targetNormal) {
   const sourceSlices = resolveOrderedSlices(sourceSeries);
   const targetSlices = resolveOrderedSlices(targetSeries);
   if (!sourceSlices?.[sourceIndex] || !targetSlices?.length) {
@@ -1231,8 +1253,10 @@ export function findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries) {
  * The anchor is the set of indices captured when synchronisation was switched
  * on, not slice 0: panes deliberately scrolled apart must keep that gap. With
  * an anchor of [x, n, y], moving the middle pane to n+1 gives [x+1, n+1, y+1].
- * When 3D geometry is available for both series, it computes physical 3D spatial
- * slice alignment; otherwise it falls back to relative slice index offset.
+ * When 3D geometry is available for both co-planar series, it computes physical
+ * 3D spatial slice alignment; otherwise it falls back to relative slice index
+ * offset.  Cross-plane series (orthogonal orientations) are NOT synced here —
+ * reference lines handle that visual indication instead.
  */
 export function syncedCompareIndices(anchor, sourcePane, sourceIndex, sliceCounts, seriesList = []) {
   const sourceSeries = seriesList[sourcePane];
@@ -1243,6 +1267,8 @@ export function syncedCompareIndices(anchor, sourcePane, sourceIndex, sliceCount
     const targetSeries = seriesList[pane];
 
     if (sourceSeries && targetSeries) {
+      // Co-planar spatial sync only.  Cross-plane pairs fall through to
+      // index-offset sync — reference lines show the intersection instead.
       const spatialIndex = findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries);
       if (typeof spatialIndex === "number" && Number.isInteger(spatialIndex)) {
         return spatialIndex;
@@ -1255,7 +1281,10 @@ export function syncedCompareIndices(anchor, sourcePane, sourceIndex, sliceCount
 }
 
 // Anchor and wiring for the comparison layouts. Rebuilt on every layout change.
-let compareSync = { enabled: false, anchor: null, viewportIds: [], seriesList: [], sliceCounts: [], spatialMode: null };
+function emptyCompareSync() {
+  return { enabled: false, anchor: null, viewportIds: [], seriesList: [], sliceCounts: [], spatialMode: null };
+}
+let compareSync = emptyCompareSync();
 
 function readCompareIndices() {
   return compareSync.viewportIds.map((viewportId) => (
@@ -1276,7 +1305,9 @@ function detectSpatialMode(seriesList) {
       const sj = seriesList[j];
       if (!si || !sj) return "index";
       const midI = Math.floor((si.sliceCount || 1) / 2);
-      if (findSpatialSliceIndex(si, midI, sj) === null) return "index";
+      if (findSpatialSliceIndex(si, midI, sj) === null) {
+        return "index";
+      }
     }
   }
   return "spatial";
@@ -1304,6 +1335,68 @@ export function compareScrollSyncState() {
     anchor: compareSync.anchor?.slice() || null,
     spatialMode: compareSync.spatialMode || null,
   };
+}
+
+/**
+ * Toggle reference lines on/off.  Reference lines show where one viewport's
+ * current slice plane intersects the image displayed in another viewport —
+ * the standard PACS cross-reference feature for orthogonal series.
+ * Returns the state actually in force.
+ */
+export function setReferenceLines(enabled) {
+  referenceLinesEnabled = Boolean(enabled);
+  if (!toolGroup || !toolGroup.hasTool(ReferenceLinesTool.toolName)) {
+    return referenceLinesEnabled;
+  }
+  if (referenceLinesEnabled) {
+    toolGroup.setToolEnabled(ReferenceLinesTool.toolName);
+    updateReferenceLineSource();
+  } else {
+    toolGroup.setToolDisabled(ReferenceLinesTool.toolName);
+  }
+  // Force re-render so reference lines appear or disappear immediately.
+  renderingEngine?.render();
+  return referenceLinesEnabled;
+}
+
+/**
+ * Point ReferenceLinesTool at the currently focused viewport so the tool
+ * knows which slice to project.  Must be called whenever:
+ *   - reference lines are turned on
+ *   - the active viewport changes (pane click)
+ *   - the layout is rebuilt
+ *
+ * enforceSameFrameOfReference stays true.  Synthetic FoR UIDs are derived
+ * from the study UID (shared across series in the same study) so the guard
+ * correctly passes for same-study pairs and blocks cross-study comparisons.
+ *
+ * If the active viewport's series has no geometry (pure JPG without spatial
+ * metadata), we disable the tool rather than let Cornerstone render lines
+ * from meaningless default coordinates.
+ */
+function updateReferenceLineSource() {
+  if (!toolGroup || !toolGroup.hasTool(ReferenceLinesTool.toolName)) return;
+  if (!referenceLinesEnabled || !activeViewportId) return;
+
+  // Check if the source viewport's series has geometry.  Without it,
+  // imagePlaneModule returns undefined → Cornerstone falls back to world
+  // coordinates that have no spatial meaning.
+  const paneIndex = compareSync.viewportIds.indexOf(activeViewportId);
+  const sourceSeries = paneIndex >= 0 ? compareSync.seriesList[paneIndex] : null;
+  if (!sourceSeries?.geometry) {
+    toolGroup.setToolDisabled(ReferenceLinesTool.toolName);
+    return;
+  }
+
+  toolGroup.setToolEnabled(ReferenceLinesTool.toolName);
+  toolGroup.setToolConfiguration(ReferenceLinesTool.toolName, {
+    sourceViewportId: activeViewportId,
+    enforceSameFrameOfReference: true,
+  });
+}
+
+export function referenceLinesState() {
+  return referenceLinesEnabled;
 }
 
 /** Returns info about the currently focused compare pane, or null. */
@@ -1529,6 +1622,9 @@ export async function showStacks(container, series, mode, comparison = null, too
     // Locked scrolling is the useful default; the button exists to break the
     // lock, scroll one pane, and re-lock on the new offset.
     setCompareScrollSync(true);
+    // compareSync is now populated — re-run updateReferenceLineSource so that
+    // reference lines activate immediately instead of waiting for pointerenter.
+    updateReferenceLineSource();
   } else {
     const count = viewports.length;
     const shouldPrefetch = mode === "single";

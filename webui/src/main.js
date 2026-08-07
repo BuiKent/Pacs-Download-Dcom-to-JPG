@@ -20,6 +20,7 @@ import {
   configureTextPrompt,
   getActiveCompareInfo,
   setCompareScrollSync,
+  setReferenceLines,
   flipActiveViewportHorizontal,
   flipActiveViewportVertical,
   initViewer,
@@ -62,6 +63,7 @@ const state = {
   // Series shown beside the primary one; index 0 is pane B, index 1 is pane C.
   compareIds: ["", ""],
   scrollSync: true,
+  referenceLines: true,
   mode: "single",
   tool: "window",
   downloadOpen: true,
@@ -95,6 +97,7 @@ const icons = {
   compare: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></svg>`,
   compare3: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>`,
   scrollSync: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
+  referenceLines: `<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="3" y1="12" x2="21" y2="12"/><line x1="12" y1="3" x2="12" y2="21"/></svg>`,
   montage6: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>`,
   montage8: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>`,
   mpr: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>`,
@@ -267,7 +270,12 @@ function renderUtilityTools(series) {
       t(state.scrollSync
         ? "Đang khoá cuộn theo vị trí — bấm để cuộn từng khung riêng"
         : "Cuộn từng khung riêng — bấm để khoá theo độ lệch hiện tại"),
-      state.scrollSync)]
+      state.scrollSync),
+      iconButton("reference-lines", icons.referenceLines,
+        t(state.referenceLines
+          ? "Đường tham chiếu đang bật — bấm để tắt"
+          : "Đường tham chiếu đang tắt — bấm để bật"),
+        state.referenceLines)]
     : [];
   const output = [
     iconButton("cine", state.cine ? "Ⅱ" : icons.cine,
@@ -976,6 +984,8 @@ async function action(name) {
         fillCompareSlots();
         // A fresh comparison starts locked, so the panes move 1-1-1, 2-2-2.
         state.scrollSync = true;
+        // Reference lines default on for compare; tell the viewer module.
+        setReferenceLines(state.referenceLines);
       }
       render();
       await renderViewer();
@@ -1010,6 +1020,21 @@ async function action(name) {
       } else {
         setStatus(t("Đã bỏ khoá: mỗi khung cuộn riêng."));
       }
+      return;
+    }
+    if (name === "reference-lines") {
+      state.referenceLines = setReferenceLines(!state.referenceLines);
+      const button = app.querySelector("[data-action='reference-lines']");
+      if (button) {
+        button.classList.toggle("active", state.referenceLines);
+        button.setAttribute("aria-pressed", state.referenceLines ? "true" : "false");
+        button.title = t(state.referenceLines
+          ? "Đường tham chiếu đang bật — bấm để tắt"
+          : "Đường tham chiếu đang tắt — bấm để bật");
+      }
+      setStatus(t(state.referenceLines
+        ? "Đường tham chiếu đã bật."
+        : "Đường tham chiếu đã tắt."));
       return;
     }
     if (name === "shortcuts") {
