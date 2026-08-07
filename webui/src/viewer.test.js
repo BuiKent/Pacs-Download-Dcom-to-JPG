@@ -195,6 +195,65 @@ describe("viewer shell", () => {
     expect(result).toEqual([13, 23]); // NOT [13, 13]
   });
 
+  describe("spatial slice matching edge cases", () => {
+    it("returns null when FrameOfReferenceUIDs are different", () => {
+      const s1 = { geometry: { frameOfReferenceUID: "1.2.3", ordered_slices: [{ position: [0, 0, 0] }] } };
+      const s2 = { geometry: { frameOfReferenceUID: "1.2.4", ordered_slices: [{ position: [0, 0, 0] }] } };
+      expect(findSpatialSliceIndex(s1, 0, s2)).toBeNull();
+    });
+
+    it("returns null when minimum distance exceeds 50mm threshold (no overlap)", () => {
+      const s1 = { geometry: { ordered_slices: [{ position: [0, 0, 0] }] } };
+      // Target is 300mm away
+      const s2 = { geometry: { ordered_slices: [{ position: [0, 0, 300] }] } };
+      expect(findSpatialSliceIndex(s1, 0, s2)).toBeNull();
+    });
+
+    it("handles different orientations and oblique slices correctly", () => {
+      // Oblique source
+      const obliqueOrientation = [0, 1, 0, 0.7071, 0, -0.7071];
+      const s1 = {
+        geometry: {
+          orientation: obliqueOrientation,
+          ordered_slices: [{ position: [10, 0, 12] }],
+        },
+      };
+      // True axial target
+      const axialOrientation = [1, 0, 0, 0, 1, 0];
+      const s2 = {
+        geometry: {
+          orientation: axialOrientation,
+          ordered_slices: [
+            { position: [0, 0, 0] },
+            { position: [0, 0, 5] },
+            { position: [0, 0, 10] },
+            { position: [0, 0, 15] },
+          ],
+        },
+      };
+      // Source position is z=12. Projecting onto axial normal (0,0,1) gives z=12.
+      // Target slices are at z=0, 5, 10, 15. Closest to 12 is 10 (index 2).
+      expect(findSpatialSliceIndex(s1, 0, s2)).toBe(2);
+    });
+
+    it("works correctly when ordered_slices are inverted", () => {
+      const s1 = { geometry: { ordered_slices: [{ position: [0, 0, 18] }] } };
+      const s2 = {
+        geometry: {
+          orientation: [1, 0, 0, 0, 1, 0],
+          ordered_slices: [
+            { position: [0, 0, 30] },
+            { position: [0, 0, 20] },
+            { position: [0, 0, 10] },
+            { position: [0, 0, 0] },
+          ],
+        },
+      };
+      // Closest to z=18 is z=20 (index 1).
+      expect(findSpatialSliceIndex(s1, 0, s2)).toBe(1);
+    });
+  });
+
   it("attributes each measurement to the series it was drawn on", () => {
     const seriesA = "aaaaaaaaaaaaaaaaaaaa";
     const seriesB = "bbbbbbbbbbbbbbbbbbbb";

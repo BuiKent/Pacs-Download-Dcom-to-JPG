@@ -1101,6 +1101,12 @@ function resolveOrientation(series) {
  * target slice by signed distance along the scan axis.
  */
 export function findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries) {
+  const sourceFor = sourceSeries?.geometry?.frameOfReferenceUID;
+  const targetFor = targetSeries?.geometry?.frameOfReferenceUID;
+  if (sourceFor && targetFor && sourceFor !== targetFor) {
+    return null;
+  }
+
   const sourceSlices = resolveOrderedSlices(sourceSeries);
   const targetSlices = resolveOrderedSlices(targetSeries);
   if (!sourceSlices?.[sourceIndex] || !targetSlices?.length) {
@@ -1151,6 +1157,12 @@ export function findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries) {
       minDistance = dist;
       bestIndex = i;
     }
+  }
+
+  // Cross-plane (axial vs sagittal) or non-overlapping series (e.g. head vs neck)
+  // should not sync by index. 50mm is a safe threshold to say they don't overlap.
+  if (minDistance > 50) {
+    return null;
   }
 
   return bestIndex;
