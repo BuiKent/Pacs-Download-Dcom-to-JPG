@@ -195,9 +195,30 @@
     if (!urlInput.value.trim()) tryAutoPaste();
   });
 
+  function canCrosslink() {
+    let frame = null;
+    if (state.mode === "compare") {
+      const paneState = state.comparePanes[state.activeComparePane || "left"];
+      if (!paneState) return false;
+      const s = (state.archive.series || []).find(x => x.id === paneState.seriesId);
+      if (s && s.geometry) frame = s.geometry.frameOfReferenceUID;
+    } else {
+      if (currentSeries && currentSeries.geometry) frame = currentSeries.geometry.frameOfReferenceUID;
+    }
+    if (!frame) return false;
+    const seriesList = state.archive.series || [];
+    return seriesList.filter(s => s.geometry && s.geometry.frameOfReferenceUID === frame).length > 1;
+  }
+
   // ── Render toolbar ─────────────────────────────────────────────────────
   function renderToolbar() {
-    const series = currentSeries;
+    let series = currentSeries;
+    if (state.mode === "compare") {
+      const paneState = state.comparePanes[state.activeComparePane || "left"];
+      if (paneState) {
+        series = (state.archive.series || []).find(x => x.id === paneState.seriesId) || currentSeries;
+      }
+    }
     const mprDisabled = !series || !series.mprReady;
     const isMpr = state.mode === "mpr";
     const measureDisabled = true; // Canvas renderer can't do Cornerstone measurements
@@ -316,12 +337,19 @@
       state.invertColors = !state.invertColors;
       renderCurrent();
       renderAllMpr();
+      if (state.mode === "compare") {
+        loadComparePane("left");
+        loadComparePane("right");
+      }
       renderToolbar();
     } else if (action === "reset") {
       resetView();
     } else if (action === "scroll-sync") {
       state.crosslink = !state.crosslink;
       renderToolbar();
+      if (state.mode === "compare") {
+        syncComparePanes(state.activeComparePane || "left");
+      }
     } else if (action === "cine") {
       toggleCine();
       renderToolbar();
@@ -390,7 +418,10 @@
     }
     if (state.flipH) parts.push(`scaleX(-1)`);
     if (state.flipV) parts.push(`scaleY(-1)`);
-    stackCanvas.style.transform = parts.join(" ");
+    
+    const transformStr = parts.join(" ");
+    stackCanvas.style.transform = transformStr;
+    stackCanvas.parentElement.style.cursor = state.tool === "pan" ? "move" : "default";
 
     // Also apply to MPR canvases
     $$(".mpr-canvas").forEach((c) => {
@@ -399,6 +430,17 @@
       if (state.flipV) mprParts.push("scaleY(-1)");
       c.style.transform = mprParts.join(" ");
     });
+
+    // Apply to Compare canvases
+    for (const p of ["left", "right"]) {
+      const cvs = $(`#compare-canvas-${p}`);
+      if (cvs) {
+        cvs.style.transform = transformStr;
+        if (cvs.parentElement) {
+          cvs.parentElement.style.cursor = state.tool === "pan" ? "move" : "default";
+        }
+      }
+    }
   }
 
   function resetView() {
