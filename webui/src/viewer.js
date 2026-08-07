@@ -699,9 +699,18 @@ export function registerSeries(series) {
 }
 
 async function ensureManifest(series) {
-  if (!series.mprReady) return null;
+  // The manifest provides ordered_slices (per-slice 3D positions) required
+  // for both MPR/3D volume rendering AND simple 2D spatial crosslinking.
+  // Any series with valid geometry has a manifest the backend can serve,
+  // even when it doesn't meet the stricter MPR/3D readiness threshold.
+  if (!series.mprReady && !series.geometry) return null;
   if (!manifestRegistry.has(series.id)) {
-    manifestRegistry.set(series.id, await api(`/api/series/${series.id}/manifest`));
+    try {
+      manifestRegistry.set(series.id, await api(`/api/series/${series.id}/manifest`));
+    } catch (_) {
+      // Series without spatial data — crosslink will fall back to index sync.
+      return null;
+    }
   }
   return manifestRegistry.get(series.id);
 }
@@ -1064,25 +1073,120 @@ async function setupStackViewport(viewportId, series, index = 0, prefetch = true
 }
 
 /**
+ * Resolve ordered_slices for a series: first from any explicit property
+ * (used by unit tests), then from the manifestRegistry (populated at
+ * runtime by ensureManifest).
+ */
+function resolveOrderedSlices(series) {
+  // Unit-test path: geometry.ordered_slices is set directly.
+  if (series?.geometry?.ordered_slices) return series.geometry.ordered_slices;
+  // Runtime path: the full manifest lives in manifestRegistry.
+  const manifest = manifestRegistry.get(series?.id);
+  return manifest?.ordered_slices || null;
+}
+
+/** Resolve orientation for a series. */
+function resolveOrientation(series) {
+  if (series?.geometry?.orientation) return series.geometry.orientation;
+  const manifest = manifestRegistry.get(series?.id);
+  return manifest?.image_orientation_patient || null;
+}
+
+/**
+ * Calculates the slice index in targetSeries that best matches the 3D physical
+ * location of sourceIndex in sourceSeries based on DICOM geometry.
+ *
+ * Uses the cross product of the target series' orientation to compute the slice
+ * normal, then projects the source position onto that normal to find the closest
+ * target slice by signed distance along the scan axis.
+ */
+export function findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries) {
+  const sourceSlices = resolveOrderedSlices(sourceSeries);
+  const targetSlices = resolveOrderedSlices(targetSeries);
+  if (!sourceSlices?.[sourceIndex] || !targetSlices?.length) {
+    return null;
+  }
+  const sourcePos = sourceSlices[sourceIndex]?.position;
+  if (!Array.isArray(sourcePos) || sourcePos.length !== 3) {
+    return null;
+  }
+
+  const targetOrientation = resolveOrientation(targetSeries);
+  let targetNormal = null;
+  if (Array.isArray(targetOrientation) && targetOrientation.length === 6) {
+    const row = targetOrientation.slice(0, 3);
+    const col = targetOrientation.slice(3, 6);
+    const nx = row[1] * col[2] - row[2] * col[1];
+    const ny = row[2] * col[0] - row[0] * col[2];
+    const nz = row[0] * col[1] - row[1] * col[0];
+    const len = Math.hypot(nx, ny, nz);
+    if (len > 1e-6) {
+      targetNormal = [nx / len, ny / len, nz / len];
+    }
+  }
+
+  let bestIndex = 0;
+  let minDistance = Infinity;
+
+  for (let i = 0; i < targetSlices.length; i += 1) {
+    const targetPos = targetSlices[i]?.position;
+    if (!Array.isArray(targetPos) || targetPos.length !== 3) continue;
+
+    let dist;
+    if (targetNormal) {
+      dist = Math.abs(
+        (sourcePos[0] - targetPos[0]) * targetNormal[0] +
+        (sourcePos[1] - targetPos[1]) * targetNormal[1] +
+        (sourcePos[2] - targetPos[2]) * targetNormal[2],
+      );
+    } else {
+      dist = Math.hypot(
+        sourcePos[0] - targetPos[0],
+        sourcePos[1] - targetPos[1],
+        sourcePos[2] - targetPos[2],
+      );
+    }
+
+    if (dist < minDistance) {
+      minDistance = dist;
+      bestIndex = i;
+    }
+  }
+
+  return bestIndex;
+}
+
+/**
  * Where every compared pane should sit when one of them is scrolled.
  *
  * The anchor is the set of indices captured when synchronisation was switched
  * on, not slice 0: panes deliberately scrolled apart must keep that gap. With
  * an anchor of [x, n, y], moving the middle pane to n+1 gives [x+1, n+1, y+1].
- * A pane that reaches the end of its own series clamps without corrupting the
- * anchor, so scrolling back restores the original relationship.
+ * When 3D geometry is available for both series, it computes physical 3D spatial
+ * slice alignment; otherwise it falls back to relative slice index offset.
  */
-export function syncedCompareIndices(anchor, sourcePane, sourceIndex, sliceCounts) {
+export function syncedCompareIndices(anchor, sourcePane, sourceIndex, sliceCounts, seriesList = []) {
+  const sourceSeries = seriesList[sourcePane];
   const delta = sourceIndex - (anchor[sourcePane] ?? 0);
+
   return anchor.map((base, pane) => {
     if (pane === sourcePane) return sourceIndex;
+    const targetSeries = seriesList[pane];
+
+    if (sourceSeries && targetSeries) {
+      const spatialIndex = findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries);
+      if (typeof spatialIndex === "number" && Number.isInteger(spatialIndex)) {
+        return spatialIndex;
+      }
+    }
+
     const limit = Math.max(0, (sliceCounts[pane] || 1) - 1);
     return Math.max(0, Math.min(base + delta, limit));
   });
 }
 
 // Anchor and wiring for the comparison layouts. Rebuilt on every layout change.
-let compareSync = { enabled: false, anchor: null, viewportIds: [], sliceCounts: [] };
+let compareSync = { enabled: false, anchor: null, viewportIds: [], seriesList: [], sliceCounts: [] };
 
 function readCompareIndices() {
   return compareSync.viewportIds.map((viewportId) => (
@@ -1108,11 +1212,97 @@ export function compareScrollSyncState() {
   return { enabled: compareSync.enabled, anchor: compareSync.anchor?.slice() || null };
 }
 
+/** Returns info about the currently focused compare pane, or null. */
+export function getActiveCompareInfo() {
+  if (!COMPARE_MODES[activeMode] || !activeViewportId) return null;
+  const paneIndex = compareSync.viewportIds.indexOf(activeViewportId);
+  if (paneIndex < 0) return null;
+  const series = compareSync.seriesList[paneIndex];
+  return { paneIndex, viewportId: activeViewportId, seriesId: series?.id || "" };
+}
+
+/**
+ * Hot-swap the series in the currently focused compare pane without
+ * tearing down the layout.  Returns { paneIndex, viewportId } or null.
+ *
+ * This is the PACS-style workflow: click a viewport to focus it, then
+ * click a series card to load that series into the focused pane.
+ */
+export async function swapComparePane(newSeries) {
+  if (!COMPARE_MODES[activeMode] || !activeViewportId || !newSeries) return null;
+  const paneIndex = compareSync.viewportIds.indexOf(activeViewportId);
+  if (paneIndex < 0) return null;
+
+  registerSeries(newSeries);
+  await ensureManifest(newSeries);
+
+  // Update internal state
+  compareSync.seriesList[paneIndex] = newSeries;
+  compareSync.sliceCounts[paneIndex] = newSeries.sliceCount || 1;
+  activeSeriesList = [...new Map(
+    compareSync.seriesList.map((item) => [item.id, item]),
+  ).values()];
+
+  // Calculate spatially-aligned start index from the first other pane
+  let startIndex = Math.floor((newSeries.sliceCount || 1) / 2);
+  for (let i = 0; i < compareSync.viewportIds.length; i += 1) {
+    if (i === paneIndex) continue;
+    const otherSeries = compareSync.seriesList[i];
+    const otherViewport = renderingEngine?.getStackViewport(compareSync.viewportIds[i]);
+    const otherIndex = otherViewport?.getCurrentImageIdIndex() ?? 0;
+    const spatial = findSpatialSliceIndex(otherSeries, otherIndex, newSeries);
+    if (typeof spatial === "number" && Number.isInteger(spatial)) {
+      startIndex = spatial;
+      break;
+    }
+  }
+
+  // Clear old slice control and label
+  const viewportId = activeViewportId;
+  const element = document.getElementById(viewportId);
+  const shell = element?.closest(".viewport-shell");
+  shell?.querySelector(".slice-control")?.remove();
+  const labelElement = shell?.querySelector(".viewport-label");
+  if (labelElement) labelElement.textContent = newSeries.name;
+
+  // Swap the image stack in-place
+  const viewport = renderingEngine?.getStackViewport(viewportId);
+  await viewport.setStack(
+    imageIds(newSeries),
+    Math.max(0, Math.min(startIndex, newSeries.sliceCount - 1)),
+  );
+  viewport.resetCamera();
+  viewport.render();
+
+  // Update data attributes
+  if (element) element.dataset.seriesId = newSeries.id;
+  if (shell) shell.dataset.seriesId = newSeries.id;
+
+  // Install a fresh slice control
+  installSliceControl({
+    element,
+    viewport,
+    label: newSeries.name,
+    count: newSeries.sliceCount,
+    initialIndex: startIndex,
+    eventName: CoreEnums.Events.STACK_NEW_IMAGE,
+    eventIndex: (detail) => detail.imageIdIndex,
+  });
+
+  // Re-capture anchor so scroll-sync uses the new positions
+  if (compareSync.enabled) {
+    compareSync.anchor = readCompareIndices();
+  }
+
+  return { paneIndex, viewportId };
+}
+
 function installCompareSynchronization(seriesList, viewportIds) {
   compareSync = {
     enabled: false,
     anchor: null,
     viewportIds,
+    seriesList: seriesList || [],
     sliceCounts: seriesList.map((item) => item?.sliceCount || 1),
   };
   let synchronizing = false;
@@ -1126,6 +1316,7 @@ function installCompareSynchronization(seriesList, viewportIds) {
         sourcePane,
         event.detail.imageIdIndex,
         compareSync.sliceCounts,
+        compareSync.seriesList,
       );
       synchronizing = true;
       try {
@@ -1225,12 +1416,18 @@ export async function showStacks(container, series, mode, comparison = null, too
   renderingEngine.setViewports(viewports);
   createToolGroup(viewports.map((item) => item.viewportId));
   if (paneCount) {
-    // The panes open on the same slice number so the default relationship is
-    // 1-1-1, 2-2-2. The shortest series decides, so no pane starts out of range.
-    const shortest = Math.min(...compared.map((item) => item.sliceCount || 1));
-    const start = Math.floor(shortest / 2);
+    // Open the primary pane at its midpoint, then spatially align each other
+    // pane to the same physical location. Falls back to same-index when
+    // geometry is unavailable.
+    const primaryStart = Math.floor((compared[0].sliceCount || 1) / 2);
+    const startIndices = compared.map((item, index) => {
+      if (index === 0) return primaryStart;
+      const spatial = findSpatialSliceIndex(compared[0], primaryStart, item);
+      if (typeof spatial === "number" && Number.isInteger(spatial)) return spatial;
+      return Math.min(primaryStart, (item.sliceCount || 1) - 1);
+    });
     await Promise.all(compared.map((item, index) => (
-      setupStackViewport(viewports[index].viewportId, item, start)
+      setupStackViewport(viewports[index].viewportId, item, startIndices[index])
     )));
     installCompareSynchronization(compared, viewports.map((item) => item.viewportId));
     // Locked scrolling is the useful default; the button exists to break the

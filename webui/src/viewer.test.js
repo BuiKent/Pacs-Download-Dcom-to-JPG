@@ -7,6 +7,7 @@ import {
   annotationTargetViewportId,
   availableWindowPresets,
   defaultWindowPreset,
+  findSpatialSliceIndex,
   isMeasurementAnnotation,
   montageIndices,
   mprPlaneLayout,
@@ -121,6 +122,77 @@ describe("viewer shell", () => {
   it("supports two panes as well as three", () => {
     expect(syncedCompareIndices([3, 8], 0, 4, [50, 50])).toEqual([4, 9]);
     expect(syncedCompareIndices([3, 8], 1, 7, [50, 50])).toEqual([2, 7]);
+  });
+
+  it("aligns slices based on 3D DICOM physical position when geometry is available", () => {
+    const seriesA = {
+      id: "seriesA",
+      geometry: {
+        orientation: [1, 0, 0, 0, 1, 0],
+        ordered_slices: [
+          { position: [0, 0, 0] },
+          { position: [0, 0, 10] },
+          { position: [0, 0, 20] },
+          { position: [0, 0, 30] },
+        ],
+      },
+    };
+    const seriesB = {
+      id: "seriesB",
+      geometry: {
+        orientation: [1, 0, 0, 0, 1, 0],
+        ordered_slices: [
+          { position: [0, 0, 2] },
+          { position: [0, 0, 12] },
+          { position: [0, 0, 22] },
+          { position: [0, 0, 32] },
+        ],
+      },
+    };
+
+    expect(findSpatialSliceIndex(seriesA, 2, seriesB)).toBe(2);
+    expect(findSpatialSliceIndex(seriesA, 1, seriesB)).toBe(1);
+    expect(syncedCompareIndices([0, 0], 0, 2, [4, 4], [seriesA, seriesB])).toEqual([2, 2]);
+  });
+
+  it("maps T1 slice 13 to T2 slice ~20 when spacings differ (real PACS crosslink)", () => {
+    // T1: 26 slices at 5mm spacing, starting at z=0
+    const t1Slices = Array.from({ length: 26 }, (_, i) => ({
+      position: [0, 0, i * 5],
+    }));
+    // T2: 40 slices at 3mm spacing, starting at z=-5 (slight offset)
+    const t2Slices = Array.from({ length: 40 }, (_, i) => ({
+      position: [0, 0, -5 + i * 3],
+    }));
+    const t1 = {
+      id: "t1series",
+      geometry: {
+        orientation: [1, 0, 0, 0, 1, 0],
+        ordered_slices: t1Slices,
+      },
+    };
+    const t2 = {
+      id: "t2series",
+      geometry: {
+        orientation: [1, 0, 0, 0, 1, 0],
+        ordered_slices: t2Slices,
+      },
+    };
+
+    // T1 slice 13 is at z = 13*5 = 65mm
+    // T2 slices: z = -5 + i*3. Closest to 65: i=23 → z=64mm (dist 1),
+    //   i=24 → z=67mm (dist 2). So best = 23.
+    expect(findSpatialSliceIndex(t1, 13, t2)).toBe(23);
+
+    // T1 slice 0 is at z=0. T2 closest: i=1 → z=-2 (dist 2), i=2 → z=1 (dist 1). Best = 2.
+    expect(findSpatialSliceIndex(t1, 0, t2)).toBe(2);
+
+    // T1 slice 25 (last) is at z=125. T2 closest: i=39 → z=112 (dist 13).
+    expect(findSpatialSliceIndex(t1, 25, t2)).toBe(39);
+
+    // syncedCompareIndices should use spatial, not index-based offset
+    const result = syncedCompareIndices([0, 0], 0, 13, [26, 40], [t1, t2]);
+    expect(result).toEqual([13, 23]); // NOT [13, 13]
   });
 
   it("attributes each measurement to the series it was drawn on", () => {

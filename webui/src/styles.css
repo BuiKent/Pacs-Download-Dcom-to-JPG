@@ -617,7 +617,29 @@ button:disabled { opacity: .35; cursor: default; }
 }
 .viewport-shell:focus-within, .viewport-shell:hover { border-color: #008bc8; }
 /* The pane that "save frame" and the keyboard shortcuts act on. */
-.viewport-shell.is-active { border-color: #00b0f0; box-shadow: inset 0 0 0 1px #00b0f055; }
+.viewport-shell.is-active {
+  border-color: #00b0f0;
+  border-width: 2px;
+  box-shadow: inset 0 0 0 1px #00b0f055, 0 0 12px 2px #00b0f033;
+}
+/* Pane indicator badge on series cards currently visible */
+.series-card[data-pane]::after {
+  content: attr(data-pane);
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  font-size: 8px;
+  font-weight: 700;
+  min-width: 14px;
+  height: 14px;
+  line-height: 14px;
+  text-align: center;
+  color: #fff;
+  background: #007fbd;
+  border-radius: 7px;
+  padding: 0 3px;
+}
+.series-card { position: relative; }
 .icon-button:focus-visible, .soft-button:focus-visible, .series-card:focus-visible {
   outline: 2px solid #49c7ff;
   outline-offset: 1px;

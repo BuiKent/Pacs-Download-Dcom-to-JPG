@@ -18,6 +18,7 @@ import {
   defaultWindowPreset,
   disposeViewer,
   configureTextPrompt,
+  getActiveCompareInfo,
   setCompareScrollSync,
   flipActiveViewportHorizontal,
   flipActiveViewportVertical,
@@ -36,6 +37,7 @@ import {
   showMpr,
   showStacks,
   stepSlice,
+  swapComparePane,
   toggleCine,
   viewerDiagnostics,
 } from "./viewer.js";
@@ -159,6 +161,30 @@ function fillCompareSlots(mode = state.mode) {
       || state.archive.series[0];
     state.compareIds[slot] = next?.id || state.selectedId;
     taken.push(state.compareIds[slot]);
+  }
+}
+
+/** Which compare pane indices currently show this series? Empty in non-compare modes. */
+function seriesVisiblePanes(seriesId) {
+  if (!isCompareMode()) return seriesId === state.selectedId ? [0] : [];
+  const panes = [];
+  if (seriesId === state.selectedId) panes.push(0);
+  for (let slot = 0; slot < state.compareIds.length; slot += 1) {
+    if (state.compareIds[slot] === seriesId) panes.push(slot + 1);
+  }
+  return panes;
+}
+
+/** Update the series-card strip highlighting without rebuilding the DOM. */
+function updateSeriesCardHighlight() {
+  for (const card of app.querySelectorAll("[data-series-id]")) {
+    const panes = seriesVisiblePanes(card.dataset.seriesId);
+    card.classList.toggle("active", panes.length > 0);
+    if (panes.length) {
+      card.dataset.pane = panes.join(",");
+    } else {
+      delete card.dataset.pane;
+    }
   }
 }
 
@@ -338,11 +364,6 @@ function render() {
           <label>${escapeHtml(t("Series"))}
             <select data-field="series">${renderSeriesOptions(state.archive, state.selectedId)}</select>
           </label>
-          ${compareSeriesList().map((_series, slot) => `<label>${escapeHtml(
-    slot === 0 ? t("So sánh với") : t("Và với"),
-  )}
-            <select data-field="compare" data-slot="${slot}">${renderSeriesOptions(state.archive, state.compareIds[slot])
-    }</select></label>`).join("")}
         </div>
         <div class="header-actions">
           ${iconButton(
@@ -457,12 +478,17 @@ function render() {
         </nav>
 
         <div class="series-strip">
-          ${state.archive.series.map((item) => `<button class="series-card ${item.id === state.selectedId ? "active" : ""}"
-            data-series-id="${item.id}" title="${escapeHtml(item.mprReason || item.description)}">
+          ${state.archive.series.map((item) => {
+    const visiblePanes = seriesVisiblePanes(item.id);
+    const isVisible = visiblePanes.length > 0;
+    return `<button class="series-card ${isVisible ? "active" : ""}"
+            data-series-id="${item.id}" title="${escapeHtml(item.mprReason || item.description)}"
+            ${isVisible ? `data-pane="${visiblePanes.join(",")}"` : ""}>
             <span>${item.mprReady ? "3D" : "2D"}</span>
             <b>${escapeHtml(item.description)}</b>
             <small>${item.sliceCount} ${escapeHtml(t("lát"))}</small>
-          </button>`).join("")}
+          </button>`;
+  }).join("")}
         </div>
 
         <div class="safety-notice ${safety?.level || ""}" ${safety ? "" : "hidden"}>
@@ -581,12 +607,6 @@ function bindEvents() {
     render();
     renderViewer();
   });
-  app.querySelectorAll("[data-field='compare']").forEach((element) => {
-    element.addEventListener("change", (event) => {
-      state.compareIds[Number(event.target.dataset.slot)] = event.target.value;
-      renderViewer();
-    });
-  });
   app.querySelector("[data-field='history']")?.addEventListener("change", (event) => {
     const entry = state.history[Number(event.target.value)];
     event.target.selectedIndex = 0;
@@ -599,8 +619,32 @@ function bindEvents() {
   });
   installClipboardFields();
   app.querySelectorAll("[data-series-id]").forEach((element) => {
-    element.addEventListener("click", () => {
-      state.selectedId = element.dataset.seriesId;
+    element.addEventListener("click", async () => {
+      const seriesId = element.dataset.seriesId;
+      const newSeries = state.archive.series.find((item) => item.id === seriesId);
+      if (!newSeries) return;
+
+      // In compare mode: hot-swap the focused pane's series (no rebuild).
+      if (isCompareMode()) {
+        const info = getActiveCompareInfo();
+        if (!info) return;
+        // Update state to track which series is where
+        if (info.paneIndex === 0) {
+          state.selectedId = seriesId;
+        } else {
+          state.compareIds[info.paneIndex - 1] = seriesId;
+        }
+        await swapComparePane(newSeries);
+        // Update card highlighting without full render()
+        updateSeriesCardHighlight();
+        if (state.windowPreset !== "full") {
+          await applyWindowPreset(state.windowPreset);
+        }
+        return;
+      }
+
+      // Non-compare modes: full rebuild as before.
+      state.selectedId = seriesId;
       const selected = selectedSeries();
       if ((state.mode === "mpr" || state.mode === "volume3d") && !selected?.mprReady) {
         state.mode = "single";

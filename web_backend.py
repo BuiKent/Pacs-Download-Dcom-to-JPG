@@ -1395,8 +1395,15 @@ class LocalApiServer:
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/manifest", path)
                 if match:
                     record = owner.controller.catalog.get(match.group(1))
-                    if not record.mpr_ready:
-                        raise ValueError(record.mpr_reason)
+                    # The manifest holds ordered_slices with 3D positions
+                    # that crosslinking needs.  Crosslinking only requires
+                    # valid geometry — not the stricter MPR/3D threshold
+                    # (101+ uniform slices).  Serve whenever present.
+                    if not record.manifest:
+                        raise ValueError(
+                            record.mpr_reason
+                            or "Series không có dữ liệu geometry."
+                        )
                     return record.manifest
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/annotations", path)
                 if match:
