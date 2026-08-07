@@ -39,25 +39,117 @@
 
   const btnOpenFolder = $("#btn-open-folder");
   const seriesList = $("#series-list");
-  const sliceInfo = $("#slice-info");
-  const btnMpr = $("#btn-mpr");
-  const btnStack = $("#btn-stack");
+  const toolbar = $("#viewer-toolbar");
+  const seriesStrip = $("#series-strip");
 
   const stackView = $("#stack-view");
   const mprView = $("#mpr-view");
+  const canvasContainer = $("#canvas-container");
   const stackCanvas = $("#stack-canvas");
   const placeholder = $("#viewer-placeholder");
+
+  const statusText = $("#status-text");
+  const statusSlice = $("#status-slice");
+  const statusRoot = $("#status-root");
+  const statusDot = $(".status-dot");
+
+  // ── SVG Icons (ported from full app) ────────────────────────────────────
+  const icons = {
+    single: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>`,
+    mpr: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>`,
+    window: "◐",
+    pan: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M14 7.5a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M10 8a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M6 9a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M18 11v1a8 8 0 1 1-16 0v-2.5"/></svg>`,
+    zoom: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`,
+    length: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></svg>`,
+    angle: "∠",
+    ellipse: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/></svg>`,
+    freehand: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>`,
+    text: `<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/></svg>`,
+    flipHorizontal: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 21h8a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2Z"/><path d="M12 2v20"/></svg>`,
+    flipVertical: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v3"/><path d="M21 16v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3"/><path d="M4 12h16"/></svg>`,
+    rotateClockwise: `<svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path>
+      <path d="M21 3v5h-5"></path>
+      <rect x="8.5" y="8.5" width="7" height="7" rx="1" transform="rotate(45 12 12)"></rect>
+    </svg>`,
+    reset: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>`,
+    invert: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 18a6 6 0 0 0 0-12v12z"/></svg>`,
+    cine: `<svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>`,
+    capture: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>`,
+    clearAnnotations: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>`,
+  };
+
+  // ── CT Window Presets (Hounsfield) ──────────────────────────────────────
+  const CT_WINDOW_PRESETS = [
+    { id: "ct-brain", label: "Não", width: 80, center: 40 },
+    { id: "ct-stroke", label: "Đột quỵ / hố sau", width: 40, center: 40 },
+    { id: "ct-subdural", label: "Máu tụ dưới màng cứng", width: 215, center: 75 },
+    { id: "ct-bone", label: "Xương", width: 1800, center: 400 },
+    { id: "ct-temporal", label: "Xương thái dương", width: 4000, center: 700 },
+  ];
+
+  const RELATIVE_PRESETS = [
+    { id: "full", label: "DICOM mặc định", scale: 1 },
+    { id: "soft", label: "Cửa sổ rộng", scale: 1.5 },
+    { id: "contrast", label: "Cửa sổ hẹp", scale: 0.6 },
+  ];
 
   // ── State ───────────────────────────────────────────────────────────────
   const state = {
     outputRoot: "",
     archive: { root: "", series: [] },
     selectedSeriesId: "",
-    mode: "stack",
-    tool: "scroll",
+    mode: "stack",         // "stack" | "mpr"
+    tool: "window",        // current tool
     jobRunning: false,
     lastOutput: "",
+    windowPreset: "full",
+    cine: false,
+    // View transforms (stack mode)
+    panX: 0, panY: 0,
+    zoomLevel: 1,
+    flipH: false, flipV: false,
+    rotateDeg: 0,
+    invertColors: false,
   };
+
+  let cineTimer = null;
+
+  // ── Helper: HTML escape ─────────────────────────────────────────────────
+  function escHtml(s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  // ── Helper: Icon button ─────────────────────────────────────────────────
+  function iconButton(id, icon, title, active, disabled, label) {
+    return `<button class="icon-button ${active ? "active" : ""} ${label ? "with-label" : ""}" data-action="${id}"
+      title="${escHtml(title)}" aria-label="${escHtml(title)}"
+      ${disabled ? "disabled" : ""}>
+      <span>${icon}</span>${label ? `<small>${escHtml(label)}</small>` : ""}
+    </button>`;
+  }
+
+  // ── Determine if series is CT with HU ───────────────────────────────────
+  function seriesIsCT(series) {
+    if (!series || !series.pixelData) return false;
+    return series.modality === "CT";
+  }
+
+  // ── Available window presets for current series ─────────────────────────
+  function availablePresets(series) {
+    const relative = RELATIVE_PRESETS.map((p) => ({
+      id: p.id,
+      label: p.label,
+    }));
+    if (!seriesIsCT(series)) return relative;
+    const ct = CT_WINDOW_PRESETS.map((p) => ({
+      id: p.id,
+      label: `${p.label} · W${p.width}/L${p.center}`,
+    }));
+    return [...ct, ...relative];
+  }
 
   // ── Clear button (×) on URL input ──────────────────────────────────────
   function updateClearButton() {
@@ -84,21 +176,279 @@
     } catch (_) {}
   }
 
-  // Re-check clipboard when window gains focus
   window.addEventListener("focus", () => {
     if (!urlInput.value.trim()) tryAutoPaste();
   });
 
-  // ── Tool mode ───────────────────────────────────────────────────────────
-  $$(".tool-btn[data-mode]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      $$(".tool-btn[data-mode]").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-      state.tool = btn.dataset.mode;
-    });
-  });
+  // ── Render toolbar ─────────────────────────────────────────────────────
+  function renderToolbar() {
+    const series = currentSeries;
+    const mprDisabled = !series || !series.mprReady;
+    const isMpr = state.mode === "mpr";
+    const measureDisabled = true; // Canvas renderer can't do Cornerstone measurements
 
-  // ── Bootstrap ───────────────────────────────────────────────────────────
+    // Layout buttons
+    const layoutBtns = [
+      iconButton("mode-single", icons.single, "Một khung ảnh", state.mode === "stack"),
+      iconButton("mode-mpr", icons.mpr, mprDisabled ? (series?.mprReason || "Series không đủ MPR") : "MPR ba mặt phẳng", state.mode === "mpr", mprDisabled),
+    ].join("");
+
+    // Window preset
+    const presets = availablePresets(series);
+    const presetOptions = presets.map((p) =>
+      `<option value="${p.id}" ${state.windowPreset === p.id ? "selected" : ""}>${escHtml(p.label)}</option>`
+    ).join("");
+    const presetHtml = `<label class="window-preset-control">
+      Hiển thị
+      <select data-field="window-preset">${presetOptions}</select>
+    </label>`;
+
+    // Interaction tools
+    const interactionBtns = [
+      iconButton("tool-window", icons.window, "Sáng/tương phản", state.tool === "window"),
+      iconButton("tool-pan", icons.pan, "Di chuyển", state.tool === "pan"),
+      iconButton("tool-zoom", icons.zoom, "Thu/phóng", state.tool === "zoom"),
+      iconButton("tool-length", icons.length, "Đo chiều dài (cần Cornerstone)", false, measureDisabled),
+      iconButton("tool-angle", icons.angle, "Đo góc (cần Cornerstone)", false, measureDisabled),
+      iconButton("tool-ellipse", icons.ellipse, "ROI ellipse (cần Cornerstone)", false, measureDisabled),
+      iconButton("tool-freehand", icons.freehand, "ROI tự do (cần Cornerstone)", false, measureDisabled),
+      iconButton("tool-text", icons.text, "Ghi chú chữ (cần Cornerstone)", false, measureDisabled),
+    ].join("");
+
+    // Utility tools
+    const utilityBtns = [
+      iconButton("rotate-clockwise", icons.rotateClockwise, "Xoay 90° theo chiều kim đồng hồ"),
+      iconButton("flip-horizontal", icons.flipHorizontal, "Lật ngang", state.flipH),
+      iconButton("flip-vertical", icons.flipVertical, "Lật dọc", state.flipV),
+      iconButton("invert", icons.invert, "Đảo màu", state.invertColors),
+      iconButton("reset", icons.reset, isMpr ? "Đặt lại ba mặt phẳng" : "Đặt lại hiển thị"),
+      iconButton("cine", state.cine ? "Ⅱ" : icons.cine,
+        state.cine ? "Dừng chạy phim" : "Chạy phim", state.cine, isMpr),
+      iconButton("capture", icons.capture, "Lưu ảnh"),
+    ].join("");
+
+    toolbar.className = isMpr ? "mode-mpr" : "";
+    toolbar.innerHTML = `
+      <div class="tool-cluster layout-tools">${layoutBtns}</div>
+      ${presetHtml}
+      <span class="toolbar-divider"></span>
+      <div class="tool-cluster interaction-tools">${interactionBtns}</div>
+      <span class="toolbar-spacer"></span>
+      <div class="tool-cluster utility-tools">${utilityBtns}</div>
+    `;
+
+    // Bind toolbar events
+    toolbar.querySelectorAll("[data-action]").forEach((btn) => {
+      btn.addEventListener("click", handleToolbarAction);
+    });
+    const presetSelect = toolbar.querySelector("[data-field='window-preset']");
+    if (presetSelect) {
+      presetSelect.addEventListener("change", () => {
+        state.windowPreset = presetSelect.value;
+        applyWindowPreset(state.windowPreset);
+      });
+    }
+  }
+
+  // ── Toolbar action handler ─────────────────────────────────────────────
+  function handleToolbarAction(e) {
+    const btn = e.currentTarget;
+    const action = btn.dataset.action;
+
+    if (action === "mode-single") {
+      switchToStack();
+      renderToolbar();
+    } else if (action === "mode-mpr") {
+      switchToMpr();
+      renderToolbar();
+    } else if (action === "tool-window") {
+      state.tool = "window";
+      renderToolbar();
+    } else if (action === "tool-pan") {
+      state.tool = "pan";
+      renderToolbar();
+    } else if (action === "tool-zoom") {
+      state.tool = "zoom";
+      renderToolbar();
+    } else if (action === "rotate-clockwise") {
+      state.rotateDeg = (state.rotateDeg + 90) % 360;
+      applyCanvasTransform();
+    } else if (action === "flip-horizontal") {
+      state.flipH = !state.flipH;
+      applyCanvasTransform();
+      renderToolbar();
+    } else if (action === "flip-vertical") {
+      state.flipV = !state.flipV;
+      applyCanvasTransform();
+      renderToolbar();
+    } else if (action === "invert") {
+      state.invertColors = !state.invertColors;
+      renderCurrent();
+      renderAllMpr();
+      renderToolbar();
+    } else if (action === "reset") {
+      resetView();
+    } else if (action === "cine") {
+      toggleCine();
+      renderToolbar();
+    } else if (action === "capture") {
+      captureScreenshot();
+    }
+  }
+
+  // ── Apply window preset ────────────────────────────────────────────────
+  function applyWindowPreset(presetId) {
+    if (!currentSeries) return;
+    const ctPreset = CT_WINDOW_PRESETS.find((p) => p.id === presetId);
+    if (ctPreset && seriesIsCT(currentSeries)) {
+      windowCenter = ctPreset.center;
+      windowWidth = ctPreset.width;
+    } else {
+      const rel = RELATIVE_PRESETS.find((p) => p.id === presetId);
+      if (rel) {
+        const pd = currentSeries.pixelData || {};
+        const slope = pd.rescaleSlope != null ? pd.rescaleSlope : 1;
+        const intercept = pd.rescaleIntercept != null ? pd.rescaleIntercept : 0;
+        const defCenter = pd.windowCenter != null ? pd.windowCenter : 128;
+        const defWidth = pd.windowWidth != null && pd.windowWidth > 0 ? pd.windowWidth : 256;
+        windowCenter = defCenter;
+        windowWidth = defWidth * rel.scale;
+      }
+    }
+    renderCurrent();
+    renderAllMpr();
+    updateStatusSlice();
+  }
+
+  // ── Canvas transform (stack mode) ──────────────────────────────────────
+  function applyCanvasTransform() {
+    const parts = [];
+    if (state.panX !== 0 || state.panY !== 0) {
+      parts.push(`translate(${state.panX}px, ${state.panY}px)`);
+    }
+    if (state.zoomLevel !== 1) {
+      parts.push(`scale(${state.zoomLevel})`);
+    }
+    if (state.rotateDeg !== 0) {
+      parts.push(`rotate(${state.rotateDeg}deg)`);
+    }
+    if (state.flipH) parts.push(`scaleX(-1)`);
+    if (state.flipV) parts.push(`scaleY(-1)`);
+    stackCanvas.style.transform = parts.join(" ");
+
+    // Also apply to MPR canvases
+    $$(".mpr-canvas").forEach((c) => {
+      const mprParts = [];
+      if (state.flipH) mprParts.push("scaleX(-1)");
+      if (state.flipV) mprParts.push("scaleY(-1)");
+      c.style.transform = mprParts.join(" ");
+    });
+  }
+
+  function resetView() {
+    state.panX = 0;
+    state.panY = 0;
+    state.zoomLevel = 1;
+    state.flipH = false;
+    state.flipV = false;
+    state.rotateDeg = 0;
+    state.invertColors = false;
+    applyCanvasTransform();
+
+    // Reset W/L to default
+    if (currentSeries) {
+      const pd = currentSeries.pixelData || {};
+      windowCenter = pd.windowCenter != null ? pd.windowCenter : 128;
+      windowWidth = pd.windowWidth != null && pd.windowWidth > 0 ? pd.windowWidth : 256;
+      state.windowPreset = seriesIsCT(currentSeries) ? "ct-brain" : "full";
+      applyWindowPreset(state.windowPreset);
+    }
+
+    if (state.cine) {
+      stopCine();
+    }
+
+    renderToolbar();
+    renderCurrent();
+    renderAllMpr();
+  }
+
+  // ── Cine playback ──────────────────────────────────────────────────────
+  function toggleCine() {
+    if (state.cine) {
+      stopCine();
+    } else {
+      startCine();
+    }
+  }
+
+  function startCine() {
+    if (!currentSeries || state.mode !== "stack") return;
+    state.cine = true;
+    cineTimer = setInterval(() => {
+      if (!currentSeries) { stopCine(); return; }
+      let next = currentSlice + 1;
+      if (next >= currentSeries.sliceCount) next = 0;
+      loadAndRender(next);
+    }, 80); // ~12.5 fps
+  }
+
+  function stopCine() {
+    state.cine = false;
+    if (cineTimer) {
+      clearInterval(cineTimer);
+      cineTimer = null;
+    }
+  }
+
+  // ── Capture screenshot ─────────────────────────────────────────────────
+  function captureScreenshot() {
+    let sourceCanvas = null;
+    if (state.mode === "stack") {
+      sourceCanvas = stackCanvas;
+    } else {
+      sourceCanvas = $("#mpr-axial");
+    }
+    if (!sourceCanvas || sourceCanvas.width <= 0) return;
+
+    // Create a composite canvas with transforms applied
+    const w = sourceCanvas.width;
+    const h = sourceCanvas.height;
+    const offscreen = document.createElement("canvas");
+    offscreen.width = w;
+    offscreen.height = h;
+    const ctx = offscreen.getContext("2d");
+    ctx.save();
+    if (state.flipH) { ctx.translate(w, 0); ctx.scale(-1, 1); }
+    if (state.flipV) { ctx.translate(0, h); ctx.scale(1, -1); }
+    ctx.drawImage(sourceCanvas, 0, 0);
+    ctx.restore();
+
+    const link = document.createElement("a");
+    link.download = `dicom_capture_${Date.now()}.png`;
+    link.href = offscreen.toDataURL("image/png");
+    link.click();
+  }
+
+  // ── Update status ──────────────────────────────────────────────────────
+  function updateStatusSlice() {
+    if (!currentSeries) {
+      statusSlice.textContent = "";
+      return;
+    }
+    if (state.mode === "mpr") {
+      statusSlice.textContent = `MPR  W:${Math.round(windowWidth)} L:${Math.round(windowCenter)}`;
+    } else {
+      statusSlice.textContent = `${currentSlice + 1}/${currentSeries.sliceCount}  W:${Math.round(windowWidth)} L:${Math.round(windowCenter)}`;
+    }
+  }
+
+  function setStatus(text, busy) {
+    statusText.textContent = text;
+    statusDot.classList.toggle("busy", !!busy);
+  }
+
+  // ── Bootstrap ──────────────────────────────────────────────────────────
   async function bootstrap() {
     try {
       const data = await GET("/api/bootstrap");
@@ -107,11 +457,14 @@
       if (data.archive && data.archive.series && data.archive.series.length) {
         state.archive = data.archive;
         renderSeriesList();
+        renderSeriesStrip();
+        statusRoot.textContent = state.archive.root || "";
       }
     } catch (e) {
       console.error("Bootstrap error:", e);
     }
     tryAutoPaste();
+    renderToolbar();
   }
 
   // ── Download ────────────────────────────────────────────────────────────
@@ -141,6 +494,7 @@
       await POST("/api/download", { url, outputRoot: state.outputRoot });
       state.jobRunning = true;
       updateButtons();
+      setStatus("Đang tải...", true);
       pollJob();
     } catch (e) {
       appendLog("Lỗi: " + e.message, "error");
@@ -206,11 +560,14 @@
         state.jobRunning = false;
         _lastLogCount = 0;
         updateButtons();
+        setStatus("Sẵn sàng", false);
         if (job.status === "complete" && job.result) {
           state.lastOutput = job.result.output || "";
           if (job.result.archive) {
             state.archive = job.result.archive;
             renderSeriesList();
+            renderSeriesStrip();
+            statusRoot.textContent = state.archive.root || "";
             appendLog(
               `✓ Tải xong ${job.result.dicom || "?"} ảnh DICOM. Chọn series bên trái để xem.`,
               "success"
@@ -232,6 +589,7 @@
         const result = await window.pywebview.api.choose_folder();
         if (result) {
           state.jobRunning = true;
+          setStatus("Đang quét folder...", true);
           pollViewerOpen();
         }
       }
@@ -247,9 +605,12 @@
         setTimeout(pollViewerOpen, 500);
       } else {
         state.jobRunning = false;
+        setStatus("Sẵn sàng", false);
         if (job.status === "complete" && job.result) {
           state.archive = job.result;
           renderSeriesList();
+          renderSeriesStrip();
+          statusRoot.textContent = state.archive.root || "";
         } else if (job.status === "error") {
           alert("Lỗi quét folder: " + (job.message || "không rõ"));
         }
@@ -259,7 +620,7 @@
     }
   }
 
-  // ── Series list ─────────────────────────────────────────────────────────
+  // ── Series list (left panel) ───────────────────────────────────────────
   function renderSeriesList() {
     seriesList.innerHTML = "";
     const series = state.archive.series || [];
@@ -296,10 +657,27 @@
     }
   }
 
-  function escHtml(s) {
-    const d = document.createElement("div");
-    d.textContent = s;
-    return d.innerHTML;
+  // ── Series strip (horizontal cards below toolbar) ──────────────────────
+  function renderSeriesStrip() {
+    const series = state.archive.series || [];
+    if (!series.length) {
+      seriesStrip.innerHTML = "";
+      return;
+    }
+    seriesStrip.innerHTML = series.map((item) =>
+      `<button class="series-card ${item.id === state.selectedSeriesId ? "active" : ""}"
+        data-series-id="${item.id}" title="${escHtml(item.mprReason || item.description)}">
+        <span>${item.mprReady ? "3D" : "2D"}</span>
+        <b>${escHtml(item.description)}</b>
+        <small>${item.sliceCount} lát</small>
+      </button>`
+    ).join("");
+
+    seriesStrip.querySelectorAll(".series-card").forEach((card) => {
+      card.addEventListener("click", () => {
+        selectSeries(card.dataset.seriesId);
+      });
+    });
   }
 
   // ── Series selection & viewing ──────────────────────────────────────────
@@ -311,21 +689,37 @@
   let isDragging = false;
   let dragStartX = 0, dragStartY = 0;
   let dragStartCenter = 0, dragStartWidth = 0;
+  let dragStartPanX = 0, dragStartPanY = 0;
 
   async function selectSeries(id) {
     state.selectedSeriesId = id;
     imageCache = {};
     currentSlice = 0;
+    stopCine();
+
+    // Reset transforms
+    state.panX = 0; state.panY = 0;
+    state.zoomLevel = 1;
+    state.flipH = false; state.flipV = false;
+    state.rotateDeg = 0;
+    state.invertColors = false;
+    applyCanvasTransform();
 
     $$(".series-item").forEach((el) => {
       el.classList.toggle("active", el.dataset.id === id);
+    });
+    $$(".series-card").forEach((el) => {
+      el.classList.toggle("active", el.dataset.seriesId === id);
     });
 
     currentSeries = (state.archive.series || []).find((s) => s.id === id) || null;
     if (!currentSeries) return;
 
-    btnMpr.disabled = !currentSeries.mprReady;
+    // Set default window preset
+    state.windowPreset = seriesIsCT(currentSeries) ? "ct-brain" : "full";
+
     switchToStack();
+    renderToolbar();
 
     if (currentSeries.pixelData) {
       const pd = currentSeries.pixelData;
@@ -333,8 +727,15 @@
       windowWidth = pd.windowWidth != null && pd.windowWidth > 0 ? pd.windowWidth : 256;
     }
 
+    // Apply default preset for CT
+    if (seriesIsCT(currentSeries)) {
+      applyWindowPreset("ct-brain");
+    }
+
     placeholder.style.display = "none";
+    setStatus(`Đang tải series: ${currentSeries.description || currentSeries.name}`, true);
     await loadAndRender(0);
+    setStatus("Sẵn sàng", false);
 
     for (let i = 1; i <= 3 && i < currentSeries.sliceCount; i++) {
       loadSliceData(i);
@@ -383,7 +784,7 @@
   async function loadAndRender(index) {
     if (!currentSeries || index < 0 || index >= currentSeries.sliceCount) return;
     currentSlice = index;
-    sliceInfo.textContent = `${index + 1}/${currentSeries.sliceCount}  W:${Math.round(windowWidth)} L:${Math.round(windowCenter)}`;
+    updateStatusSlice();
 
     const entry = await loadSliceData(index);
     if (!entry) return;
@@ -411,13 +812,14 @@
     const data = imgData.data;
     const slope = meta.slope, intercept = meta.intercept;
     const lower = wc - ww / 2, upper = wc + ww / 2, range = upper - lower || 1;
-    const invert = meta.photometric === "MONOCHROME1";
+    const invertPhoto = meta.photometric === "MONOCHROME1";
+    const invertFinal = state.invertColors ? !invertPhoto : invertPhoto;
 
     for (let i = 0, len = rows * cols; i < len; i++) {
       const hu = (pixels[i] !== undefined ? pixels[i] : 0) * slope + intercept;
       let gray = ((hu - lower) / range) * 255;
       gray = gray < 0 ? 0 : gray > 255 ? 255 : gray;
-      if (invert) gray = 255 - gray;
+      if (invertFinal) gray = 255 - gray;
       const g = gray | 0;
       const off = i * 4;
       data[off] = g; data[off + 1] = g; data[off + 2] = g; data[off + 3] = 255;
@@ -429,36 +831,74 @@
   stackView.addEventListener("wheel", (e) => {
     e.preventDefault();
     if (!currentSeries) return;
-    if (state.tool === "scroll") {
+    if (state.tool === "zoom") {
+      const factor = e.deltaY > 0 ? 0.9 : 1.1;
+      state.zoomLevel = Math.max(0.1, Math.min(10, state.zoomLevel * factor));
+      applyCanvasTransform();
+    } else {
+      // Default: scroll slices
       const delta = e.deltaY > 0 ? 1 : -1;
       const next = Math.max(0, Math.min(currentSeries.sliceCount - 1, currentSlice + delta));
       if (next !== currentSlice) loadAndRender(next);
-    } else {
-      windowWidth = Math.max(1, windowWidth + (e.deltaY > 0 ? 10 : -10));
-      renderCurrent();
     }
   });
 
   stackView.addEventListener("mousedown", (e) => {
-    if (state.tool !== "window" || !currentSeries) return;
+    if (!currentSeries) return;
     isDragging = true;
-    dragStartX = e.clientX; dragStartY = e.clientY;
-    dragStartCenter = windowCenter; dragStartWidth = windowWidth;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    dragStartCenter = windowCenter;
+    dragStartWidth = windowWidth;
+    dragStartPanX = state.panX;
+    dragStartPanY = state.panY;
     e.preventDefault();
   });
 
   document.addEventListener("mousemove", (e) => {
     if (!isDragging) return;
-    windowWidth = Math.max(1, dragStartWidth + (e.clientX - dragStartX));
-    windowCenter = dragStartCenter - (e.clientY - dragStartY);
-    renderCurrent();
+    const dx = e.clientX - dragStartX;
+    const dy = e.clientY - dragStartY;
+    if (state.tool === "window") {
+      windowWidth = Math.max(1, dragStartWidth + dx);
+      windowCenter = dragStartCenter - dy;
+      renderCurrent();
+    } else if (state.tool === "pan") {
+      state.panX = dragStartPanX + dx;
+      state.panY = dragStartPanY + dy;
+      applyCanvasTransform();
+    } else if (state.tool === "zoom") {
+      const factor = 1 + dy * -0.005;
+      state.zoomLevel = Math.max(0.1, Math.min(10, state.zoomLevel * factor));
+      dragStartY = e.clientY; // Continuous zoom
+      applyCanvasTransform();
+    }
   });
 
   document.addEventListener("mouseup", () => { isDragging = false; });
 
   document.addEventListener("keydown", (e) => {
     if (!currentSeries) return;
-    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+
+    // Keyboard shortcuts matching full app
+    if (e.key === "w" || e.key === "W") {
+      state.tool = "window"; renderToolbar(); return;
+    }
+    if (e.key === "p" || e.key === "P") {
+      state.tool = "pan"; renderToolbar(); return;
+    }
+    if (e.key === "z" || e.key === "Z") {
+      state.tool = "zoom"; renderToolbar(); return;
+    }
+    if (e.key === "r" || e.key === "R") {
+      resetView(); return;
+    }
+    if (e.key === "i" || e.key === "I") {
+      state.invertColors = !state.invertColors;
+      renderCurrent(); renderAllMpr(); renderToolbar(); return;
+    }
+
     if (state.mode === "mpr") return;
     if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
       e.preventDefault();
@@ -476,19 +916,15 @@
     const entry = imageCache[currentSlice];
     if (!entry) return;
     renderToCanvas(stackCanvas, entry.pixels, entry.meta, windowCenter, windowWidth);
-    sliceInfo.textContent = `${currentSlice + 1}/${currentSeries.sliceCount}  W:${Math.round(windowWidth)} L:${Math.round(windowCenter)}`;
+    updateStatusSlice();
   }
 
   // ── View mode switching ─────────────────────────────────────────────────
-  btnStack.addEventListener("click", switchToStack);
-  btnMpr.addEventListener("click", switchToMpr);
-
   function switchToStack() {
     state.mode = "stack";
     stackView.style.display = "";
     mprView.style.display = "none";
-    btnStack.classList.add("active");
-    btnMpr.classList.remove("active");
+    stopCine();
   }
 
   async function switchToMpr() {
@@ -496,8 +932,7 @@
     state.mode = "mpr";
     stackView.style.display = "none";
     mprView.style.display = "";
-    btnMpr.classList.add("active");
-    btnStack.classList.remove("active");
+    stopCine();
     await loadMprVolume();
   }
 
@@ -515,7 +950,7 @@
     const rows = manifest.rows || 0;
     const cols = manifest.columns || 0;
 
-    sliceInfo.textContent = `MPR: đang tải ${sliceCount} lát...`;
+    setStatus(`MPR: đang tải ${sliceCount} lát...`, true);
 
     const volume = new Float32Array(sliceCount * rows * cols);
     let slope = 1, intercept = 0, wc = 128, ww = 256;
@@ -537,6 +972,12 @@
     mprMeta = { sliceCount, rows, cols, wc, ww };
     windowCenter = wc; windowWidth = ww;
 
+    // Apply CT preset if CT
+    if (seriesIsCT(currentSeries)) {
+      state.windowPreset = "ct-brain";
+      applyWindowPreset("ct-brain");
+    }
+
     $("#slider-axial").max = sliceCount - 1;
     $("#slider-axial").value = Math.floor(sliceCount / 2);
     $("#slider-coronal").max = rows - 1;
@@ -549,7 +990,8 @@
     mprSlices.sagittal = Math.floor(cols / 2);
 
     renderAllMpr();
-    sliceInfo.textContent = `MPR: ${sliceCount} lát · W:${Math.round(ww)} L:${Math.round(wc)}`;
+    setStatus("Sẵn sàng", false);
+    updateStatusSlice();
   }
 
   function renderMprPlane(plane) {
@@ -570,23 +1012,28 @@
       w = cols; h = sliceCount;
       const y = mprSlices.coronal;
       if (y < 0 || y >= rows) return;
-      getVal = (z, c) => mprVolume[z * rows * cols + y * cols + c];
+      // FIX: Flip Z-axis for correct radiological orientation
+      // (superior at top, inferior at bottom)
+      getVal = (z, c) => mprVolume[(sliceCount - 1 - z) * rows * cols + y * cols + c];
     } else {
       w = rows; h = sliceCount;
       const x = mprSlices.sagittal;
       if (x < 0 || x >= cols) return;
-      getVal = (z, r) => mprVolume[z * rows * cols + r * cols + x];
+      // FIX: Flip Z-axis for correct radiological orientation
+      getVal = (z, r) => mprVolume[(sliceCount - 1 - z) * rows * cols + r * cols + x];
     }
 
     canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext("2d");
     const imgData = ctx.createImageData(w, h);
     const data = imgData.data;
+    const invertFinal = state.invertColors;
 
     for (let r = 0; r < h; r++) {
       for (let c = 0; c < w; c++) {
         let gray = ((getVal(r, c) - lower) / range) * 255;
         gray = gray < 0 ? 0 : gray > 255 ? 255 : gray;
+        if (invertFinal) gray = 255 - gray;
         const g = gray | 0;
         const off = (r * w + c) * 4;
         data[off] = g; data[off + 1] = g; data[off + 2] = g; data[off + 3] = 255;
@@ -601,7 +1048,7 @@
     renderMprPlane("sagittal");
   }
 
-  // MPR slider + scroll
+  // MPR slider + scroll + W/L drag
   ["axial", "coronal", "sagittal"].forEach((plane) => {
     const slider = $(`#slider-${plane}`);
     slider.addEventListener("input", () => {
@@ -612,13 +1059,17 @@
     const canvas = $(`#mpr-${plane}`);
     canvas.addEventListener("wheel", (e) => {
       e.preventDefault();
+      if (state.tool === "zoom") {
+        // Zoom MPR
+        return; // zoom handled by CSS transform on parent
+      }
       const max = parseInt(slider.max);
       mprSlices[plane] = Math.max(0, Math.min(max, mprSlices[plane] + (e.deltaY > 0 ? 1 : -1)));
       slider.value = mprSlices[plane];
       renderMprPlane(plane);
     });
 
-    // W/L drag on MPR
+    // W/L drag on MPR (right-click or W/L mode)
     let md = false, mx = 0, my = 0, mwc = 0, mww = 0;
     canvas.addEventListener("mousedown", (e) => {
       if (e.button === 2 || state.tool === "window") {
@@ -633,11 +1084,11 @@
       windowWidth = Math.max(1, mww + (e.clientX - mx));
       windowCenter = mwc - (e.clientY - my);
       renderAllMpr();
-      sliceInfo.textContent = `MPR  W:${Math.round(windowWidth)} L:${Math.round(windowCenter)}`;
+      updateStatusSlice();
     });
     document.addEventListener("mouseup", () => { md = false; });
   });
 
-  // ── Init ────────────────────────────────────────────────────────────────
+  // ── Init ────────────────────────────────────────────────────────────
   bootstrap();
 })();

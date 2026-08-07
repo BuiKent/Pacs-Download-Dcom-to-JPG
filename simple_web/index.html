@@ -63,23 +63,17 @@
 
     <!-- Main viewer area -->
     <main id="viewer-main">
-      <div id="viewer-toolbar">
-        <div class="toolbar-group">
-          <button class="tool-btn active" data-mode="scroll" title="Cuộn lát cắt">🖱 Cuộn</button>
-          <button class="tool-btn" data-mode="window" title="Window/Level">🔆 W/L</button>
-        </div>
-        <div class="toolbar-group">
-          <button id="btn-mpr" class="tool-btn" disabled title="MPR 3 mặt phẳng">🧊 MPR</button>
-          <button id="btn-stack" class="tool-btn active" title="Xem từng lát">📄 Lát cắt</button>
-        </div>
-        <div class="toolbar-group toolbar-right">
-          <span id="slice-info">—</span>
-        </div>
-      </div>
+      <!-- Toolbar (rendered by JS) -->
+      <nav id="viewer-toolbar"></nav>
+
+      <!-- Series strip -->
+      <div id="series-strip"></div>
 
       <!-- Stack mode -->
       <div id="stack-view" class="view-area">
-        <canvas id="stack-canvas"></canvas>
+        <div id="canvas-container">
+          <canvas id="stack-canvas"></canvas>
+        </div>
         <div id="viewer-placeholder">
           <div class="placeholder-icon">🏥</div>
           <div>Dán link viewer để tải DICOM</div>
@@ -90,23 +84,37 @@
       <!-- MPR mode -->
       <div id="mpr-view" class="view-area" style="display:none">
         <div class="mpr-grid">
-          <div class="mpr-pane">
+          <div class="mpr-pane" data-plane="axial">
             <div class="mpr-label">AXIAL</div>
-            <canvas id="mpr-axial" class="mpr-canvas"></canvas>
+            <div class="mpr-canvas-wrap">
+              <canvas id="mpr-axial" class="mpr-canvas"></canvas>
+            </div>
             <input type="range" class="mpr-slider" id="slider-axial" min="0" max="0" value="0">
           </div>
-          <div class="mpr-pane">
+          <div class="mpr-pane" data-plane="coronal">
             <div class="mpr-label">CORONAL</div>
-            <canvas id="mpr-coronal" class="mpr-canvas"></canvas>
+            <div class="mpr-canvas-wrap">
+              <canvas id="mpr-coronal" class="mpr-canvas"></canvas>
+            </div>
             <input type="range" class="mpr-slider" id="slider-coronal" min="0" max="0" value="0">
           </div>
-          <div class="mpr-pane">
+          <div class="mpr-pane" data-plane="sagittal">
             <div class="mpr-label">SAGITTAL</div>
-            <canvas id="mpr-sagittal" class="mpr-canvas"></canvas>
+            <div class="mpr-canvas-wrap">
+              <canvas id="mpr-sagittal" class="mpr-canvas"></canvas>
+            </div>
             <input type="range" class="mpr-slider" id="slider-sagittal" min="0" max="0" value="0">
           </div>
         </div>
       </div>
+
+      <!-- Status bar -->
+      <footer id="status-bar" class="status-bar">
+        <span class="status-dot"></span>
+        <span id="status-text">Sẵn sàng</span>
+        <span class="status-slice" id="status-slice"></span>
+        <span class="status-root" id="status-root"></span>
+      </footer>
     </main>
   </div>
 
