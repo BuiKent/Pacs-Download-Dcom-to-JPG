@@ -8,107 +8,106 @@
 </head>
 <body>
   <div id="app">
-    <!-- Top bar -->
-    <header id="topbar">
-      <div class="topbar-left">
-        <h1>DICOM Download & Viewer</h1>
-      </div>
-      <nav class="tabs">
-        <button class="tab active" data-tab="download">📥 Tải DICOM</button>
-        <button class="tab" data-tab="viewer">🔬 Xem ảnh</button>
-      </nav>
-      <div class="topbar-right">
-        <span id="status-text">Sẵn sàng</span>
-      </div>
-    </header>
+    <!-- Left panel: download + series list -->
+    <aside id="left-panel">
+      <!-- Download section -->
+      <div id="download-section">
+        <div class="section-header">
+          <span class="section-icon">📥</span>
+          <span>Tải DICOM</span>
+        </div>
 
-    <!-- DOWNLOAD TAB -->
-    <section id="tab-download" class="tab-content active">
-      <div class="download-panel">
         <div class="input-group">
-          <label>Link Viewer:</label>
-          <div class="input-row">
-            <input type="text" id="url-input" placeholder="Dán link viewer từ PACS vào đây..." spellcheck="false">
-            <button id="btn-paste" title="Dán từ clipboard">📋</button>
+          <label>Link Viewer</label>
+          <div class="input-with-clear">
+            <input type="text" id="url-input" placeholder="Dán link viewer vào đây..." spellcheck="false">
+            <button id="btn-clear-url" class="btn-clear" title="Xóa link" style="display:none">&times;</button>
           </div>
         </div>
 
         <div class="input-group">
-          <label>Folder lưu:</label>
+          <label>Folder lưu</label>
           <div class="input-row">
             <input type="text" id="output-path" readonly placeholder="~/DICOM Downloads">
-            <button id="btn-choose-output" title="Chọn folder">📁</button>
+            <button id="btn-choose-output" class="btn-icon" title="Chọn folder">📁</button>
           </div>
         </div>
 
         <div class="button-row">
-          <button id="btn-download" class="btn-primary">▶ Bắt đầu tải</button>
+          <button id="btn-download" class="btn-primary">▶ Tải</button>
           <button id="btn-stop" class="btn-danger" disabled>⏹ Dừng</button>
-          <button id="btn-open-output" class="btn-secondary" title="Mở folder trong Explorer">📂 Mở folder</button>
+          <button id="btn-open-output" class="btn-icon-text" title="Mở trong Explorer">📂</button>
         </div>
 
-        <div class="log-container">
+        <!-- Collapsible log -->
+        <div id="log-wrapper" style="display:none">
           <div id="log-area"></div>
         </div>
       </div>
-    </section>
 
-    <!-- VIEWER TAB -->
-    <section id="tab-viewer" class="tab-content">
-      <div class="viewer-layout">
-        <!-- Left panel: series list -->
-        <aside id="series-panel">
-          <div class="series-header">
-            <button id="btn-open-folder" class="btn-primary">📂 Mở folder DICOM</button>
-          </div>
-          <div id="series-list"></div>
-        </aside>
+      <!-- Divider -->
+      <div class="panel-divider"></div>
 
-        <!-- Main viewer area -->
-        <main id="viewer-main">
-          <div id="viewer-toolbar">
-            <div class="toolbar-group">
-              <button class="tool-btn active" data-mode="scroll" title="Cuộn lát cắt">🖱 Cuộn</button>
-              <button class="tool-btn" data-mode="window" title="Window/Level">🔆 W/L</button>
-            </div>
-            <div class="toolbar-group">
-              <button id="btn-mpr" class="tool-btn" disabled title="Xem MPR 3 mặt phẳng">🧊 MPR</button>
-              <button id="btn-stack" class="tool-btn" title="Xem từng lát">📄 Lát cắt</button>
-            </div>
-            <div class="toolbar-group">
-              <span id="slice-info">—</span>
-            </div>
-          </div>
-
-          <!-- Stack mode: single canvas -->
-          <div id="stack-view" class="view-area">
-            <canvas id="stack-canvas"></canvas>
-            <div id="viewer-placeholder">Chọn một series để xem</div>
-          </div>
-
-          <!-- MPR mode: 3 canvases -->
-          <div id="mpr-view" class="view-area" style="display:none">
-            <div class="mpr-grid">
-              <div class="mpr-pane">
-                <div class="mpr-label">AXIAL</div>
-                <canvas id="mpr-axial" class="mpr-canvas"></canvas>
-                <input type="range" class="mpr-slider" id="slider-axial" min="0" max="0" value="0">
-              </div>
-              <div class="mpr-pane">
-                <div class="mpr-label">CORONAL</div>
-                <canvas id="mpr-coronal" class="mpr-canvas"></canvas>
-                <input type="range" class="mpr-slider" id="slider-coronal" min="0" max="0" value="0">
-              </div>
-              <div class="mpr-pane">
-                <div class="mpr-label">SAGITTAL</div>
-                <canvas id="mpr-sagittal" class="mpr-canvas"></canvas>
-                <input type="range" class="mpr-slider" id="slider-sagittal" min="0" max="0" value="0">
-              </div>
-            </div>
-          </div>
-        </main>
+      <!-- Series list -->
+      <div id="series-section">
+        <div class="section-header">
+          <span class="section-icon">🔬</span>
+          <span>Series</span>
+          <button id="btn-open-folder" class="btn-small" title="Mở folder DICOM">📂 Mở folder</button>
+        </div>
+        <div id="series-list">
+          <div class="empty-state">Chưa có dữ liệu</div>
+        </div>
       </div>
-    </section>
+    </aside>
+
+    <!-- Main viewer area -->
+    <main id="viewer-main">
+      <div id="viewer-toolbar">
+        <div class="toolbar-group">
+          <button class="tool-btn active" data-mode="scroll" title="Cuộn lát cắt">🖱 Cuộn</button>
+          <button class="tool-btn" data-mode="window" title="Window/Level">🔆 W/L</button>
+        </div>
+        <div class="toolbar-group">
+          <button id="btn-mpr" class="tool-btn" disabled title="MPR 3 mặt phẳng">🧊 MPR</button>
+          <button id="btn-stack" class="tool-btn active" title="Xem từng lát">📄 Lát cắt</button>
+        </div>
+        <div class="toolbar-group toolbar-right">
+          <span id="slice-info">—</span>
+        </div>
+      </div>
+
+      <!-- Stack mode -->
+      <div id="stack-view" class="view-area">
+        <canvas id="stack-canvas"></canvas>
+        <div id="viewer-placeholder">
+          <div class="placeholder-icon">🏥</div>
+          <div>Dán link viewer để tải DICOM</div>
+          <div class="placeholder-sub">hoặc mở folder DICOM có sẵn</div>
+        </div>
+      </div>
+
+      <!-- MPR mode -->
+      <div id="mpr-view" class="view-area" style="display:none">
+        <div class="mpr-grid">
+          <div class="mpr-pane">
+            <div class="mpr-label">AXIAL</div>
+            <canvas id="mpr-axial" class="mpr-canvas"></canvas>
+            <input type="range" class="mpr-slider" id="slider-axial" min="0" max="0" value="0">
+          </div>
+          <div class="mpr-pane">
+            <div class="mpr-label">CORONAL</div>
+            <canvas id="mpr-coronal" class="mpr-canvas"></canvas>
+            <input type="range" class="mpr-slider" id="slider-coronal" min="0" max="0" value="0">
+          </div>
+          <div class="mpr-pane">
+            <div class="mpr-label">SAGITTAL</div>
+            <canvas id="mpr-sagittal" class="mpr-canvas"></canvas>
+            <input type="range" class="mpr-slider" id="slider-sagittal" min="0" max="0" value="0">
+          </div>
+        </div>
+      </div>
+    </main>
   </div>
 
   <script src="app.js"></script>
