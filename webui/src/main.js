@@ -1000,11 +1000,16 @@ async function action(name) {
           ? "Đang khoá cuộn theo vị trí — bấm để cuộn từng khung riêng"
           : "Cuộn từng khung riêng — bấm để khoá theo độ lệch hiện tại");
       }
-      const anchor = compareScrollSyncState().anchor;
-      setStatus(state.scrollSync
-        ? tf("Đã khoá cuộn theo vị trí hiện tại: {}.",
-          (anchor || []).map((index) => index + 1).join(" · "))
-        : t("Đã bỏ khoá: mỗi khung cuộn riêng."));
+      const { anchor, spatialMode } = compareScrollSyncState();
+      if (state.scrollSync) {
+        const positions = (anchor || []).map((index) => index + 1).join(" · ");
+        const modeHint = spatialMode === "spatial"
+          ? t("đồng bộ theo vị trí 3D")
+          : t("⚠ đồng bộ theo số thứ tự lát (không có đồng bộ không gian)");
+        setStatus(tf("Đã khoá cuộn: {} — {}.", positions, modeHint));
+      } else {
+        setStatus(t("Đã bỏ khoá: mỗi khung cuộn riêng."));
+      }
       return;
     }
     if (name === "shortcuts") {

@@ -294,6 +294,7 @@ def _direct_dicom_manifest(headers: list[DicomHeader]) -> tuple[Optional[dict], 
         "study_instance_uid": first.study_uid,
         "series_instance_uid": first.series_uid,
         "frame_of_reference_uid": first.frame_uid or first.series_uid,
+        "frame_of_reference_synthetic": not bool(first.frame_uid),
         "rows": first.rows,
         "columns": first.columns,
         "slice_count": len(headers),
@@ -484,6 +485,7 @@ class SeriesRecord:
                 "sliceSpacing": float(self.manifest["slice_spacing"]),
                 "orientation": self.manifest["image_orientation_patient"],
                 "frameOfReferenceUID": self.manifest.get("frame_of_reference_uid") or self.series_id,
+                "frameOfReferenceSynthetic": self.manifest.get("frame_of_reference_synthetic", False),
             }
         return data
 

@@ -7,6 +7,7 @@ import {
   annotationTargetViewportId,
   availableWindowPresets,
   defaultWindowPreset,
+  computeSliceNormal,
   findSpatialSliceIndex,
   isMeasurementAnnotation,
   montageIndices,
@@ -196,51 +197,86 @@ describe("viewer shell", () => {
   });
 
   describe("spatial slice matching edge cases", () => {
-    it("returns null when FrameOfReferenceUIDs are different", () => {
-      const s1 = { geometry: { frameOfReferenceUID: "1.2.3", ordered_slices: [{ position: [0, 0, 0] }] } };
-      const s2 = { geometry: { frameOfReferenceUID: "1.2.4", ordered_slices: [{ position: [0, 0, 0] }] } };
+    it("returns null when real FrameOfReferenceUIDs differ", () => {
+      const s1 = { geometry: { frameOfReferenceUID: "1.2.3", frameOfReferenceSynthetic: false, orientation: [1,0,0,0,1,0], ordered_slices: [{ position: [0, 0, 0] }] } };
+      const s2 = { geometry: { frameOfReferenceUID: "1.2.4", frameOfReferenceSynthetic: false, orientation: [1,0,0,0,1,0], ordered_slices: [{ position: [0, 0, 0] }] } };
       expect(findSpatialSliceIndex(s1, 0, s2)).toBeNull();
     });
 
-    it("returns null when minimum distance exceeds 50mm threshold (no overlap)", () => {
-      const s1 = { geometry: { ordered_slices: [{ position: [0, 0, 0] }] } };
-      // Target is 300mm away
-      const s2 = { geometry: { ordered_slices: [{ position: [0, 0, 300] }] } };
-      expect(findSpatialSliceIndex(s1, 0, s2)).toBeNull();
+    it("allows crosslink when FrameOfReferenceUID differs but is synthetic", () => {
+      const s1 = { geometry: { frameOfReferenceUID: "series-a", frameOfReferenceSynthetic: true, orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, 0] }] } };
+      const s2 = { geometry: { frameOfReferenceUID: "series-b", frameOfReferenceSynthetic: true, orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, 0] }] } };
+      expect(findSpatialSliceIndex(s1, 0, s2)).toBe(0);
     });
 
-    it("handles different orientations and oblique slices correctly", () => {
-      // Oblique source
-      const obliqueOrientation = [0, 1, 0, 0.7071, 0, -0.7071];
-      const s1 = {
+    it("returns null for cross-plane (axial vs sagittal)", () => {
+      // Axial: normal = (0, 0, 1)
+      const axial = {
         geometry: {
-          orientation: obliqueOrientation,
-          ordered_slices: [{ position: [10, 0, 12] }],
+          orientation: [1, 0, 0, 0, 1, 0],
+          sliceSpacing: 5,
+          ordered_slices: [{ position: [0, 0, 10] }],
         },
       };
-      // True axial target
-      const axialOrientation = [1, 0, 0, 0, 1, 0];
-      const s2 = {
+      // Sagittal: row=[0,1,0] col=[0,0,-1] → normal=(-1,0,0)
+      // Slices span the head width, so some slice will be close in |Δx|
+      // but |dot(axialNormal, sagittalNormal)| = 0 < 0.9 → must return null
+      const sagittal = {
         geometry: {
-          orientation: axialOrientation,
+          orientation: [0, 1, 0, 0, 0, -1],
+          sliceSpacing: 2,
           ordered_slices: [
+            { position: [-4, 0, 0] },
+            { position: [-2, 0, 0] },
             { position: [0, 0, 0] },
-            { position: [0, 0, 5] },
-            { position: [0, 0, 10] },
-            { position: [0, 0, 15] },
+            { position: [2, 0, 0] },
           ],
         },
       };
-      // Source position is z=12. Projecting onto axial normal (0,0,1) gives z=12.
-      // Target slices are at z=0, 5, 10, 15. Closest to 12 is 10 (index 2).
-      expect(findSpatialSliceIndex(s1, 0, s2)).toBe(2);
+      expect(findSpatialSliceIndex(axial, 0, sagittal)).toBeNull();
+    });
+
+    it("syncs two parallel oblique series correctly (same non-axis normal)", () => {
+      // Both tilted 45° around x: row=[1,0,0] col=[0,0.7071,0.7071]
+      // normal = cross(row,col) = (0, -0.7071, 0.7071)
+      // Positions must vary along the normal direction.
+      // Moving 10mm along normal (0, -0.7071, 0.7071) means Δy ≈ -7.071, Δz ≈ +7.071.
+      const obliqueOri = [1, 0, 0, 0, 0.7071, 0.7071];
+      const s1 = {
+        geometry: {
+          orientation: obliqueOri,
+          sliceSpacing: 10,
+          ordered_slices: [{ position: [0, -7.071, 7.071] }],
+        },
+      };
+      const s2 = {
+        geometry: {
+          orientation: obliqueOri,
+          sliceSpacing: 10,
+          ordered_slices: [
+            { position: [0, 0, 0] },
+            { position: [0, -7.071, 7.071] },
+            { position: [0, -14.142, 14.142] },
+          ],
+        },
+      };
+      // Source at distance 10mm along normal matches target index 1 exactly
+      expect(findSpatialSliceIndex(s1, 0, s2)).toBe(1);
+    });
+
+    it("returns null when minimum distance exceeds sliceSpacing-based threshold", () => {
+      const s1 = { geometry: { orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, 0] }] } };
+      // 300mm away, threshold = max(5*2, 5) = 10mm → 300 > 10 → null
+      const s2 = { geometry: { orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, 300] }] } };
+      expect(findSpatialSliceIndex(s1, 0, s2)).toBeNull();
     });
 
     it("works correctly when ordered_slices are inverted", () => {
-      const s1 = { geometry: { ordered_slices: [{ position: [0, 0, 18] }] } };
+      const s1 = { geometry: { orientation: [1,0,0,0,1,0], ordered_slices: [{ position: [0, 0, 18] }] } };
       const s2 = {
         geometry: {
           orientation: [1, 0, 0, 0, 1, 0],
+          sliceSpacing: 10,
           ordered_slices: [
             { position: [0, 0, 30] },
             { position: [0, 0, 20] },
@@ -251,6 +287,28 @@ describe("viewer shell", () => {
       };
       // Closest to z=18 is z=20 (index 1).
       expect(findSpatialSliceIndex(s1, 0, s2)).toBe(1);
+    });
+  });
+
+  describe("computeSliceNormal", () => {
+    it("returns (0,0,1) for standard axial orientation", () => {
+      const n = computeSliceNormal([1, 0, 0, 0, 1, 0]);
+      expect(n[0]).toBeCloseTo(0);
+      expect(n[1]).toBeCloseTo(0);
+      expect(n[2]).toBeCloseTo(1);
+    });
+
+    it("returns (-1,0,0) for sagittal orientation", () => {
+      const n = computeSliceNormal([0, 1, 0, 0, 0, -1]);
+      expect(n[0]).toBeCloseTo(-1);
+      expect(n[1]).toBeCloseTo(0);
+      expect(n[2]).toBeCloseTo(0);
+    });
+
+    it("returns null for missing or degenerate orientation", () => {
+      expect(computeSliceNormal(null)).toBeNull();
+      expect(computeSliceNormal([1, 0, 0])).toBeNull();
+      expect(computeSliceNormal([0, 0, 0, 0, 0, 0])).toBeNull();
     });
   });
 

@@ -722,7 +722,7 @@ function engineIsLive() {
 function destroyCurrent() {
   // The listeners die with the elements; clearing the anchor stops a stale
   // layout's pane list from being consulted by the next one.
-  compareSync = { enabled: false, anchor: null, viewportIds: [], sliceCounts: [] };
+  compareSync = { enabled: false, anchor: null, viewportIds: [], sliceCounts: [], spatialMode: null };
   stopCine();
   loadGeneration += 1;
   resizeObserver?.disconnect();
@@ -1093,18 +1093,58 @@ function resolveOrientation(series) {
 }
 
 /**
+ * Compute the slice-plane normal from a 6-element ImageOrientationPatient.
+ * Returns a unit-length [nx, ny, nz] or null when orientation is missing/degenerate.
+ */
+export function computeSliceNormal(orientation) {
+  if (!Array.isArray(orientation) || orientation.length !== 6) return null;
+  const row = orientation.slice(0, 3);
+  const col = orientation.slice(3, 6);
+  const nx = row[1] * col[2] - row[2] * col[1];
+  const ny = row[2] * col[0] - row[0] * col[2];
+  const nz = row[0] * col[1] - row[1] * col[0];
+  const len = Math.hypot(nx, ny, nz);
+  if (len < 1e-6) return null;
+  return [nx / len, ny / len, nz / len];
+}
+
+/**
  * Calculates the slice index in targetSeries that best matches the 3D physical
  * location of sourceIndex in sourceSeries based on DICOM geometry.
+ *
+ * Guards:
+ * 1. Different *real* FrameOfReferenceUIDs → incompatible coordinate spaces → null.
+ *    Synthetic FoR (tag missing from DICOM, backend filled in series UID) is ignored.
+ * 2. Cross-plane: if |dot(sourceNormal, targetNormal)| < 0.9 (~25°), there is no
+ *    meaningful 1-to-1 slice correspondence → null.
+ * 3. Distance threshold: max(sliceSpacing × 2, 5 mm).  Prevents mapping between
+ *    non-overlapping anatomy (e.g. brain vs neck).
  *
  * Uses the cross product of the target series' orientation to compute the slice
  * normal, then projects the source position onto that normal to find the closest
  * target slice by signed distance along the scan axis.
  */
 export function findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries) {
+  // Guard 1: FrameOfReferenceUID — only block when both are *real* DICOM FoR
   const sourceFor = sourceSeries?.geometry?.frameOfReferenceUID;
   const targetFor = targetSeries?.geometry?.frameOfReferenceUID;
-  if (sourceFor && targetFor && sourceFor !== targetFor) {
+  const sourceSynthetic = sourceSeries?.geometry?.frameOfReferenceSynthetic;
+  const targetSynthetic = targetSeries?.geometry?.frameOfReferenceSynthetic;
+  if (sourceFor && targetFor && sourceFor !== targetFor
+      && !sourceSynthetic && !targetSynthetic) {
     return null;
+  }
+
+  // Guard 2: cross-plane check — normals must be near-parallel
+  const sourceNormal = computeSliceNormal(resolveOrientation(sourceSeries));
+  const targetNormal = computeSliceNormal(resolveOrientation(targetSeries));
+  if (sourceNormal && targetNormal) {
+    const dot = Math.abs(
+      sourceNormal[0] * targetNormal[0] +
+      sourceNormal[1] * targetNormal[1] +
+      sourceNormal[2] * targetNormal[2],
+    );
+    if (dot < 0.9) return null; // planes differ by > ~25°
   }
 
   const sourceSlices = resolveOrderedSlices(sourceSeries);
@@ -1115,20 +1155,6 @@ export function findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries) {
   const sourcePos = sourceSlices[sourceIndex]?.position;
   if (!Array.isArray(sourcePos) || sourcePos.length !== 3) {
     return null;
-  }
-
-  const targetOrientation = resolveOrientation(targetSeries);
-  let targetNormal = null;
-  if (Array.isArray(targetOrientation) && targetOrientation.length === 6) {
-    const row = targetOrientation.slice(0, 3);
-    const col = targetOrientation.slice(3, 6);
-    const nx = row[1] * col[2] - row[2] * col[1];
-    const ny = row[2] * col[0] - row[0] * col[2];
-    const nz = row[0] * col[1] - row[1] * col[0];
-    const len = Math.hypot(nx, ny, nz);
-    if (len > 1e-6) {
-      targetNormal = [nx / len, ny / len, nz / len];
-    }
   }
 
   let bestIndex = 0;
@@ -1159,9 +1185,12 @@ export function findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries) {
     }
   }
 
-  // Cross-plane (axial vs sagittal) or non-overlapping series (e.g. head vs neck)
-  // should not sync by index. 50mm is a safe threshold to say they don't overlap.
-  if (minDistance > 50) {
+  // Guard 3: non-overlapping anatomy — threshold tied to actual slice geometry
+  const sliceSpacing = targetSeries?.geometry?.sliceSpacing;
+  const maxDistance = (Number.isFinite(sliceSpacing) && sliceSpacing > 0)
+    ? Math.max(sliceSpacing * 2, 5)
+    : 50; // conservative fallback when geometry is incomplete
+  if (minDistance > maxDistance) {
     return null;
   }
 
@@ -1198,7 +1227,7 @@ export function syncedCompareIndices(anchor, sourcePane, sourceIndex, sliceCount
 }
 
 // Anchor and wiring for the comparison layouts. Rebuilt on every layout change.
-let compareSync = { enabled: false, anchor: null, viewportIds: [], seriesList: [], sliceCounts: [] };
+let compareSync = { enabled: false, anchor: null, viewportIds: [], seriesList: [], sliceCounts: [], spatialMode: null };
 
 function readCompareIndices() {
   return compareSync.viewportIds.map((viewportId) => (
@@ -1206,22 +1235,59 @@ function readCompareIndices() {
   ));
 }
 
+/**
+ * Checks whether all series pairs support spatial crosslink.
+ * Returns "spatial" when all pairs have compatible geometry,
+ * "index" when any pair fails (different FoR, cross-plane, no geometry).
+ */
+function detectSpatialMode(seriesList) {
+  for (let i = 0; i < seriesList.length; i += 1) {
+    for (let j = i + 1; j < seriesList.length; j += 1) {
+      const si = seriesList[i];
+      const sj = seriesList[j];
+      if (!si?.geometry || !sj?.geometry) return "index";
+
+      const forI = si.geometry.frameOfReferenceUID;
+      const forJ = sj.geometry.frameOfReferenceUID;
+      if (forI && forJ && forI !== forJ
+          && !si.geometry.frameOfReferenceSynthetic
+          && !sj.geometry.frameOfReferenceSynthetic) {
+        return "index";
+      }
+
+      const nI = computeSliceNormal(resolveOrientation(si));
+      const nJ = computeSliceNormal(resolveOrientation(sj));
+      if (nI && nJ) {
+        const dot = Math.abs(nI[0] * nJ[0] + nI[1] * nJ[1] + nI[2] * nJ[2]);
+        if (dot < 0.9) return "index";
+      }
+    }
+  }
+  return "spatial";
+}
+
 /** Turn position-locked scrolling on or off; returns the state actually in force. */
 export function setCompareScrollSync(enabled) {
   if (!enabled || compareSync.viewportIds.length < 2) {
     compareSync.enabled = false;
     compareSync.anchor = null;
+    compareSync.spatialMode = null;
     return false;
   }
   // Capture where the panes are *now*: that offset is what the user is asking
   // to preserve by pressing the button.
   compareSync.anchor = readCompareIndices();
   compareSync.enabled = true;
+  compareSync.spatialMode = detectSpatialMode(compareSync.seriesList);
   return true;
 }
 
 export function compareScrollSyncState() {
-  return { enabled: compareSync.enabled, anchor: compareSync.anchor?.slice() || null };
+  return {
+    enabled: compareSync.enabled,
+    anchor: compareSync.anchor?.slice() || null,
+    spatialMode: compareSync.spatialMode || null,
+  };
 }
 
 /** Returns info about the currently focused compare pane, or null. */
