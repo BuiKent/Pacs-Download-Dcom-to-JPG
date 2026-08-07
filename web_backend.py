@@ -52,6 +52,12 @@ MIME_TYPES = {
 
 DICOM_MANIFEST_FORMAT = "dcom-direct-dicom"
 
+# Grayscale is windowed; every other accepted form is converted to plain RGB
+# before it leaves the backend, so the browser only ever sees these two shapes.
+GRAYSCALE_PHOTOMETRICS = {"MONOCHROME1", "MONOCHROME2"}
+COLOR_PHOTOMETRICS = {"RGB", "PALETTE COLOR", "YBR_FULL", "YBR_FULL_422", "YBR_RCT", "YBR_ICT"}
+SUPPORTED_PHOTOMETRICS = GRAYSCALE_PHOTOMETRICS | COLOR_PHOTOMETRICS
+
 
 def _natural_key(value: str) -> list[Any]:
     return [int(item) if item.isdigit() else item.casefold() for item in re.split(r"(\d+)", value)]
@@ -197,7 +203,14 @@ def _read_dicom_header(path: Path) -> list[DicomHeader]:
         return []
     samples = int(getattr(ds, "SamplesPerPixel", 1) or 1)
     photometric = str(getattr(ds, "PhotometricInterpretation", "MONOCHROME2") or "MONOCHROME2").upper()
-    if samples != 1 or photometric not in {"MONOCHROME1", "MONOCHROME2"}:
+    if photometric not in SUPPORTED_PHOTOMETRICS:
+        return []
+    # Grayscale carries one sample; every colour form this viewer accepts is
+    # normalised to three by _dicom_pixel_payload before it reaches the browser.
+    expected_samples = 1 if photometric in GRAYSCALE_PHOTOMETRICS else 3
+    if photometric == "PALETTE COLOR":
+        expected_samples = 1
+    if samples != expected_samples:
         return []
     series_number = str(getattr(ds, "SeriesNumber", "") or "")
     description = str(getattr(ds, "SeriesDescription", "") or "").strip() or "DICOM series"
@@ -298,6 +311,13 @@ def _ordered_dicom_headers(headers: list[DicomHeader]) -> list[DicomHeader]:
 
 def _direct_dicom_manifest(headers: list[DicomHeader]) -> tuple[Optional[dict], bool, str]:
     first = headers[0]
+    if first.photometric not in GRAYSCALE_PHOTOMETRICS:
+        # Colour pixels carry no modality LUT and no reliable slice geometry;
+        # reslicing them as a scalar volume would be meaningless.
+        return None, False, (
+            f"Ảnh màu DICOM ({first.photometric}): xem được 2D, "
+            "không dựng MPR/3D và không đo theo đơn vị vật lý."
+        )
     spacing = first.pixel_spacing
     orientation = first.orientation
     if not spacing or min(spacing) <= 0:
@@ -394,6 +414,49 @@ def _direct_dicom_manifest(headers: list[DicomHeader]) -> tuple[Optional[dict], 
     return manifest, True, ""
 
 
+def _dicom_color_payload(ds: Any, pixels: Any, photometric: str) -> tuple[bytes, dict[str, str]]:
+    """Normalise any accepted colour form to interleaved 8-bit RGB.
+
+    Colour DICOM (ultrasound, secondary capture, palette-coded overlays) has no
+    meaningful window/level, so it is handed to the browser already in display
+    space instead of going through the modality LUT path.
+    """
+    import numpy as np
+    from pydicom.pixels import apply_color_lut, convert_color_space
+
+    if photometric == "PALETTE COLOR":
+        pixels = np.asarray(apply_color_lut(pixels, ds))
+    elif photometric.startswith("YBR"):
+        pixels = np.asarray(convert_color_space(pixels, photometric, "RGB"))
+
+    if pixels.ndim != 3 or pixels.shape[2] < 3:
+        raise ValueError(
+            f"Ảnh màu DICOM có hình dạng không dùng được: {getattr(pixels, 'shape', None)}."
+        )
+    pixels = pixels[:, :, :3]
+    if pixels.dtype != np.uint8:
+        # Palette LUTs are often 16-bit; scale by the declared LUT depth rather
+        # than by the sample maximum, which would stretch a dark frame.
+        depth = 2 ** int(getattr(ds, "BitsStored", 16) or 16) - 1
+        top = float(depth) if depth > 0 else float(pixels.max() or 1)
+        pixels = np.clip(pixels.astype("float32") / top * 255.0, 0, 255).round().astype("uint8")
+    pixels = np.ascontiguousarray(pixels)
+    headers = {
+        "X-DCom-Pixel-Type": "uint8",
+        "X-DCom-Rows": str(pixels.shape[0]),
+        "X-DCom-Columns": str(pixels.shape[1]),
+        "X-DCom-Samples": "3",
+        "X-DCom-Min": "0",
+        "X-DCom-Max": "255",
+        "X-DCom-Slope": "1.0",
+        "X-DCom-Intercept": "0.0",
+        "X-DCom-Window-Center": "127.5",
+        "X-DCom-Window-Width": "255.0",
+        "X-DCom-Photometric": "RGB",
+    }
+    return pixels.tobytes(order="C"), headers
+
+
 def _dicom_pixel_payload(path: Path, frame: int = 0) -> tuple[bytes, dict[str, str]]:
     import numpy as np
     import pydicom
@@ -403,13 +466,22 @@ def _dicom_pixel_payload(path: Path, frame: int = 0) -> tuple[bytes, dict[str, s
         pixels = np.asarray(ds.pixel_array)
     except Exception as exc:
         raise ValueError(f"Không giải mã được pixel DICOM: {path.name} ({exc})") from exc
-    # Multi-frame DICOM: pixel_array is (frames, rows, columns). The catalog
+    photometric = str(
+        getattr(ds, "PhotometricInterpretation", "MONOCHROME2") or "MONOCHROME2"
+    ).upper()
+    frames = int(getattr(ds, "NumberOfFrames", 1) or 1)
+    # Multi-frame pixel_array is (frames, rows, columns[, samples]). The catalog
     # expands such a file into one slice per frame, so the requested frame is
-    # what the viewer asked for, not always the first one.
-    if pixels.ndim == 3 and int(getattr(ds, "SamplesPerPixel", 1) or 1) == 1:
-        if not 0 <= frame < pixels.shape[0]:
-            raise IndexError(f"Khung {frame} ngoài phạm vi {pixels.shape[0]} khung.")
+    # what the viewer asked for, not always the first one. A single-frame colour
+    # image is also 3-D — shape[0] == frames keeps the two apart.
+    if frames > 1 and pixels.ndim >= 3 and pixels.shape[0] == frames:
+        if not 0 <= frame < frames:
+            raise IndexError(f"Khung {frame} ngoài phạm vi {frames} khung.")
         pixels = pixels[frame]
+
+    if photometric in COLOR_PHOTOMETRICS:
+        return _dicom_color_payload(ds, pixels, photometric)
+
     if pixels.ndim != 2:
         raise ValueError("Viewer trực tiếp hiện chỉ hỗ trợ DICOM xám 2D (hoặc multi-frame xám).")
 
@@ -443,6 +515,7 @@ def _dicom_pixel_payload(path: Path, frame: int = 0) -> tuple[bytes, dict[str, s
         "X-DCom-Pixel-Type": pixel_type,
         "X-DCom-Rows": str(pixels.shape[0]),
         "X-DCom-Columns": str(pixels.shape[1]),
+        "X-DCom-Samples": "1",
         "X-DCom-Min": str(raw_min),
         "X-DCom-Max": str(raw_max),
         "X-DCom-Slope": repr(slope),

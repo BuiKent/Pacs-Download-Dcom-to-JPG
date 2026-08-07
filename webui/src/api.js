@@ -64,6 +64,8 @@ export async function apiPixelData(path) {
     pixelType: response.headers.get("X-DCom-Pixel-Type") || "uint16",
     rows: number("X-DCom-Rows", 0),
     columns: number("X-DCom-Columns", 0),
+    // 1 for windowed grayscale, 3 for colour already normalised to RGB.
+    samples: number("X-DCom-Samples", 1),
     min: number("X-DCom-Min", 0),
     max: number("X-DCom-Max", 0),
     slope: number("X-DCom-Slope", 1),

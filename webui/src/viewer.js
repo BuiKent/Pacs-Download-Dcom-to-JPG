@@ -495,6 +495,57 @@ export function rescaledDicomPixels(pixels, slope, intercept, min, max) {
   return { pixels: scaled, min: lower, max: upper };
 }
 
+/**
+ * Build the Cornerstone image descriptor for a colour DICOM frame.
+ *
+ * The backend already resolved palette LUTs and YBR into interleaved 8-bit
+ * RGB, so there is nothing to window here: the samples are display values.
+ * Cornerstone wants RGBA in the canvas but reads RGB triplets from
+ * getPixelData, hence the two different layouts below.
+ */
+export function colorDicomImage({ rgb, rows, columns }) {
+  const expected = rows * columns * 3;
+  if (!rgb || rgb.length !== expected) {
+    throw new Error(`Pixel màu DICOM không đầy đủ: ${rgb?.length ?? 0}/${expected}.`);
+  }
+  return {
+    minPixelValue: 0,
+    maxPixelValue: 255,
+    slope: 1,
+    intercept: 0,
+    windowCenter: 127.5,
+    windowWidth: 255,
+    getPixelData: () => rgb,
+    rows,
+    columns,
+    height: rows,
+    width: columns,
+    color: true,
+    rgba: false,
+    numberOfComponents: 3,
+    invert: false,
+    photometricInterpretation: "RGB",
+    sizeInBytes: rgb.byteLength,
+    dataType: "Uint8Array",
+  };
+}
+
+function colorCanvas(rgb, width, height) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  const frame = context.createImageData(width, height);
+  for (let source = 0, target = 0; source < rgb.length; source += 3, target += 4) {
+    frame.data[target] = rgb[source];
+    frame.data[target + 1] = rgb[source + 1];
+    frame.data[target + 2] = rgb[source + 2];
+    frame.data[target + 3] = 255;
+  }
+  context.putImageData(frame, 0, 0);
+  return canvas;
+}
+
 function dicomCanvas(pixels, width, height, min, max, invert) {
   const display = new Uint8Array(pixels.length);
   const span = Math.max(1, max - min);
@@ -507,6 +558,19 @@ function dicomCanvas(pixels, width, height, min, max, invert) {
 
 async function decodeDicomImage(imageId, parsed, series) {
   const decoded = await apiPixelData(imagePath(parsed.seriesId, parsed.index));
+  const spacingForColor = series?.geometry?.pixelSpacing || series?.pixelData?.pixelSpacing;
+  if (decoded.samples === 3) {
+    const rgb = new Uint8Array(decoded.buffer);
+    decodePath = "dicom-color";
+    return {
+      imageId,
+      ...colorDicomImage({ rgb, rows: decoded.rows, columns: decoded.columns }),
+      getCanvas: () => colorCanvas(rgb, decoded.columns, decoded.rows),
+      columnPixelSpacing: spacingForColor?.[1],
+      rowPixelSpacing: spacingForColor?.[0],
+      imageQualityStatus: CoreEnums.ImageQualityStatus.FULL_RESOLUTION,
+    };
+  }
   const stored = typedDicomPixels(decoded.buffer, decoded.pixelType);
   if (stored.length !== decoded.rows * decoded.columns) {
     throw new Error(`Pixel DICOM không đầy đủ: ${stored.length}/${decoded.rows * decoded.columns}.`);

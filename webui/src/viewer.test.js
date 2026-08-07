@@ -7,6 +7,7 @@ import {
   annotationTargetViewportId,
   availableWindowPresets,
   defaultWindowPreset,
+  colorDicomImage,
   computeSliceNormal,
   findSpatialSliceIndex,
   comparePairMode,
@@ -441,6 +442,34 @@ describe("viewer shell", () => {
       pixelData: { numberOfFrames: 12 },
       geometry: { orientation: [1, 0, 0, 0, 1, 0], sliceSpacing: 5 },
     })).toBeNull();
+  });
+
+  describe("colorDicomImage", () => {
+    const rgb = new Uint8Array([
+      10, 20, 30, 40, 50, 60,
+      70, 80, 90, 100, 110, 120,
+    ]);
+
+    it("describes a colour frame without applying a window", () => {
+      const image = colorDicomImage({ rgb, rows: 2, columns: 2 });
+      expect(image.color).toBe(true);
+      expect(image.rgba).toBe(false);
+      expect(image.numberOfComponents).toBe(3);
+      expect(image.photometricInterpretation).toBe("RGB");
+      // Samples are already display values: no rescale, no inversion.
+      expect(image.slope).toBe(1);
+      expect(image.intercept).toBe(0);
+      expect(image.invert).toBe(false);
+      expect(image.minPixelValue).toBe(0);
+      expect(image.maxPixelValue).toBe(255);
+      expect(image.getPixelData()).toBe(rgb);
+    });
+
+    it("refuses a buffer that is not exactly rows × columns × 3", () => {
+      // Silently rendering a short buffer would paint garbage rows.
+      expect(() => colorDicomImage({ rgb, rows: 2, columns: 3 })).toThrow(/12/);
+      expect(() => colorDicomImage({ rgb: null, rows: 2, columns: 2 })).toThrow();
+    });
   });
 
   describe("computeSliceNormal", () => {

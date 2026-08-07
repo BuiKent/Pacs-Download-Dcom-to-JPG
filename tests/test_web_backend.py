@@ -25,6 +25,7 @@ def write_local_dicom(
     number_of_frames: int = 1,
     skip_frame_uid: bool = False,
     frame_positions: list[float] | None = None,
+    photometric: str = "MONOCHROME2",
 ) -> None:
     sop_uid = generate_uid()
     file_meta = FileMetaDataset()
@@ -81,6 +82,41 @@ def write_local_dicom(
             dataset.FrameOfReferenceUID = frame_uid or generate_uid()
     dataset.WindowCenter = 8
     dataset.WindowWidth = 16
+
+    if photometric == "RGB":
+        dataset.PhotometricInterpretation = "RGB"
+        dataset.SamplesPerPixel = 3
+        dataset.PlanarConfiguration = 0
+        dataset.BitsAllocated = 8
+        dataset.BitsStored = 8
+        dataset.HighBit = 7
+        rgb = np.zeros((4, 4, 3), dtype=np.uint8)
+        rgb[..., 0] = np.arange(16, dtype=np.uint8).reshape(4, 4) * 15
+        rgb[..., 1] = 64
+        rgb[..., 2] = 200
+        dataset.PixelData = rgb.tobytes()
+        dataset.save_as(str(path), enforce_file_format=True)
+        return
+
+    if photometric == "PALETTE COLOR":
+        dataset.PhotometricInterpretation = "PALETTE COLOR"
+        dataset.SamplesPerPixel = 1
+        dataset.BitsAllocated = 8
+        dataset.BitsStored = 8
+        dataset.HighBit = 7
+        # 16-entry LUT: red ramps with the index, green/blue stay flat, so a
+        # test can tell "LUT applied" from "raw indices passed through".
+        descriptor = [16, 0, 8]
+        dataset.RedPaletteColorLookupTableDescriptor = descriptor
+        dataset.GreenPaletteColorLookupTableDescriptor = descriptor
+        dataset.BluePaletteColorLookupTableDescriptor = descriptor
+        dataset.RedPaletteColorLookupTableData = bytes(range(0, 256, 16))
+        dataset.GreenPaletteColorLookupTableData = bytes([32] * 16)
+        dataset.BluePaletteColorLookupTableData = bytes([128] * 16)
+        dataset.PixelData = np.arange(16, dtype=np.uint8).reshape(4, 4).tobytes()
+        dataset.save_as(str(path), enforce_file_format=True)
+        return
+
     frame = np.arange(16, dtype=np.uint16).reshape(4, 4) + instance_number
     if number_of_frames > 1:
         # Distinct frames, otherwise a test cannot tell frame 2 from frame 0.
@@ -204,6 +240,49 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(3, len(set(frames)), f"frames must differ: {frames}")
             with self.assertRaises(IndexError):
                 _dicom_pixel_payload(path, 3)
+
+    def test_rgb_dicom_is_listed_and_served_as_rgb_bytes(self):
+        """Colour DICOM (ultrasound, secondary capture) used to be dropped
+        silently. It must open in 2D, with MPR/3D withheld for a stated
+        reason, and the payload must be interleaved 8-bit RGB."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "color.dcm"
+            write_local_dicom(path, photometric="RGB")
+
+            catalog = ArchiveCatalog().open(root)
+            self.assertEqual(len(catalog["series"]), 1)
+            series = catalog["series"][0]
+            self.assertFalse(series["mprReady"])
+            self.assertIn("màu", series["mprReason"].lower())
+            self.assertNotIn("geometry", series)
+
+            body, headers = _dicom_pixel_payload(path)
+            self.assertEqual(headers["X-DCom-Samples"], "3")
+            self.assertEqual(headers["X-DCom-Photometric"], "RGB")
+            self.assertEqual(headers["X-DCom-Pixel-Type"], "uint8")
+            self.assertEqual(len(body), 4 * 4 * 3)
+
+    def test_palette_color_dicom_is_expanded_through_the_lut(self):
+        """PALETTE COLOR carries one sample plus a lookup table; the backend
+        must resolve the LUT rather than hand the browser raw indices."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "palette.dcm"
+            write_local_dicom(path, photometric="PALETTE COLOR")
+
+            catalog = ArchiveCatalog().open(root)
+            self.assertEqual(len(catalog["series"]), 1)
+
+            body, headers = _dicom_pixel_payload(path)
+            self.assertEqual(headers["X-DCom-Samples"], "3")
+            self.assertEqual(len(body), 4 * 4 * 3)
+            # Assert the LUT output itself, not merely "the values vary": raw
+            # indices 0..15 also vary, so a variance check passes with the LUT
+            # skipped entirely.  Red ramps by 16, green and blue stay flat.
+            self.assertEqual(list(range(0, 256, 16)), list(body[0::3]))
+            self.assertEqual({32}, set(body[1::3]))
+            self.assertEqual({128}, set(body[2::3]))
 
     def test_direct_dicom_geometry_enables_mpr_without_jpg_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
