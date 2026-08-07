@@ -342,9 +342,11 @@ function renderSeriesOptions(archive, selectedId) {
 }
 
 function seriesFrameLabel(series) {
+  // A multi-frame file is expanded into one slice per frame, so the count is
+  // the real number of images either way; only the noun changes.
   const numberOfFrames = Number(series?.pixelData?.numberOfFrames || 1);
-  if (numberOfFrames > 1) return `1/${numberOfFrames} ${t("khung")}`;
-  return `${series?.sliceCount || 0} ${t("lát")}`;
+  const unit = numberOfFrames > 1 ? t("khung") : t("lát");
+  return `${series?.sliceCount || 0} ${unit}`;
 }
 
 function windowPresetHint(series) {

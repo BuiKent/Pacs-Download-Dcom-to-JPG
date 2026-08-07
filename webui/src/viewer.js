@@ -252,10 +252,14 @@ export function windowPresetRange(name, series = null) {
 export function seriesSafetyNotice(series) {
   if (!series) return null;
   const numberOfFrames = Number(series.pixelData?.numberOfFrames || 1);
-  if (series.sourceType === "dicom" && numberOfFrames > 1) {
+  // Frames of an enhanced file are served as ordinary slices, so the only
+  // thing left to warn about is a multi-frame file that carries no per-frame
+  // position: it is viewable but has no 3D space to measure or crosslink in.
+  if (series.sourceType === "dicom" && numberOfFrames > 1 && !series.geometry) {
     return {
       level: "warning",
-      text: "DICOM multi-frame: viewer hiện chỉ hiển thị khung đầu tiên; không dùng MPR/3D cho series này.",
+      text: "DICOM multi-frame thiếu vị trí 3D theo khung: xem được từng khung, "
+        + "nhưng không có MPR/3D và không đồng bộ theo vị trí với series khác.",
     };
   }
   if (series.sourceType === "dicom") return null;

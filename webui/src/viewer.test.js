@@ -423,14 +423,24 @@ describe("viewer shell", () => {
     });
   });
 
-  it("shows a visible safety warning for first-frame-only multi-frame DICOM", () => {
+  it("warns only for multi-frame DICOM that carries no per-frame position", () => {
+    // Frames are served as ordinary slices now, so the warning is about the
+    // missing 3D space, not about frames being hidden.
     expect(seriesSafetyNotice({
       sourceType: "dicom",
       pixelData: { numberOfFrames: 12 },
     })).toEqual({
       level: "warning",
-      text: "DICOM multi-frame: viewer hiện chỉ hiển thị khung đầu tiên; không dùng MPR/3D cho series này.",
+      text: "DICOM multi-frame thiếu vị trí 3D theo khung: xem được từng khung, "
+        + "nhưng không có MPR/3D và không đồng bộ theo vị trí với series khác.",
     });
+    // PerFrameFunctionalGroupsSequence was present, so there is nothing to warn
+    // about: the frames behave exactly like the slices of a classic series.
+    expect(seriesSafetyNotice({
+      sourceType: "dicom",
+      pixelData: { numberOfFrames: 12 },
+      geometry: { orientation: [1, 0, 0, 0, 1, 0], sliceSpacing: 5 },
+    })).toBeNull();
   });
 
   describe("computeSliceNormal", () => {

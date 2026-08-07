@@ -7,7 +7,8 @@ import urllib.request
 from pathlib import Path
 
 import numpy as np
-from pydicom.dataset import FileDataset, FileMetaDataset
+from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
+from pydicom.sequence import Sequence
 from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage, generate_uid
 from PIL import Image
 
@@ -23,6 +24,7 @@ def write_local_dicom(
     position: float | None = None,
     number_of_frames: int = 1,
     skip_frame_uid: bool = False,
+    frame_positions: list[float] | None = None,
 ) -> None:
     sop_uid = generate_uid()
     file_meta = FileMetaDataset()
@@ -56,10 +58,36 @@ def write_local_dicom(
         dataset.FrameOfReferenceUID = frame_uid or generate_uid()
         if skip_frame_uid:
             del dataset.FrameOfReferenceUID
+    if frame_positions is not None:
+        # Enhanced layout: geometry lives in the functional groups, not at the
+        # top level, exactly as a real Enhanced CT/MR file stores it.
+        measures = Dataset()
+        measures.PixelSpacing = [0.5, 0.5]
+        plane = Dataset()
+        plane.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
+        shared = Dataset()
+        shared.PixelMeasuresSequence = Sequence([measures])
+        shared.PlaneOrientationSequence = Sequence([plane])
+        dataset.SharedFunctionalGroupsSequence = Sequence([shared])
+        per_frame = []
+        for z in frame_positions:
+            position_item = Dataset()
+            position_item.ImagePositionPatient = [0, 0, float(z)]
+            item = Dataset()
+            item.PlanePositionSequence = Sequence([position_item])
+            per_frame.append(item)
+        dataset.PerFrameFunctionalGroupsSequence = Sequence(per_frame)
+        if not skip_frame_uid:
+            dataset.FrameOfReferenceUID = frame_uid or generate_uid()
     dataset.WindowCenter = 8
     dataset.WindowWidth = 16
     frame = np.arange(16, dtype=np.uint16).reshape(4, 4) + instance_number
-    dataset.PixelData = np.repeat(frame[np.newaxis, ...], number_of_frames, axis=0).tobytes()
+    if number_of_frames > 1:
+        # Distinct frames, otherwise a test cannot tell frame 2 from frame 0.
+        stack = np.stack([frame + index * 100 for index in range(number_of_frames)])
+        dataset.PixelData = stack.astype(np.uint16).tobytes()
+    else:
+        dataset.PixelData = frame.tobytes()
     dataset.save_as(str(path), enforce_file_format=True)
 
 
@@ -121,7 +149,10 @@ class ManifestValidationTests(unittest.TestCase):
 
 
 class CatalogTests(unittest.TestCase):
-    def test_unsupported_multiframe_dicom_reports_cause_instead_of_zero_series(self):
+    def test_multiframe_without_frame_geometry_is_browsable_frame_by_frame(self):
+        """A multi-frame file with no PerFrameFunctionalGroupsSequence still
+        becomes one slice per frame; only MPR/3D is withheld, and the reason
+        must say why rather than pretending the file is unsupported."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write_local_dicom(root / "enhanced.dcm", number_of_frames=3)
@@ -129,21 +160,50 @@ class CatalogTests(unittest.TestCase):
             catalog = ArchiveCatalog().open(root)
             self.assertEqual(len(catalog["series"]), 1)
             series = catalog["series"][0]
+            self.assertEqual(3, series["sliceCount"])
             self.assertFalse(series["mprReady"])
-            self.assertIn("khung 1/", series["mprReason"])
+            self.assertIn("multi-frame", series["mprReason"].lower())
+            self.assertNotIn("geometry", series)
             self.assertEqual(3, series["pixelData"]["numberOfFrames"])
 
-    def test_multiframe_dicom_pixel_payload_extracts_first_frame(self):
-        """_dicom_pixel_payload must extract frame 0 from a multi-frame file
-        instead of raising ValueError for ndim==3."""
+    def test_multiframe_with_functional_groups_gets_real_3d_geometry(self):
+        """Enhanced geometry lives in the functional groups. Reading it turns
+        the frames into a spatially ordered series with a usable manifest."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_local_dicom(
+                root / "enhanced.dcm",
+                number_of_frames=4,
+                frame_positions=[0.0, 5.0, 10.0, 15.0],
+            )
+
+            catalog = ArchiveCatalog().open(root)
+            series = catalog["series"][0]
+            self.assertEqual(4, series["sliceCount"])
+            geometry = series.get("geometry")
+            self.assertIsNotNone(geometry, "per-frame positions must yield geometry")
+            self.assertEqual([0.5, 0.5], list(geometry["pixelSpacing"]))
+            self.assertEqual([1, 0, 0, 0, 1, 0], list(geometry["orientation"]))
+            self.assertAlmostEqual(5.0, geometry["sliceSpacing"])
+
+    def test_multiframe_pixel_payload_returns_the_requested_frame(self):
+        """Each expanded slice must serve its own frame, not always frame 0."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "enhanced.dcm"
             write_local_dicom(path, number_of_frames=3)
-            body, headers = _dicom_pixel_payload(path)
-            # The first frame is a 4×4 uint16 image → 32 bytes.
-            self.assertEqual(len(body), 4 * 4 * 2)
-            self.assertEqual(headers["X-DCom-Rows"], "4")
-            self.assertEqual(headers["X-DCom-Columns"], "4")
+
+            frames = []
+            for index in range(3):
+                body, headers = _dicom_pixel_payload(path, index)
+                # Each frame is a 4×4 uint16 image → 32 bytes.
+                self.assertEqual(len(body), 4 * 4 * 2)
+                self.assertEqual(headers["X-DCom-Rows"], "4")
+                self.assertEqual(headers["X-DCom-Columns"], "4")
+                frames.append(body)
+
+            self.assertEqual(3, len(set(frames)), f"frames must differ: {frames}")
+            with self.assertRaises(IndexError):
+                _dicom_pixel_payload(path, 3)
 
     def test_direct_dicom_geometry_enables_mpr_without_jpg_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
