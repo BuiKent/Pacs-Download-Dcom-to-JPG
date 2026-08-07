@@ -1117,8 +1117,11 @@ export function computeSliceNormal(orientation) {
  *    Synthetic FoR (tag missing from DICOM, backend filled in series UID) is ignored.
  * 2. Cross-plane: if |dot(sourceNormal, targetNormal)| < 0.9 (~25°), there is no
  *    meaningful 1-to-1 slice correspondence → null.
- * 3. Distance threshold: max(sliceSpacing × 2, 5 mm).  Prevents mapping between
- *    non-overlapping anatomy (e.g. brain vs neck).
+ * 3. Distance threshold (Non-overlapping anatomy): Projects slices onto the target normal.
+ *    If the source slice is outside the target's physical coverage range, it clamps to the
+ *    nearest boundary slice (PACS edge-of-stack behavior). However, if the overshoot distance
+ *    exceeds the entire extent of the target series itself (or 50mm fallback), it is deemed
+ *    completely different anatomy (e.g. brain vs neck) → null.
  *
  * Uses the cross product of the target series' orientation to compute the slice
  * normal, then projects the source position onto that normal to find the closest
@@ -1160,38 +1163,63 @@ export function findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries) {
   let bestIndex = 0;
   let minDistance = Infinity;
 
-  for (let i = 0; i < targetSlices.length; i += 1) {
-    const targetPos = targetSlices[i]?.position;
-    if (!Array.isArray(targetPos) || targetPos.length !== 3) continue;
+  if (targetNormal) {
+    // --- Normal-projection path (preferred) ---
+    // Project source and all target positions onto the target normal.
+    // This gives us both the best-match index AND the target coverage range
+    // so we can distinguish "edge of stack" from "different anatomy."
+    const sourceProj = sourcePos[0] * targetNormal[0] +
+                       sourcePos[1] * targetNormal[1] +
+                       sourcePos[2] * targetNormal[2];
+    let projMin = Infinity;
+    let projMax = -Infinity;
 
-    let dist;
-    if (targetNormal) {
-      dist = Math.abs(
-        (sourcePos[0] - targetPos[0]) * targetNormal[0] +
-        (sourcePos[1] - targetPos[1]) * targetNormal[1] +
-        (sourcePos[2] - targetPos[2]) * targetNormal[2],
-      );
-    } else {
-      dist = Math.hypot(
+    for (let i = 0; i < targetSlices.length; i += 1) {
+      const targetPos = targetSlices[i]?.position;
+      if (!Array.isArray(targetPos) || targetPos.length !== 3) continue;
+
+      const targetProj = targetPos[0] * targetNormal[0] +
+                         targetPos[1] * targetNormal[1] +
+                         targetPos[2] * targetNormal[2];
+      if (targetProj < projMin) projMin = targetProj;
+      if (targetProj > projMax) projMax = targetProj;
+
+      const dist = Math.abs(sourceProj - targetProj);
+      if (dist < minDistance) {
+        minDistance = dist;
+        bestIndex = i;
+      }
+    }
+
+    // Guard 3: non-overlapping anatomy.
+    // Source beyond the target coverage is fine (clamps to boundary slice)
+    // as long as it isn't farther away than the series extent itself —
+    // that signals completely different anatomy (brain vs cervical spine).
+    const extent = projMax - projMin;
+    const overshoot = Math.max(0, projMin - sourceProj, sourceProj - projMax);
+    if (overshoot > Math.max(extent, 50)) {
+      return null;
+    }
+  } else {
+    // --- Euclidean fallback (no orientation) ---
+    for (let i = 0; i < targetSlices.length; i += 1) {
+      const targetPos = targetSlices[i]?.position;
+      if (!Array.isArray(targetPos) || targetPos.length !== 3) continue;
+
+      const dist = Math.hypot(
         sourcePos[0] - targetPos[0],
         sourcePos[1] - targetPos[1],
         sourcePos[2] - targetPos[2],
       );
+      if (dist < minDistance) {
+        minDistance = dist;
+        bestIndex = i;
+      }
     }
 
-    if (dist < minDistance) {
-      minDistance = dist;
-      bestIndex = i;
+    if (minDistance > 50) {
+      return null;
     }
-  }
-
-  // Guard 3: non-overlapping anatomy — threshold tied to actual slice geometry
-  const sliceSpacing = targetSeries?.geometry?.sliceSpacing;
-  const maxDistance = (Number.isFinite(sliceSpacing) && sliceSpacing > 0)
-    ? Math.max(sliceSpacing * 2, 5)
-    : 50; // conservative fallback when geometry is incomplete
-  if (minDistance > maxDistance) {
-    return null;
   }
 
   return bestIndex;
@@ -1236,31 +1264,19 @@ function readCompareIndices() {
 }
 
 /**
- * Checks whether all series pairs support spatial crosslink.
- * Returns "spatial" when all pairs have compatible geometry,
- * "index" when any pair fails (different FoR, cross-plane, no geometry).
+ * Checks whether all series pairs support spatial crosslink by actually
+ * calling findSpatialSliceIndex with a representative slice.  This avoids
+ * duplicating guards and ensures the status indicator matches real behavior.
+ * Returns "spatial" or "index".
  */
 function detectSpatialMode(seriesList) {
   for (let i = 0; i < seriesList.length; i += 1) {
     for (let j = i + 1; j < seriesList.length; j += 1) {
       const si = seriesList[i];
       const sj = seriesList[j];
-      if (!si?.geometry || !sj?.geometry) return "index";
-
-      const forI = si.geometry.frameOfReferenceUID;
-      const forJ = sj.geometry.frameOfReferenceUID;
-      if (forI && forJ && forI !== forJ
-          && !si.geometry.frameOfReferenceSynthetic
-          && !sj.geometry.frameOfReferenceSynthetic) {
-        return "index";
-      }
-
-      const nI = computeSliceNormal(resolveOrientation(si));
-      const nJ = computeSliceNormal(resolveOrientation(sj));
-      if (nI && nJ) {
-        const dot = Math.abs(nI[0] * nJ[0] + nI[1] * nJ[1] + nI[2] * nJ[2]);
-        if (dot < 0.9) return "index";
-      }
+      if (!si || !sj) return "index";
+      const midI = Math.floor((si.sliceCount || 1) / 2);
+      if (findSpatialSliceIndex(si, midI, sj) === null) return "index";
     }
   }
   return "spatial";
@@ -1370,6 +1386,7 @@ export async function swapComparePane(newSeries) {
   // Re-capture anchor so scroll-sync uses the new positions
   if (compareSync.enabled) {
     compareSync.anchor = readCompareIndices();
+    compareSync.spatialMode = detectSpatialMode(compareSync.seriesList);
   }
 
   return { paneIndex, viewportId };
@@ -1382,6 +1399,7 @@ function installCompareSynchronization(seriesList, viewportIds) {
     viewportIds,
     seriesList: seriesList || [],
     sliceCounts: seriesList.map((item) => item?.sliceCount || 1),
+    spatialMode: null,
   };
   let synchronizing = false;
   viewportIds.forEach((viewportId, sourcePane) => {

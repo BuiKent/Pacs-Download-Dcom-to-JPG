@@ -169,6 +169,7 @@ describe("viewer shell", () => {
       id: "t1series",
       geometry: {
         orientation: [1, 0, 0, 0, 1, 0],
+        sliceSpacing: 5,
         ordered_slices: t1Slices,
       },
     };
@@ -176,6 +177,7 @@ describe("viewer shell", () => {
       id: "t2series",
       geometry: {
         orientation: [1, 0, 0, 0, 1, 0],
+        sliceSpacing: 3,
         ordered_slices: t2Slices,
       },
     };
@@ -264,10 +266,39 @@ describe("viewer shell", () => {
       expect(findSpatialSliceIndex(s1, 0, s2)).toBe(1);
     });
 
-    it("returns null when minimum distance exceeds sliceSpacing-based threshold", () => {
-      const s1 = { geometry: { orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, 0] }] } };
-      // 300mm away, threshold = max(5*2, 5) = 10mm → 300 > 10 → null
-      const s2 = { geometry: { orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, 300] }] } };
+    it("clamps to boundary when source is outside target coverage but within extent", () => {
+      const s1 = { geometry: { orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, -20] }] } };
+      // Target spans z=0 to z=50 (extent 50). Source at -20 is outside, but overshoot (20) <= max(extent 50, 50).
+      // So it should clamp to the nearest boundary slice (z=0 -> index 0).
+      const s2 = {
+        geometry: {
+          orientation: [1,0,0,0,1,0],
+          sliceSpacing: 5,
+          ordered_slices: [
+            { position: [0, 0, 0] },
+            { position: [0, 0, 25] },
+            { position: [0, 0, 50] },
+          ]
+        }
+      };
+      expect(findSpatialSliceIndex(s1, 0, s2)).toBe(0);
+    });
+
+    it("returns null when overshoot exceeds the target extent (different anatomy)", () => {
+      const s1 = { geometry: { orientation: [1,0,0,0,1,0], sliceSpacing: 5, ordered_slices: [{ position: [0, 0, -60] }] } };
+      // Target spans z=0 to z=50 (extent 50). Source at -60 overshoots by 60.
+      // 60 > max(50, 50) -> null.
+      const s2 = {
+        geometry: {
+          orientation: [1,0,0,0,1,0],
+          sliceSpacing: 5,
+          ordered_slices: [
+            { position: [0, 0, 0] },
+            { position: [0, 0, 25] },
+            { position: [0, 0, 50] },
+          ]
+        }
+      };
       expect(findSpatialSliceIndex(s1, 0, s2)).toBeNull();
     });
 

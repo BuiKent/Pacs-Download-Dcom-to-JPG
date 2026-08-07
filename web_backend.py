@@ -485,7 +485,7 @@ class SeriesRecord:
                 "sliceSpacing": float(self.manifest["slice_spacing"]),
                 "orientation": self.manifest["image_orientation_patient"],
                 "frameOfReferenceUID": self.manifest.get("frame_of_reference_uid") or self.series_id,
-                "frameOfReferenceSynthetic": self.manifest.get("frame_of_reference_synthetic", False),
+                "frameOfReferenceSynthetic": not bool(self.manifest.get("frame_of_reference_uid")),
             }
         return data
 
