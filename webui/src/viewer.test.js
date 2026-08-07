@@ -75,16 +75,22 @@ describe("viewer shell", () => {
   });
 
   it("never keeps a tool the layout cannot honour", () => {
-    // Crosshairs need two linked viewports; a single stack pane must fall back.
-    expect(toolFallback("crosshair", 1, false)).toBe("window");
-    expect(toolFallback("crosshair", 3, false)).toBe("crosshair");
-    // The 3D orbit needs a 3D viewport.
-    expect(toolFallback("orbit3d", 4, false)).toBe("window");
-    expect(toolFallback("orbit3d", 4, true)).toBe("orbit3d");
-    expect(toolFallback("length", 1, false)).toBe("length");
+    // Crosshairs need two linked viewports; a single MPR pane must fall back.
+    expect(toolFallback("crosshair", 1, false, "mpr")).toBe("window");
+    expect(toolFallback("crosshair", 3, false, "mpr")).toBe("crosshair");
+    // A stack compare layout omits CrosshairsTool entirely (getSlabThickness
+    // throws on StackViewport), so pane count alone must not grant it.
+    expect(toolFallback("crosshair", 3, false, "stack")).toBe("window");
+    // The 3D orbit needs a 3D viewport *and* a layout that carries the tool.
+    // "hybrid" is the layout the 3D view actually builds its group with —
+    // createToolGroup is only ever called with "stack", "mpr" or "hybrid".
+    expect(toolFallback("orbit3d", 4, false, "hybrid")).toBe("window");
+    expect(toolFallback("orbit3d", 4, true, "hybrid")).toBe("orbit3d");
+    expect(toolFallback("orbit3d", 4, true, "stack")).toBe("window");
+    expect(toolFallback("length", 1, false, "stack")).toBe("length");
     // Text notes are plain annotations and work in any 2D layout.
-    expect(toolFallback("text", 1, false)).toBe("text");
-    expect(toolFallback("nonsense", 3, true)).toBe("window");
+    expect(toolFallback("text", 1, false, "stack")).toBe("text");
+    expect(toolFallback("nonsense", 3, true, "stack")).toBe("window");
   });
 
   it("keeps volume crosshairs out of stack compare so Reference Lines can render", () => {

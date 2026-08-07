@@ -437,45 +437,21 @@ class FrameOfReferenceSyntheticTests(unittest.TestCase):
                 ds.save_as(str(dcm_path))
 
             snapshot = ArchiveCatalog().open(root)
-            by_id = {s["id"]: s for s in snapshot["series"]}
-            geos = {sid: s.get("geometry", {}) for sid, s in by_id.items()}
-
-            # Find series A and B (same study) vs C (different study)
-            same_study_fors = set()
-            other_study_fors = set()
-            for sid, geo in geos.items():
-                if not geo:
-                    continue
-                # Check which study this series belongs to by examining its
-                # synthetic FoR UID (should equal its study UID).
-                for s in snapshot["series"]:
-                    if s["id"] == sid:
-                        study_group = s.get("studyGroup", "")
-                        break
-                for dcm_path in root.glob("*.dcm"):
-                    ds = pydicom.dcmread(str(dcm_path), stop_before_pixels=True)
-                    if ds.SeriesInstanceUID in (series_a, series_b) and \
-                       geo.get("frameOfReferenceUID"):
-                        same_study_fors.add(geo["frameOfReferenceUID"])
-                    elif ds.SeriesInstanceUID == series_c and \
-                         geo.get("frameOfReferenceUID"):
-                        other_study_fors.add(geo["frameOfReferenceUID"])
-                    break  # only need one match per series
-
-            # Simpler approach: just check all FoR UIDs directly
-            for_uids = [g.get("frameOfReferenceUID") for g in geos.values() if g]
+            geos = [s.get("geometry", {}) for s in snapshot["series"]]
+            for_uids = [g.get("frameOfReferenceUID") for g in geos if g]
             self.assertEqual(len(for_uids), 3, "Expected 3 series with geometry")
-            # All three should have FoR UIDs
             self.assertTrue(all(for_uids))
 
-            # Count unique FoR UIDs: should be exactly 2
-            # (one for the shared study, one for the other study)
+            # Exactly two distinct FoR UIDs: A and B share the study UID,
+            # C belongs to a different study and must stay separate.
             unique_fors = set(for_uids)
             self.assertEqual(
                 len(unique_fors), 2,
                 f"Expected 2 unique FoR UIDs (same-study pair + other study), "
                 f"got {len(unique_fors)}: {unique_fors}",
             )
+            self.assertIn(study_uid, unique_fors)
+            self.assertIn(other_study_uid, unique_fors)
 
 
 if __name__ == "__main__":

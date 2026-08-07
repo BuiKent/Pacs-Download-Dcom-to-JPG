@@ -29,6 +29,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", required=True)
     parser.add_argument("--static", default="web_dist")
+    parser.add_argument(
+        "--require-compare",
+        action="store_true",
+        help=(
+            "Fail instead of skipping when the archive has fewer than two "
+            "series. Use this when the run is meant to gate the compare / "
+            "Reference Lines path, otherwise a one-series archive reports a "
+            "pass that proved nothing about it."
+        ),
+    )
     args = parser.parse_args()
 
     controller = WebController()
@@ -81,7 +91,17 @@ def main() -> int:
             # compare/ReferenceLines call path. Cross-plane stacks must keep
             # their slice sliders independent while an SVG reference line is
             # rendered from shared patient-space geometry.
-            if state.get("series", 0) >= 2:
+            if state.get("series", 0) < 2:
+                # Record the skip explicitly: a silent pass here used to read
+                # as "Reference Lines verified" when nothing had been checked.
+                skipped = (
+                    f"skipped: cần >= 2 series để kiểm compare/Reference Lines "
+                    f"(archive có {state.get('series', 0)})"
+                )
+                if args.require_compare:
+                    raise RuntimeError(skipped)
+                result["compareReferenceLines"] = skipped
+            else:
                 window.evaluate_js(
                     """(() => {
                       window.__smokeErrors = [];
@@ -126,12 +146,30 @@ def main() -> int:
                         compare.get("readyMode") == "compare"
                         and compare.get("canvases", 0) >= 2
                         and len(compare.get("sliders", [])) == 2
-                        and compare.get("referenceLines", 0) >= 1
+                        and (compare.get("diagnostics") or {})
+                        .get("referenceLines", {})
+                        .get("pairModes")
                     ):
                         break
                     time.sleep(0.5)
                 else:
-                    raise TimeoutError(f"Reference Lines không xuất hiện: {compare}")
+                    raise TimeoutError(f"Không dựng được compare: {compare}")
+
+                # What the two panes are allowed to do depends on their
+                # geometric relationship, not on the fact that there are two of
+                # them.  ReferenceLinesTool draws the intersection of the source
+                # plane with the target plane, so parallel (co-planar) series
+                # correctly produce no line at all — asserting one there fails a
+                # healthy archive.
+                pair_mode = (compare["diagnostics"]["referenceLines"]["pairModes"] or ["index"])[0]
+                compare["pairMode"] = pair_mode
+                if pair_mode == "reference" and compare.get("referenceLines", 0) < 1:
+                    raise RuntimeError(f"Cross-plane pair vẽ thiếu Reference Line: {compare}")
+                if pair_mode == "spatial" and compare.get("referenceLines", 0) > 0:
+                    raise RuntimeError(
+                        f"Co-planar pair không được có Reference Line (hai mặt song song "
+                        f"không có giao tuyến): {compare}"
+                    )
 
                 before = compare["sliders"]
                 result["compareReferenceLines"] = compare
@@ -153,15 +191,28 @@ def main() -> int:
                       '#workspace .slice-control input'
                     )].map(input => Number(input.value))"""
                 )
-                if after_values[0] == before[0] or after_values[1] != before[1]:
+                if after_values[0] == before[0]:
                     raise RuntimeError(
-                        f"Cross-plane scroll was not independent: {before} -> {after_values}"
+                        f"Pane nguồn không cuộn được: {before} -> {after_values}"
+                    )
+                followed = after_values[1] != before[1]
+                # spatial/index pairs must follow; reference/blocked pairs must
+                # stay put and rely on the reference line instead.
+                should_follow = pair_mode in ("spatial", "index")
+                if followed != should_follow:
+                    raise RuntimeError(
+                        f"Cặp '{pair_mode}' đồng bộ sai: {before} -> {after_values} "
+                        f"(mong đợi pane 2 {'đi theo' if should_follow else 'giữ nguyên'})"
                     )
                 compare["slidersAfter"] = after_values
                 compare["referenceLinesAfter"] = window.evaluate_js(
                     "document.querySelectorAll('#workspace svg line[data-id]').length"
                 )
-                if compare["referenceLinesAfter"] < 1 or compare.get("jsErrors"):
+                # A cross-plane line must survive the scroll; the other modes
+                # only have to stay free of runtime errors.
+                if pair_mode == "reference" and compare["referenceLinesAfter"] < 1:
+                    raise RuntimeError(f"Reference Line biến mất sau khi cuộn: {compare}")
+                if compare.get("jsErrors"):
                     raise RuntimeError(f"Reference Lines runtime error: {compare}")
                 compare["litPixels"] = _assert_panes_drawn(window, "compare", 2)
                 result["compareReferenceLines"] = compare

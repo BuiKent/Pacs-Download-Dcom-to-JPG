@@ -101,6 +101,9 @@ let activeSeriesList = [];
 let activeMode = "single";
 let currentTool = "window";
 let mprPrimaryPlane = "axial";
+// Which toolClassesForLayout() set the live tool group was built from. A tool
+// missing from that set can never be activated, so toolFallback must know it.
+let toolGroupLayout = "stack";
 let referenceLinesEnabled = true;
 let cineTimer = null;
 let loadGeneration = 0;
@@ -749,6 +752,9 @@ function destroyCurrent() {
     ToolGroupManager.destroyToolGroup(TOOL_GROUP_ID);
     toolGroup = null;
   }
+  // The layout key must die with the group it describes, otherwise the next
+  // toolFallback() call answers for a layout that no longer exists.
+  toolGroupLayout = "stack";
   // Release each viewport explicitly: this is what returns its slot in the
   // engine's WebGL context pool. setViewports() alone leaves the slot bound.
   if (engineIsLive()) {
@@ -796,6 +802,7 @@ function createToolGroup(viewportIds, mode = "stack") {
   ToolGroupManager.destroyToolGroup(TOOL_GROUP_ID);
   toolGroup = ToolGroupManager.createToolGroup(TOOL_GROUP_ID);
   if (!toolGroup) throw new Error("Không tạo được nhóm công cụ.");
+  toolGroupLayout = mode;
   const allowed = toolClassesForLayout(mode);
   for (const ToolClass of allowed) {
     toolGroup.addTool(ToolClass.toolName);
@@ -1194,8 +1201,11 @@ export function comparePairMode(sourceSeries, targetSeries) {
   const targetGeometry = targetSeries?.geometry;
   const sourceSlices = resolveOrderedSlices(sourceSeries);
   const targetSlices = resolveOrderedSlices(targetSeries);
-  const sourceNormal = computeSliceNormal(sourceGeometry?.orientation);
-  const targetNormal = computeSliceNormal(targetGeometry?.orientation);
+  // resolveOrientation, not geometry.orientation: findSpatialSliceIndex reads
+  // the same value through the manifest fallback, and the two must never
+  // disagree about whether a pair is co-planar.
+  const sourceNormal = computeSliceNormal(resolveOrientation(sourceSeries));
+  const targetNormal = computeSliceNormal(resolveOrientation(targetSeries));
 
   if (!sourceGeometry || !targetGeometry) return "index";
   // Geometry was advertised but could not be resolved. Falling back to slice
@@ -2065,18 +2075,34 @@ export function viewerDiagnostics() {
 /**
  * Tools a layout cannot honour must never be reported as active: Crosshairs
  * needs at least two linked viewports and TrackballRotate needs a 3D viewport.
+ *
+ * `layout` is the toolClassesForLayout() key the live tool group was built
+ * from; setTool passes the live one. A stack compare layout deliberately omits
+ * CrosshairsTool (it calls getSlabThickness() on StackViewport and throws), so
+ * asking for it there must report the fallback rather than a tool the group
+ * cannot activate.  The default stays the most restrictive layout so the answer
+ * never depends on hidden module state.
  */
-export function toolFallback(mode, viewportCount = activeElements.length, hasVolume3d = false) {
+export function toolFallback(
+  mode,
+  viewportCount = activeElements.length,
+  hasVolume3d = false,
+  layout = "stack",
+) {
+  if (!toolByMode[mode]) return "window";
   if (mode === "crosshair" && viewportCount < 2) return "window";
   if (mode === "orbit3d" && !hasVolume3d) return "window";
-  if (!toolByMode[mode]) return "window";
+  const toolName = toolByMode[mode];
+  if (!toolClassesForLayout(layout).some((ToolClass) => ToolClass.toolName === toolName)) {
+    return "window";
+  }
   return mode;
 }
 
 /** Activates `mode` on the primary mouse button and returns the tool in force. */
 export function setTool(mode) {
   const hasVolume3d = activeElements.some((element) => element.id === "volume-3d");
-  const requested = toolFallback(mode, activeElements.length, hasVolume3d);
+  const requested = toolFallback(mode, activeElements.length, hasVolume3d, toolGroupLayout);
   const toolName = toolByMode[requested];
   if (!toolGroup) {
     currentTool = requested;
