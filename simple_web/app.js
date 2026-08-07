@@ -77,6 +77,7 @@
     cine: `<svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>`,
     capture: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>`,
     clearAnnotations: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>`,
+    scrollSync: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
   };
 
   // ── CT Window Presets (Hounsfield) ──────────────────────────────────────
@@ -105,6 +106,7 @@
     lastOutput: "",
     windowPreset: "full",
     cine: false,
+    crosslink: true,       // sync slice position between series with same FrameOfReferenceUID
     // View transforms (stack mode)
     panX: 0, panY: 0,
     zoomLevel: 1,
@@ -131,10 +133,14 @@
     </button>`;
   }
 
-  // ── Determine if series is CT with HU ───────────────────────────────────
-  function seriesIsCT(series) {
+  // ── Determine if series supports Hounsfield (matches full app logic) ────
+  function seriesSupportsHounsfield(series) {
     if (!series || !series.pixelData) return false;
-    return series.modality === "CT";
+    if (series.modality !== "CT") return false;
+    const pixel = series.pixelData;
+    return Number.isFinite(pixel.rescaleSlope)
+      && pixel.rescaleSlope !== 0
+      && Number.isFinite(pixel.rescaleIntercept);
   }
 
   // ── Available window presets for current series ─────────────────────────
@@ -143,10 +149,11 @@
       id: p.id,
       label: p.label,
     }));
-    if (!seriesIsCT(series)) return relative;
+    if (!seriesSupportsHounsfield(series)) return relative;
     const ct = CT_WINDOW_PRESETS.map((p) => ({
       id: p.id,
-      label: `${p.label} · W${p.width}/L${p.center}`,
+      label: p.label,
+      detail: `W${p.width}/L${p.center}`,
     }));
     return [...ct, ...relative];
   }
@@ -195,16 +202,36 @@
 
     // Window preset
     const presets = availablePresets(series);
+    // Fallback preset if current one isn't available for this series
+    if (!presets.some((p) => p.id === state.windowPreset)) {
+      state.windowPreset = seriesSupportsHounsfield(series) ? "ct-brain" : "full";
+    }
     const presetOptions = presets.map((p) =>
-      `<option value="${p.id}" ${state.windowPreset === p.id ? "selected" : ""}>${escHtml(p.label)}</option>`
+      `<option value="${p.id}" ${state.windowPreset === p.id ? "selected" : ""}>${escHtml(p.detail ? `${p.label} · ${p.detail}` : p.label)}</option>`
     ).join("");
     const presetHtml = `<label class="window-preset-control">
       Hiển thị
       <select data-field="window-preset">${presetOptions}</select>
     </label>`;
 
-    // Interaction tools
-    const interactionBtns = [
+    // Crosslink: check if there are linkable series (same FrameOfReferenceUID)
+    const hasLinkable = canCrosslink();
+    const crosslinkBtn = hasLinkable
+      ? iconButton("scroll-sync", icons.scrollSync,
+        state.crosslink
+          ? "Đang đồng bộ vị trí lát giữa các series — bấm để tắt"
+          : "Đồng bộ vị trí lát giữa các series cùng tọa độ",
+        state.crosslink)
+      : "";
+
+    // All buttons flat — natural flex-wrap handles overflow
+    const allBtns = [
+      // Layout
+      layoutBtns,
+      // Preset
+      presetHtml,
+      '<span class="toolbar-divider"></span>',
+      // Interaction tools
       iconButton("tool-window", icons.window, "Sáng/tương phản", state.tool === "window"),
       iconButton("tool-pan", icons.pan, "Di chuyển", state.tool === "pan"),
       iconButton("tool-zoom", icons.zoom, "Thu/phóng", state.tool === "zoom"),
@@ -213,10 +240,10 @@
       iconButton("tool-ellipse", icons.ellipse, "ROI ellipse (cần Cornerstone)", false, measureDisabled),
       iconButton("tool-freehand", icons.freehand, "ROI tự do (cần Cornerstone)", false, measureDisabled),
       iconButton("tool-text", icons.text, "Ghi chú chữ (cần Cornerstone)", false, measureDisabled),
-    ].join("");
-
-    // Utility tools
-    const utilityBtns = [
+      // Spacer
+      '<span class="toolbar-spacer"></span>',
+      // Utility tools
+      crosslinkBtn,
       iconButton("rotate-clockwise", icons.rotateClockwise, "Xoay 90° theo chiều kim đồng hồ"),
       iconButton("flip-horizontal", icons.flipHorizontal, "Lật ngang", state.flipH),
       iconButton("flip-vertical", icons.flipVertical, "Lật dọc", state.flipV),
@@ -227,15 +254,7 @@
       iconButton("capture", icons.capture, "Lưu ảnh"),
     ].join("");
 
-    toolbar.className = isMpr ? "mode-mpr" : "";
-    toolbar.innerHTML = `
-      <div class="tool-cluster layout-tools">${layoutBtns}</div>
-      ${presetHtml}
-      <span class="toolbar-divider"></span>
-      <div class="tool-cluster interaction-tools">${interactionBtns}</div>
-      <span class="toolbar-spacer"></span>
-      <div class="tool-cluster utility-tools">${utilityBtns}</div>
-    `;
+    toolbar.innerHTML = allBtns;
 
     // Bind toolbar events
     toolbar.querySelectorAll("[data-action]").forEach((btn) => {
@@ -288,6 +307,9 @@
       renderToolbar();
     } else if (action === "reset") {
       resetView();
+    } else if (action === "scroll-sync") {
+      state.crosslink = !state.crosslink;
+      renderToolbar();
     } else if (action === "cine") {
       toggleCine();
       renderToolbar();
@@ -296,11 +318,33 @@
     }
   }
 
+  // ── Crosslink: sync slice between series with same FrameOfReferenceUID ─
+  function canCrosslink() {
+    if (!currentSeries || !currentSeries.geometry) return false;
+    const myFrame = currentSeries.geometry.frameOfReferenceUID;
+    if (!myFrame) return false;
+    return (state.archive.series || []).some((s) =>
+      s.id !== currentSeries.id && s.geometry && s.geometry.frameOfReferenceUID === myFrame
+    );
+  }
+
+  /** Remember the physical position for the current slice so other series can sync to it. */
+  function crosslinkPosition() {
+    if (!currentSeries || !currentSeries.geometry || !currentSeries.mprReady) return null;
+    if (!mprMeta || !mprVolume) return null;
+    // Use the manifest to get slice positions
+    return {
+      frameUID: currentSeries.geometry.frameOfReferenceUID,
+      sliceIndex: currentSlice,
+      sliceCount: currentSeries.sliceCount || mprMeta.sliceCount,
+    };
+  }
+
   // ── Apply window preset ────────────────────────────────────────────────
   function applyWindowPreset(presetId) {
     if (!currentSeries) return;
     const ctPreset = CT_WINDOW_PRESETS.find((p) => p.id === presetId);
-    if (ctPreset && seriesIsCT(currentSeries)) {
+    if (ctPreset && seriesSupportsHounsfield(currentSeries)) {
       windowCenter = ctPreset.center;
       windowWidth = ctPreset.width;
     } else {
@@ -360,7 +404,7 @@
       const pd = currentSeries.pixelData || {};
       windowCenter = pd.windowCenter != null ? pd.windowCenter : 128;
       windowWidth = pd.windowWidth != null && pd.windowWidth > 0 ? pd.windowWidth : 256;
-      state.windowPreset = seriesIsCT(currentSeries) ? "ct-brain" : "full";
+      state.windowPreset = seriesSupportsHounsfield(currentSeries) ? "ct-brain" : "full";
       applyWindowPreset(state.windowPreset);
     }
 
@@ -716,7 +760,7 @@
     if (!currentSeries) return;
 
     // Set default window preset
-    state.windowPreset = seriesIsCT(currentSeries) ? "ct-brain" : "full";
+    state.windowPreset = seriesSupportsHounsfield(currentSeries) ? "ct-brain" : "full";
 
     switchToStack();
     renderToolbar();
@@ -728,8 +772,13 @@
     }
 
     // Apply default preset for CT
-    if (seriesIsCT(currentSeries)) {
+    if (seriesSupportsHounsfield(currentSeries)) {
       applyWindowPreset("ct-brain");
+    }
+
+    // Crosslink: sync to remembered position from previous series
+    if (state.crosslink && crosslinkSliceMap[currentSeries.id] != null) {
+      currentSlice = crosslinkSliceMap[currentSeries.id];
     }
 
     placeholder.style.display = "none";
@@ -796,9 +845,32 @@
 
     renderToCanvas(stackCanvas, entry.pixels, entry.meta, windowCenter, windowWidth);
 
+    // Crosslink: propagate slice position to linked series
+    if (state.crosslink && currentSeries && currentSeries.geometry) {
+      propagateCrosslink(currentSeries, index);
+    }
+
     const pre = [index - 1, index + 1, index + 2, index - 2];
     for (const p of pre) {
       if (p >= 0 && p < currentSeries.sliceCount && !imageCache[p]) loadSliceData(p);
+    }
+  }
+
+  // ── Crosslink slice map ─────────────────────────────────────────────────
+  // Maps series ID → remembered slice index for crosslink sync
+  const crosslinkSliceMap = {};
+
+  function propagateCrosslink(fromSeries, fromIndex) {
+    if (!fromSeries.geometry) return;
+    const myFrame = fromSeries.geometry.frameOfReferenceUID;
+    if (!myFrame) return;
+    const ratio = fromSeries.sliceCount > 1 ? fromIndex / (fromSeries.sliceCount - 1) : 0;
+    for (const s of (state.archive.series || [])) {
+      if (s.id === fromSeries.id) continue;
+      if (!s.geometry || s.geometry.frameOfReferenceUID !== myFrame) continue;
+      // Map by ratio (proportional position)
+      const targetSlice = Math.round(ratio * Math.max(0, s.sliceCount - 1));
+      crosslinkSliceMap[s.id] = targetSlice;
     }
   }
 
@@ -973,7 +1045,7 @@
     windowCenter = wc; windowWidth = ww;
 
     // Apply CT preset if CT
-    if (seriesIsCT(currentSeries)) {
+    if (seriesSupportsHounsfield(currentSeries)) {
       state.windowPreset = "ct-brain";
       applyWindowPreset("ct-brain");
     }

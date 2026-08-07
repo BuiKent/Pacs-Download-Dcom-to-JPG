@@ -352,9 +352,7 @@ button, input, select, textarea { font: inherit; }
 }
 
 .tool-cluster {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 3px;
+  display: contents;
 }
 
 .toolbar-divider {
@@ -363,7 +361,7 @@ button, input, select, textarea { font: inherit; }
   background: #2a3743;
 }
 
-.toolbar-spacer { flex: 1; }
+.toolbar-spacer { flex: 1; min-width: 0; }
 
 /* ─── Icon buttons (ported from full app) ──────────────────────────── */
 .icon-button {
@@ -669,7 +667,3 @@ button, input, select, textarea { font: inherit; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #4a5568; }
 
-/* ─── MPR toolbar reorder ───────────────────────────────────────────── */
-#viewer-toolbar.mode-mpr .interaction-tools { order: 3; }
-#viewer-toolbar.mode-mpr .toolbar-spacer { order: 4; min-width: 0; }
-#viewer-toolbar.mode-mpr .utility-tools { order: 5; }
