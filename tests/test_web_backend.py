@@ -22,6 +22,7 @@ def write_local_dicom(
     instance_number: int = 1,
     position: float | None = None,
     number_of_frames: int = 1,
+    skip_frame_uid: bool = False,
 ) -> None:
     sop_uid = generate_uid()
     file_meta = FileMetaDataset()
@@ -53,6 +54,8 @@ def write_local_dicom(
         dataset.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
         dataset.ImagePositionPatient = [0, 0, position]
         dataset.FrameOfReferenceUID = frame_uid or generate_uid()
+        if skip_frame_uid:
+            del dataset.FrameOfReferenceUID
     dataset.WindowCenter = 8
     dataset.WindowWidth = 16
     frame = np.arange(16, dtype=np.uint16).reshape(4, 4) + instance_number
@@ -311,6 +314,62 @@ class ServerSecurityTests(unittest.TestCase):
             self.request("/api/series/../../image/0", self.server.token)
         self.assertEqual(caught.exception.code, 404)
         caught.exception.close()
+
+
+class FrameOfReferenceSyntheticTests(unittest.TestCase):
+    """Verify that public_dict correctly reports frameOfReferenceSynthetic
+    for DICOM series with and without real FrameOfReferenceUID tags."""
+
+    def test_dicom_without_for_tag_is_marked_synthetic(self):
+        """Anonymized DICOM missing FrameOfReferenceUID must get
+        frameOfReferenceSynthetic=True so the frontend skips the FoR guard
+        and still allows spatial crosslink."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            uid = generate_uid()
+            for i in range(3):
+                write_local_dicom(
+                    root / f"slice-{i:03d}.dcm",
+                    series_uid=uid,
+                    instance_number=i + 1,
+                    position=float(i * 5),
+                    skip_frame_uid=True,
+                )
+            snapshot = ArchiveCatalog().open(root)
+            series = snapshot["series"][0]
+            geo = series.get("geometry", {})
+            self.assertIn("frameOfReferenceSynthetic", geo)
+            self.assertTrue(
+                geo["frameOfReferenceSynthetic"],
+                "DICOM without FrameOfReferenceUID must be marked synthetic",
+            )
+            # UID should still be present (fallback to series_id)
+            self.assertTrue(geo.get("frameOfReferenceUID"))
+
+    def test_dicom_with_real_for_tag_is_not_synthetic(self):
+        """Normal DICOM with a real FrameOfReferenceUID tag must get
+        frameOfReferenceSynthetic=False."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            uid = generate_uid()
+            fuid = generate_uid()
+            for i in range(3):
+                write_local_dicom(
+                    root / f"slice-{i:03d}.dcm",
+                    series_uid=uid,
+                    frame_uid=fuid,
+                    instance_number=i + 1,
+                    position=float(i * 5),
+                )
+            snapshot = ArchiveCatalog().open(root)
+            series = snapshot["series"][0]
+            geo = series.get("geometry", {})
+            self.assertIn("frameOfReferenceSynthetic", geo)
+            self.assertFalse(
+                geo["frameOfReferenceSynthetic"],
+                "DICOM with real FrameOfReferenceUID must NOT be marked synthetic",
+            )
+            self.assertEqual(fuid, geo["frameOfReferenceUID"])
 
 
 if __name__ == "__main__":
