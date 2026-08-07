@@ -600,6 +600,7 @@ class ArchiveCatalog:
                         "rescaleIntercept": first.rescale_intercept,
                         "windowCenter": first.window_center,
                         "windowWidth": first.window_width,
+                        "numberOfFrames": first.number_of_frames,
                     },
                 )
 
@@ -644,6 +645,7 @@ class ArchiveCatalog:
                         "rescaleIntercept": mf_header.rescale_intercept,
                         "windowCenter": mf_header.window_center,
                         "windowWidth": mf_header.window_width,
+                        "numberOfFrames": mf_header.number_of_frames,
                     },
                 )
 

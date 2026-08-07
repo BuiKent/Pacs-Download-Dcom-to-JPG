@@ -175,6 +175,15 @@ const EN = {
   "Đang mở ảnh…": "Opening images…",
   "Không mở được khung xem": "Could not open the layout",
   "An toàn hiển thị": "Display safety",
+  "DICOM multi-frame: viewer hiện chỉ hiển thị khung đầu tiên; không dùng MPR/3D cho series này.":
+    "Multi-frame DICOM: the viewer currently shows only the first frame; do not use MPR/3D for this series.",
+  "khung": "frames",
+  "chỉ đồng bộ các cặp tương thích; mặt phẳng khác hướng giữ lát độc lập":
+    "only compatible pairs are synchronized; differently oriented planes remain independent",
+  "Hai mặt phẳng giữ lát độc lập; đường tham chiếu biểu diễn giao tuyến 3D.":
+    "The two planes remain independently scrollable; the reference line shows their 3D intersection.",
+  "Không khoá cuộn vì hai series khác hệ tọa độ (Frame of Reference).":
+    "Scroll lock is unavailable because the two series use different Frames of Reference.",
   "Không khởi động được DICOM/JPG Downloader & Viewer":
     "Could not start DICOM/JPG Downloader & Viewer",
   "Tải lại": "Reload",

@@ -248,6 +248,13 @@ export function windowPresetRange(name, series = null) {
 
 export function seriesSafetyNotice(series) {
   if (!series) return null;
+  const numberOfFrames = Number(series.pixelData?.numberOfFrames || 1);
+  if (series.sourceType === "dicom" && numberOfFrames > 1) {
+    return {
+      level: "warning",
+      text: "DICOM multi-frame: viewer hiện chỉ hiển thị khung đầu tiên; không dùng MPR/3D cho series này.",
+    };
+  }
   if (series.sourceType === "dicom") return null;
   if (series.modality === "CT") {
     return {
@@ -785,16 +792,11 @@ export function disposeViewer() {
 
 function createToolGroup(viewportIds, mode = "stack") {
   const threeDimensional = mode === "volume3d";
-  const hybrid = mode === "hybrid";
   // A stale group survives a failed teardown and would block creation.
   ToolGroupManager.destroyToolGroup(TOOL_GROUP_ID);
   toolGroup = ToolGroupManager.createToolGroup(TOOL_GROUP_ID);
   if (!toolGroup) throw new Error("Không tạo được nhóm công cụ.");
-  const allowed = threeDimensional
-    ? [TrackballRotateTool, PanTool, ZoomTool]
-    : hybrid
-      ? toolClasses
-      : toolClasses.filter((tool) => tool !== TrackballRotateTool);
+  const allowed = toolClassesForLayout(mode);
   for (const ToolClass of allowed) {
     toolGroup.addTool(ToolClass.toolName);
   }
@@ -1165,6 +1167,55 @@ export function findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries) {
   return projectSliceIndex(sourceSeries, sourceIndex, targetSeries, sourceNormal, targetNormal);
 }
 
+export function toolClassesForLayout(mode = "stack") {
+  if (mode === "volume3d") return [TrackballRotateTool, PanTool, ZoomTool];
+  if (mode === "hybrid") return toolClasses;
+  if (mode === "mpr") return toolClasses.filter((tool) => tool !== TrackballRotateTool);
+  // CrosshairsTool is a volume-reslice tool. In a multi-stack compare layout
+  // Cornerstone 4.22 calls getSlabThickness() on StackViewport, which throws
+  // before ReferenceLinesTool can render. Stack compare uses Reference Lines;
+  // point crosshair remains available in real MPR/3D layouts.
+  return toolClasses.filter((tool) => (
+    tool !== TrackballRotateTool && tool !== CrosshairsTool
+  ));
+}
+
+/**
+ * Decide how two compared series may follow each other.
+ *
+ * - spatial: co-planar DICOM geometry in the same frame of reference
+ * - reference: different planes in the same frame; keep slices independent and
+ *   let ReferenceLinesTool show their physical intersection
+ * - blocked: different frames of reference; never infer a correspondence
+ * - index: at least one side has no usable spatial geometry (for example JPG)
+ */
+export function comparePairMode(sourceSeries, targetSeries) {
+  const sourceGeometry = sourceSeries?.geometry;
+  const targetGeometry = targetSeries?.geometry;
+  const sourceSlices = resolveOrderedSlices(sourceSeries);
+  const targetSlices = resolveOrderedSlices(targetSeries);
+  const sourceNormal = computeSliceNormal(sourceGeometry?.orientation);
+  const targetNormal = computeSliceNormal(targetGeometry?.orientation);
+
+  if (!sourceGeometry || !targetGeometry) return "index";
+  // Geometry was advertised but could not be resolved. Falling back to slice
+  // numbers would turn corrupt/incomplete spatial metadata into a false match.
+  if (!sourceNormal || !targetNormal || !sourceSlices?.length || !targetSlices?.length) {
+    return "blocked";
+  }
+
+  const sourceFor = sourceGeometry.frameOfReferenceUID;
+  const targetFor = targetGeometry.frameOfReferenceUID;
+  if (sourceFor && targetFor && sourceFor !== targetFor) return "blocked";
+
+  const dot = Math.abs(
+    sourceNormal[0] * targetNormal[0]
+    + sourceNormal[1] * targetNormal[1]
+    + sourceNormal[2] * targetNormal[2],
+  );
+  return dot < 0.9 ? "reference" : "spatial";
+}
+
 
 
 /**
@@ -1254,9 +1305,9 @@ function projectSliceIndex(sourceSeries, sourceIndex, targetSeries, sourceNormal
  * on, not slice 0: panes deliberately scrolled apart must keep that gap. With
  * an anchor of [x, n, y], moving the middle pane to n+1 gives [x+1, n+1, y+1].
  * When 3D geometry is available for both co-planar series, it computes physical
- * 3D spatial slice alignment; otherwise it falls back to relative slice index
- * offset.  Cross-plane series (orthogonal orientations) are NOT synced here —
- * reference lines handle that visual indication instead.
+ * 3D spatial slice alignment. Series without geometry fall back to relative
+ * slice index. Cross-plane or different-FoR series stay at their current slice:
+ * reference lines handle same-FoR cross-plane indication instead.
  */
 export function syncedCompareIndices(anchor, sourcePane, sourceIndex, sliceCounts, seriesList = []) {
   const sourceSeries = seriesList[sourcePane];
@@ -1266,13 +1317,19 @@ export function syncedCompareIndices(anchor, sourcePane, sourceIndex, sliceCount
     if (pane === sourcePane) return sourceIndex;
     const targetSeries = seriesList[pane];
 
-    if (sourceSeries && targetSeries) {
-      // Co-planar spatial sync only.  Cross-plane pairs fall through to
-      // index-offset sync — reference lines show the intersection instead.
+    const pairMode = comparePairMode(sourceSeries, targetSeries);
+    if (pairMode === "spatial") {
       const spatialIndex = findSpatialSliceIndex(sourceSeries, sourceIndex, targetSeries);
       if (typeof spatialIndex === "number" && Number.isInteger(spatialIndex)) {
         return spatialIndex;
       }
+      // Both series claim valid co-planar geometry, but this source position is
+      // outside the target coverage. Preserve the target rather than inventing
+      // an index match.
+      return base;
+    }
+    if (pairMode === "reference" || pairMode === "blocked") {
+      return base;
     }
 
     const limit = Math.max(0, (sliceCounts[pane] || 1) - 1);
@@ -1293,24 +1350,19 @@ function readCompareIndices() {
 }
 
 /**
- * Checks whether all series pairs support spatial crosslink by actually
- * calling findSpatialSliceIndex with a representative slice.  This avoids
- * duplicating guards and ensures the status indicator matches real behavior.
- * Returns "spatial" or "index".
+ * Summarise the pair modes for the toolbar status. "mixed" means a three-pane
+ * layout contains more than one relationship type.
  */
 function detectSpatialMode(seriesList) {
+  const modes = new Set();
   for (let i = 0; i < seriesList.length; i += 1) {
     for (let j = i + 1; j < seriesList.length; j += 1) {
       const si = seriesList[i];
       const sj = seriesList[j];
-      if (!si || !sj) return "index";
-      const midI = Math.floor((si.sliceCount || 1) / 2);
-      if (findSpatialSliceIndex(si, midI, sj) === null) {
-        return "index";
-      }
+      modes.add(comparePairMode(si, sj));
     }
   }
-  return "spatial";
+  return modes.size === 1 ? [...modes][0] : "mixed";
 }
 
 /** Turn position-locked scrolling on or off; returns the state actually in force. */
@@ -1321,11 +1373,26 @@ export function setCompareScrollSync(enabled) {
     compareSync.spatialMode = null;
     return false;
   }
+  const spatialMode = detectSpatialMode(compareSync.seriesList);
+  const hasSyncablePair = compareSync.seriesList.some((source, sourceIndex) => (
+    compareSync.seriesList.some((target, targetIndex) => (
+      targetIndex > sourceIndex
+      && ["spatial", "index"].includes(comparePairMode(source, target))
+    ))
+  ));
+  // A two-pane cross-plane/different-FoR comparison intentionally has no slice
+  // lock. Reference lines remain available for a same-FoR cross-plane pair.
+  if (!hasSyncablePair) {
+    compareSync.enabled = false;
+    compareSync.anchor = null;
+    compareSync.spatialMode = spatialMode;
+    return false;
+  }
   // Capture where the panes are *now*: that offset is what the user is asking
   // to preserve by pressing the button.
   compareSync.anchor = readCompareIndices();
   compareSync.enabled = true;
-  compareSync.spatialMode = detectSpatialMode(compareSync.seriesList);
+  compareSync.spatialMode = spatialMode;
   return true;
 }
 
@@ -1611,9 +1678,15 @@ export async function showStacks(container, series, mode, comparison = null, too
     const primaryStart = Math.floor((compared[0].sliceCount || 1) / 2);
     const startIndices = compared.map((item, index) => {
       if (index === 0) return primaryStart;
-      const spatial = findSpatialSliceIndex(compared[0], primaryStart, item);
-      if (typeof spatial === "number" && Number.isInteger(spatial)) return spatial;
-      return Math.min(primaryStart, (item.sliceCount || 1) - 1);
+      const pairMode = comparePairMode(compared[0], item);
+      if (pairMode === "spatial") {
+        const spatial = findSpatialSliceIndex(compared[0], primaryStart, item);
+        if (typeof spatial === "number" && Number.isInteger(spatial)) return spatial;
+      }
+      if (pairMode === "index") {
+        return Math.min(primaryStart, (item.sliceCount || 1) - 1);
+      }
+      return Math.floor((item.sliceCount || 1) / 2);
     });
     await Promise.all(compared.map((item, index) => (
       setupStackViewport(viewports[index].viewportId, item, startIndices[index])
@@ -1797,7 +1870,7 @@ export async function showMpr(container, series, primaryPlane = "axial", tool = 
       eventCount: (detail) => detail.numberOfSlices,
     });
   }
-  createToolGroup(definitions.map((item) => item[0]));
+  createToolGroup(definitions.map((item) => item[0]), "mpr");
   const applied = setTool(tool);
   installResizeObserver(container);
   await settleVolumeRendering();
@@ -1951,6 +2024,7 @@ export async function show3d(container, series, tool = "orbit3d") {
 }
 
 export function viewerDiagnostics() {
+  const referenceTool = toolGroup?.getToolInstance?.(ReferenceLinesTool.toolName);
   return {
     mode: activeMode,
     sourceType: activeSeries?.sourceType || "",
@@ -1960,6 +2034,18 @@ export function viewerDiagnostics() {
     tool: currentTool,
     decodePath,
     lastDecodeStats,
+    referenceLines: {
+      requested: referenceLinesEnabled,
+      toolMode: referenceTool?.mode || "",
+      toolOptions: toolGroup?.toolOptions?.[ReferenceLinesTool.toolName] || null,
+      sourceViewportId: referenceTool?.configuration?.sourceViewportId || "",
+      initialized: Boolean(referenceTool?.editData?.annotation),
+      pairModes: compareSync.seriesList.map((source, sourceIndex) => (
+        compareSync.seriesList.slice(sourceIndex + 1).map((target) => (
+          comparePairMode(source, target)
+        ))
+      )).flat(),
+    },
     viewports: (engineIsLive() ? renderingEngine.getViewports() || [] : []).map((viewport) => {
       const properties = viewport.getProperties?.() || {};
       return {
@@ -1992,8 +2078,12 @@ export function setTool(mode) {
   const hasVolume3d = activeElements.some((element) => element.id === "volume-3d");
   const requested = toolFallback(mode, activeElements.length, hasVolume3d);
   const toolName = toolByMode[requested];
-  if (!toolGroup || !toolName || !toolGroup.hasTool(toolName)) {
+  if (!toolGroup) {
     currentTool = requested;
+    return currentTool;
+  }
+  if (!toolName || !toolGroup.hasTool(toolName)) {
+    currentTool = "window";
     return currentTool;
   }
   for (const candidate of Object.values(toolByMode)) {

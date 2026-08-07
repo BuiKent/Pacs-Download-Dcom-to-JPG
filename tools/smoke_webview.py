@@ -14,6 +14,7 @@ import argparse
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -65,7 +66,7 @@ def main() -> int:
                 if state.get("error"):
                     raise RuntimeError(state["error"])
                 if (
-                    state.get("series") == 1
+                    state.get("series", 0) >= 1
                     and state.get("canvases", 0) >= 1
                     and state.get("readyMode") == "single"
                 ):
@@ -75,6 +76,95 @@ def main() -> int:
                 time.sleep(0.5)
             else:
                 raise TimeoutError(f"Không dựng được stack: {state}")
+
+            # A two-series synthetic archive can additionally prove the real
+            # compare/ReferenceLines call path. Cross-plane stacks must keep
+            # their slice sliders independent while an SVG reference line is
+            # rendered from shared patient-space geometry.
+            if state.get("series", 0) >= 2:
+                window.evaluate_js(
+                    """(() => {
+                      window.__smokeErrors = [];
+                      window.addEventListener('error', event => window.__smokeErrors.push(
+                        event.error?.stack || event.message || String(event.error)
+                      ));
+                      const oldError = console.error;
+                      console.error = (...args) => {
+                        window.__smokeErrors.push(args.map(String).join(' '));
+                        oldError(...args);
+                      };
+                      document.querySelector('[data-action="mode-compare"]').click();
+                    })()"""
+                )
+                deadline = time.time() + 45
+                while time.time() < deadline:
+                    compare = window.evaluate_js(
+                        """({
+                          readyMode: window.__viewerReadyMode || '',
+                          canvases: document.querySelectorAll('#workspace canvas').length,
+                          sliders: [...document.querySelectorAll('#workspace .slice-control input')]
+                            .map(input => Number(input.value)),
+                          referenceLines: document.querySelectorAll(
+                            '#workspace svg line[data-id], #workspace svg line[data-uid]'
+                          ).length,
+                          referenceButton: {
+                            pressed: document.querySelector(
+                              '[data-action="reference-lines"]'
+                            )?.getAttribute('aria-pressed') || '',
+                            visible: Boolean(document.querySelector(
+                              '[data-action="reference-lines"]'
+                            ))
+                          },
+                          diagnostics: window.__viewerDiagnostics || null,
+                          jsErrors: window.__smokeErrors || [],
+                          error: document.querySelector('.empty-state.error')?.textContent || ''
+                        })"""
+                    )
+                    if compare.get("error"):
+                        raise RuntimeError(compare["error"])
+                    if (
+                        compare.get("readyMode") == "compare"
+                        and compare.get("canvases", 0) >= 2
+                        and len(compare.get("sliders", [])) == 2
+                        and compare.get("referenceLines", 0) >= 1
+                    ):
+                        break
+                    time.sleep(0.5)
+                else:
+                    raise TimeoutError(f"Reference Lines không xuất hiện: {compare}")
+
+                before = compare["sliders"]
+                result["compareReferenceLines"] = compare
+                window.evaluate_js(
+                    """(() => {
+                      const sliders = [...document.querySelectorAll(
+                        '#workspace .slice-control input'
+                      )];
+                      sliders[0].value = String(Math.min(
+                        Number(sliders[0].max), Number(sliders[0].value) + 1
+                      ));
+                      sliders[0].dispatchEvent(new Event('input', { bubbles: true }));
+                      return true;
+                    })()"""
+                )
+                time.sleep(0.5)
+                after_values = window.evaluate_js(
+                    """[...document.querySelectorAll(
+                      '#workspace .slice-control input'
+                    )].map(input => Number(input.value))"""
+                )
+                if after_values[0] == before[0] or after_values[1] != before[1]:
+                    raise RuntimeError(
+                        f"Cross-plane scroll was not independent: {before} -> {after_values}"
+                    )
+                compare["slidersAfter"] = after_values
+                compare["referenceLinesAfter"] = window.evaluate_js(
+                    "document.querySelectorAll('#workspace svg line[data-id]').length"
+                )
+                if compare["referenceLinesAfter"] < 1 or compare.get("jsErrors"):
+                    raise RuntimeError(f"Reference Lines runtime error: {compare}")
+                compare["litPixels"] = _assert_panes_drawn(window, "compare", 2)
+                result["compareReferenceLines"] = compare
 
             window.evaluate_js("document.querySelector('[data-action=\"mode-mpr\"]').click()")
             deadline = time.time() + 60
@@ -172,6 +262,7 @@ def main() -> int:
                 raise TimeoutError(f"Không dựng được 3D: {volume}")
         except Exception as exc:
             result["error"] = str(exc)
+            result["traceback"] = traceback.format_exc()
         finally:
             window.destroy()
 

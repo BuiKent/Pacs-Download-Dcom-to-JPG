@@ -131,6 +131,7 @@ class CatalogTests(unittest.TestCase):
             series = catalog["series"][0]
             self.assertFalse(series["mprReady"])
             self.assertIn("khung 1/", series["mprReason"])
+            self.assertEqual(3, series["pixelData"]["numberOfFrames"])
 
     def test_multiframe_dicom_pixel_payload_extracts_first_frame(self):
         """_dicom_pixel_payload must extract frame 0 from a multi-frame file

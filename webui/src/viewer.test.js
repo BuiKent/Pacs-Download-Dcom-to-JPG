@@ -9,6 +9,7 @@ import {
   defaultWindowPreset,
   computeSliceNormal,
   findSpatialSliceIndex,
+  comparePairMode,
   isMeasurementAnnotation,
   montageIndices,
   mprPlaneLayout,
@@ -18,6 +19,7 @@ import {
   seriesSupportsHounsfield,
   syncedCompareIndices,
   toolFallback,
+  toolClassesForLayout,
   volumeTransferRange,
   windowPresetRange,
 } from "./viewer.js";
@@ -83,6 +85,14 @@ describe("viewer shell", () => {
     // Text notes are plain annotations and work in any 2D layout.
     expect(toolFallback("text", 1, false)).toBe("text");
     expect(toolFallback("nonsense", 3, true)).toBe("window");
+  });
+
+  it("keeps volume crosshairs out of stack compare so Reference Lines can render", () => {
+    const stackTools = toolClassesForLayout("stack").map((tool) => tool.toolName);
+    const mprTools = toolClassesForLayout("mpr").map((tool) => tool.toolName);
+    expect(stackTools).toContain("ReferenceLines");
+    expect(stackTools).not.toContain("Crosshairs");
+    expect(mprTools).toContain("Crosshairs");
   });
 
   it("keeps compared panes in lockstep when they start aligned", () => {
@@ -283,7 +293,7 @@ describe("viewer shell", () => {
         }
       });
 
-      it("syncedCompareIndices falls back to index-offset for cross-plane pairs", () => {
+      it("keeps cross-plane slices independent so reference lines remain meaningful", () => {
         const axial = {
           sliceCount: 10,
           geometry: {
@@ -304,12 +314,23 @@ describe("viewer shell", () => {
             })),
           },
         };
-        // Anchor [0, 0], scroll axial to 5 → sagittal follows by delta.
-        const result = syncedCompareIndices([0, 0], 0, 5, [10, 8], [axial, sagittal]);
-        expect(result).toEqual([5, 5]);
-        // Scroll further → clamped to sagittal max (7).
-        const result2 = syncedCompareIndices([0, 0], 0, 9, [10, 8], [axial, sagittal]);
-        expect(result2).toEqual([9, 7]);
+        expect(comparePairMode(axial, sagittal)).toBe("reference");
+        // Anchor [0, 2], scroll axial to 5 → sagittal stays on slice 2.
+        const result = syncedCompareIndices([0, 2], 0, 5, [10, 8], [axial, sagittal]);
+        expect(result).toEqual([5, 2]);
+        const result2 = syncedCompareIndices([0, 2], 0, 9, [10, 8], [axial, sagittal]);
+        expect(result2).toEqual([9, 2]);
+      });
+
+      it("never falls back to index sync across Frames of Reference", () => {
+        const geometry = {
+          orientation: [1, 0, 0, 0, 1, 0],
+          ordered_slices: [{ position: [0, 0, 0] }, { position: [0, 0, 5] }],
+        };
+        const left = { geometry: { ...geometry, frameOfReferenceUID: "for-a" } };
+        const right = { geometry: { ...geometry, frameOfReferenceUID: "for-b" } };
+        expect(comparePairMode(left, right)).toBe("blocked");
+        expect(syncedCompareIndices([0, 1], 0, 1, [2, 2], [left, right])).toEqual([1, 1]);
       });
     });
 
@@ -393,6 +414,16 @@ describe("viewer shell", () => {
       };
       // Closest to z=18 is z=20 (index 1).
       expect(findSpatialSliceIndex(s1, 0, s2)).toBe(1);
+    });
+  });
+
+  it("shows a visible safety warning for first-frame-only multi-frame DICOM", () => {
+    expect(seriesSafetyNotice({
+      sourceType: "dicom",
+      pixelData: { numberOfFrames: 12 },
+    })).toEqual({
+      level: "warning",
+      text: "DICOM multi-frame: viewer hiện chỉ hiển thị khung đầu tiên; không dùng MPR/3D cho series này.",
     });
   });
 

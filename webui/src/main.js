@@ -202,7 +202,8 @@ function escapeHtml(value) {
 function iconButton(id, icon, title, active = false, disabled = false, label = "") {
   // Mode, tool and cine buttons are stateful, so screen readers need the state
   // that the highlight conveys visually.
-  const stateful = /^(mode-|tool-)/.test(id) || id === "cine";
+  const stateful = /^(mode-|tool-)/.test(id)
+    || ["cine", "scroll-sync", "reference-lines"].includes(id);
   return `<button class="icon-button ${active ? "active" : ""} ${label ? "with-label" : ""}" data-action="${id}"
     title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"
     ${stateful ? `aria-pressed="${active ? "true" : "false"}"` : ""} ${disabled ? "disabled" : ""}>
@@ -333,11 +334,17 @@ function renderSeriesOptions(archive, selectedId) {
   return Object.entries(groups).map(([groupKey, items]) => {
     const options = items.map((item) =>
       `<option value="${item.id}" ${item.id === selectedId ? "selected" : ""}>
-        ▪ ${escapeHtml(item.description)} · ${item.sliceCount} ${escapeHtml(t("lát"))}
+        ▪ ${escapeHtml(item.description)} · ${escapeHtml(seriesFrameLabel(item))}
       </option>`
     ).join("");
     return `<optgroup label="${escapeHtml(formatGroupLabel(groupKey))}">${options}</optgroup>`;
   }).join("");
+}
+
+function seriesFrameLabel(series) {
+  const numberOfFrames = Number(series?.pixelData?.numberOfFrames || 1);
+  if (numberOfFrames > 1) return `1/${numberOfFrames} ${t("khung")}`;
+  return `${series?.sliceCount || 0} ${t("lát")}`;
 }
 
 function windowPresetHint(series) {
@@ -494,7 +501,7 @@ function render() {
             ${isVisible ? `data-pane="${visiblePanes.join(",")}"` : ""}>
             <span>${item.mprReady ? "3D" : "2D"}</span>
             <b>${escapeHtml(item.description)}</b>
-            <small>${item.sliceCount} ${escapeHtml(t("lát"))}</small>
+            <small>${escapeHtml(seriesFrameLabel(item))}</small>
           </button>`;
   }).join("")}
         </div>
@@ -1015,8 +1022,14 @@ async function action(name) {
         const positions = (anchor || []).map((index) => index + 1).join(" · ");
         const modeHint = spatialMode === "spatial"
           ? t("đồng bộ theo vị trí 3D")
-          : t("⚠ đồng bộ theo số thứ tự lát (không có đồng bộ không gian)");
+          : spatialMode === "index"
+            ? t("⚠ đồng bộ theo số thứ tự lát (không có đồng bộ không gian)")
+            : t("chỉ đồng bộ các cặp tương thích; mặt phẳng khác hướng giữ lát độc lập");
         setStatus(tf("Đã khoá cuộn: {} — {}.", positions, modeHint));
+      } else if (["reference", "blocked"].includes(spatialMode)) {
+        setStatus(t(spatialMode === "reference"
+          ? "Hai mặt phẳng giữ lát độc lập; đường tham chiếu biểu diễn giao tuyến 3D."
+          : "Không khoá cuộn vì hai series khác hệ tọa độ (Frame of Reference)."));
       } else {
         setStatus(t("Đã bỏ khoá: mỗi khung cuộn riêng."));
       }
@@ -1224,6 +1237,18 @@ function renderViewer() {
       if (applied && applied !== state.tool) {
         state.tool = applied;
         syncToolHighlight();
+      }
+      if (mode === "compare" || mode === "compare3") {
+        const sync = compareScrollSyncState();
+        state.scrollSync = sync.enabled;
+        const button = app.querySelector("[data-action='scroll-sync']");
+        if (button) {
+          button.classList.toggle("active", state.scrollSync);
+          button.setAttribute("aria-pressed", state.scrollSync ? "true" : "false");
+          button.title = t(state.scrollSync
+            ? "Đang khoá cuộn theo vị trí — bấm để cuộn từng khung riêng"
+            : "Cuộn từng khung riêng — bấm để khoá theo độ lệch hiện tại");
+        }
       }
       // Cornerstone establishes the file's own VOI while the stack actor is
       // being attached. Re-applying an equivalent range in that same transition
