@@ -627,6 +627,76 @@ button, input, select, textarea { font: inherit; }
   cursor: pointer;
 }
 
+/* ─── Compare view (2 series side by side) ──────────────────────────── */
+.compare-grid {
+  display: grid;
+  grid-template-columns: 1fr 2px 1fr;
+  width: 100%;
+  height: 100%;
+  background: #111;
+}
+
+.compare-divider {
+  background: #2a3743;
+}
+
+.compare-pane {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #000;
+  min-height: 0;
+}
+
+.compare-header {
+  flex-shrink: 0;
+  padding: 4px 6px;
+  background: #0c131b;
+  border-bottom: 1px solid #1e2b36;
+}
+
+.compare-series-select {
+  width: 100%;
+  background: #121d28;
+  color: #c8dde8;
+  border: 1px solid #1e2b36;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.compare-series-select:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
+
+.compare-canvas-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.compare-canvas-wrap canvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+  image-rendering: auto;
+}
+
+.compare-slice-info {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  font-size: 10px;
+  color: #8fa9bc;
+  background: #0c131b;
+  border-top: 1px solid #1e2b36;
+  text-align: center;
+}
+
 /* ─── Status bar ────────────────────────────────────────────────────── */
 .status-bar {
   display: flex;

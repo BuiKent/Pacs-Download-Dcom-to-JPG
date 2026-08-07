@@ -44,6 +44,7 @@
 
   const stackView = $("#stack-view");
   const mprView = $("#mpr-view");
+  const compareView = $("#compare-view");
   const canvasContainer = $("#canvas-container");
   const stackCanvas = $("#stack-canvas");
   const placeholder = $("#viewer-placeholder");
@@ -56,6 +57,7 @@
   // ── SVG Icons (ported from full app) ────────────────────────────────────
   const icons = {
     single: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>`,
+    compare: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></svg>`,
     mpr: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>`,
     window: "◐",
     pan: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M14 7.5a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M10 8a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M6 9a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M18 11v1a8 8 0 1 1-16 0v-2.5"/></svg>`,
@@ -100,7 +102,7 @@
     outputRoot: "",
     archive: { root: "", series: [] },
     selectedSeriesId: "",
-    mode: "stack",         // "stack" | "mpr"
+    mode: "stack",         // "stack" | "mpr" | "compare"
     tool: "window",        // current tool
     jobRunning: false,
     lastOutput: "",
@@ -113,6 +115,11 @@
     flipH: false, flipV: false,
     rotateDeg: 0,
     invertColors: false,
+    // Compare mode state
+    comparePanes: {
+      left:  { seriesId: "", slice: 0, wc: 128, ww: 256, cache: {} },
+      right: { seriesId: "", slice: 0, wc: 128, ww: 256, cache: {} },
+    },
   };
 
   let cineTimer = null;
@@ -197,6 +204,7 @@
     // Layout buttons
     const layoutBtns = [
       iconButton("mode-single", icons.single, "Một khung ảnh", state.mode === "stack"),
+      iconButton("mode-compare", icons.compare, "So sánh hai series cạnh nhau", state.mode === "compare"),
       iconButton("mode-mpr", icons.mpr, mprDisabled ? (series?.mprReason || "Series không đủ MPR") : "MPR ba mặt phẳng", state.mode === "mpr", mprDisabled),
     ].join("");
 
@@ -276,6 +284,9 @@
 
     if (action === "mode-single") {
       switchToStack();
+      renderToolbar();
+    } else if (action === "mode-compare") {
+      switchToCompare();
       renderToolbar();
     } else if (action === "mode-mpr") {
       switchToMpr();
@@ -992,17 +1003,31 @@
   }
 
   // ── View mode switching ─────────────────────────────────────────────────
+  function hideAllViews() {
+    stackView.style.display = "none";
+    mprView.style.display = "none";
+    compareView.style.display = "none";
+  }
+
   function switchToStack() {
     state.mode = "stack";
+    hideAllViews();
     stackView.style.display = "";
-    mprView.style.display = "none";
     stopCine();
+  }
+
+  function switchToCompare() {
+    state.mode = "compare";
+    hideAllViews();
+    compareView.style.display = "";
+    stopCine();
+    initCompareMode();
   }
 
   async function switchToMpr() {
     if (!currentSeries || !currentSeries.mprReady) return;
     state.mode = "mpr";
-    stackView.style.display = "none";
+    hideAllViews();
     mprView.style.display = "";
     stopCine();
     await loadMprVolume();
@@ -1112,6 +1137,26 @@
       }
     }
     ctx.putImageData(imgData, 0, 0);
+
+    // Fix aspect ratio: use physical dimensions from geometry
+    if (currentSeries && currentSeries.geometry) {
+      const ps = currentSeries.geometry.pixelSpacing; // [row, col]
+      const ss = currentSeries.geometry.sliceSpacing;
+      if (ps && ps.length >= 2 && ss > 0) {
+        let physW, physH;
+        if (plane === "axial") {
+          physW = w * ps[1]; // cols * colSpacing
+          physH = h * ps[0]; // rows * rowSpacing
+        } else if (plane === "coronal") {
+          physW = w * ps[1]; // cols * colSpacing
+          physH = h * ss;    // sliceCount * sliceSpacing
+        } else {
+          physW = w * ps[0]; // rows * rowSpacing
+          physH = h * ss;    // sliceCount * sliceSpacing
+        }
+        canvas.style.aspectRatio = `${physW} / ${physH}`;
+      }
+    }
   }
 
   function renderAllMpr() {
@@ -1160,6 +1205,194 @@
     });
     document.addEventListener("mouseup", () => { md = false; });
   });
+
+  // ── Compare mode engine ─────────────────────────────────────────────
+  function initCompareMode() {
+    const series = state.archive.series || [];
+    if (!series.length) return;
+
+    // Default: left = current series, right = next linkable or next series
+    const leftId = state.selectedSeriesId || series[0].id;
+    let rightId = "";
+    if (state.crosslink) {
+      const leftSeries = series.find((s) => s.id === leftId);
+      const leftFrame = leftSeries?.geometry?.frameOfReferenceUID;
+      if (leftFrame) {
+        const linked = series.find((s) => s.id !== leftId && s.geometry?.frameOfReferenceUID === leftFrame);
+        if (linked) rightId = linked.id;
+      }
+    }
+    if (!rightId) {
+      const other = series.find((s) => s.id !== leftId);
+      rightId = other ? other.id : leftId;
+    }
+
+    state.comparePanes.left.seriesId = leftId;
+    state.comparePanes.left.slice = crosslinkSliceMap[leftId] || 0;
+    state.comparePanes.left.cache = {};
+    state.comparePanes.right.seriesId = rightId;
+    state.comparePanes.right.slice = crosslinkSliceMap[rightId] || 0;
+    state.comparePanes.right.cache = {};
+
+    renderCompareSelects();
+    loadComparePane("left");
+    loadComparePane("right");
+    setupCompareEvents();
+  }
+
+  function renderCompareSelects() {
+    const series = state.archive.series || [];
+    for (const pane of ["left", "right"]) {
+      const sel = $(`.compare-series-select[data-pane="${pane}"]`);
+      const currentId = state.comparePanes[pane].seriesId;
+      sel.innerHTML = series.map((s) =>
+        `<option value="${s.id}" ${s.id === currentId ? "selected" : ""}>${escHtml(s.description || s.name)} (${s.sliceCount} lát)</option>`
+      ).join("");
+    }
+  }
+
+  async function loadCompareSlice(pane, seriesId, index) {
+    const paneState = state.comparePanes[pane];
+    if (paneState.cache[index]) return paneState.cache[index];
+    const res = await fetch(`/api/series/${seriesId}/image/${index}`, {
+      headers: { "X-DCom-Token": TOKEN },
+    });
+    if (!res.ok) return null;
+    const buffer = await res.arrayBuffer();
+    const meta = {
+      pixelType: res.headers.get("X-DCom-Pixel-Type") || "uint16",
+      rows: parseInt(res.headers.get("X-DCom-Rows") || "0"),
+      columns: parseInt(res.headers.get("X-DCom-Columns") || "0"),
+      rawMin: parseInt(res.headers.get("X-DCom-Min") || "0"),
+      rawMax: parseInt(res.headers.get("X-DCom-Max") || "0"),
+      slope: parseFloat(res.headers.get("X-DCom-Slope") || "1"),
+      intercept: parseFloat(res.headers.get("X-DCom-Intercept") || "0"),
+      windowCenter: parseFloat(res.headers.get("X-DCom-Window-Center") || "128"),
+      windowWidth: parseFloat(res.headers.get("X-DCom-Window-Width") || "256"),
+      photometric: res.headers.get("X-DCom-Photometric") || "MONOCHROME2",
+    };
+    let typedArray;
+    switch (meta.pixelType) {
+      case "int8":    typedArray = new Int8Array(buffer); break;
+      case "uint8":   typedArray = new Uint8Array(buffer); break;
+      case "int16":   typedArray = new Int16Array(buffer); break;
+      case "uint16":  typedArray = new Uint16Array(buffer); break;
+      case "int32":   typedArray = new Int32Array(buffer); break;
+      case "uint32":  typedArray = new Uint32Array(buffer); break;
+      default:        typedArray = new Int16Array(buffer);
+    }
+    const entry = { pixels: typedArray, meta };
+    paneState.cache[index] = entry;
+    return entry;
+  }
+
+  async function loadComparePane(pane) {
+    const paneState = state.comparePanes[pane];
+    const series = (state.archive.series || []).find((s) => s.id === paneState.seriesId);
+    if (!series) return;
+    const canvas = $(`#compare-canvas-${pane}`);
+    const info = $(`.compare-slice-info[data-pane="${pane}"]`);
+    const idx = Math.max(0, Math.min(series.sliceCount - 1, paneState.slice));
+    paneState.slice = idx;
+
+    const entry = await loadCompareSlice(pane, series.id, idx);
+    if (!entry) return;
+
+    // Set W/L on first load
+    if (Object.keys(paneState.cache).length <= 1) {
+      paneState.wc = entry.meta.windowCenter;
+      paneState.ww = entry.meta.windowWidth;
+      // Apply CT preset
+      if (seriesSupportsHounsfield(series)) {
+        const ctPreset = CT_WINDOW_PRESETS.find((p) => p.id === "ct-brain");
+        if (ctPreset) { paneState.wc = ctPreset.center; paneState.ww = ctPreset.width; }
+      }
+    }
+
+    renderToCanvas(canvas, entry.pixels, entry.meta, paneState.wc, paneState.ww);
+    info.textContent = `${idx + 1} / ${series.sliceCount}  ·  W/L: ${Math.round(paneState.ww)}/${Math.round(paneState.wc)}  ·  ${series.description || series.name}`;
+
+    // Prefetch neighbors
+    for (const p of [idx - 1, idx + 1]) {
+      if (p >= 0 && p < series.sliceCount && !paneState.cache[p]) {
+        loadCompareSlice(pane, series.id, p);
+      }
+    }
+  }
+
+  function scrollComparePane(pane, delta) {
+    const paneState = state.comparePanes[pane];
+    const series = (state.archive.series || []).find((s) => s.id === paneState.seriesId);
+    if (!series) return;
+    const next = Math.max(0, Math.min(series.sliceCount - 1, paneState.slice + delta));
+    if (next === paneState.slice) return;
+    paneState.slice = next;
+    loadComparePane(pane);
+
+    // Crosslink: sync other pane
+    if (state.crosslink) {
+      const otherPane = pane === "left" ? "right" : "left";
+      const otherState = state.comparePanes[otherPane];
+      const otherSeries = (state.archive.series || []).find((s) => s.id === otherState.seriesId);
+      if (otherSeries) {
+        const myFrame = series.geometry?.frameOfReferenceUID;
+        const otherFrame = otherSeries.geometry?.frameOfReferenceUID;
+        if (myFrame && myFrame === otherFrame) {
+          // Proportional sync
+          const ratio = series.sliceCount > 1 ? next / (series.sliceCount - 1) : 0;
+          const otherIdx = Math.round(ratio * Math.max(0, otherSeries.sliceCount - 1));
+          if (otherIdx !== otherState.slice) {
+            otherState.slice = otherIdx;
+            loadComparePane(otherPane);
+          }
+        }
+      }
+    }
+  }
+
+  let compareEventsSetup = false;
+  function setupCompareEvents() {
+    if (compareEventsSetup) return;
+    compareEventsSetup = true;
+
+    // Series selectors
+    for (const pane of ["left", "right"]) {
+      const sel = $(`.compare-series-select[data-pane="${pane}"]`);
+      sel.addEventListener("change", () => {
+        state.comparePanes[pane].seriesId = sel.value;
+        state.comparePanes[pane].slice = 0;
+        state.comparePanes[pane].cache = {};
+        loadComparePane(pane);
+      });
+
+      // Wheel scroll
+      const wrap = $(`#compare-canvas-${pane}`).parentElement;
+      wrap.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        scrollComparePane(pane, e.deltaY > 0 ? 1 : -1);
+      });
+
+      // W/L drag
+      let dragging = false, startX = 0, startY = 0, startWc = 0, startWw = 0;
+      wrap.addEventListener("mousedown", (e) => {
+        if (e.button === 2 || state.tool === "window") {
+          dragging = true;
+          startX = e.clientX; startY = e.clientY;
+          startWc = state.comparePanes[pane].wc;
+          startWw = state.comparePanes[pane].ww;
+          e.preventDefault();
+        }
+      });
+      wrap.addEventListener("contextmenu", (e) => e.preventDefault());
+      document.addEventListener("mousemove", (e) => {
+        if (!dragging) return;
+        state.comparePanes[pane].ww = Math.max(1, startWw + (e.clientX - startX));
+        state.comparePanes[pane].wc = startWc - (e.clientY - startY);
+        loadComparePane(pane);
+      });
+      document.addEventListener("mouseup", () => { dragging = false; });
+    }
+  }
 
   // ── Init ────────────────────────────────────────────────────────────
   bootstrap();

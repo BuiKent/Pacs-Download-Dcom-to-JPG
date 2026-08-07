@@ -108,6 +108,31 @@
         </div>
       </div>
 
+      <!-- Compare mode (2 series side by side) -->
+      <div id="compare-view" class="view-area" style="display:none">
+        <div class="compare-grid">
+          <div class="compare-pane" data-pane="left">
+            <div class="compare-header">
+              <select class="compare-series-select" data-pane="left"></select>
+            </div>
+            <div class="compare-canvas-wrap">
+              <canvas id="compare-canvas-left"></canvas>
+            </div>
+            <div class="compare-slice-info" data-pane="left"></div>
+          </div>
+          <div class="compare-divider"></div>
+          <div class="compare-pane" data-pane="right">
+            <div class="compare-header">
+              <select class="compare-series-select" data-pane="right"></select>
+            </div>
+            <div class="compare-canvas-wrap">
+              <canvas id="compare-canvas-right"></canvas>
+            </div>
+            <div class="compare-slice-info" data-pane="right"></div>
+          </div>
+        </div>
+      </div>
+
       <!-- Status bar -->
       <footer id="status-bar" class="status-bar">
         <span class="status-dot"></span>
