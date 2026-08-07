@@ -99,6 +99,7 @@
 
   // ── State ───────────────────────────────────────────────────────────────
   const state = {
+    activeComparePane: "left",
     outputRoot: "",
     archive: { root: "", series: [] },
     selectedSeriesId: "",
@@ -773,6 +774,17 @@
     // Set default window preset
     state.windowPreset = seriesSupportsHounsfield(currentSeries) ? "ct-brain" : "full";
 
+    // Compare mode routing
+    if (state.mode === "compare") {
+      const activePane = state.activeComparePane || "left";
+      state.comparePanes[activePane].seriesId = id;
+      state.comparePanes[activePane].slice = 0;
+      state.comparePanes[activePane].cache = {};
+      state.comparePanes[activePane].manifest = null;
+      loadComparePane(activePane);
+      return; // Do not switch to stack view
+    }
+
     switchToStack();
     renderToolbar();
 
@@ -1230,25 +1242,40 @@
     state.comparePanes.left.seriesId = leftId;
     state.comparePanes.left.slice = crosslinkSliceMap[leftId] || 0;
     state.comparePanes.left.cache = {};
+    state.comparePanes.left.manifest = null;
     state.comparePanes.right.seriesId = rightId;
     state.comparePanes.right.slice = crosslinkSliceMap[rightId] || 0;
     state.comparePanes.right.cache = {};
+    state.comparePanes.right.manifest = null;
 
-    renderCompareSelects();
+    updateCompareFocus();
     loadComparePane("left");
     loadComparePane("right");
     setupCompareEvents();
   }
 
-  function renderCompareSelects() {
-    const series = state.archive.series || [];
-    for (const pane of ["left", "right"]) {
-      const sel = $(`.compare-series-select[data-pane="${pane}"]`);
-      const currentId = state.comparePanes[pane].seriesId;
-      sel.innerHTML = series.map((s) =>
-        `<option value="${s.id}" ${s.id === currentId ? "selected" : ""}>${escHtml(s.description || s.name)} (${s.sliceCount} lát)</option>`
-      ).join("");
+  function updateCompareFocus() {
+    $$(".compare-pane").forEach(el => {
+      el.classList.toggle("active", el.dataset.pane === state.activeComparePane);
+    });
+  }
+
+  async function ensureManifest(pane) {
+    const paneState = state.comparePanes[pane];
+    const series = (state.archive.series || []).find((s) => s.id === paneState.seriesId);
+    if (!series || !series.mprReady) {
+      return null;
     }
+    if (paneState.manifest) return paneState.manifest;
+    try {
+      const res = await fetch(`/api/series/${series.id}/manifest`, { headers: { "X-DCom-Token": TOKEN } });
+      if (res.ok) {
+        paneState.manifest = await res.json();
+        return paneState.manifest;
+      }
+    } catch(e) {}
+    paneState.manifest = { failed: true };
+    return null;
   }
 
   async function loadCompareSlice(pane, seriesId, index) {
@@ -1286,6 +1313,17 @@
     return entry;
   }
 
+  function updateCompareSlider(pane) {
+    const paneState = state.comparePanes[pane];
+    const series = (state.archive.series || []).find((s) => s.id === paneState.seriesId);
+    if (!series) return;
+    const slider = $(`.compare-slider-vertical[data-pane="${pane}"]`);
+    if (slider) {
+      slider.max = Math.max(0, series.sliceCount - 1);
+      slider.value = paneState.slice;
+    }
+  }
+
   async function loadComparePane(pane) {
     const paneState = state.comparePanes[pane];
     const series = (state.archive.series || []).find((s) => s.id === paneState.seriesId);
@@ -1294,6 +1332,8 @@
     const info = $(`.compare-slice-info[data-pane="${pane}"]`);
     const idx = Math.max(0, Math.min(series.sliceCount - 1, paneState.slice));
     paneState.slice = idx;
+
+    updateCompareSlider(pane);
 
     const entry = await loadCompareSlice(pane, series.id, idx);
     if (!entry) return;
@@ -1320,6 +1360,53 @@
     }
   }
 
+  async function syncComparePanes(sourcePane) {
+    if (!state.crosslink) return;
+    const targetPane = sourcePane === "left" ? "right" : "left";
+    const srcState = state.comparePanes[sourcePane];
+    const tgtState = state.comparePanes[targetPane];
+
+    const srcSeries = (state.archive.series || []).find(s => s.id === srcState.seriesId);
+    const tgtSeries = (state.archive.series || []).find(s => s.id === tgtState.seriesId);
+
+    if (!srcSeries || !tgtSeries) return;
+    const srcFrame = srcSeries.geometry?.frameOfReferenceUID;
+    const tgtFrame = tgtSeries.geometry?.frameOfReferenceUID;
+    if (!srcFrame || srcFrame !== tgtFrame) return;
+
+    const srcManifest = await ensureManifest(sourcePane);
+    const tgtManifest = await ensureManifest(targetPane);
+
+    let targetIdx = tgtState.slice;
+
+    if (srcManifest && !srcManifest.failed && srcManifest.ordered_slices && 
+        tgtManifest && !tgtManifest.failed && tgtManifest.ordered_slices) {
+      // Coordinate-based physical sync
+      const srcDistance = srcManifest.ordered_slices[srcState.slice]?.distance;
+      if (srcDistance !== undefined) {
+        let minDiff = Infinity;
+        let bestIdx = 0;
+        tgtManifest.ordered_slices.forEach((sl, i) => {
+          const diff = Math.abs(sl.distance - srcDistance);
+          if (diff < minDiff) {
+            minDiff = diff;
+            bestIdx = i;
+          }
+        });
+        targetIdx = bestIdx;
+      }
+    } else {
+      // Fallback: Proportional ratio-based sync
+      const ratio = srcSeries.sliceCount > 1 ? srcState.slice / (srcSeries.sliceCount - 1) : 0;
+      targetIdx = Math.round(ratio * Math.max(0, tgtSeries.sliceCount - 1));
+    }
+
+    if (targetIdx !== tgtState.slice) {
+      tgtState.slice = targetIdx;
+      loadComparePane(targetPane);
+    }
+  }
+
   function scrollComparePane(pane, delta) {
     const paneState = state.comparePanes[pane];
     const series = (state.archive.series || []).find((s) => s.id === paneState.seriesId);
@@ -1328,26 +1415,7 @@
     if (next === paneState.slice) return;
     paneState.slice = next;
     loadComparePane(pane);
-
-    // Crosslink: sync other pane
-    if (state.crosslink) {
-      const otherPane = pane === "left" ? "right" : "left";
-      const otherState = state.comparePanes[otherPane];
-      const otherSeries = (state.archive.series || []).find((s) => s.id === otherState.seriesId);
-      if (otherSeries) {
-        const myFrame = series.geometry?.frameOfReferenceUID;
-        const otherFrame = otherSeries.geometry?.frameOfReferenceUID;
-        if (myFrame && myFrame === otherFrame) {
-          // Proportional sync
-          const ratio = series.sliceCount > 1 ? next / (series.sliceCount - 1) : 0;
-          const otherIdx = Math.round(ratio * Math.max(0, otherSeries.sliceCount - 1));
-          if (otherIdx !== otherState.slice) {
-            otherState.slice = otherIdx;
-            loadComparePane(otherPane);
-          }
-        }
-      }
-    }
+    syncComparePanes(pane);
   }
 
   let compareEventsSetup = false;
@@ -1355,15 +1423,22 @@
     if (compareEventsSetup) return;
     compareEventsSetup = true;
 
-    // Series selectors
     for (const pane of ["left", "right"]) {
-      const sel = $(`.compare-series-select[data-pane="${pane}"]`);
-      sel.addEventListener("change", () => {
-        state.comparePanes[pane].seriesId = sel.value;
-        state.comparePanes[pane].slice = 0;
-        state.comparePanes[pane].cache = {};
-        loadComparePane(pane);
+      const paneEl = $(`.compare-pane[data-pane="${pane}"]`);
+      paneEl.addEventListener("mousedown", () => {
+        state.activeComparePane = pane;
+        updateCompareFocus();
       });
+
+      // Slider scroll
+      const slider = $(`.compare-slider-vertical[data-pane="${pane}"]`);
+      if (slider) {
+        slider.addEventListener("input", () => {
+          state.comparePanes[pane].slice = parseInt(slider.value);
+          loadComparePane(pane);
+          syncComparePanes(pane);
+        });
+      }
 
       // Wheel scroll
       const wrap = $(`#compare-canvas-${pane}`).parentElement;
@@ -1397,3 +1472,4 @@
   // ── Init ────────────────────────────────────────────────────────────
   bootstrap();
 })();
+

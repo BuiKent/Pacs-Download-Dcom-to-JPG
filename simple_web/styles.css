@@ -646,28 +646,31 @@ button, input, select, textarea { font: inherit; }
   overflow: hidden;
   background: #000;
   min-height: 0;
-}
-
-.compare-header {
-  flex-shrink: 0;
-  padding: 4px 6px;
-  background: #0c131b;
-  border-bottom: 1px solid #1e2b36;
-}
-
-.compare-series-select {
-  width: 100%;
-  background: #121d28;
-  color: #c8dde8;
-  border: 1px solid #1e2b36;
-  border-radius: 4px;
-  padding: 4px 6px;
-  font-size: 11px;
+  border: 1px solid transparent;
+  transition: border-color 0.2s;
   cursor: pointer;
 }
-.compare-series-select:focus {
-  outline: 1px solid var(--accent);
-  border-color: var(--accent);
+
+.compare-pane.active {
+  border: 1px solid var(--accent);
+}
+
+.compare-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+.compare-slider-vertical {
+  -webkit-appearance: slider-vertical;
+  appearance: slider-vertical;
+  width: 14px;
+  margin: 5px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  background: transparent;
+  transform: scaleY(-1);
 }
 
 .compare-canvas-wrap {
