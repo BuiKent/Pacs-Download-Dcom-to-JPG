@@ -1155,9 +1155,20 @@ function recenterAtClientPoint(viewportId, clientX, clientY) {
   if (crosshairs?.setToolCenter) {
     crosshairs.setToolCenter(worldPos, true);
     renderingEngine?.render();
+  } else {
+    // Không có crosshair (compare/montage). Đồng bộ vị trí click sang các khung StackViewport khác.
+    const allViewports = renderingEngine?.getViewports() || [];
+    let synced = false;
+    for (const vp of allViewports) {
+      if (vp.id === viewportId || vp.type !== "stack") continue;
+      const index = toolUtilities.getClosestStackImageIndexForPoint(worldPos, vp);
+      if (index !== null && index !== undefined) {
+        vp.setImageIdIndex(index);
+        synced = true;
+      }
+    }
+    if (synced) renderingEngine?.render();
   }
-  // single/compare/montage: không có crosshair nên không làm gì thêm ở đây;
-  // markActiveViewport() đã chạy ở pointerdown rồi nên vẫn "chọn xung" đúng.
 }
 
 export function activeViewport() {
