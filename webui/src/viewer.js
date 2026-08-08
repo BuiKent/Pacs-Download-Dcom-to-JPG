@@ -98,6 +98,7 @@ let toolGroup = null;
 let resizeObserver = null;
 let activeElements = [];
 let activeViewportId = "";
+let maximizedViewportId = null;
 let activeSeries = null;
 let activeSeriesList = [];
 let activeMode = "single";
@@ -839,6 +840,7 @@ function destroyCurrent() {
   }
   activeElements = [];
   activeViewportId = "";
+  maximizedViewportId = null;
 }
 
 function createRenderingEngine() {
@@ -893,6 +895,11 @@ function createToolGroup(viewportIds, mode = "stack") {
       bindings: [{ mouseButton: ToolEnums.MouseBindings.Wheel }],
     });
   }
+  if (allowed.includes(WindowLevelTool)) {
+    toolGroup.setToolActive(WindowLevelTool.toolName, {
+      bindings: [{ mouseButton: ToolEnums.MouseBindings.Primary, modifierKey: 17 }],
+    });
+  }
   // Reference lines render passively (Enabled state) — they show where one
   // viewport's current slice intersects another viewport's plane. Only useful
   // in compare layouts where multiple viewports coexist.
@@ -921,6 +928,77 @@ async function settleVolumeRendering() {
   renderingEngine.render();
 }
 
+function getOrientationStringLPS(vector) {
+  if (!vector || vector.length !== 3) return "";
+  const absX = Math.abs(vector[0]), absY = Math.abs(vector[1]), absZ = Math.abs(vector[2]);
+  const max = Math.max(absX, absY, absZ);
+  if (max === absX) return vector[0] < 0 ? "R" : "L";
+  if (max === absY) return vector[1] < 0 ? "A" : "P";
+  if (max === absZ) return vector[2] < 0 ? "I" : "S";
+  return "";
+}
+
+function updateViewportOverlays(viewportId, tl, tr, bl, br, ot, ob, ol, or) {
+  const viewport = renderingEngine?.getViewport(viewportId);
+  if (!viewport) return;
+  const series = seriesRegistry.get(viewport.element?.dataset?.seriesId);
+  if (!series) return;
+  const manifest = manifestRegistry.get(series.id) || {};
+  
+  const patientName = manifest.patientName || manifest.patient_name || "";
+  const patientId = manifest.patientId || manifest.patient_id || "";
+  const dob = manifest.patientBirthDate ? `DOB: ${manifest.patientBirthDate}` : "";
+  tl.innerText = [patientName, patientId, dob].filter(Boolean).join("\n");
+  
+  const modality = series.modality || manifest.modality || "";
+  const studyDate = manifest.studyDate || manifest.study_date || "";
+  const inst = manifest.institutionName || manifest.institution_name || "";
+  tr.innerText = [studyDate, modality, inst].filter(Boolean).join("\n");
+  
+  const zoom = Math.round((viewport.getZoom?.() || 1) * 100);
+  const props = typeof viewport.getProperties === "function" ? viewport.getProperties() : {};
+  const range = props.voiRange;
+  const wwText = range && Number.isFinite(range.lower) && Number.isFinite(range.upper)
+    ? `WW/WL: ${Math.round(range.upper - range.lower)} / ${Math.round((range.upper + range.lower) / 2)}`
+    : "";
+  bl.innerText = `Zoom: ${zoom}%\n${wwText}`.trim();
+  
+  let sliceInfo = "";
+  if (typeof viewport.getCurrentImageIdIndex === "function") {
+    const idx = viewport.getCurrentImageIdIndex();
+    const count = viewport.getImageIds?.().length || series.sliceCount || 1;
+    sliceInfo = `Im: ${idx + 1}/${count}`;
+  }
+  
+  let orientation = "";
+  if (viewport.getCamera) {
+    const camera = viewport.getCamera();
+    if (camera.viewPlaneNormal && camera.viewUp) {
+      const vpn = camera.viewPlaneNormal;
+      const vUp = camera.viewUp;
+      ot.innerText = getOrientationStringLPS(vUp);
+      ob.innerText = getOrientationStringLPS([-vUp[0], -vUp[1], -vUp[2]]);
+      
+      const rightVec = [
+        vUp[1] * vpn[2] - vUp[2] * vpn[1],
+        vUp[2] * vpn[0] - vUp[0] * vpn[2],
+        vUp[0] * vpn[1] - vUp[1] * vpn[0]
+      ];
+      or.innerText = getOrientationStringLPS(rightVec);
+      ol.innerText = getOrientationStringLPS([-rightVec[0], -rightVec[1], -rightVec[2]]);
+      
+      const normalStr = getOrientationStringLPS(vpn);
+      if (normalStr) {
+        orientation = normalStr === "S" || normalStr === "I" ? "Axial" 
+                    : normalStr === "L" || normalStr === "R" ? "Sagittal" 
+                    : "Coronal";
+      }
+    }
+  }
+  
+  br.innerText = [sliceInfo, orientation].filter(Boolean).join("\n");
+}
+
 function viewportElement(container, id, label, shellClass = "", seriesId = "") {
   const shell = document.createElement("section");
   shell.className = `viewport-shell ${shellClass}`.trim();
@@ -938,10 +1016,28 @@ function viewportElement(container, id, label, shellClass = "", seriesId = "") {
   // active pane. Focus follows explicit pointerdown, not hover.
   element.addEventListener("pointerdown", () => markActiveViewport(id));
   element.addEventListener("dblclick", () => {
-    shell.classList.toggle("viewport-maximized");
+    if (maximizedViewportId && maximizedViewportId !== id) {
+      document.getElementById(maximizedViewportId)?.closest(".viewport-shell")?.classList.remove("viewport-maximized");
+    }
+    const nowMaximized = shell.classList.toggle("viewport-maximized");
+    maximizedViewportId = nowMaximized ? id : null;
     setTimeout(() => renderingEngine?.resize(true, false), 0);
   });
-  shell.append(tag, element);
+
+  const ot = document.createElement("div"); ot.className = "orientation-marker orientation-t";
+  const ob = document.createElement("div"); ob.className = "orientation-marker orientation-b";
+  const ol = document.createElement("div"); ol.className = "orientation-marker orientation-l";
+  const or = document.createElement("div"); or.className = "orientation-marker orientation-r";
+  const tl = document.createElement("div"); tl.className = "viewport-overlay overlay-tl";
+  const tr = document.createElement("div"); tr.className = "viewport-overlay overlay-tr";
+  const bl = document.createElement("div"); bl.className = "viewport-overlay overlay-bl";
+  const br = document.createElement("div"); br.className = "viewport-overlay overlay-br";
+
+  const refreshOverlays = () => updateViewportOverlays(id, tl, tr, bl, br, ot, ob, ol, or);
+  element.addEventListener(CoreEnums.Events.IMAGE_RENDERED, refreshOverlays);
+  element.addEventListener(CoreEnums.Events.CAMERA_MODIFIED, refreshOverlays);
+
+  shell.append(tag, element, ot, ob, ol, or, tl, tr, bl, br);
   container.append(shell);
   activeElements.push(element);
   if (!activeViewportId) markActiveViewport(id);
@@ -1600,6 +1696,24 @@ export function getActiveCompareInfo() {
   return { paneIndex, viewportId: activeViewportId, seriesId: series?.id || "" };
 }
 
+export async function cycleMaximizedSeries() {
+  if (!maximizedViewportId || !COMPARE_MODES[activeMode]) return;
+  const viewport = renderingEngine?.getViewport(maximizedViewportId);
+  if (!viewport || !activeSeriesList.length) return;
+  
+  const currentSeriesId = viewport.element?.dataset?.seriesId;
+  const currentIndex = activeSeriesList.findIndex((s) => s.id === currentSeriesId);
+  if (currentIndex < 0) return;
+  
+  const nextSeries = activeSeriesList[(currentIndex + 1) % activeSeriesList.length];
+  if (nextSeries && nextSeries.id !== currentSeriesId) {
+    const oldActive = activeViewportId;
+    activeViewportId = maximizedViewportId;
+    await swapComparePane(nextSeries);
+    activeViewportId = oldActive;
+  }
+}
+
 /**
  * Hot-swap the series in the currently focused compare pane without
  * tearing down the layout.  Returns { paneIndex, viewportId } or null.
@@ -2249,20 +2363,48 @@ export function setTool(mode) {
   for (const candidate of Object.values(toolByMode)) {
     if (candidate !== toolName && toolGroup.hasTool(candidate)) {
       try {
-        toolGroup.setToolPassive(candidate);
+        if (candidate === WindowLevelTool.toolName) {
+          toolGroup.setToolActive(candidate, {
+            bindings: [{ mouseButton: ToolEnums.MouseBindings.Primary, modifierKey: 17 }],
+          });
+        } else {
+          toolGroup.setToolPassive(candidate);
+        }
       } catch (_) {
         // Some navigation tools retain their secondary binding.
       }
     }
   }
-  toolGroup.setToolActive(toolName, {
-    bindings: [{ mouseButton: ToolEnums.MouseBindings.Primary }],
-  });
+  
+  const bindings = [{ mouseButton: ToolEnums.MouseBindings.Primary }];
+  if (toolName === WindowLevelTool.toolName) {
+    bindings.push({ mouseButton: ToolEnums.MouseBindings.Primary, modifierKey: 17 });
+  }
+  
+  toolGroup.setToolActive(toolName, { bindings });
   currentTool = requested;
   return currentTool;
 }
 
 export function resetView() {
+  if (!engineIsLive() || !activeViewportId) return;
+  const viewport = renderingEngine.getViewport(activeViewportId);
+  if (!viewport) return;
+  viewport.resetCamera();
+  if (typeof viewport.resetProperties === "function") viewport.resetProperties();
+  viewport.render();
+  
+  if ((activeMode === "mpr" || activeMode === "volume3d") && viewport.id !== "volume-3d") {
+    const center = viewport.getCamera?.().focalPoint;
+    const crosshairs = toolGroup?.getToolInstance?.(CrosshairsTool.toolName);
+    if (center && crosshairs?.setToolCenter) {
+      crosshairs.setToolCenter([...center], true);
+      renderingEngine.render();
+    }
+  }
+}
+
+export function resetAllViews() {
   if (!engineIsLive()) return;
   for (const viewport of renderingEngine.getViewports() || []) {
     viewport.resetCamera();
@@ -2348,11 +2490,13 @@ export function toggleCine(series, onChange) {
     stopCine();
     return false;
   }
-  if (activeMode !== "single" || !engineIsLive()) return false;
-  const viewport = renderingEngine.getStackViewport("stack-0");
-  if (!viewport) return false;
+  if (!engineIsLive()) return false;
+  const viewportId = maximizedViewportId || activeViewportId || "stack-0";
+  const viewport = renderingEngine.getStackViewport(viewportId);
+  if (!viewport || !viewport.getCurrentImageIdIndex || typeof viewport.setImageIdIndex !== "function") return false;
+  const totalSlices = viewport.getImageIds?.().length || series?.sliceCount || 1;
   cineTimer = window.setInterval(() => {
-    const next = (viewport.getCurrentImageIdIndex() + 1) % series.sliceCount;
+    const next = (viewport.getCurrentImageIdIndex() + 1) % totalSlices;
     viewport.setImageIdIndex(next);
     viewport.render();
     onChange?.(next);
@@ -2420,6 +2564,25 @@ export async function clearActiveMeasurements() {
   if (engineIsLive()) renderingEngine.render();
   await saveAnnotations();
   return removable.length;
+}
+
+export async function undoLastAnnotation() {
+  const targets = new Set(activeSeriesList.map((series) => series.id));
+  if (!targets.size && activeSeries?.id) targets.add(activeSeries.id);
+  const removable = annotation.state
+    .getAllAnnotations()
+    .filter((item) => (
+      isMeasurementAnnotation(item)
+      && (!targets.size || [...targets].some((seriesId) => annotationBelongsToSeries(item, seriesId)))
+    ));
+  if (removable.length > 0) {
+    const lastItem = removable[removable.length - 1];
+    if (lastItem.annotationUID) annotation.state.removeAnnotation(lastItem.annotationUID);
+    if (engineIsLive()) renderingEngine.render();
+    await saveAnnotations();
+    return 1;
+  }
+  return 0;
 }
 
 function serializableAnnotations(seriesId) {

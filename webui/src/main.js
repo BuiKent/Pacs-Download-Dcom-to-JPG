@@ -15,6 +15,7 @@ import {
   captureActiveViewport,
   clearActiveMeasurements,
   compareScrollSyncState,
+  cycleMaximizedSeries,
   defaultWindowPreset,
   disposeViewer,
   configureTextPrompt,
@@ -29,6 +30,7 @@ import {
   persistActiveAnnotations,
   registerSeries,
   resetView,
+  resetAllViews,
   roiVolumeMl,
   rotateActiveViewportClockwise,
   saveAnnotations,
@@ -41,6 +43,7 @@ import {
   stepSlice,
   swapComparePane,
   toggleCine,
+  undoLastAnnotation,
   viewerDiagnostics,
 } from "./viewer.js";
 
@@ -288,7 +291,7 @@ function renderUtilityTools(series) {
     : [];
   const output = [
     iconButton("cine", state.cine ? "Ⅱ" : icons.cine,
-      t(state.cine ? "Dừng chạy phim" : "Chạy phim"), state.cine, state.mode !== "single"),
+      t(state.cine ? "Dừng chạy phim" : "Chạy phim"), state.cine),
     iconButton("capture", icons.capture, t("Lưu ảnh")),
   ];
   // Cine only means anything on a single stack; MPR drops it rather than
@@ -1099,6 +1102,17 @@ async function action(name) {
       const select = app.querySelector("[data-field='window-preset']");
       if (select) select.value = state.windowPreset;
     }
+    if (name === "reset-all") {
+      state.windowPreset = defaultWindowPreset(selectedSeries());
+      resetAllViews();
+      await applyWindowPreset(state.windowPreset);
+      window.__viewerDiagnostics = viewerDiagnostics();
+      const select = app.querySelector("[data-field='window-preset']");
+      if (select) select.value = state.windowPreset;
+    }
+    if (name === "undo-annotation") {
+      undoLastAnnotation();
+    }
     if (name === "clear-annotations") {
       const count = await clearActiveMeasurements();
       setStatus(count
@@ -1342,9 +1356,9 @@ function updateStatusOnly() {
   if (element) element.textContent = state.sliceText;
 }
 
-const SHORTCUT_HINT = "Phím tắt: ←/→ hoặc PgUp/PgDn đổi lát · Home/End lát đầu/cuối · 1 sáng · 2 pan"
-  + " · 3 zoom · 4 đo dài · 5 góc · 6 ROI ellipse · 7 ROI tự do · 8 ghi chú chữ · C định vị"
-  + " · R đặt lại · I đảo màu · Space chạy phim · S lưu đo · P lưu ảnh.";
+const SHORTCUT_HINT = "Phím tắt: ←/→, PgUp/PgDn, Home/End: đổi lát · 1..8: bộ công cụ · C: định vị"
+  + " · R/Shift+R: đặt lại · I: đảo màu · Space: chạy phim · S: lưu đo · P: lưu ảnh"
+  + " · Tab: xoay vòng series · Ctrl+Z: hoàn tác đo · Ctrl+Chuột Trái: chỉnh sáng tối.";
 
 const SHORTCUT_TOOLS = {
   1: "window",
@@ -1363,7 +1377,23 @@ function isTypingTarget(target) {
 
 function installKeyboardShortcuts() {
   window.addEventListener("keydown", (event) => {
-    if (event.ctrlKey || event.altKey || event.metaKey || isTypingTarget(event.target)) return;
+    if (isTypingTarget(event.target)) return;
+    
+    if (event.key === "Tab" && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
+      if (document.querySelector(".viewport-maximized")) {
+        event.preventDefault();
+        cycleMaximizedSeries();
+        return;
+      }
+    }
+    
+    if (event.ctrlKey && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      action("undo-annotation");
+      return;
+    }
+    
+    if (event.ctrlKey || event.altKey || event.metaKey) return;
     if (state.busyViewer || !state.archive.series.length) return;
     const step = { ArrowLeft: -1, ArrowUp: -1, PageUp: -5, ArrowRight: 1, ArrowDown: 1, PageDown: 5 };
     if (event.key in step) {
@@ -1381,13 +1411,19 @@ function installKeyboardShortcuts() {
       action(`tool-${SHORTCUT_TOOLS[event.key]}`);
       return;
     }
+    
+    if (event.key === "R") {
+      action("reset-all");
+      return;
+    }
+    
     const key = event.key.toLowerCase();
     if (key === "c") action("tool-crosshair");
     else if (key === "r") action("reset");
     else if (key === "i") action("invert");
     else if (key === "s") action("save-annotations");
     else if (key === "p") action("capture");
-    else if (event.key === " " && state.mode === "single") {
+    else if (event.key === " ") {
       event.preventDefault();
       action("cine");
     }

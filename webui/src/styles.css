@@ -648,6 +648,35 @@ button:disabled { opacity: .35; cursor: default; }
   border-radius: 7px;
   padding: 0 3px;
 }
+
+.viewport-overlay {
+  position: absolute;
+  font-size: 13px;
+  color: #ffbc42;
+  text-shadow: 1px 1px 1px #000, 0 0 2px #000;
+  pointer-events: none;
+  z-index: 10;
+  white-space: pre-line;
+}
+.overlay-tl { top: 25px; left: 5px; text-align: left; }
+.overlay-tr { top: 5px; right: 5px; text-align: right; }
+.overlay-bl { bottom: 25px; left: 5px; text-align: left; }
+.overlay-br { bottom: 25px; right: 5px; text-align: right; }
+
+.orientation-marker {
+  position: absolute;
+  font-size: 13px;
+  color: #88c0d0;
+  font-weight: bold;
+  text-shadow: 1px 1px 1px #000, 0 0 2px #000;
+  pointer-events: none;
+  z-index: 10;
+}
+.orientation-t { top: 5px; left: 50%; transform: translateX(-50%); }
+.orientation-b { bottom: 5px; left: 50%; transform: translateX(-50%); }
+.orientation-l { left: 5px; top: 50%; transform: translateY(-50%); }
+.orientation-r { right: 5px; top: 50%; transform: translateY(-50%); }
+
 .series-card { position: relative; }
 .icon-button:focus-visible, .soft-button:focus-visible, .series-card:focus-visible {
   outline: 2px solid #49c7ff;
