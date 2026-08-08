@@ -38,12 +38,14 @@ hình học của cặp (`pairModes` trong `viewerDiagnostics`):
 
 Nhánh này cũng kiểm con trỏ tham chiếu (crosslink theo điểm): tool phải ở chế độ
 `Passive` — chế độ duy nhất vừa nhận `mouseMove` vừa vẽ — `positionSync` phải
-tắt, và gate **rê chuột thật** ngang qua pane A rồi đếm nét vẽ. Pane dưới chuột
-luôn vẽ 4 nét; pane còn lại thêm 4 nét nữa khi điểm đó rơi gần mặt phẳng của nó.
-Dưới 4 nét nghĩa là tool đã bật nhưng không nhận sự kiện.
+tắt. Gate đặt chuột vào trung điểm Reference Line, tức một điểm chắc chắn nằm
+trên cả hai mặt phẳng, rồi tạm ẩn Reference Line để đếm riêng nét của cursor.
+Mỗi pane phải có ít nhất 4 nét (tổng ít nhất 8); chỉ có 4 nét tổng cộng mới chứng
+minh marker ở pane dưới chuột, chưa chứng minh được phép chiếu sang pane kia.
 
-Bước MPR chọn series có nhãn `3D` thay vì series đầu danh sách — chạy MPR trên
-một localiser 8 lát chỉ chứng minh được đường timeout.
+Bước MPR thoát compare về single trước, chọn series có nhãn `3D` làm primary và
+đợi nút MPR được bật — chạy MPR trên một localiser 8 lát hoặc chỉ hot-swap pane B
+đều không chứng minh được nhánh tái tạo đa mặt phẳng.
 
 Gate phát hành đầy đủ (pixel assertion, lặp chuyển MPR/3D) là
 `python dcom_web_app.py --smoke-test`.

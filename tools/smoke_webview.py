@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 import traceback
@@ -23,6 +24,39 @@ import webview
 
 from dcom_web_app import _assert_panes_drawn
 from web_backend import LocalApiServer, WebController
+
+
+def _cross_plane_pair(series_list: list[dict]) -> tuple[str, str] | None:
+    """Return two geometry-bearing series on different planes in one FoR."""
+    candidates: list[tuple[str, str, list[float]]] = []
+    for series in series_list:
+        geometry = series.get("geometry") or {}
+        orientation = geometry.get("orientation")
+        if not isinstance(orientation, list) or len(orientation) != 6:
+            continue
+        row = orientation[:3]
+        column = orientation[3:]
+        normal = [
+            row[1] * column[2] - row[2] * column[1],
+            row[2] * column[0] - row[0] * column[2],
+            row[0] * column[1] - row[1] * column[0],
+        ]
+        length = math.sqrt(sum(value * value for value in normal))
+        if length <= 1e-6:
+            continue
+        series_id = str(series.get("id") or "")
+        frame_uid = str(geometry.get("frameOfReferenceUID") or "")
+        if series_id:
+            candidates.append((series_id, frame_uid, [value / length for value in normal]))
+
+    for index, (source_id, source_for, source_normal) in enumerate(candidates):
+        for target_id, target_for, target_normal in candidates[index + 1:]:
+            if source_for and target_for and source_for != target_for:
+                continue
+            dot = abs(sum(a * b for a, b in zip(source_normal, target_normal)))
+            if dot < 0.9:
+                return source_id, target_id
+    return None
 
 
 def main() -> int:
@@ -42,7 +76,8 @@ def main() -> int:
     args = parser.parse_args()
 
     controller = WebController()
-    controller.open_archive(args.archive)
+    archive = controller.open_archive(args.archive)
+    cross_plane_pair = _cross_plane_pair(archive.get("series") or [])
     server = LocalApiServer(controller, Path(args.static))
     url = server.start()
     window = webview.create_window(
@@ -161,30 +196,70 @@ def main() -> int:
                 # the Reference Lines path is actually exercised — and so the
                 # swap path itself is covered, since a swap used to leave the
                 # reference line behind.
-                def read_pair_mode() -> str:
-                    modes = ((window.evaluate_js("window.__viewerDiagnostics || null") or {})
-                             .get("referenceLines", {}).get("pairModes") or ["index"])
+                def read_swap_state(viewport_id: str) -> dict:
+                    selector = f'[data-viewport-id="{viewport_id}"]'
+                    return window.evaluate_js(
+                        """({
+                          readyMode: window.__viewerReadyMode || '',
+                          paneSeriesId: document.querySelector(%s)
+                            ?.dataset.seriesId || '',
+                          activeViewportId: document.querySelector(
+                            '.viewport-shell.is-active'
+                          )?.dataset.viewportId || '',
+                          pairModes: window.__viewerDiagnostics
+                            ?.referenceLines?.pairModes || [],
+                          error: document.querySelector(
+                            '.empty-state.error'
+                          )?.textContent || '',
+                          jsErrors: window.__smokeErrors || []
+                        })""" % json.dumps(selector)
+                    ) or {}
+
+                def pair_mode_from(state: dict) -> str:
+                    modes = state.get("pairModes") or ["index"]
                     return modes[0]
 
-                pair_mode = read_pair_mode()
-                if pair_mode != "reference":
-                    candidates = window.evaluate_js(
-                        "[...document.querySelectorAll('.series-card')].map(c => c.dataset.seriesId)"
-                    ) or []
+                def hot_swap(viewport_id: str, series_id: str) -> dict:
                     window.evaluate_js(
-                        """document.getElementById('stack-b')?.dispatchEvent(
-                             new PointerEvent('pointerdown', { bubbles: true })
-                           )"""
+                        """document.getElementById(%s)?.dispatchEvent(
+                             new Event('pointerdown', { bubbles: true })
+                           )""" % json.dumps(viewport_id)
                     )
-                    for series_id in candidates:
-                        window.evaluate_js(
-                            "document.querySelector('[data-series-id=\"%s\"]')?.click()" % series_id
-                        )
-                        time.sleep(1.0)
-                        pair_mode = read_pair_mode()
-                        if pair_mode == "reference":
-                            compare["crossPlaneSeriesId"] = series_id
+                    deadline = time.time() + 5
+                    while time.time() < deadline:
+                        if read_swap_state(viewport_id).get("activeViewportId") == viewport_id:
                             break
+                        time.sleep(0.1)
+                    window.evaluate_js(
+                        "document.querySelector('[data-series-id=%s]')?.click()"
+                        % json.dumps(series_id)
+                    )
+                    # Card clicks start async stack/decode work. Wait until the
+                    # selected pane and diagnostics both belong to this swap.
+                    deadline = time.time() + 30
+                    swap_state = {}
+                    while time.time() < deadline:
+                        swap_state = read_swap_state(viewport_id)
+                        if swap_state.get("error"):
+                            raise RuntimeError(swap_state["error"])
+                        if (
+                            swap_state.get("readyMode") == "compare"
+                            and swap_state.get("paneSeriesId") == series_id
+                            and swap_state.get("pairModes")
+                        ):
+                            return swap_state
+                        time.sleep(0.25)
+                    raise TimeoutError(
+                        f"Hot-swap {viewport_id} sang {series_id} chưa hoàn tất: {swap_state}"
+                    )
+
+                pair_mode = pair_mode_from(read_swap_state("stack-b"))
+                if cross_plane_pair:
+                    source_id, target_id = cross_plane_pair
+                    hot_swap("stack-a", source_id)
+                    swap_state = hot_swap("stack-b", target_id)
+                    pair_mode = pair_mode_from(swap_state)
+                    compare["crossPlaneSeriesIds"] = [source_id, target_id]
                 compare["pairMode"] = pair_mode
                 if pair_mode != "reference" and args.require_compare:
                     raise RuntimeError(
@@ -193,7 +268,17 @@ def main() -> int:
                         f"để dùng làm gate (pairMode={pair_mode})."
                     )
 
-                # Re-read after the swap: counts and diagnostics are stale now.
+                # Re-read after the swap, waiting for its SVG render too.
+                if pair_mode == "reference":
+                    deadline = time.time() + 15
+                    while time.time() < deadline:
+                        if window.evaluate_js(
+                            "document.querySelectorAll("
+                            "'#workspace svg line[data-id], #workspace svg line[data-uid]'"
+                            ").length"
+                        ) >= 1:
+                            break
+                        time.sleep(0.25)
                 compare.update(window.evaluate_js(
                     """({
                       sliders: [...document.querySelectorAll('#workspace .slice-control input')]
@@ -224,51 +309,110 @@ def main() -> int:
                             f"chạy theo chuột: {cursor}"
                         )
 
-                    # Mode and configuration only prove the wiring. Move the
-                    # mouse for real and count the strokes: an inert tool draws
-                    # nothing no matter how correct its configuration looks.
-                    # Sweeping across the pane is what eventually crosses the
-                    # other plane, where the second marker appears.
-                    sweep = window.evaluate_js(
-                        """(() => {
-                          const count = () => document.querySelectorAll('#workspace svg line').length;
-                          const element = document.getElementById('stack-a');
-                          if (!element) return { error: 'no stack-a' };
-                          const rect = element.getBoundingClientRect();
-                          const before = count();
-                          let max = before;
-                          const seen = [];
-                          for (let step = 1; step < 10; step += 1) {
-                            const x = rect.left + (rect.width * step) / 10;
-                            const y = rect.top + rect.height / 2;
-                            for (const type of ['mousemove', 'pointermove']) {
-                              element.dispatchEvent(new MouseEvent(type, {
-                                bubbles: true, clientX: x, clientY: y,
-                              }));
-                            }
-                            const now = count();
-                            seen.push(now);
-                            if (now > max) max = now;
-                          }
-                          return { before, max, seen };
-                        })()"""
-                    )
-                    time.sleep(0.5)
-                    sweep["after"] = window.evaluate_js(
-                        "document.querySelectorAll('#workspace svg line').length"
-                    )
-                    compare["cursorSweep"] = sweep
-                    if sweep.get("error"):
-                        raise RuntimeError(f"Không quét được con trỏ tham chiếu: {sweep}")
-                    strokes = max(sweep["max"], sweep["after"]) - sweep["before"]
-                    # The pane under the mouse always draws its own 4-stroke
-                    # crosshair; the far pane adds 4 more when the point lands
-                    # near its plane.
-                    if strokes < 4:
-                        raise RuntimeError(
-                            f"Con trỏ tham chiếu không vẽ nét nào khi rê chuột: {sweep}"
+                    if pair_mode == "reference":
+                        # The Reference Line is the exact set of points shared
+                        # by both planes. Move to its midpoint and require one
+                        # four-stroke cursor in each pane. A broad sweep plus a
+                        # >=4 total check only proved the source-pane marker.
+                        target = window.evaluate_js(
+                            """(() => {
+                              const line = document.querySelector(
+                                '#workspace svg line[data-id], #workspace svg line[data-uid]'
+                              );
+                              if (!line) return { error: 'no reference line' };
+                              const rect = line.getBoundingClientRect();
+                              return {
+                                viewportId: line.closest('.viewport')?.id || '',
+                                x: (rect.left + rect.right) / 2,
+                                y: (rect.top + rect.bottom) / 2
+                              };
+                            })()"""
+                        ) or {}
+                        if target.get("error") or not target.get("viewportId"):
+                            raise RuntimeError(
+                                f"Không định vị được giao tuyến cho con trỏ: {target}"
+                            )
+
+                        # Hide Reference Lines so its identified SVG stroke
+                        # cannot be mistaken for a ReferenceCursors stroke.
+                        window.evaluate_js(
+                            "document.querySelector('[data-action=\"reference-lines\"]')?.click()"
                         )
-                    compare["cursorStrokes"] = strokes
+                        deadline = time.time() + 5
+                        while time.time() < deadline:
+                            identified = window.evaluate_js(
+                                "document.querySelectorAll("
+                                "'#workspace svg line[data-id], #workspace svg line[data-uid]'"
+                                ").length"
+                            )
+                            if identified == 0:
+                                break
+                            time.sleep(0.1)
+
+                        window.evaluate_js(
+                            """(() => {
+                              const target = %s;
+                              const element = document.getElementById(target.viewportId);
+                              if (!element) return false;
+                              element.dispatchEvent(new Event('pointerenter', { bubbles: true }));
+                              element.dispatchEvent(new MouseEvent('mousemove', {
+                                bubbles: true,
+                                view: window,
+                                clientX: target.x,
+                                clientY: target.y,
+                                buttons: 0
+                              }));
+                              return true;
+                            })()""" % json.dumps(target)
+                        )
+                        deadline = time.time() + 10
+                        pane_strokes = []
+                        while time.time() < deadline:
+                            pane_strokes = window.evaluate_js(
+                                """[...document.querySelectorAll(
+                                  '#workspace .viewport-shell'
+                                )].map(shell => ({
+                                  viewportId: shell.dataset.viewportId || '',
+                                  strokes: shell.querySelectorAll(
+                                    'svg line:not([data-id]):not([data-uid])'
+                                  ).length
+                                }))"""
+                            ) or []
+                            if len(pane_strokes) == 2 and all(
+                                item.get("strokes", 0) >= 4 for item in pane_strokes
+                            ):
+                                break
+                            time.sleep(0.2)
+
+                        compare["cursorProjection"] = pane_strokes
+                        if len(pane_strokes) != 2 or any(
+                            item.get("strokes", 0) < 4 for item in pane_strokes
+                        ):
+                            raise RuntimeError(
+                                "Con trỏ tham chiếu không vẽ đủ 4 nét trên mỗi pane: "
+                                f"{pane_strokes}"
+                            )
+                        compare["cursorStrokes"] = sum(
+                            item["strokes"] for item in pane_strokes
+                        )
+
+                        # Restore the line for the scroll-survival assertion.
+                        window.evaluate_js(
+                            "document.querySelector('[data-action=\"reference-lines\"]')?.click()"
+                        )
+                        deadline = time.time() + 10
+                        while time.time() < deadline:
+                            if window.evaluate_js(
+                                "document.querySelectorAll("
+                                "'#workspace svg line[data-id], #workspace svg line[data-uid]'"
+                                ").length"
+                            ) >= 1:
+                                break
+                            time.sleep(0.2)
+                    else:
+                        compare["cursorProjection"] = (
+                            "skipped: cần cặp cross-plane để chứng minh marker ở cả hai pane"
+                        )
                 if pair_mode == "reference" and compare.get("referenceLines", 0) < 1:
                     raise RuntimeError(f"Cross-plane pair vẽ thiếu Reference Line: {compare}")
                 if pair_mode == "spatial" and compare.get("referenceLines", 0) > 0:
@@ -323,9 +467,23 @@ def main() -> int:
                 compare["litPixels"] = _assert_panes_drawn(window, "compare", 2)
                 result["compareReferenceLines"] = compare
 
-            # MPR needs a series that can actually be resliced. Selecting
-            # whichever series happens to be first only proves the timeout
-            # path when that series is an 8-slice localiser.
+            # Card clicks in compare hot-swap the focused pane; they do not
+            # change the primary series that MPR uses. Leave compare first,
+            # then select an MPR-ready card and wait until it is the single
+            # viewport's series before pressing MPR.
+            window.evaluate_js(
+                "document.querySelector('[data-action=\"mode-single\"]')?.click()"
+            )
+            deadline = time.time() + 45
+            while time.time() < deadline:
+                if window.evaluate_js("window.__viewerReadyMode || ''") == "single":
+                    break
+                time.sleep(0.25)
+            else:
+                raise TimeoutError(
+                    "Không thể thoát compare về single trước khi dựng MPR."
+                )
+
             mpr_series = window.evaluate_js(
                 """(() => {
                   const card = [...document.querySelectorAll('.series-card')].find(
@@ -341,7 +499,36 @@ def main() -> int:
                 raise RuntimeError(
                     "Archive không có series nào MPR-ready, không thể kiểm nhánh MPR."
                 )
-            time.sleep(1.0)
+            deadline = time.time() + 45
+            mpr_selection = {}
+            while time.time() < deadline:
+                mpr_selection = window.evaluate_js(
+                    """({
+                      readyMode: window.__viewerReadyMode || '',
+                      seriesId: document.querySelector(
+                        '#workspace .viewport-shell'
+                      )?.dataset.seriesId || '',
+                      disabled: document.querySelector(
+                        '[data-action="mode-mpr"]'
+                      )?.disabled ?? true,
+                      error: document.querySelector(
+                        '.empty-state.error'
+                      )?.textContent || ''
+                    })"""
+                ) or {}
+                if mpr_selection.get("error"):
+                    raise RuntimeError(mpr_selection["error"])
+                if (
+                    mpr_selection.get("readyMode") == "single"
+                    and mpr_selection.get("seriesId") == mpr_series
+                    and mpr_selection.get("disabled") is False
+                ):
+                    break
+                time.sleep(0.25)
+            else:
+                raise TimeoutError(
+                    f"Series 3D chưa trở thành primary MPR: {mpr_selection}"
+                )
             window.evaluate_js("document.querySelector('[data-action=\"mode-mpr\"]').click()")
             deadline = time.time() + 60
             while time.time() < deadline:
