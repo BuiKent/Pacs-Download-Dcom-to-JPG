@@ -319,19 +319,26 @@ def _classify_text(header: _Header) -> tuple[Optional[str], float, list[str]]:
         return kind, score, reasons
 
     is_t1 = bool(_T1_RE.search(text) or re.search(r"\b(BRAVO|MPRAGE|SPGR|TFE)\b", text))
-    if not is_t1:
-        return None, 0.0, ["không nhận diện được T1"]
+    is_other_3d = bool(_THREED_RE.search(text) or re.search(r"\b(TOF3D|TOF|CISS|FIESTA|FSPGR|SPACE|CUBE|VISTA|TARQ|3D)\b", text))
+    
+    if not is_t1 and not is_other_3d:
+        return None, 0.0, ["không nhận diện được T1 hoặc chuỗi 3D"]
 
     post = bool(_POST_RE.search(text) or header.contrast_agent)
     pre = bool(_PRE_RE.search(text))
-    if post and not pre:
-        kind = "T1_POST_CONTRAST"
-        score = 1000.0
-        reasons.append("T1 sau tiêm")
+    if is_t1:
+        if post and not pre:
+            kind = "T1_POST_CONTRAST"
+            score = 1000.0
+            reasons.append("T1 sau tiêm")
+        else:
+            kind = "T1_PRE_CONTRAST"
+            score = 500.0
+            reasons.append("T1 không tiêm")
     else:
-        kind = "T1_PRE_CONTRAST"
-        score = 500.0
-        reasons.append("T1 không tiêm")
+        kind = "MR_VOLUME"
+        score = 600.0
+        reasons.append("chuỗi 3D MR")
 
     if _THREED_RE.search(text):
         score += 120.0

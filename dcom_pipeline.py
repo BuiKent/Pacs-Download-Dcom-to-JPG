@@ -2175,7 +2175,7 @@ def convert_all(
             )
             series_folder.mkdir(exist_ok=True)
             
-            manifest_path = series_folder / "manifest.json"
+            manifest_path = series_folder / "mpr-volume.json"
             if not manifest_path.exists():
                 import json
                 try:
