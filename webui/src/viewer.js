@@ -788,13 +788,12 @@ async function ensureManifest(series) {
   // for both MPR/3D volume rendering AND simple 2D spatial crosslinking.
   // Any series with valid geometry has a manifest the backend can serve,
   // even when it doesn't meet the stricter MPR/3D readiness threshold.
-  if (!series.mprReady && !series.geometry) return null;
   if (!manifestRegistry.has(series.id)) {
     try {
       manifestRegistry.set(series.id, await api(`/api/series/${series.id}/manifest`));
     } catch (_) {
-      // Series without spatial data — crosslink will fall back to index sync.
-      return null;
+      // Series without spatial data or metadata — crosslink will fall back to index sync.
+      manifestRegistry.set(series.id, {});
     }
   }
   return manifestRegistry.get(series.id);
