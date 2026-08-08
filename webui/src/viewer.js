@@ -950,9 +950,21 @@ function updateViewportOverlays(viewportId, tl, tr, bl, br, ot, ob, ol, or) {
   tl.innerText = [patientName, patientId, dob].filter(Boolean).join("\n");
   
   const modality = series.modality || manifest.modality || "";
-  const studyDate = manifest.studyDate || manifest.study_date || "";
+  
+  let studyDate = manifest.studyDate || manifest.study_date || series.studyDate || "";
+  if (!studyDate) {
+    const groupParts = (series.studyGroup || "").split(" - ");
+    if (groupParts.length > 0 && groupParts[0] !== "Không rõ ca chụp") {
+      if (/^\d{4}-\d{2}-\d{2}/.test(groupParts[0])) {
+        studyDate = `${groupParts[0]} (thư mục)`;
+      }
+    }
+  }
+
   const inst = manifest.institutionName || manifest.institution_name || "";
-  tr.innerText = [studyDate, modality, inst].filter(Boolean).join("\n");
+  const desc = series.description || manifest.series_description || "";
+  
+  tr.innerText = [studyDate, modality, desc, inst].filter(Boolean).join("\n");
   
   const zoom = Math.round((viewport.getZoom?.() || 1) * 100);
   const props = typeof viewport.getProperties === "function" ? viewport.getProperties() : {};

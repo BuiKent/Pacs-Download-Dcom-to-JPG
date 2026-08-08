@@ -495,6 +495,35 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(1, len(finished["result"]["archive"]["series"]))
             self.assertFalse(finished["result"]["archive"]["series"][0]["mprReady"])
 
+    def test_generic_jpg_without_mpr_exposes_study_date_in_manifest(self):
+        """A generic JPG conversion without MPR (e.g. from 1 slice) still has a manifest,
+        and its studyDate is exposed by the catalog for the frontend to render."""
+        import pydicom
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            source.mkdir()
+            # Write a DICOM with a known study date
+            dicom_path = source / "000001"
+            write_local_dicom(dicom_path)
+            ds = pydicom.dcmread(str(dicom_path))
+            ds.StudyDate = "20230501"
+            ds.save_as(str(dicom_path))
+
+            controller = WebController()
+            controller.output_root = root / "output"
+            started = controller.start_local_dicom_import(str(source), {"quality": 100})
+            
+            deadline = time.time() + 5
+            while controller.job.snapshot()["status"] == "running" and time.time() < deadline:
+                time.sleep(0.01)
+                
+            finished = controller.job.snapshot()
+            series = finished["result"]["archive"]["series"][0]
+            
+            self.assertFalse(series["mprReady"])
+            self.assertEqual("2023-05-01", series.get("studyDate"))
+
     def test_same_folder_names_do_not_collide(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

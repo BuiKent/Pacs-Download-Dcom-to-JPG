@@ -733,6 +733,7 @@ class SeriesRecord:
     source_type: str = "image"
     pixel_data: Optional[dict] = None
     study_group: str = ""
+    study_date: str = ""
     # Parallel to `images`: which frame of that file each slice refers to.
     # Empty for series where every file holds exactly one frame.
     frame_indices: list[int] = field(default_factory=list)
@@ -749,6 +750,7 @@ class SeriesRecord:
             "modality": self.modality,
             "sourceType": self.source_type,
             "studyGroup": self.study_group,
+            "studyDate": self.study_date or (self.manifest or {}).get("study_date") or (self.manifest or {}).get("studyDate", ""),
         }
         if self.pixel_data:
             data["pixelData"] = self.pixel_data
@@ -874,6 +876,7 @@ class ArchiveCatalog:
                 modality=modality if modality in {"CT", "MR"} else "UNKNOWN",
                 source_type="dicom",
                 study_group=study_group,
+                study_date=first.study_date,
                 pixel_data={
                     "rows": first.rows,
                     "columns": first.columns,

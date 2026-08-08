@@ -360,6 +360,21 @@ function seriesFrameLabel(series) {
   return `${series?.sliceCount || 0} ${unit}`;
 }
 
+function seriesDateInfo(series) {
+  if (series.studyDate) {
+    return series.studyDate; // From manifest or DICOM
+  }
+  const groupParts = (series.studyGroup || "").split(" - ");
+  if (groupParts.length > 0 && groupParts[0] !== "Không rõ ca chụp") {
+    // If the folder starts with a date, use it
+    if (/^\d{4}-\d{2}-\d{2}/.test(groupParts[0])) {
+      return `${groupParts[0]} (thư mục)`;
+    }
+  }
+  return "";
+}
+
+
 function windowPresetHint(series) {
   if (seriesSupportsHounsfield(series)) {
     return "Cửa sổ Hounsfield chuẩn, tính trực tiếp trên pixel CT gốc";
@@ -509,10 +524,12 @@ function render() {
           ${state.archive.series.map((item) => {
     const visiblePanes = seriesVisiblePanes(item.id);
     const isVisible = visiblePanes.length > 0;
+    const dateInfo = seriesDateInfo(item);
     return `<button class="series-card ${isVisible ? "active" : ""}"
             data-series-id="${item.id}" title="${escapeHtml(item.mprReason || item.description)}"
             ${isVisible ? `data-pane="${visiblePanes.join(",")}"` : ""}>
             <span>${item.mprReady ? "3D" : "2D"}</span>
+            <b>${escapeHtml([dateInfo, item.modality].filter(Boolean).join(" · "))}</b>
             <b>${escapeHtml(item.description)}</b>
             <small>${escapeHtml(seriesFrameLabel(item))}</small>
           </button>`;
