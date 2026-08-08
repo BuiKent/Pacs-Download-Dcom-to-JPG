@@ -658,10 +658,10 @@ button:disabled { opacity: .35; cursor: default; }
   z-index: 10;
   white-space: pre-line;
 }
-.overlay-tl { top: 25px; left: 5px; text-align: left; max-width: 45%; }
-.overlay-tr { top: 5px; right: 5px; text-align: right; max-width: 45%; }
-.overlay-bl { bottom: 35px; left: 5px; text-align: left; }
-.overlay-br { bottom: 35px; right: 5px; text-align: right; }
+.overlay-tl { top: 33px; left: 5px; text-align: left; max-width: 45%; word-break: break-word; }
+.overlay-tr { top: 5px; right: 5px; text-align: right; max-width: 45%; word-break: break-word; }
+.overlay-bl { bottom: 35px; left: 5px; text-align: left; max-width: 45%; word-break: break-word; }
+.overlay-br { bottom: 35px; right: 5px; text-align: right; max-width: 45%; word-break: break-word; }
 
 .orientation-marker {
   position: absolute;
@@ -688,13 +688,16 @@ button:disabled { opacity: .35; cursor: default; }
   position: absolute;
   top: 5px;
   left: 7px;
+  right: 52%;
   z-index: 2;
-  max-width: 80%;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
   color: #d8f2ff;
   text-overflow: ellipsis;
   text-shadow: 0 1px 3px #000;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   pointer-events: none;
   font-size: 10px;
   font-weight: 700;
