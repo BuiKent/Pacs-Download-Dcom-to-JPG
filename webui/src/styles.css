@@ -660,8 +660,8 @@ button:disabled { opacity: .35; cursor: default; }
 }
 .overlay-tl { top: 25px; left: 5px; text-align: left; max-width: 45%; }
 .overlay-tr { top: 5px; right: 5px; text-align: right; max-width: 45%; }
-.overlay-bl { bottom: 35px; left: 5px; text-align: left; }
-.overlay-br { bottom: 35px; right: 5px; text-align: right; }
+.overlay-bl { bottom: 45px; left: 5px; text-align: left; }
+.overlay-br { bottom: 45px; right: 5px; text-align: right; }
 
 .orientation-marker {
   position: absolute;
