@@ -127,6 +127,9 @@ class DicomHeader:
     window_width: Optional[float]
     study_date: str = ""
     study_desc: str = ""
+    patient_id: str = ""
+    patient_name: str = ""
+    patient_birth_date: str = ""
     number_of_frames: int = 1
     # Which frame inside `path` this header stands for. Always 0 for classic
     # single-frame files; an enhanced multi-frame file yields one header per
@@ -262,6 +265,13 @@ def _read_dicom_header(path: Path) -> list[DicomHeader]:
     if study_time:
         study_date = f"{study_date} {study_time}".strip()
     study_desc = str(getattr(ds, "StudyDescription", "") or "").strip()
+    
+    patient_id = str(getattr(ds, "PatientID", "") or "").strip()
+    patient_name = str(getattr(ds, "PatientName", "") or "").strip()
+    
+    patient_birth_date = str(getattr(ds, "PatientBirthDate", "") or "").strip()
+    if patient_birth_date and len(patient_birth_date) == 8 and patient_birth_date.isdigit():
+        patient_birth_date = f"{patient_birth_date[:4]}-{patient_birth_date[4:6]}-{patient_birth_date[6:]}"
 
     pixel_spacing = _dicom_numbers(getattr(ds, "PixelSpacing", None), 2)
     orientation = _dicom_numbers(getattr(ds, "ImageOrientationPatient", None), 6)
@@ -320,6 +330,9 @@ def _read_dicom_header(path: Path) -> list[DicomHeader]:
             ),
             study_date=study_date,
             study_desc=study_desc,
+            patient_id=patient_id,
+            patient_name=patient_name,
+            patient_birth_date=patient_birth_date,
             number_of_frames=frames,
             frame_index=frame_index,
         )
@@ -448,6 +461,9 @@ def _direct_dicom_manifest(headers: list[DicomHeader]) -> tuple[Optional[dict], 
         "modality": "MR" if first.modality == "MRI" else first.modality,
         "series_number": first.series_number,
         "study_date": first.study_date,
+        "patient_id": first.patient_id,
+        "patient_name": first.patient_name,
+        "patient_birth_date": first.patient_birth_date,
         "study_instance_uid": first.study_uid,
         "series_instance_uid": first.series_uid,
         "frame_of_reference_uid": first.frame_uid or first.study_uid or first.series_uid,

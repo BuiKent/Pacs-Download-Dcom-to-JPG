@@ -2174,6 +2174,40 @@ def convert_all(
                 series_number, series_desc, series_uid,
             )
             series_folder.mkdir(exist_ok=True)
+            
+            manifest_path = series_folder / "manifest.json"
+            if not manifest_path.exists():
+                import json
+                try:
+                    from mpr_engine import _format_date, _format_time
+                except ImportError:
+                    def _format_date(d: str) -> str:
+                        if d and len(d) == 8 and d.isdigit(): return f"{d[:4]}-{d[4:6]}-{d[6:]}"
+                        return d
+                    def _format_time(t: str) -> str:
+                        if t and len(t) >= 6 and t[:6].isdigit(): return f"{t[:2]}:{t[2:4]}:{t[4:6]}"
+                        return t
+
+                study_date = _format_date(str(getattr(ds, "StudyDate", "") or "").strip())
+                study_time = _format_time(str(getattr(ds, "StudyTime", "") or "").strip())
+                patient_birth = _format_date(str(getattr(ds, "PatientBirthDate", "") or "").strip())
+                
+                manifest_data = {
+                    "format": "dcom-mpr-jpg",
+                    "version": 1,
+                    "series_type": "JPG_GENERIC",
+                    "series_description": str(getattr(ds, "SeriesDescription", "") or "").strip(),
+                    "modality": str(getattr(ds, "Modality", "") or "").strip(),
+                    "series_number": str(getattr(ds, "SeriesNumber", "") or "").strip(),
+                    "study_instance_uid": str(getattr(ds, "StudyInstanceUID", "") or "").strip(),
+                    "study_date": study_date,
+                    "study_time": study_time,
+                    "patient_id": str(getattr(ds, "PatientID", "") or "").strip(),
+                    "patient_name": str(getattr(ds, "PatientName", "") or "").strip(),
+                    "patient_birth_date": patient_birth,
+                    "series_instance_uid": series_uid,
+                }
+                manifest_path.write_text(json.dumps(manifest_data, ensure_ascii=False), encoding="utf-8")
 
             frames = _dicom_to_frames(ds, contrast_mode)
             multi = len(frames) > 1

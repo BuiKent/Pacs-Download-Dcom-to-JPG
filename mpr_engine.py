@@ -159,6 +159,11 @@ class MprCandidate:
     protocol_name: str
     sequence_name: str
     study_uid: str
+    study_date: str
+    study_time: str
+    patient_id: str
+    patient_name: str
+    patient_birth_date: str
     frame_of_reference_uid: str
     rows: int
     columns: int
@@ -188,6 +193,11 @@ class _Header:
     sequence_name: str
     study_uid: str
     study_description: str
+    study_date: str
+    study_time: str
+    patient_id: str
+    patient_name: str
+    patient_birth_date: str
     body_part: str
     frame_uid: str
     modality: str
@@ -238,6 +248,11 @@ def _read_header(path: Path) -> Optional[_Header]:
         sequence_name=_text(getattr(ds, "SequenceName", "")),
         study_uid=_text(getattr(ds, "StudyInstanceUID", "")),
         study_description=_text(getattr(ds, "StudyDescription", "")),
+        study_date=_format_date(_text(getattr(ds, "StudyDate", ""))),
+        study_time=_format_time(_text(getattr(ds, "StudyTime", ""))),
+        patient_id=_text(getattr(ds, "PatientID", "")),
+        patient_name=_text(getattr(ds, "PatientName", "")),
+        patient_birth_date=_format_date(_text(getattr(ds, "PatientBirthDate", ""))),
         body_part=_text(getattr(ds, "BodyPartExamined", "")),
         frame_uid=_text(getattr(ds, "FrameOfReferenceUID", "")),
         modality=_norm(getattr(ds, "Modality", "")),
@@ -419,6 +434,11 @@ def _candidate_from_group(headers: list[_Header], min_slices: int) -> Optional[M
         protocol_name=first.protocol_name,
         sequence_name=first.sequence_name,
         study_uid=first.study_uid,
+        study_date=first.study_date,
+        study_time=first.study_time,
+        patient_id=first.patient_id,
+        patient_name=first.patient_name,
+        patient_birth_date=first.patient_birth_date,
         frame_of_reference_uid=first.frame_uid,
         rows=first.rows,
         columns=first.columns,
@@ -490,6 +510,19 @@ def _pixel_array(path: Path) -> tuple[np.ndarray, object]:
     except Exception:
         pass
     return np.asarray(arr, dtype=np.float32), ds
+
+
+def _format_date(date_str: str) -> str:
+    date_str = date_str.strip()
+    if date_str and len(date_str) == 8 and date_str.isdigit():
+        return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+    return date_str
+
+def _format_time(time_str: str) -> str:
+    time_str = time_str.strip()
+    if time_str and len(time_str) >= 6 and time_str[:6].isdigit():
+        return f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:6]}"
+    return time_str
 
 
 def _first_number(value) -> Optional[float]:
@@ -665,6 +698,11 @@ def convert_mpr_candidate(
         "modality": candidate.modality,
         "series_number": candidate.series_number,
         "study_instance_uid": candidate.study_uid,
+        "study_date": candidate.study_date,
+        "study_time": candidate.study_time,
+        "patient_id": candidate.patient_id,
+        "patient_name": candidate.patient_name,
+        "patient_birth_date": candidate.patient_birth_date,
         "series_instance_uid": candidate.series_uid,
         "frame_of_reference_uid": candidate.frame_of_reference_uid,
         "rows": candidate.rows,
