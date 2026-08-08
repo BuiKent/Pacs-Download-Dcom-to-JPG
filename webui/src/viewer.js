@@ -935,9 +935,12 @@ function viewportElement(container, id, label, shellClass = "", seriesId = "") {
   element.dataset.seriesId = seriesId;
   element.oncontextmenu = (event) => event.preventDefault();
   // "Save the frame I am looking at" and the keyboard shortcuts must act on the
-  // pane under the pointer, not on whichever pane happens to be built first.
-  element.addEventListener("pointerenter", () => markActiveViewport(id));
+  // active pane. Focus follows explicit pointerdown, not hover.
   element.addEventListener("pointerdown", () => markActiveViewport(id));
+  element.addEventListener("dblclick", () => {
+    shell.classList.toggle("viewport-maximized");
+    setTimeout(() => renderingEngine?.resize(true, false), 0);
+  });
   shell.append(tag, element);
   container.append(shell);
   activeElements.push(element);
@@ -998,7 +1001,6 @@ function installSliceControl({
       onSlice({ viewportId: element.id, label, index: safeIndex, count: safeTotal });
     }
   };
-  control.addEventListener("pointerenter", () => markActiveViewport(element.id));
   control.addEventListener("pointerdown", (event) => {
     markActiveViewport(element.id);
     event.stopPropagation();

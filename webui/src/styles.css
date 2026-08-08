@@ -615,6 +615,15 @@ button:disabled { opacity: .35; cursor: default; }
   border: 1px solid #18232c;
   background: #000;
 }
+.viewport-shell.viewport-maximized {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  right: 2px;
+  bottom: 2px;
+  z-index: 50;
+  background: #000;
+}
 .viewport-shell:focus-within, .viewport-shell:hover { border-color: #008bc8; }
 /* The pane that "save frame" and the keyboard shortcuts act on. */
 .viewport-shell.is-active {
