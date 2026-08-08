@@ -254,6 +254,13 @@ def _read_dicom_header(path: Path) -> list[DicomHeader]:
     study_date = str(getattr(ds, "StudyDate", "") or "").strip()
     if study_date and len(study_date) == 8 and study_date.isdigit():
         study_date = f"{study_date[:4]}-{study_date[4:6]}-{study_date[6:]}"
+    
+    study_time = str(getattr(ds, "StudyTime", "") or "").strip()
+    if study_time and len(study_time) >= 6 and study_time[:6].isdigit():
+        study_time = f"{study_time[:2]}:{study_time[2:4]}:{study_time[4:6]}"
+    
+    if study_time:
+        study_date = f"{study_date} {study_time}".strip()
     study_desc = str(getattr(ds, "StudyDescription", "") or "").strip()
 
     pixel_spacing = _dicom_numbers(getattr(ds, "PixelSpacing", None), 2)
@@ -440,6 +447,7 @@ def _direct_dicom_manifest(headers: list[DicomHeader]) -> tuple[Optional[dict], 
         "series_description": first.description,
         "modality": "MR" if first.modality == "MRI" else first.modality,
         "series_number": first.series_number,
+        "study_date": first.study_date,
         "study_instance_uid": first.study_uid,
         "series_instance_uid": first.series_uid,
         "frame_of_reference_uid": first.frame_uid or first.study_uid or first.series_uid,
