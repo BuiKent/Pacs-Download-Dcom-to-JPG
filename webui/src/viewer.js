@@ -1672,6 +1672,13 @@ export async function swapComparePane(newSeries) {
     compareSync.spatialMode = detectSpatialMode(compareSync.seriesList);
   }
 
+  // The swapped pane is a different plane and a different image stack, so both
+  // cross-viewport aids have to be re-pointed. Without this the reference line
+  // silently disappears until the user toggles the button off and on again.
+  updateReferenceLineSource();
+  updateReferenceCursor();
+  renderingEngine?.render();
+
   return { paneIndex, viewportId };
 }
 

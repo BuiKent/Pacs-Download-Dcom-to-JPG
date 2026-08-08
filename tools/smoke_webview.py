@@ -155,14 +155,56 @@ def main() -> int:
                 else:
                     raise TimeoutError(f"Không dựng được compare: {compare}")
 
-                # What the two panes are allowed to do depends on their
-                # geometric relationship, not on the fact that there are two of
-                # them.  ReferenceLinesTool draws the intersection of the source
-                # plane with the target plane, so parallel (co-planar) series
-                # correctly produce no line at all — asserting one there fails a
-                # healthy archive.
-                pair_mode = (compare["diagnostics"]["referenceLines"]["pairModes"] or ["index"])[0]
+                # Compare opens on whatever two series come first, which on a
+                # real archive is usually a co-planar pair. Hot-swap pane B
+                # through the catalog until a cross-plane partner turns up, so
+                # the Reference Lines path is actually exercised — and so the
+                # swap path itself is covered, since a swap used to leave the
+                # reference line behind.
+                def read_pair_mode() -> str:
+                    modes = ((window.evaluate_js("window.__viewerDiagnostics || null") or {})
+                             .get("referenceLines", {}).get("pairModes") or ["index"])
+                    return modes[0]
+
+                pair_mode = read_pair_mode()
+                if pair_mode != "reference":
+                    candidates = window.evaluate_js(
+                        "[...document.querySelectorAll('.series-card')].map(c => c.dataset.seriesId)"
+                    ) or []
+                    window.evaluate_js(
+                        """document.getElementById('stack-b')?.dispatchEvent(
+                             new PointerEvent('pointerdown', { bubbles: true })
+                           )"""
+                    )
+                    for series_id in candidates:
+                        window.evaluate_js(
+                            "document.querySelector('[data-series-id=\"%s\"]')?.click()" % series_id
+                        )
+                        time.sleep(1.0)
+                        pair_mode = read_pair_mode()
+                        if pair_mode == "reference":
+                            compare["crossPlaneSeriesId"] = series_id
+                            break
                 compare["pairMode"] = pair_mode
+                if pair_mode != "reference" and args.require_compare:
+                    raise RuntimeError(
+                        "Không tìm được cặp series khác mặt phẳng cùng Frame of Reference, "
+                        "nên nhánh Reference Lines chưa được kiểm. Archive này không đủ "
+                        f"để dùng làm gate (pairMode={pair_mode})."
+                    )
+
+                # Re-read after the swap: counts and diagnostics are stale now.
+                compare.update(window.evaluate_js(
+                    """({
+                      sliders: [...document.querySelectorAll('#workspace .slice-control input')]
+                        .map(input => Number(input.value)),
+                      referenceLines: document.querySelectorAll(
+                        '#workspace svg line[data-id], #workspace svg line[data-uid]'
+                      ).length,
+                      diagnostics: window.__viewerDiagnostics || null,
+                      jsErrors: window.__smokeErrors || []
+                    })"""
+                ))
 
                 # Point crosslink: the tool has to be Passive, because that is
                 # the only mode that both receives mouseMove and renders. It
@@ -181,6 +223,52 @@ def main() -> int:
                             f"Con trỏ tham chiếu đang bật positionSync, sẽ kéo pane kia "
                             f"chạy theo chuột: {cursor}"
                         )
+
+                    # Mode and configuration only prove the wiring. Move the
+                    # mouse for real and count the strokes: an inert tool draws
+                    # nothing no matter how correct its configuration looks.
+                    # Sweeping across the pane is what eventually crosses the
+                    # other plane, where the second marker appears.
+                    sweep = window.evaluate_js(
+                        """(() => {
+                          const count = () => document.querySelectorAll('#workspace svg line').length;
+                          const element = document.getElementById('stack-a');
+                          if (!element) return { error: 'no stack-a' };
+                          const rect = element.getBoundingClientRect();
+                          const before = count();
+                          let max = before;
+                          const seen = [];
+                          for (let step = 1; step < 10; step += 1) {
+                            const x = rect.left + (rect.width * step) / 10;
+                            const y = rect.top + rect.height / 2;
+                            for (const type of ['mousemove', 'pointermove']) {
+                              element.dispatchEvent(new MouseEvent(type, {
+                                bubbles: true, clientX: x, clientY: y,
+                              }));
+                            }
+                            const now = count();
+                            seen.push(now);
+                            if (now > max) max = now;
+                          }
+                          return { before, max, seen };
+                        })()"""
+                    )
+                    time.sleep(0.5)
+                    sweep["after"] = window.evaluate_js(
+                        "document.querySelectorAll('#workspace svg line').length"
+                    )
+                    compare["cursorSweep"] = sweep
+                    if sweep.get("error"):
+                        raise RuntimeError(f"Không quét được con trỏ tham chiếu: {sweep}")
+                    strokes = max(sweep["max"], sweep["after"]) - sweep["before"]
+                    # The pane under the mouse always draws its own 4-stroke
+                    # crosshair; the far pane adds 4 more when the point lands
+                    # near its plane.
+                    if strokes < 4:
+                        raise RuntimeError(
+                            f"Con trỏ tham chiếu không vẽ nét nào khi rê chuột: {sweep}"
+                        )
+                    compare["cursorStrokes"] = strokes
                 if pair_mode == "reference" and compare.get("referenceLines", 0) < 1:
                     raise RuntimeError(f"Cross-plane pair vẽ thiếu Reference Line: {compare}")
                 if pair_mode == "spatial" and compare.get("referenceLines", 0) > 0:
@@ -235,6 +323,25 @@ def main() -> int:
                 compare["litPixels"] = _assert_panes_drawn(window, "compare", 2)
                 result["compareReferenceLines"] = compare
 
+            # MPR needs a series that can actually be resliced. Selecting
+            # whichever series happens to be first only proves the timeout
+            # path when that series is an 8-slice localiser.
+            mpr_series = window.evaluate_js(
+                """(() => {
+                  const card = [...document.querySelectorAll('.series-card')].find(
+                    item => item.querySelector('span')?.textContent?.trim() === '3D'
+                  );
+                  if (!card) return '';
+                  card.click();
+                  return card.dataset.seriesId || '';
+                })()"""
+            )
+            result["mprSeriesId"] = mpr_series or "none"
+            if not mpr_series:
+                raise RuntimeError(
+                    "Archive không có series nào MPR-ready, không thể kiểm nhánh MPR."
+                )
+            time.sleep(1.0)
             window.evaluate_js("document.querySelector('[data-action=\"mode-mpr\"]').click()")
             deadline = time.time() + 60
             while time.time() < deadline:

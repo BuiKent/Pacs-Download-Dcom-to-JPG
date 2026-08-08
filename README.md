@@ -22,10 +22,12 @@ python tools/smoke_webview.py --archive "<đường dẫn folder bệnh nhân>" 
 Về tầng 3: cửa sổ **phải hiện ra**, WebView2 không composite được cửa sổ ẩn nên
 Cornerstone sẽ không gắn canvas và mọi kiểm tra sẽ timeout.
 
-Nhánh compare chỉ chạy khi archive có **từ 2 series trở lên**; thiếu
-`--require-compare` thì archive một series sẽ bỏ qua nhánh đó mà vẫn báo pass.
-Nhánh này tự nhận diện quan hệ hình học của cặp series (`pairModes` trong
-`viewerDiagnostics`) rồi kiểm theo đúng quan hệ đó — **không** cần cặp cross-plane:
+Nhánh compare chỉ chạy khi archive có **từ 2 series trở lên**. Compare mở bằng
+hai series đầu danh sách, thường là cặp đồng phẳng, nên gate tự hot-swap pane B
+qua từng series cho tới khi gặp cặp **khác mặt phẳng cùng Frame of Reference**
+(việc này cũng phủ luôn đường hot-swap). Với `--require-compare`, không tìm được
+cặp như vậy là **fail** chứ không phải pass. Sau đó gate kiểm theo đúng quan hệ
+hình học của cặp (`pairModes` trong `viewerDiagnostics`):
 
 | Quan hệ cặp | Reference Line | Cuộn pane 1 |
 |---|---|---|
@@ -35,8 +37,13 @@ Nhánh này tự nhận diện quan hệ hình học của cặp series (`pairMo
 | `index` (thiếu hình học, ví dụ JPG) | không bắt buộc | pane 2 đi theo số thứ tự lát |
 
 Nhánh này cũng kiểm con trỏ tham chiếu (crosslink theo điểm): tool phải ở chế độ
-`Passive` — chế độ duy nhất vừa nhận `mouseMove` vừa vẽ — và `positionSync` phải
-tắt, nếu không pane còn lại sẽ bị kéo chạy theo chuột.
+`Passive` — chế độ duy nhất vừa nhận `mouseMove` vừa vẽ — `positionSync` phải
+tắt, và gate **rê chuột thật** ngang qua pane A rồi đếm nét vẽ. Pane dưới chuột
+luôn vẽ 4 nét; pane còn lại thêm 4 nét nữa khi điểm đó rơi gần mặt phẳng của nó.
+Dưới 4 nét nghĩa là tool đã bật nhưng không nhận sự kiện.
+
+Bước MPR chọn series có nhãn `3D` thay vì series đầu danh sách — chạy MPR trên
+một localiser 8 lát chỉ chứng minh được đường timeout.
 
 Gate phát hành đầy đủ (pixel assertion, lặp chuyển MPR/3D) là
 `python dcom_web_app.py --smoke-test`.

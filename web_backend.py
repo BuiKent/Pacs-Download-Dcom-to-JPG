@@ -145,28 +145,68 @@ def _sequence_item(group: Any, name: str) -> Any:
         return None
 
 
-def _multiframe_geometry(ds: Any, frames: int) -> tuple[
-    Optional[list[float]], Optional[list[float]], list[Optional[list[float]]]
-]:
-    """Pull enhanced-DICOM geometry out of the functional group sequences.
+def _sequence_item_at(owner: Any, name: str, index: int) -> Any:
+    """Item `index` of a top-level sequence, or None when it is out of reach."""
+    sequence = getattr(owner, name, None)
+    try:
+        return sequence[index] if sequence is not None and index < len(sequence) else None
+    except (IndexError, TypeError):
+        return None
 
-    Enhanced CT/MR keeps PixelSpacing, ImageOrientationPatient and the
-    per-frame ImagePositionPatient inside SharedFunctionalGroupsSequence /
-    PerFrameFunctionalGroupsSequence rather than at the top level, so the
-    plain getattr() reads used for classic files come back empty.
 
-    Returns (pixel_spacing, orientation, positions) where positions has one
-    entry per frame and may contain None when a frame carries no position.
+@dataclass(frozen=True)
+class FrameAttributes:
+    """Everything an enhanced frame can override on its own."""
+    position: Optional[list[float]]
+    orientation: Optional[list[float]]
+    pixel_spacing: Optional[list[float]]
+    rescale_slope: Optional[float]
+    rescale_intercept: Optional[float]
+    window_center: Optional[float]
+    window_width: Optional[float]
+
+
+def _frame_attributes(shared: Any, item: Any) -> FrameAttributes:
+    """Read one frame's attributes, letting per-frame values win over shared.
+
+    Enhanced CT/MR keeps geometry *and* the modality/VOI transforms inside the
+    functional groups. Collapsing them to the first frame's values silently
+    mislabels a file whose frames differ — which is exactly what a
+    multi-orientation or variable-rescale acquisition looks like.
     """
+    def read(name: str, attribute: str, count: Optional[int] = None) -> Any:
+        for group in (item, shared):
+            entry = _sequence_item(group, name)
+            value = getattr(entry, attribute, None) if entry is not None else None
+            if value is None:
+                continue
+            if count is None:
+                number = _dicom_number(value, math.nan)
+                if math.isfinite(number):
+                    return number
+                continue
+            numbers = _dicom_numbers(value, count)
+            if numbers is not None:
+                return numbers
+        return None
+
+    width = read("FrameVOILUTSequence", "WindowWidth")
+    return FrameAttributes(
+        position=read("PlanePositionSequence", "ImagePositionPatient", 3),
+        orientation=read("PlaneOrientationSequence", "ImageOrientationPatient", 6),
+        pixel_spacing=read("PixelMeasuresSequence", "PixelSpacing", 2),
+        rescale_slope=read("PixelValueTransformationSequence", "RescaleSlope"),
+        rescale_intercept=read("PixelValueTransformationSequence", "RescaleIntercept"),
+        window_center=read("FrameVOILUTSequence", "WindowCenter"),
+        window_width=width if width is None or width > 0 else None,
+    )
+
+
+def _multiframe_attributes(ds: Any, frames: int) -> list[FrameAttributes]:
+    """One FrameAttributes per frame, per-frame values overriding shared ones."""
     shared = _sequence_item(ds, "SharedFunctionalGroupsSequence")
     per_frame = getattr(ds, "PerFrameFunctionalGroupsSequence", None)
-
-    measures = _sequence_item(shared, "PixelMeasuresSequence")
-    spacing = _dicom_numbers(getattr(measures, "PixelSpacing", None), 2)
-    plane = _sequence_item(shared, "PlaneOrientationSequence")
-    orientation = _dicom_numbers(getattr(plane, "ImageOrientationPatient", None), 6)
-
-    positions: list[Optional[list[float]]] = []
+    result: list[FrameAttributes] = []
     for index in range(frames):
         item = None
         try:
@@ -174,19 +214,8 @@ def _multiframe_geometry(ds: Any, frames: int) -> tuple[
                 item = per_frame[index]
         except TypeError:
             item = None
-        position_group = _sequence_item(item, "PlanePositionSequence")
-        positions.append(
-            _dicom_numbers(getattr(position_group, "ImagePositionPatient", None), 3)
-        )
-        if spacing is None:
-            frame_measures = _sequence_item(item, "PixelMeasuresSequence")
-            spacing = _dicom_numbers(getattr(frame_measures, "PixelSpacing", None), 2)
-        if orientation is None:
-            frame_plane = _sequence_item(item, "PlaneOrientationSequence")
-            orientation = _dicom_numbers(
-                getattr(frame_plane, "ImageOrientationPatient", None), 6
-            )
-    return spacing, orientation, positions
+        result.append(_frame_attributes(shared, item))
+    return result
 
 
 def _read_dicom_header(path: Path) -> list[DicomHeader]:
@@ -232,16 +261,21 @@ def _read_dicom_header(path: Path) -> list[DicomHeader]:
     position = _dicom_numbers(getattr(ds, "ImagePositionPatient", None), 3)
     instance_number = _dicom_number(getattr(ds, "InstanceNumber", None), math.inf)
 
-    # Enhanced multi-frame keeps geometry in the functional groups. Expanding
-    # one header per frame lets ordering, manifest building and crosslinking
-    # treat frames exactly like the slices of a classic series.
-    positions: list[Optional[list[float]]] = [position]
-    if frames > 1:
-        shared_spacing, shared_orientation, positions = _multiframe_geometry(ds, frames)
-        pixel_spacing = pixel_spacing or shared_spacing
-        orientation = orientation or shared_orientation
+    slope = _dicom_number(getattr(ds, "RescaleSlope", None), 1.0)
+    intercept = _dicom_number(getattr(ds, "RescaleIntercept", None), 0.0)
 
-    def build(frame_index: int, frame_position: Optional[list[float]]) -> DicomHeader:
+    # Enhanced multi-frame keeps geometry *and* the modality/VOI transforms in
+    # the functional groups. Expanding one header per frame — each carrying its
+    # own values — lets ordering, manifest building and crosslinking treat
+    # frames exactly like the slices of a classic series, and keeps a file
+    # whose frames genuinely differ from being flattened into a false average.
+    blank = FrameAttributes(None, None, None, None, None, None, None)
+    per_frame: list[FrameAttributes] = [blank] * frames
+    if frames > 1:
+        per_frame = _multiframe_attributes(ds, frames)
+
+    def build(frame_index: int) -> DicomHeader:
+        frame = per_frame[frame_index]
         return DicomHeader(
             path=path,
             series_uid=series_uid,
@@ -258,24 +292,32 @@ def _read_dicom_header(path: Path) -> list[DicomHeader]:
             bits_stored=int(getattr(ds, "BitsStored", 16) or 16),
             high_bit=int(getattr(ds, "HighBit", 15) or 15),
             pixel_representation=int(getattr(ds, "PixelRepresentation", 0) or 0),
-            pixel_spacing=pixel_spacing,
-            orientation=orientation,
-            position=frame_position,
-            # Every frame of one file shares a single InstanceNumber, so the
-            # frame index is what keeps their order stable.
-            instance_number=instance_number if frames == 1 else float(frame_index),
+            pixel_spacing=frame.pixel_spacing or pixel_spacing,
+            orientation=frame.orientation or orientation,
+            position=frame.position or position,
+            # Frames of one file share an InstanceNumber; frame_index breaks
+            # the tie without disturbing the order between separate files.
+            instance_number=instance_number,
             sop_uid=str(getattr(ds, "SOPInstanceUID", "") or ""),
-            rescale_slope=_dicom_number(getattr(ds, "RescaleSlope", None), 1.0),
-            rescale_intercept=_dicom_number(getattr(ds, "RescaleIntercept", None), 0.0),
-            window_center=window_center if math.isfinite(window_center) else None,
-            window_width=window_width if math.isfinite(window_width) and window_width > 0 else None,
+            rescale_slope=frame.rescale_slope if frame.rescale_slope is not None else slope,
+            rescale_intercept=(
+                frame.rescale_intercept if frame.rescale_intercept is not None else intercept
+            ),
+            window_center=(
+                frame.window_center if frame.window_center is not None
+                else (window_center if math.isfinite(window_center) else None)
+            ),
+            window_width=(
+                frame.window_width if frame.window_width is not None
+                else (window_width if math.isfinite(window_width) and window_width > 0 else None)
+            ),
             study_date=study_date,
             study_desc=study_desc,
             number_of_frames=frames,
             frame_index=frame_index,
         )
 
-    return [build(index, positions[index]) for index in range(frames)]
+    return [build(index) for index in range(frames)]
 
 
 def _dicom_vectors_close(left: Optional[list[float]], right: Optional[list[float]]) -> bool:
@@ -285,8 +327,13 @@ def _dicom_vectors_close(left: Optional[list[float]], right: Optional[list[float
 
 
 def _ordered_dicom_headers(headers: list[DicomHeader]) -> list[DicomHeader]:
+    # frame_index is the last key, never the first: without it the frames of
+    # two multi-frame files interleave as A0, B0, A1, B1 instead of following
+    # their own file.
     if not headers or not headers[0].orientation or any(item.position is None for item in headers):
-        return sorted(headers, key=lambda item: (item.instance_number, str(item.path).casefold()))
+        return sorted(headers, key=lambda item: (
+            item.instance_number, str(item.path).casefold(), item.frame_index,
+        ))
     orientation = headers[0].orientation
     row = orientation[:3]
     column = orientation[3:]
@@ -305,6 +352,7 @@ def _ordered_dicom_headers(headers: list[DicomHeader]) -> list[DicomHeader]:
             sum(a * b for a, b in zip(item.position or [], normal)),
             item.instance_number,
             str(item.path).casefold(),
+            item.frame_index,
         ),
     )
 
@@ -414,6 +462,28 @@ def _direct_dicom_manifest(headers: list[DicomHeader]) -> tuple[Optional[dict], 
     return manifest, True, ""
 
 
+def _palette_lut_bits(ds: Any) -> int:
+    """Bits per entry of the palette colour LUT.
+
+    Third value of the Palette Color Lookup Table Descriptor. Falls back to 16
+    because that is what an out-of-spec descriptor almost always turns out to
+    be, and over-estimating only darkens rather than saturating to white.
+    """
+    for name in (
+        "RedPaletteColorLookupTableDescriptor",
+        "GreenPaletteColorLookupTableDescriptor",
+        "BluePaletteColorLookupTableDescriptor",
+    ):
+        descriptor = getattr(ds, name, None)
+        try:
+            bits = int(descriptor[2])
+        except (IndexError, TypeError, ValueError):
+            continue
+        if bits in {8, 16}:
+            return bits
+    return 16
+
+
 def _dicom_color_payload(ds: Any, pixels: Any, photometric: str) -> tuple[bytes, dict[str, str]]:
     """Normalise any accepted colour form to interleaved 8-bit RGB.
 
@@ -422,12 +492,18 @@ def _dicom_color_payload(ds: Any, pixels: Any, photometric: str) -> tuple[bytes,
     space instead of going through the modality LUT path.
     """
     import numpy as np
-    from pydicom.pixels import apply_color_lut, convert_color_space
+    from pydicom.pixels import apply_color_lut
 
+    # pydicom already hands back RGB for every YBR form it can decode, so
+    # calling convert_color_space here would apply the transform a second time
+    # and tint the whole image. Only palette indices still need expanding.
+    sample_bits = int(getattr(ds, "BitsStored", 8) or 8)
     if photometric == "PALETTE COLOR":
         pixels = np.asarray(apply_color_lut(pixels, ds))
-    elif photometric.startswith("YBR"):
-        pixels = np.asarray(convert_color_space(pixels, photometric, "RGB"))
+        # The LUT entries have their own depth, declared in the third value of
+        # the descriptor. Scaling 16-bit entries by the *index* depth instead
+        # saturates almost everything to white.
+        sample_bits = _palette_lut_bits(ds)
 
     if pixels.ndim != 3 or pixels.shape[2] < 3:
         raise ValueError(
@@ -435,10 +511,7 @@ def _dicom_color_payload(ds: Any, pixels: Any, photometric: str) -> tuple[bytes,
         )
     pixels = pixels[:, :, :3]
     if pixels.dtype != np.uint8:
-        # Palette LUTs are often 16-bit; scale by the declared LUT depth rather
-        # than by the sample maximum, which would stretch a dark frame.
-        depth = 2 ** int(getattr(ds, "BitsStored", 16) or 16) - 1
-        top = float(depth) if depth > 0 else float(pixels.max() or 1)
+        top = float(2 ** max(1, sample_bits) - 1)
         pixels = np.clip(pixels.astype("float32") / top * 255.0, 0, 255).round().astype("uint8")
     pixels = np.ascontiguousarray(pixels)
     headers = {
@@ -505,6 +578,23 @@ def _dicom_pixel_payload(path: Path, frame: int = 0) -> tuple[bytes, dict[str, s
     intercept = _dicom_number(getattr(ds, "RescaleIntercept", None), 0.0)
     center = _dicom_number(getattr(ds, "WindowCenter", None), math.nan)
     width = _dicom_number(getattr(ds, "WindowWidth", None), math.nan)
+    if frames > 1:
+        # Enhanced CT/MR states the modality LUT in
+        # PixelValueTransformationSequence, not at the top level. Reporting the
+        # 1/0 default there hands the viewer stored values while it believes it
+        # is windowing Hounsfield units.
+        attributes = _frame_attributes(
+            _sequence_item(ds, "SharedFunctionalGroupsSequence"),
+            _sequence_item_at(ds, "PerFrameFunctionalGroupsSequence", frame),
+        )
+        if attributes.rescale_slope is not None:
+            slope = attributes.rescale_slope
+        if attributes.rescale_intercept is not None:
+            intercept = attributes.rescale_intercept
+        if attributes.window_center is not None:
+            center = attributes.window_center
+        if attributes.window_width is not None:
+            width = attributes.window_width
     physical_min = raw_min * slope + intercept
     physical_max = raw_max * slope + intercept
     if not math.isfinite(center):
@@ -722,7 +812,15 @@ class ArchiveCatalog:
             manifest, ready, reason = _direct_dicom_manifest(headers_ordered)
             first = headers_ordered[0]
             multiframe = any(item.number_of_frames > 1 for item in headers_ordered)
-            if multiframe and manifest is None:
+            # Only claim "no per-frame position" when that is actually what
+            # happened. Colour pixels or invalid geometry produce their own
+            # reason, and overwriting it hides the real cause.
+            if (
+                multiframe
+                and manifest is None
+                and first.photometric in GRAYSCALE_PHOTOMETRICS
+                and all(item.position is None for item in headers_ordered)
+            ):
                 reason = (
                     f"DICOM multi-frame ({first.number_of_frames} khung): xem được "
                     "từng khung nhưng thiếu vị trí 3D theo khung "

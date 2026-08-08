@@ -665,6 +665,15 @@ function bindEvents() {
         if (state.windowPreset !== "full") {
           await applyWindowPreset(state.windowPreset);
         }
+        // The new pane can change the pair relationship, so the scroll-lock
+        // state and the diagnostics a gate reads must be refreshed too.
+        window.__viewerDiagnostics = viewerDiagnostics();
+        state.scrollSync = compareScrollSyncState().enabled;
+        const syncButton = app.querySelector("[data-action='scroll-sync']");
+        if (syncButton) {
+          syncButton.classList.toggle("active", state.scrollSync);
+          syncButton.setAttribute("aria-pressed", state.scrollSync ? "true" : "false");
+        }
         return;
       }
 
