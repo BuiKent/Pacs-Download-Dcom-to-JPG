@@ -1012,9 +1012,23 @@ function viewportElement(container, id, label, shellClass = "", seriesId = "") {
   element.className = "viewport";
   element.dataset.seriesId = seriesId;
   element.oncontextmenu = (event) => event.preventDefault();
-  // "Save the frame I am looking at" and the keyboard shortcuts must act on the
-  // active pane. Focus follows explicit pointerdown, not hover.
-  element.addEventListener("pointerdown", () => markActiveViewport(id));
+  let rightPressStart = null;
+  element.addEventListener("pointerdown", (event) => {
+    markActiveViewport(id);
+    if (event.button === 2) {
+      rightPressStart = { x: event.clientX, y: event.clientY, time: Date.now() };
+    }
+  });
+  element.addEventListener("pointerup", (event) => {
+    if (event.button !== 2 || !rightPressStart) return;
+    const dx = event.clientX - rightPressStart.x;
+    const dy = event.clientY - rightPressStart.y;
+    const moved = Math.hypot(dx, dy);
+    const elapsed = Date.now() - rightPressStart.time;
+    rightPressStart = null;
+    if (moved > 4 || elapsed > 400) return;
+    recenterAtClientPoint(id, event.clientX, event.clientY);
+  });
   element.addEventListener("dblclick", () => {
     if (maximizedViewportId && maximizedViewportId !== id) {
       document.getElementById(maximizedViewportId)?.closest(".viewport-shell")?.classList.remove("viewport-maximized");
@@ -1123,6 +1137,27 @@ function markActiveViewport(viewportId) {
   }
   // When focus moves, the reference-line source must follow.
   updateReferenceLineSource();
+}
+
+function recenterAtClientPoint(viewportId, clientX, clientY) {
+  const viewport = renderingEngine?.getViewport(viewportId);
+  if (!viewport) return;
+  const rect = viewport.element.getBoundingClientRect();
+  const canvasPos = [clientX - rect.left, clientY - rect.top];
+  let worldPos;
+  try {
+    worldPos = viewport.canvasToWorld(canvasPos);
+  } catch (_) {
+    return; // Camera chưa sẵn sàng (đang chuyển layout).
+  }
+  // MPR/3D: có crosshair dùng chung giữa các mặt phẳng — nhảy điểm này ở cả 3.
+  const crosshairs = toolGroup?.getToolInstance?.(CrosshairsTool.toolName);
+  if (crosshairs?.setToolCenter) {
+    crosshairs.setToolCenter(worldPos, true);
+    renderingEngine?.render();
+  }
+  // single/compare/montage: không có crosshair nên không làm gì thêm ở đây;
+  // markActiveViewport() đã chạy ở pointerdown rồi nên vẫn "chọn xung" đúng.
 }
 
 export function activeViewport() {
