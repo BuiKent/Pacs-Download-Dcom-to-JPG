@@ -976,21 +976,16 @@ function updateViewportOverlays(viewportId, tl, tr, bl, br, ot, ob, ol, or) {
     if (camera.viewPlaneNormal && camera.viewUp) {
       const vpn = camera.viewPlaneNormal;
       const vUp = camera.viewUp;
-      const expand = (str) => {
-        const map = { "A": "Anterior", "P": "Posterior", "S": "Superior", "I": "Inferior" };
-        return map[str] || str;
-      };
-      
-      ot.innerText = expand(getOrientationStringLPS(vUp));
-      ob.innerText = expand(getOrientationStringLPS([-vUp[0], -vUp[1], -vUp[2]]));
+      ot.innerText = getOrientationStringLPS(vUp);
+      ob.innerText = getOrientationStringLPS([-vUp[0], -vUp[1], -vUp[2]]);
       
       const rightVec = [
         vUp[1] * vpn[2] - vUp[2] * vpn[1],
         vUp[2] * vpn[0] - vUp[0] * vpn[2],
         vUp[0] * vpn[1] - vUp[1] * vpn[0]
       ];
-      or.innerText = expand(getOrientationStringLPS(rightVec));
-      ol.innerText = expand(getOrientationStringLPS([-rightVec[0], -rightVec[1], -rightVec[2]]));
+      or.innerText = getOrientationStringLPS(rightVec);
+      ol.innerText = getOrientationStringLPS([-rightVec[0], -rightVec[1], -rightVec[2]]);
       
       const normalStr = getOrientationStringLPS(vpn);
       if (normalStr) {
