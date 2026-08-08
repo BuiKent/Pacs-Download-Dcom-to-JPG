@@ -1161,7 +1161,7 @@ function recenterAtClientPoint(viewportId, clientX, clientY) {
     let synced = false;
     for (const vp of allViewports) {
       if (vp.id === viewportId || vp.type !== "stack") continue;
-      const index = toolUtilities.getClosestStackImageIndexForPoint(worldPos, vp);
+      const index = utilities.getClosestStackImageIndexForPoint(worldPos, vp);
       if (index !== null && index !== undefined) {
         vp.setImageIdIndex(index);
         synced = true;
