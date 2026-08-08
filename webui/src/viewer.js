@@ -976,16 +976,21 @@ function updateViewportOverlays(viewportId, tl, tr, bl, br, ot, ob, ol, or) {
     if (camera.viewPlaneNormal && camera.viewUp) {
       const vpn = camera.viewPlaneNormal;
       const vUp = camera.viewUp;
-      ot.innerText = getOrientationStringLPS(vUp);
-      ob.innerText = getOrientationStringLPS([-vUp[0], -vUp[1], -vUp[2]]);
+      const expand = (str) => {
+        const map = { "A": "Anterior", "P": "Posterior", "S": "Superior", "I": "Inferior" };
+        return map[str] || str;
+      };
+      
+      ot.innerText = expand(getOrientationStringLPS(vUp));
+      ob.innerText = expand(getOrientationStringLPS([-vUp[0], -vUp[1], -vUp[2]]));
       
       const rightVec = [
         vUp[1] * vpn[2] - vUp[2] * vpn[1],
         vUp[2] * vpn[0] - vUp[0] * vpn[2],
         vUp[0] * vpn[1] - vUp[1] * vpn[0]
       ];
-      or.innerText = getOrientationStringLPS(rightVec);
-      ol.innerText = getOrientationStringLPS([-rightVec[0], -rightVec[1], -rightVec[2]]);
+      or.innerText = expand(getOrientationStringLPS(rightVec));
+      ol.innerText = expand(getOrientationStringLPS([-rightVec[0], -rightVec[1], -rightVec[2]]));
       
       const normalStr = getOrientationStringLPS(vpn);
       if (normalStr) {
@@ -1096,9 +1101,34 @@ function installSliceControl({
   if (!shell) return;
   const control = document.createElement("label");
   control.className = "slice-control";
-  control.innerHTML = `<input type="range" min="0" max="${count - 1}" step="1"
-    aria-label="Lát ảnh ${label}">`;
+  control.innerHTML = `<button type="button" class="cine-btn" title="Chạy phim">▶</button>
+    <input type="range" min="0" max="${count - 1}" step="1" aria-label="Lát ảnh ${label}">`;
   const input = control.querySelector("input");
+  const cineBtn = control.querySelector(".cine-btn");
+  let localCineTimer = null;
+  
+  cineBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    markActiveViewport(element.id);
+    if (localCineTimer) {
+      clearInterval(localCineTimer);
+      localCineTimer = null;
+      cineBtn.textContent = "▶";
+      cineBtn.title = "Chạy phim";
+    } else {
+      cineBtn.textContent = "■";
+      cineBtn.title = "Dừng phim";
+      localCineTimer = setInterval(() => {
+        const total = viewport.getImageIds?.().length || count;
+        let current = viewport.getCurrentImageIdIndex?.() ?? 0;
+        let next = (current + 1) % total;
+        if (typeof viewport.setImageIdIndex === "function") {
+          viewport.setImageIdIndex(next);
+          viewport.render();
+        }
+      }, 90);
+    }
+  });
   const update = (index, total = count) => {
     const safeTotal = Math.max(1, Number(total) || count);
     const safeIndex = Math.max(0, Math.min(Number(index) || 0, safeTotal - 1));
