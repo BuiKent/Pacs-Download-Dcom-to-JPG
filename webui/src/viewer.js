@@ -1097,16 +1097,13 @@ function installSliceControl({
   const control = document.createElement("label");
   control.className = "slice-control";
   control.innerHTML = `<input type="range" min="0" max="${count - 1}" step="1"
-    aria-label="Lát ảnh ${label}"><output></output>`;
+    aria-label="Lát ảnh ${label}">`;
   const input = control.querySelector("input");
-  const output = control.querySelector("output");
   const update = (index, total = count) => {
     const safeTotal = Math.max(1, Number(total) || count);
     const safeIndex = Math.max(0, Math.min(Number(index) || 0, safeTotal - 1));
     input.max = String(safeTotal - 1);
     input.value = String(safeIndex);
-    output.textContent = `${safeIndex + 1}/${safeTotal}`;
-    if (labelElement) labelElement.textContent = `${label} · ${safeIndex + 1}/${safeTotal}`;
     if (activeViewportId === element.id) {
       onSlice({ viewportId: element.id, label, index: safeIndex, count: safeTotal });
     }

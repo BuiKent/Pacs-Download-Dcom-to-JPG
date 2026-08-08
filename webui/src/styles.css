@@ -720,7 +720,7 @@ button:disabled { opacity: .35; cursor: default; }
 .viewport-shell.is-active .slice-control,
 .slice-control:focus-within { opacity: 1; }
 .slice-control input { min-width: 40px; width: 100%; accent-color: #20b7ef; }
-.slice-control output { min-width: 48px; text-align: right; font: 10px Consolas, monospace; }
+
 .viewer-loading, .empty-state, .fatal-error {
   position: absolute;
   inset: 0;
