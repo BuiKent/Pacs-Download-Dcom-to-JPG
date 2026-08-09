@@ -3365,10 +3365,10 @@ ${S}`.trim();let E="";if(typeof l.getCurrentImageIdIndex=="function"){const R=l.
           </label>
         </div>
         <div class="header-actions">
-          ${He("toggle-download",_.downloadOpen?"⇤":"⇥",$(_.downloadOpen?"Thu gọn khu tải phim":"Mở khu tải phim"),_.downloadOpen,!1,$("Tải phim"))}
+          <span style="display: none;">${He("toggle-download",_.downloadOpen?"⇤":"⇥",$(_.downloadOpen?"Thu gọn khu tải phim":"Mở khu tải phim"),_.downloadOpen,!1,$("Tải phim"))}</span>
           ${He("choose-archive",ze.folder,$("Mở folder DICOM hoặc JPG/PNG trong viewer"))}
           ${He("refresh-archive","⟳",$("Quét lại thư mục hiện tại"),!1,!_.archive.root)}
-          <button class="soft-button" data-action="toggle-language"
+          <button class="soft-button" data-action="toggle-language" style="display: none;"
             title="${Q($("Chuyển sang tiếng Anh"))}">${ll()==="en"?"VI":"EN"}</button>
           <button class="soft-button" data-action="classic"
             title="${Q($("Khởi động lại bằng --classic"))}">Classic</button>
@@ -3377,21 +3377,21 @@ ${S}`.trim();let E="";if(typeof l.getCurrentImageIdIndex=="function"){const R=l.
 
       <aside class="download-panel">
         <div class="panel-title"><b>${Q($("TẢI MRI / CT"))}</b>
-          <button data-action="toggle-download" title="${Q($("Thu gọn khu tải phim"))}">×</button></div>
+          <button data-action="toggle-download" style="display: none;" title="${Q($("Thu gọn khu tải phim"))}">×</button></div>
         <label class="field history-field">
           <select data-field="history" title="${Q($("Mở lại thư mục đã tải hoặc đã xem"))}"
             ${_.history.length?"":"disabled"}>${xy()}</select>
         </label>
-        <section class="dicom-source-card">
+        <section class="dicom-source-card" style="display: none;">
           <button data-action="import-dicom-folder"
             title="${Q($("Tính năng xuất JPG riêng; không dùng để mở DICOM trong viewer."))}">${Q($("Chuyển Dcom → JPG"))}</button>
         </section>
-        <div class="hospital-row">
+        <div class="hospital-row" style="display: none;">
           ${(_.bootstrap?.hospitals||[]).map((r,i)=>`<label><input type="radio" name="hospital" value="${r.id}"
           ${_.patient?.hospitalKey?r.id===_.patient.hospitalKey?"checked":"":r.isDefault??i===0?"checked":""}>
               ${Q(r.name)}</label>`).join("")}
         </div>
-        <div class="field-row">
+        <div class="field-row" style="display: none;">
           <fieldset class="boxed-field">
             <legend>${Q($("Mã bệnh nhân"))}</legend>
             <span class="clearable">
@@ -3403,10 +3403,10 @@ ${S}`.trim();let E="";if(typeof l.getCurrentImageIdIndex=="function"){const R=l.
           <button data-action="search"
             title="${Q($("Tìm các ca MRI/CT của mã bệnh nhân này trên RIS"))}">${Q($("Tìm ca"))}</button>
         </div>
-        <div class="patient-status">${My()}</div>
-        <div class="study-list">${Oy()}</div>
+        <div class="patient-status" style="display: none;">${My()}</div>
+        <div class="study-list" style="display: none;">${Oy()}</div>
         <div class="download-actions">
-          <button class="primary" data-action="download-selected"
+          <button class="primary" data-action="download-selected" style="display: none;"
             title="${Q($("Tải các ca đang tích ở danh sách trên"))}"
             ${_.studies.some(r=>r.local_status!=="downloaded")&&!_.patient?.nameConflict?"":"disabled"}>${Q($("Tải ca đã chọn"))}</button>
           <button class="danger" data-action="stop-job"
@@ -3427,11 +3427,11 @@ ${S}`.trim();let E="";if(typeof l.getCurrentImageIdIndex=="function"){const R=l.
             title="${Q($("Thử lại link vừa dán và gộp vào folder cũ, bỏ qua ảnh đã có"))}">${Q($("Thử lại"))}</button>
         </div>
         <div class="download-options">
-          <label title="${Q($("Chất lượng JPG (70-100)"))}">JPG
+          <label style="display: none;" title="${Q($("Chất lượng JPG (70-100)"))}">JPG
             <input id="quality" type="number" min="70" max="100" value="100"></label>
           <label><input id="download-all-files" type="checkbox" ${_.downloadAllFiles?"checked":""}>
             ${Q($("Tải tất cả file"))}</label>
-          <label><input id="show-browser" type="checkbox"> ${Q($("Hiện trình duyệt tải"))}</label>
+          <label style="display: none;"><input id="show-browser" type="checkbox"> ${Q($("Hiện trình duyệt tải"))}</label>
         </div>
         <div id="series-picker" class="series-picker ${_.downloadAllFiles?"hidden":""}">
           ${Ry()}

@@ -409,17 +409,17 @@ function render() {
           </label>
         </div>
         <div class="header-actions">
-          ${iconButton(
+          <span style="display: none;">${iconButton(
       "toggle-download",
       state.downloadOpen ? "⇤" : "⇥",
       t(state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim"),
       state.downloadOpen,
       false,
       t("Tải phim"),
-    )}
+    )}</span>
           ${iconButton("choose-archive", icons.folder, t("Mở folder DICOM hoặc JPG/PNG trong viewer"))}
           ${iconButton("refresh-archive", "⟳", t("Quét lại thư mục hiện tại"), false, !state.archive.root)}
-          <button class="soft-button" data-action="toggle-language"
+          <button class="soft-button" data-action="toggle-language" style="display: none;"
             title="${escapeHtml(t("Chuyển sang tiếng Anh"))}">${getLanguage() === "en" ? "VI" : "EN"}</button>
           <button class="soft-button" data-action="classic"
             title="${escapeHtml(t("Khởi động lại bằng --classic"))}">Classic</button>
@@ -428,22 +428,22 @@ function render() {
 
       <aside class="download-panel">
         <div class="panel-title"><b>${escapeHtml(t("TẢI MRI / CT"))}</b>
-          <button data-action="toggle-download" title="${escapeHtml(t("Thu gọn khu tải phim"))}">×</button></div>
+          <button data-action="toggle-download" style="display: none;" title="${escapeHtml(t("Thu gọn khu tải phim"))}">×</button></div>
         <label class="field history-field">
           <select data-field="history" title="${escapeHtml(t("Mở lại thư mục đã tải hoặc đã xem"))}"
             ${state.history.length ? "" : "disabled"}>${renderHistoryOptions()}</select>
         </label>
-        <section class="dicom-source-card">
+        <section class="dicom-source-card" style="display: none;">
           <button data-action="import-dicom-folder"
             title="${escapeHtml(t("Tính năng xuất JPG riêng; không dùng để mở DICOM trong viewer."))}">${escapeHtml(t("Chuyển Dcom → JPG"))}</button>
         </section>
-        <div class="hospital-row">
+        <div class="hospital-row" style="display: none;">
           ${(state.bootstrap?.hospitals || []).map((item, index) =>
       `<label><input type="radio" name="hospital" value="${item.id}"
           ${state.patient?.hospitalKey ? (item.id === state.patient.hospitalKey ? "checked" : "") : ((item.isDefault ?? (index === 0)) ? "checked" : "")}>
               ${escapeHtml(item.name)}</label>`).join("")}
         </div>
-        <div class="field-row">
+        <div class="field-row" style="display: none;">
           <fieldset class="boxed-field">
             <legend>${escapeHtml(t("Mã bệnh nhân"))}</legend>
             <span class="clearable">
@@ -455,10 +455,10 @@ function render() {
           <button data-action="search"
             title="${escapeHtml(t("Tìm các ca MRI/CT của mã bệnh nhân này trên RIS"))}">${escapeHtml(t("Tìm ca"))}</button>
         </div>
-        <div class="patient-status">${renderPatientStatus()}</div>
-        <div class="study-list">${renderStudies()}</div>
+        <div class="patient-status" style="display: none;">${renderPatientStatus()}</div>
+        <div class="study-list" style="display: none;">${renderStudies()}</div>
         <div class="download-actions">
-          <button class="primary" data-action="download-selected"
+          <button class="primary" data-action="download-selected" style="display: none;"
             title="${escapeHtml(t("Tải các ca đang tích ở danh sách trên"))}"
             ${state.studies.some((item) => item.local_status !== "downloaded") && !state.patient?.nameConflict ? "" : "disabled"}>${escapeHtml(t("Tải ca đã chọn"))}</button>
           <button class="danger" data-action="stop-job"
@@ -479,11 +479,11 @@ function render() {
             title="${escapeHtml(t("Thử lại link vừa dán và gộp vào folder cũ, bỏ qua ảnh đã có"))}">${escapeHtml(t("Thử lại"))}</button>
         </div>
         <div class="download-options">
-          <label title="${escapeHtml(t("Chất lượng JPG (70-100)"))}">JPG
+          <label style="display: none;" title="${escapeHtml(t("Chất lượng JPG (70-100)"))}">JPG
             <input id="quality" type="number" min="70" max="100" value="100"></label>
           <label><input id="download-all-files" type="checkbox" ${state.downloadAllFiles ? "checked" : ""}>
             ${escapeHtml(t("Tải tất cả file"))}</label>
-          <label><input id="show-browser" type="checkbox"> ${escapeHtml(t("Hiện trình duyệt tải"))}</label>
+          <label style="display: none;"><input id="show-browser" type="checkbox"> ${escapeHtml(t("Hiện trình duyệt tải"))}</label>
         </div>
         <div id="series-picker" class="series-picker ${state.downloadAllFiles ? "hidden" : ""}">
           ${renderSeriesPicker()}
