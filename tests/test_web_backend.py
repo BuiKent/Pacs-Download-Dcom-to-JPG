@@ -524,6 +524,57 @@ class CatalogTests(unittest.TestCase):
             self.assertFalse(series["mprReady"])
             self.assertEqual("2023-05-01", series.get("studyDate"))
 
+    def test_legacy_generic_jpg_restores_crosslink_geometry_from_sibling_dicom(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dicom = root / "DICOM"
+            dicom.mkdir()
+            series_uid = generate_uid()
+            frame_uid = generate_uid()
+            write_local_dicom(
+                dicom / "slice-1.dcm",
+                series_uid=series_uid,
+                frame_uid=frame_uid,
+                instance_number=1,
+                position=0.0,
+            )
+            write_local_dicom(
+                dicom / "slice-2.dcm",
+                series_uid=series_uid,
+                frame_uid=frame_uid,
+                instance_number=2,
+                position=5.0,
+            )
+
+            jpg_root = root / "JPG"
+            folder = jpg_root / "Series_1_LOCAL_TEST"
+            folder.mkdir(parents=True)
+            Image.new("L", (4, 4)).save(folder / "IM_0001.jpg")
+            Image.new("L", (4, 4)).save(folder / "IM_0002.jpg")
+            (folder / "mpr-volume.json").write_text(json.dumps({
+                "format": "dcom-mpr-jpg",
+                "version": 1,
+                "series_type": "JPG_GENERIC",
+                "series_description": "LOCAL TEST",
+                "modality": "MR",
+                "series_instance_uid": series_uid,
+            }), encoding="utf-8")
+
+            catalog = ArchiveCatalog()
+            series = catalog.open(jpg_root)["series"][0]
+            self.assertFalse(series["mprReady"])
+            self.assertIn("geometry", series["mprReason"])
+            self.assertEqual(frame_uid, series["geometry"]["frameOfReferenceUID"])
+            manifest = catalog.get(series["id"]).manifest
+            self.assertEqual(
+                ["IM_0001.jpg", "IM_0002.jpg"],
+                [item["file"] for item in manifest["ordered_slices"]],
+            )
+            self.assertEqual(
+                [0.0, 5.0],
+                [item["distance"] for item in manifest["ordered_slices"]],
+            )
+
     def test_same_folder_names_do_not_collide(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

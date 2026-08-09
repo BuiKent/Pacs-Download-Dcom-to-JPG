@@ -11,6 +11,7 @@ from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage, generate_uid
 
 import mpr_engine
 import dcom_pipeline
+from web_backend import ArchiveCatalog
 
 
 def _write_series(
@@ -27,10 +28,12 @@ def _write_series(
     window: tuple[float, float] | None = None,
     rescale: tuple[float, float] | None = None,
     pixel_fill: np.ndarray | None = None,
+    study_uid: str | None = None,
+    frame_uid: str | None = None,
 ) -> str:
     series_uid = generate_uid()
-    study_uid = generate_uid()
-    frame_uid = generate_uid()
+    study_uid = study_uid or generate_uid()
+    frame_uid = frame_uid or generate_uid()
     folder = base / f"series-{series_number}-{series_uid[-8:]}"
     folder.mkdir(parents=True)
     for index in range(count):
@@ -289,7 +292,10 @@ class MprPackageTests(unittest.TestCase):
             )
             self.assertEqual(202, stats.mpr_converted)
             self.assertEqual(204, stats.converted)
-            mpr_folders = [p for p in jpg.iterdir() if mpr_engine.read_manifest(p)]
+            mpr_folders = [
+                p for p in jpg.iterdir()
+                if (mpr_engine.read_manifest(p) or {}).get("series_type") != "JPG_GENERIC"
+            ]
             self.assertEqual(2, len(mpr_folders))
             manifests = [mpr_engine.read_manifest(path) for path in mpr_folders]
             self.assertEqual(
@@ -303,10 +309,88 @@ class MprPackageTests(unittest.TestCase):
             self.assertEqual(2, len({path.name for path in mpr_folders}))
             self.assertTrue(all(len(mpr_engine.manifest_image_files(path)) == 101 for path in mpr_folders))
             self.assertTrue(all(not list(path.glob("IM_*.jpg")) for path in mpr_folders))
-            normal_folders = [p for p in jpg.iterdir() if not mpr_engine.read_manifest(p)]
+            normal_folders = [
+                p for p in jpg.iterdir()
+                if (mpr_engine.read_manifest(p) or {}).get("series_type") == "JPG_GENERIC"
+            ]
             self.assertEqual(1, len(normal_folders))
             self.assertEqual(2, len(list(normal_folders[0].glob("IM_*.jpg"))))
             self.assertEqual("Series_2_Ax T2 FLAIR", normal_folders[0].name)
+
+    def test_generic_jpg_keeps_real_geometry_for_2d_crosslink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dicom = root / "dicom"
+            study_uid = generate_uid()
+            frame_uid = generate_uid()
+            _write_series(
+                dicom,
+                "Ax T2 FLAIR",
+                4,
+                series_number=2,
+                spacing=5.0,
+                study_uid=study_uid,
+                frame_uid=frame_uid,
+            )
+            jpg = root / "jpg"
+            dcom_pipeline.convert_all(
+                dicom,
+                jpg,
+                quality=95,
+                log=lambda _message: None,
+            )
+
+            folder = next(path for path in jpg.iterdir() if path.is_dir())
+            manifest = mpr_engine.read_manifest(folder)
+            self.assertIsNotNone(manifest)
+            self.assertEqual("JPG_GENERIC", manifest["series_type"])
+            self.assertEqual(frame_uid, manifest["frame_of_reference_uid"])
+            self.assertFalse(manifest["frame_of_reference_synthetic"])
+            self.assertEqual(4, manifest["slice_count"])
+            self.assertEqual(
+                [0.0, 5.0, 10.0, 15.0],
+                [item["distance"] for item in manifest["ordered_slices"]],
+            )
+            self.assertEqual(
+                ["IM_0001.jpg", "IM_0002.jpg", "IM_0003.jpg", "IM_0004.jpg"],
+                [item["file"] for item in manifest["ordered_slices"]],
+            )
+
+            catalog = ArchiveCatalog()
+            public = catalog.open(jpg)["series"][0]
+            self.assertFalse(public["mprReady"])
+            self.assertEqual(frame_uid, public["geometry"]["frameOfReferenceUID"])
+            self.assertEqual([0.5, 0.5], public["geometry"]["pixelSpacing"])
+            self.assertEqual(5.0, public["geometry"]["sliceSpacing"])
+
+
+    def test_duplicate_patient_positions_fail_closed_without_crashing(self):
+        item = {
+            "file": "IM_0001.jpg",
+            "rows": 16,
+            "columns": 20,
+            "pixel_spacing": [0.5, 0.5],
+            "orientation": [1, 0, 0, 0, 1, 0],
+            "position": [0, 0, 0],
+            "frame_uid": "same-frame",
+            "study_uid": "same-study",
+            "series_uid": "same-series",
+            "sop_instance_uid": "one",
+        }
+        duplicate = {
+            **item,
+            "file": "IM_0002.jpg",
+            "sop_instance_uid": "two",
+        }
+        self.assertIsNone(
+            dcom_pipeline._generic_jpg_spatial_geometry([item, duplicate]),
+        )
+        invalid_spacing = {**duplicate, "position": [0, 0, 5]}
+        item["pixel_spacing"] = [0.0, 0.5]
+        invalid_spacing["pixel_spacing"] = [0.0, 0.5]
+        self.assertIsNone(
+            dcom_pipeline._generic_jpg_spatial_geometry([item, invalid_spacing]),
+        )
 
 
 class SeriesFolderNamerTests(unittest.TestCase):

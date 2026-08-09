@@ -442,6 +442,11 @@ def _direct_dicom_manifest(headers: list[DicomHeader]) -> tuple[Optional[dict], 
             "position": list(item.position or []),
             "distance": float(distance),
             "sop_instance_uid": item.sop_uid,
+            "instance_number": (
+                int(item.instance_number)
+                if math.isfinite(item.instance_number) and item.instance_number.is_integer()
+                else item.instance_number
+            ),
         }
         for index, (distance, item) in enumerate(unique)
     ]
@@ -651,6 +656,13 @@ def validate_mpr_manifest(folder: Path, manifest: Optional[dict]) -> tuple[bool,
         return False, "Định dạng manifest MPR không được hỗ trợ."
     if int(manifest.get("version", 0) or 0) != mpr_engine.MANIFEST_VERSION:
         return False, "Phiên bản manifest MPR không tương thích."
+    if manifest.get("series_type") == "JPG_GENERIC":
+        if manifest.get("ordered_slices"):
+            return False, (
+                "Series JPG c\u00f3 geometry \u0111\u1ec3 \u0111\u1ed3ng b\u1ed9 kh\u00f4ng gian 2D, "
+                "nh\u01b0ng kh\u00f4ng ph\u1ea3i g\u00f3i volume MPR/3D."
+            )
+        return False, "Series JPG 2D kh\u00f4ng c\u00f3 g\u00f3i volume MPR/3D."
 
     rows = int(manifest.get("rows", 0) or 0)
     columns = int(manifest.get("columns", 0) or 0)
@@ -807,6 +819,150 @@ class ArchiveCatalog:
         if tokens.intersection({"MR", "MRI"}):
             return "MR"
         return "UNKNOWN"
+
+    @staticmethod
+    def _jpg_geometry_from_dicom_manifest(
+        folder: Path,
+        manifest: dict,
+    ) -> Optional[tuple[dict, list[Path]]]:
+        """Map a direct-DICOM geometry manifest onto existing converted JPGs.
+
+        Older JPG exports retained SeriesInstanceUID but not per-slice geometry.
+        When their sibling DICOM archive is still present, this provides an
+        in-memory compatibility migration.  Every DICOM slice must map to one
+        existing JPG; otherwise the method fails closed instead of attaching
+        incomplete or guessed coordinates.
+        """
+        required = (
+            "rows", "columns", "pixel_spacing", "slice_spacing",
+            "image_orientation_patient", "ordered_slices",
+        )
+        if not all(key in manifest for key in required):
+            return None
+        available = {
+            path.name.casefold(): path
+            for path in folder.iterdir()
+            if path.is_file() and path.suffix.casefold() in {".jpg", ".jpeg"}
+        }
+        ordered: list[dict] = []
+        images: list[Path] = []
+        used: set[str] = set()
+        for item in manifest.get("ordered_slices") or []:
+            raw_instance = item.get("instance_number")
+            try:
+                numeric_instance = float(raw_instance)
+            except (TypeError, ValueError):
+                numeric_instance = math.nan
+            instance = (
+                str(int(numeric_instance))
+                if math.isfinite(numeric_instance) and numeric_instance.is_integer()
+                else str(raw_instance or "")
+            )
+            if not instance:
+                return None
+            base = (
+                f"IM_{int(instance):04d}"
+                if instance.isdigit()
+                else f"IM_{dcom_pipeline._safe_name(instance)}"
+            )
+            name = f"{base}.jpg"
+            key = name.casefold()
+            image = available.get(key)
+            if image is None or key in used:
+                return None
+            used.add(key)
+            images.append(image)
+            ordered.append({
+                "file": image.name,
+                "position": item.get("position"),
+                "distance": item.get("distance"),
+                "sop_instance_uid": item.get("sop_instance_uid", ""),
+            })
+        if len(images) < 2 or used != set(available):
+            return None
+        geometry = {
+            "frame_of_reference_uid": manifest.get("frame_of_reference_uid"),
+            "frame_of_reference_synthetic": manifest.get(
+                "frame_of_reference_synthetic", False,
+            ),
+            "rows": manifest["rows"],
+            "columns": manifest["columns"],
+            "slice_count": len(images),
+            "pixel_spacing": manifest["pixel_spacing"],
+            "slice_spacing": manifest["slice_spacing"],
+            "image_orientation_patient": manifest["image_orientation_patient"],
+            "ordered_slices": ordered,
+        }
+        return geometry, images
+
+    def _restore_legacy_jpg_geometry(
+        self,
+        records: dict[str, SeriesRecord],
+        root: Path,
+        *,
+        log: Optional[Callable[[str], None]] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> int:
+        missing = [
+            record for record in records.values()
+            if (record.manifest or {}).get("series_type") == "JPG_GENERIC"
+            and not (record.manifest or {}).get("ordered_slices")
+            and (record.manifest or {}).get("series_instance_uid")
+        ]
+        if not missing:
+            return 0
+        candidates = []
+        for candidate in (root / "DICOM", root.parent / "DICOM"):
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved.is_dir() and resolved not in candidates:
+                candidates.append(resolved)
+        if not candidates:
+            return 0
+
+        target_uids = {
+            str(record.manifest.get("series_instance_uid")) for record in missing
+        }
+        direct_by_uid: dict[str, dict] = {}
+        for dicom_root in candidates:
+            if should_stop and should_stop():
+                break
+            direct_records, _unsupported, _total = self._dicom_records(
+                dicom_root,
+                should_stop=should_stop,
+            )
+            for direct in direct_records.values():
+                uid = str((direct.manifest or {}).get("series_instance_uid") or "")
+                if uid in target_uids and direct.manifest:
+                    direct_by_uid[uid] = direct.manifest
+
+        restored = 0
+        for record in missing:
+            uid = str(record.manifest.get("series_instance_uid") or "")
+            direct_manifest = direct_by_uid.get(uid)
+            if not direct_manifest:
+                continue
+            mapped = self._jpg_geometry_from_dicom_manifest(
+                record.folder,
+                direct_manifest,
+            )
+            if not mapped:
+                continue
+            geometry, images = mapped
+            record.manifest = {**record.manifest, **geometry}
+            record.mpr_ready, record.mpr_reason = validate_mpr_manifest(
+                record.folder, record.manifest,
+            )
+            record.images = images
+            restored += 1
+        if restored and log:
+            log(
+                f"Đã khôi phục geometry DICOM cho {restored} series JPG 2D cũ; "
+                "crosslink dùng tọa độ bệnh nhân thật."
+            )
+        return restored
 
     @staticmethod
     def _dicom_records(
@@ -985,6 +1141,12 @@ class ArchiveCatalog:
                 modality=self._modality(folder, root, manifest),
                 study_group=study_group,
             )
+        self._restore_legacy_jpg_geometry(
+            records,
+            root,
+            log=log,
+            should_stop=should_stop,
+        )
         if log:
             log(f"Đã quét {scanned} thư mục, tìm thấy {len(records)} series ảnh.")
         if not records and dicom_candidates:

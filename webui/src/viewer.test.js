@@ -215,6 +215,38 @@ describe("viewer shell", () => {
     expect(result).toEqual([13, 23]); // NOT [13, 13]
   });
 
+  it("uses real patient-space geometry for converted JPG even when MPR is disabled", () => {
+    const jpgT1 = {
+      id: "jpg-t1",
+      sourceType: "image",
+      mprReady: false,
+      geometry: {
+        frameOfReferenceUID: "same-study-frame",
+        orientation: [1, 0, 0, 0, 1, 0],
+        ordered_slices: Array.from({ length: 4 }, (_, index) => ({
+          position: [0, 0, index * 5],
+        })),
+      },
+    };
+    const jpgT2 = {
+      id: "jpg-t2",
+      sourceType: "image",
+      mprReady: false,
+      geometry: {
+        frameOfReferenceUID: "same-study-frame",
+        orientation: [1, 0, 0, 0, 1, 0],
+        ordered_slices: Array.from({ length: 7 }, (_, index) => ({
+          position: [0, 0, -1 + index * 3],
+        })),
+      },
+    };
+
+    expect(comparePairMode(jpgT1, jpgT2)).toBe("spatial");
+    expect(findSpatialSliceIndex(jpgT1, 2, jpgT2)).toBe(4);
+    expect(syncedCompareIndices([0, 0], 0, 2, [4, 7], [jpgT1, jpgT2]))
+      .toEqual([2, 4]);
+  });
+
   describe("spatial slice matching edge cases", () => {
     it("returns null when FrameOfReferenceUIDs differ", () => {
       const s1 = { geometry: { frameOfReferenceUID: "1.2.3", orientation: [1,0,0,0,1,0], ordered_slices: [{ position: [0, 0, 0] }] } };

@@ -28,6 +28,7 @@ import copy
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -2063,6 +2064,126 @@ def _dicom_to_frames(ds, contrast_mode: str = CLINICAL):
     return frames
 
 
+def _finite_dicom_values(value: Any, count: int) -> Optional[list[float]]:
+    """Return a finite DICOM numeric vector without inventing missing values."""
+    try:
+        values = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+    if len(values) != count or not all(math.isfinite(item) for item in values):
+        return None
+    return values
+
+
+def _generic_jpg_spatial_geometry(items: list[dict]) -> Optional[dict]:
+    """Build the minimal real-DICOM geometry needed for 2D JPG crosslinking.
+
+    This deliberately does not add an affine matrix.  A generic JPG stack may
+    be perfectly adequate for PACS-style 2D point/slice linking while still
+    failing the stricter MPR/3D contract.  Keeping those readiness decisions
+    separate prevents a 20-slice T2 stack from losing its patient-space
+    coordinates merely because it cannot form a diagnostic volume.
+    """
+    if len(items) < 2:
+        return None
+    first = items[0]
+    rows = int(first.get("rows") or 0)
+    columns = int(first.get("columns") or 0)
+    spacing = first.get("pixel_spacing")
+    orientation = first.get("orientation")
+    if (
+        rows <= 0
+        or columns <= 0
+        or not spacing
+        or min(spacing) <= 0
+        or not orientation
+    ):
+        return None
+
+    row = orientation[:3]
+    column = orientation[3:]
+    row_norm = math.sqrt(sum(value * value for value in row))
+    column_norm = math.sqrt(sum(value * value for value in column))
+    dot = sum(a * b for a, b in zip(row, column))
+    normal = [
+        row[1] * column[2] - row[2] * column[1],
+        row[2] * column[0] - row[0] * column[2],
+        row[0] * column[1] - row[1] * column[0],
+    ]
+    normal_norm = math.sqrt(sum(value * value for value in normal))
+    if (
+        abs(row_norm - 1) > 1e-3
+        or abs(column_norm - 1) > 1e-3
+        or abs(dot) > 1e-3
+        or normal_norm <= 1e-9
+    ):
+        return None
+    normal = [value / normal_norm for value in normal]
+
+    def close(left: list[float], right: list[float]) -> bool:
+        return len(left) == len(right) and all(
+            abs(a - b) <= 1e-4 for a, b in zip(left, right)
+        )
+
+    if any(
+        int(item.get("rows") or 0) != rows
+        or int(item.get("columns") or 0) != columns
+        or not item.get("pixel_spacing")
+        or not close(item["pixel_spacing"], spacing)
+        or not item.get("orientation")
+        or not close(item["orientation"], orientation)
+        or not item.get("position")
+        for item in items
+    ):
+        return None
+
+    frame_uids = {str(item.get("frame_uid") or "") for item in items if item.get("frame_uid")}
+    study_uids = {str(item.get("study_uid") or "") for item in items if item.get("study_uid")}
+    if len(frame_uids) > 1 or len(study_uids) > 1:
+        return None
+    frame_uid = next(iter(frame_uids), "")
+    study_uid = next(iter(study_uids), "")
+    series_uid = str(first.get("series_uid") or "")
+
+    positioned = sorted(
+        (
+            (
+                sum(a * b for a, b in zip(item["position"], normal)),
+                item,
+            )
+            for item in items
+        ),
+        key=lambda pair: pair[0],
+    )
+    distances = [float(distance) for distance, _item in positioned]
+    if any(abs(b - a) < 1e-4 for a, b in zip(distances, distances[1:])):
+        return None
+    gaps = [abs(b - a) for a, b in zip(distances, distances[1:])]
+    slice_spacing = sorted(gaps)[len(gaps) // 2] if gaps else 0.0
+    if not math.isfinite(slice_spacing) or slice_spacing <= 0:
+        return None
+
+    return {
+        "frame_of_reference_uid": frame_uid or study_uid or series_uid,
+        "frame_of_reference_synthetic": not bool(frame_uid),
+        "rows": rows,
+        "columns": columns,
+        "slice_count": len(positioned),
+        "pixel_spacing": list(spacing),
+        "slice_spacing": float(slice_spacing),
+        "image_orientation_patient": list(orientation),
+        "ordered_slices": [
+            {
+                "file": item["file"],
+                "position": list(item["position"]),
+                "distance": float(distance),
+                "sop_instance_uid": str(item.get("sop_instance_uid") or ""),
+            }
+            for distance, item in positioned
+        ],
+    }
+
+
 def convert_all(
     dicom_dir: Path,
     jpg_dir: Path,
@@ -2090,6 +2211,9 @@ def convert_all(
     mpr_candidates = []
     converted_mpr_uids: set[str] = set()
     mpr_series_names: list[str] = []
+    generic_manifests: dict[Path, dict] = {}
+    generic_outputs: dict[Path, list[str]] = {}
+    generic_geometry: dict[Path, list[dict]] = {}
     namer = mpr_engine.SeriesFolderNamer(jpg_dir)
 
     # Keep every eligible T1 3D series (post-contrast and pre-contrast).  The
@@ -2176,8 +2300,7 @@ def convert_all(
             series_folder.mkdir(exist_ok=True)
             
             manifest_path = series_folder / "mpr-volume.json"
-            if not manifest_path.exists():
-                import json
+            if manifest_path not in generic_manifests:
                 try:
                     from mpr_engine import _format_date, _format_time
                 except ImportError:
@@ -2192,7 +2315,7 @@ def convert_all(
                 study_time = _format_time(str(getattr(ds, "StudyTime", "") or "").strip())
                 patient_birth = _format_date(str(getattr(ds, "PatientBirthDate", "") or "").strip())
                 
-                manifest_data = {
+                generic_manifests[manifest_path] = {
                     "format": "dcom-mpr-jpg",
                     "version": 1,
                     "series_type": "JPG_GENERIC",
@@ -2207,7 +2330,8 @@ def convert_all(
                     "patient_birth_date": patient_birth,
                     "series_instance_uid": series_uid,
                 }
-                manifest_path.write_text(json.dumps(manifest_data, ensure_ascii=False), encoding="utf-8")
+                generic_outputs[manifest_path] = []
+                generic_geometry[manifest_path] = []
 
             frames = _dicom_to_frames(ds, contrast_mode)
             multi = len(frames) > 1
@@ -2223,18 +2347,53 @@ def convert_all(
                 if multi:
                     base += f"_F{fidx:03d}"
 
-                img.save(series_folder / f"{base}.jpg", "JPEG",
+                filename = f"{base}.jpg"
+                img.save(series_folder / filename, "JPEG",
                          quality=quality, optimize=True, subsampling=0)
                 if save_png:
                     img.save(series_folder / f"{base}.png", "PNG", optimize=True)
 
                 stats.converted += 1
+                generic_outputs[manifest_path].append(filename)
+                if not multi:
+                    generic_geometry[manifest_path].append({
+                        "file": filename,
+                        "rows": int(getattr(ds, "Rows", 0) or 0),
+                        "columns": int(getattr(ds, "Columns", 0) or 0),
+                        "pixel_spacing": _finite_dicom_values(
+                            getattr(ds, "PixelSpacing", None), 2,
+                        ),
+                        "orientation": _finite_dicom_values(
+                            getattr(ds, "ImageOrientationPatient", None), 6,
+                        ),
+                        "position": _finite_dicom_values(
+                            getattr(ds, "ImagePositionPatient", None), 3,
+                        ),
+                        "frame_uid": str(getattr(ds, "FrameOfReferenceUID", "") or "").strip(),
+                        "study_uid": str(getattr(ds, "StudyInstanceUID", "") or "").strip(),
+                        "series_uid": series_uid,
+                        "sop_instance_uid": str(getattr(ds, "SOPInstanceUID", "") or "").strip(),
+                    })
 
             if stats.converted % 50 == 0:
                 log(f"  ...đã chuyển {stats.converted} ảnh")
         except Exception as e:
             stats.failed += 1
             log(f"  Lỗi file {path.name}: {e}")
+
+    for manifest_path, manifest_data in generic_manifests.items():
+        outputs = generic_outputs.get(manifest_path, [])
+        geometry_items = generic_geometry.get(manifest_path, [])
+        if len(outputs) == len(set(outputs)) == len(geometry_items):
+            spatial = _generic_jpg_spatial_geometry(geometry_items)
+            if spatial:
+                manifest_data.update(spatial)
+        temporary = manifest_path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(manifest_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(manifest_path)
 
     log(f"Chuyển đổi xong: {stats.converted} ảnh JPG"
         f"{' (+PNG)' if save_png else ''}, bỏ qua {stats.skipped}, lỗi {stats.failed}.")
