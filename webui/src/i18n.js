@@ -364,6 +364,19 @@ const LOG_PATTERNS = [
   [/Hoàn tất\./g, "Complete."],
   [/Đang chuẩn bị\.\.\./g, "Preparing..."],
   [/Lỗi: (.+)/g, "Error: $1"],
+  [/Đã khôi phục geometry DICOM cho (\d+) series JPG 2D cũ; crosslink dùng tọa độ bệnh nhân thật\./g,
+    "Restored DICOM geometry for $1 legacy 2D JPG series; crosslink uses real patient coordinates."],
+  [/Đang đọc metadata DICOM: (\d+)\/(\d+) file…/g, "Reading DICOM metadata: $1/$2 files..."],
+  [/Bỏ qua (\d+) file nghi DICOM chưa hỗ trợ \(ảnh màu, metadata thiếu hoặc file hỏng\)\./g,
+    "Skipped $1 files suspected to be unsupported DICOM (color images, missing metadata, or corrupted)."],
+  [/Đã nhận diện (\d+) series DICOM, mở trực tiếp không chuyển JPG\./g,
+    "Identified $1 DICOM series, opening directly without JPG conversion."],
+  [/Đang quét thư mục phim: (\d+) thư mục…/g, "Scanning movie folders: $1 folders..."],
+  [/Bỏ qua thư mục không đọc được: (.+) \((.+)\)/g, "Skipping unreadable folder: $1 ($2)"],
+  [/Đã quét (\d+) thư mục, tìm thấy (\d+) series ảnh\./g, "Scanned $1 folders, found $2 image series."],
+  [/Bắt đầu xuất JPG cho (\d+) file DICOM…/g, "Starting JPG export for $1 DICOM files..."],
+  [/Xử lý lỗi ở (.+): (.+)/g, "Error processing $1: $2"],
+  [/Hoàn tất chuyển đổi (\d+) file JPG cho series (.+)\./g, "Completed converting $1 JPG files for series $2."],
 ];
 
 export function translateLog(message) {
