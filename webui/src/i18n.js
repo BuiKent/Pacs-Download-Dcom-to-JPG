@@ -3,10 +3,10 @@
 // back to the Vietnamese text, so an untranslated string degrades to readable
 // output instead of an empty label.
 
-let language = "vi";
+let language = "en";
 
 export function setLanguage(value) {
-  language = value === "en" ? "en" : "vi";
+  language = value === "vi" ? "vi" : "en";
   return language;
 }
 

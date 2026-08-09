@@ -1,16 +1,17 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { getLanguage, setLanguage, t, tf, translateLog } from "./i18n.js";
 
-afterEach(() => setLanguage("vi"));
+afterEach(() => setLanguage("en"));
 
 describe("language selection", () => {
-  it("defaults to Vietnamese and only accepts a known language", () => {
-    expect(getLanguage()).toBe("vi");
-    expect(setLanguage("en")).toBe("en");
-    expect(setLanguage("fr")).toBe("vi");
+  it("defaults to English and only accepts a known language", () => {
+    expect(getLanguage()).toBe("en");
+    expect(setLanguage("vi")).toBe("vi");
+    expect(setLanguage("fr")).toBe("en");
   });
 
   it("returns the source text unchanged in Vietnamese", () => {
+    setLanguage("vi");
     expect(t("Tải ca đã chọn")).toBe("Tải ca đã chọn");
   });
 
@@ -31,6 +32,7 @@ describe("language selection", () => {
 
 describe("placeholder substitution", () => {
   it("fills each {} in order", () => {
+    setLanguage("vi");
     expect(tf("Đã xóa {} phép đo/ROI.", 3)).toBe("Đã xóa 3 phép đo/ROI.");
   });
 
@@ -40,12 +42,14 @@ describe("placeholder substitution", () => {
   });
 
   it("keeps an unfilled placeholder visible instead of printing undefined", () => {
+    setLanguage("vi");
     expect(tf("Đã có trong kho · {} ca đã tải · {} ca mới · {} ca chưa hoàn tất", 1)).toContain("{}");
   });
 });
 
 describe("pipeline log translation", () => {
   it("leaves logs untouched in Vietnamese", () => {
+    setLanguage("vi");
     const line = "  ...đã tải 42 ảnh (DICOM: 40)";
     expect(translateLog(line)).toBe(line);
   });

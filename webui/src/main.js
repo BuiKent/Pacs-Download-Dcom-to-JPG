@@ -1659,7 +1659,7 @@ function applyTextPromptLanguage() {
 async function boot() {
   if (!hasSessionToken) throw new Error(t("Thiếu token phiên local."));
   state.bootstrap = await api("/api/bootstrap");
-  setLanguage(state.bootstrap.language || "vi");
+  setLanguage(state.bootstrap.language || "en");
   applyTextPromptLanguage();
   state.history = Array.isArray(state.bootstrap.history) ? state.bootstrap.history : [];
   state.lastDirectUrl = state.bootstrap.lastDirectUrl || "";

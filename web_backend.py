@@ -1329,7 +1329,7 @@ class WebController:
         self.settings_path = app_data / "DCom JPG PACS" / "settings.json"
         self.history = HistoryStore()
         settings = self._read_settings()
-        self.language = settings.get("language", "vi")
+        self.language = settings.get("language", "en")
         self.output_root = Path(settings.get("outputRoot") or (Path.home() / "DCom JPG PACS"))
 
     def _read_settings(self) -> dict:
@@ -1339,9 +1339,9 @@ class WebController:
             return {}
         if not isinstance(value, dict):
             return {}
-        language = str(value.get("language") or "vi")
+        language = str(value.get("language") or "en")
         return {
-            "language": language if language in SUPPORTED_LANGUAGES else "vi",
+            "language": language if language in SUPPORTED_LANGUAGES else "en",
             "outputRoot": str(value.get("outputRoot") or ""),
         }
 
