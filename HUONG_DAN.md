@@ -94,19 +94,25 @@ vùng xem chính từ **2D** sang **MPR**; ứng dụng không mở cửa sổ p
 Mô hình 3D u cần ROI trên nhiều lát axial. Nút này không tự nhận diện u và
 không thay thế việc kiểm tra đường viền của người dùng.
 
-Khi tải theo mã bệnh nhân, kết quả được gom ổn định theo thứ tự mã BN, tên BN,
-bệnh viện và ngày tạo hồ sơ:
+Khi tải theo mã bệnh nhân, folder tổng dùng thứ tự **Tên BN - Tuổi - Mã BN - Ngày tải**.
+Tuổi trong tên folder là tuổi tại ngày tải, được suy chính xác từ ngày sinh; nếu
+thiếu ngày sinh thì dùng `PatientAge` trong DICOM:
 ```
-2605032022 - NGUYEN VAN A - Viet Duc - 2026-08-02/
-  patient-index.json        ← nhận biết ca đã tải/phim mới ở lần tìm sau
-  2026-07-28 - MR - MR BRAIN - a1b2c3d4e5/
+NGUYEN VAN A - 23T - 2605032022 - 2026-08-02/
+  patient-index.json        ← ID, tên, ngày sinh, giới và trạng thái các ca
+  2026-07-28 - MR - MR BRAIN/
     DICOM/
       Series_2_AX T2 FLAIR_<UID-hash>/
       Series_5_3D AX T1+C_<UID-hash>/
     RAW_JPG/
-    2026-07-28 - 45Y - MR BRAIN _ MR/
+    2026-07-28 - MR - MR BRAIN/
       Series_..._<UID-hash>/
 ```
+
+`patient-index.json` lưu ngày sinh và giới ở cấp bệnh nhân, đồng thời suy và lưu
+tuổi tại ngày chụp cho từng study. Tuổi hiện tại trong app không được ghi cứng:
+app tính lại từ ngày sinh theo ngày đang xem, vì vậy không bị lỗi thời sau mỗi
+sinh nhật.
 
 Cùng mã BN và bệnh viện sẽ dùng lại folder trên; study đã tải được bỏ chọn mặc
 định, study mới hoặc chưa hoàn tất được chọn để bổ sung. Nếu cùng mã nhưng tên
@@ -129,13 +135,16 @@ qua DICOM và tạo chỉ mục khi dùng lại.
 - Viewer không có manifest sẽ được chọn theo thứ tự thumbnail đang hiển thị; nếu
   không quét được thumbnail, app báo rõ và không tự tải nhầm series.
 
-Khi tải một link viewer riêng, mỗi lượt được đặt trong folder `LINK_<thời gian>_<hash>`.
-Kết quả bên trong:
+Khi tải một link viewer riêng, app dùng `LINK_<thời gian>_<hash>` làm folder tạm,
+sau đó đổi thành **Tên BN - Tuổi - Mã BN - Ngày tải** ngay khi đọc được DICOM.
+Một marker ẩn chỉ chứa hash của link giúp Resume tìm lại folder sau khi đổi tên mà
+không phụ thuộc hoàn toàn vào lịch sử. Kết quả bên trong:
 ```
-LINK_.../
+NGUYEN VAN A - 23T - 2605032022 - 2026-08-02/
+  patient-index.json
   DICOM/     ← DICOM gốc, chia Series_<số>_<mô tả>_<UID-hash>/
   RAW_JPG/   ← ảnh JPG viewer trả trực tiếp (nếu có)
-  JPG/       ← ẢNH JPG CHẤT LƯỢNG CAO, chia theo từng series  ← DÙNG CÁI NÀY
+  2026-07-28 - MR - MR BRAIN/  ← ẢNH JPG CHẤT LƯỢNG CAO
 ```
 
 ## Cách dùng bằng dòng lệnh (không cần giao diện)

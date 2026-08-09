@@ -90,6 +90,18 @@ describe("pipeline log translation", () => {
       .toBe("STEP 1/2: Download images from the viewer");
   });
 
+  it("translates folder scan and resume-metadata failures", () => {
+    setLanguage("en");
+    expect(translateLog("Đang quét thư mục phim: 100 thư mục…"))
+      .toBe("Scanning imaging folders: 100 folders...");
+    expect(translateLog("Không thể đổi tên thư mục: access denied"))
+      .toBe("Could not rename directory: access denied");
+    expect(translateLog("Không thể ghi metadata tải tiếp: disk full"))
+      .toBe("Could not write resume metadata: disk full");
+    expect(translateLog("❌ CHẶN GỘP CA 2 DO MÂU THUẪN ĐỊNH DANH: Ngày sinh DICOM '2000-01-01' không khớp hồ sơ '2001-01-01'."))
+      .toBe("❌ BLOCKED MERGING STUDY 2 DUE TO AN IDENTITY CONFLICT: DICOM birth date '2000-01-01' does not match the patient record '2001-01-01'.");
+  });
+
   it("passes through a line it does not recognise", () => {
     setLanguage("en");
     expect(translateLog("Dòng log lạ")).toBe("Dòng log lạ");

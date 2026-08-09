@@ -658,7 +658,7 @@ def download_all(
                 captured["vrpacs"] = response.body()
                 return
             # DICOMweb QIDO: danh sách series (…/studies/<uid>/series)
-            if (captured["qido_series"] is None 
+            if (captured["qido_series"] is None
                     and u.split("?")[0].rstrip("/").endswith("/series")):
                 captured["qido_series"] = u
                 try:
@@ -1497,6 +1497,10 @@ PATIENT_MANIFEST_NAME = "patient-index.json"
 PATIENT_MANIFEST_FORMAT = "dcom-patient-index-v1"
 
 
+class PatientIdentityConflictError(ValueError):
+    """A folder contains DICOM identities that must not be merged."""
+
+
 def _identity_token(value: Any) -> str:
     """Normalize a patient/hospital identity value for local matching only."""
     text = unicodedata.normalize("NFKD", str(value or ""))
@@ -1519,6 +1523,79 @@ def _study_patient_name(study: dict) -> str:
     if isinstance(nested, str) and nested.strip():
         return re.sub(r"\s+", " ", nested).strip()
     return ""
+
+
+def _study_patient_value(study: dict, *keys: str) -> str:
+    for key in keys:
+        value = study.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    nested = study.get("patient")
+    if isinstance(nested, dict):
+        return _study_patient_value(nested, *keys)
+    return ""
+
+
+def _patient_display_name(value: Any) -> str:
+    """Turn a DICOM PN value into a readable folder component."""
+    text = str(value or "").replace("^", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _normalise_dicom_date(value: Any) -> str:
+    digits = re.sub(r"\D", "", str(value or ""))
+    if len(digits) < 8:
+        return ""
+    try:
+        parsed = datetime.strptime(digits[:8], "%Y%m%d")
+    except ValueError:
+        return ""
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _age_from_dates(birth_date: str, study_date: str) -> tuple[str, Optional[int]]:
+    """Return a human label and completed years at the study date."""
+    try:
+        birth = datetime.strptime(birth_date, "%Y-%m-%d").date()
+        study = datetime.strptime(study_date, "%Y-%m-%d").date()
+    except ValueError:
+        return "", None
+    if study < birth:
+        return "", None
+    years = study.year - birth.year - ((study.month, study.day) < (birth.month, birth.day))
+    if years > 0:
+        return f"{years}T", years
+    months = (study.year - birth.year) * 12 + study.month - birth.month
+    months -= study.day < birth.day
+    if months > 0:
+        return f"{months} tháng", 0
+    return f"{(study - birth).days} ngày", 0
+
+
+def _normalise_patient_age(
+    raw_age: Any,
+    birth_date: str,
+    study_date: str,
+) -> tuple[str, Optional[int], str]:
+    raw = str(raw_age or "").strip().upper()
+    derived, derived_years = _age_from_dates(birth_date, study_date)
+    if derived:
+        return derived, derived_years, "DICOM.PatientBirthDate+StudyDate"
+    match = re.fullmatch(r"(\d{3})([DWMY])", raw)
+    if match:
+        value = int(match.group(1))
+        unit = match.group(2)
+        if unit == "Y" and value > 0:
+            return f"{value}T", value, "DICOM.PatientAge"
+        if unit == "M" and value > 0:
+            return f"{value} tháng", 0, "DICOM.PatientAge"
+        if unit == "W" and value > 0:
+            return f"{value} tuần", 0, "DICOM.PatientAge"
+        if unit == "D" and value > 0:
+            return f"{value} ngày", 0, "DICOM.PatientAge"
+        labels = {"Y": "0T", "M": "0 tháng", "W": "0 tuần", "D": "0 ngày"}
+        return labels[unit], 0, "DICOM.PatientAge"
+    return "KHONG_RO_TUOI", None, ""
 
 
 def _now_local() -> str:
@@ -1749,6 +1826,11 @@ def patient_archive_status(
         or bool(legacy_id and _identity_token(legacy_id) != _identity_token(patient_id))
     )
     known = (manifest or {}).get("studies") or (_legacy_study_index(folder) if folder else {})
+    patient_birth_date = str((manifest or {}).get("patientBirthDate") or "")
+    current_age, current_age_years = _age_from_dates(
+        patient_birth_date,
+        datetime.now().strftime("%Y-%m-%d"),
+    )
     new_count = downloaded_count = incomplete_count = selected_count = 0
     for study in studies:
         uid = str(study.get("study_uid") or "")
@@ -1771,6 +1853,10 @@ def patient_archive_status(
         "folder": str(folder) if folder else "",
         "patientId": patient_id,
         "patientName": patient_name or stored_name,
+        "patientBirthDate": patient_birth_date,
+        "patientSex": str((manifest or {}).get("patientSex") or ""),
+        "currentAge": current_age,
+        "currentAgeYears": current_age_years,
         "hospitalKey": hospital_key,
         "hospitalName": hospital_name,
         "nameConflict": conflict,
@@ -1793,6 +1879,8 @@ def ensure_patient_archive(
     patient_name: str,
     hospital_key: str,
     hospital_name: str,
+    patient_birth_date: str = "",
+    patient_sex: str = "",
 ) -> tuple[Path, dict, bool]:
     root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -1815,11 +1903,12 @@ def ensure_patient_archive(
         )
     if folder is None:
         created_date = datetime.now().strftime("%Y-%m-%d")
-        display_name = patient_name or "CHUA_RO_TEN"
+        display_name = patient_name or "KHONG_RO_TEN"
+        pid = patient_id or "KHONG_RO_ID"
         folder_name = " - ".join((
-            _safe_name(patient_id),
             _safe_name(display_name),
-            _safe_name(hospital_name or hospital_key),
+            "KHONG_RO_TUOI",
+            _safe_name(pid),
             created_date,
         ))
         folder = root / folder_name
@@ -1837,6 +1926,8 @@ def ensure_patient_archive(
             "format": PATIENT_MANIFEST_FORMAT,
             "patientId": patient_id,
             "patientName": patient_name or legacy_name,
+            "patientBirthDate": _normalise_dicom_date(patient_birth_date),
+            "patientSex": str(patient_sex or "").strip().upper(),
             "hospitalKey": hospital_key,
             "hospitalName": hospital_name,
             "createdAt": now,
@@ -1846,6 +1937,10 @@ def ensure_patient_archive(
     else:
         if patient_name and not manifest.get("patientName"):
             manifest["patientName"] = patient_name
+        if patient_birth_date and not manifest.get("patientBirthDate"):
+            manifest["patientBirthDate"] = _normalise_dicom_date(patient_birth_date)
+        if patient_sex and not manifest.get("patientSex"):
+            manifest["patientSex"] = str(patient_sex).strip().upper()
         manifest["hospitalName"] = hospital_name or manifest.get("hospitalName", "")
         manifest["updatedAt"] = now
     _write_patient_manifest(folder, manifest)
@@ -1861,6 +1956,7 @@ def record_patient_study(
     image_count: int,
     selected_series_ids: Optional[list[str]] = None,
     selection_complete: bool = False,
+    patient_metadata: Optional[dict] = None,
 ) -> None:
     manifest = _read_patient_manifest(patient_folder)
     if manifest is None:
@@ -1869,6 +1965,16 @@ def record_patient_study(
     if not uid:
         raise ValueError("Study thiếu StudyInstanceUID.")
     previous = manifest["studies"].get(uid) or {}
+    metadata = patient_metadata or {}
+    if metadata:
+        _assert_patient_metadata_matches(
+            str(manifest.get("patientId") or ""),
+            str(manifest.get("patientName") or ""),
+            metadata,
+            str(manifest.get("patientBirthDate") or ""),
+            str(manifest.get("patientSex") or ""),
+        )
+        _merge_manifest_demographics(manifest, metadata)
     selected = sorted({
         *(str(value) for value in (previous.get("selectedSeries") or []) if str(value)),
         *(str(value) for value in (selected_series_ids or []) if str(value)),
@@ -1889,6 +1995,16 @@ def record_patient_study(
         "imageCount": max(int(image_count or 0), int(previous.get("imageCount") or 0)),
         "downloadedAt": _now_local() if (complete or selection_complete) else previous.get("downloadedAt", ""),
         "selectedSeries": selected,
+        "patientAgeRaw": metadata.get("PatientAgeRaw") or previous.get("patientAgeRaw", ""),
+        "patientAgeAtStudy": metadata.get("PatientAge") or previous.get("patientAgeAtStudy", ""),
+        "patientAgeAtStudyYears": (
+            metadata.get("PatientAgeYears")
+            if metadata.get("PatientAgeYears") is not None
+            else previous.get("patientAgeAtStudyYears")
+        ),
+        "patientAgeSource": metadata.get("PatientAgeSource") or previous.get("patientAgeSource", ""),
+        "patientBirthDate": metadata.get("PatientBirthDate") or previous.get("patientBirthDate", ""),
+        "patientSex": metadata.get("PatientSex") or previous.get("patientSex", ""),
     }
     manifest["updatedAt"] = _now_local()
     _write_patient_manifest(patient_folder, manifest)
@@ -2298,7 +2414,7 @@ def convert_all(
                 series_number, series_desc, series_uid,
             )
             series_folder.mkdir(exist_ok=True)
-            
+
             manifest_path = series_folder / "mpr-volume.json"
             if manifest_path not in generic_manifests:
                 try:
@@ -2314,7 +2430,7 @@ def convert_all(
                 study_date = _format_date(str(getattr(ds, "StudyDate", "") or "").strip())
                 study_time = _format_time(str(getattr(ds, "StudyTime", "") or "").strip())
                 patient_birth = _format_date(str(getattr(ds, "PatientBirthDate", "") or "").strip())
-                
+
                 generic_manifests[manifest_path] = {
                     "format": "dcom-mpr-jpg",
                     "version": 1,
@@ -2328,6 +2444,8 @@ def convert_all(
                     "patient_id": str(getattr(ds, "PatientID", "") or "").strip(),
                     "patient_name": str(getattr(ds, "PatientName", "") or "").strip(),
                     "patient_birth_date": patient_birth,
+                    "patient_sex": str(getattr(ds, "PatientSex", "") or "").strip().upper(),
+                    "patient_age": str(getattr(ds, "PatientAge", "") or "").strip().upper(),
                     "series_instance_uid": series_uid,
                 }
                 generic_outputs[manifest_path] = []
@@ -2432,41 +2550,299 @@ def summarize_dicom(dicom_dir: Path, log: LogFn = _default_log) -> None:
 #  CLI
 # --------------------------------------------------------------------------- #
 
+def extract_patient_metadata(dicom_dir: Path) -> dict:
+    """Read one patient's demographics and study context from local DICOM."""
+    try:
+        import pydicom
+    except Exception:
+        return {}
+
+    values = {
+        "name": "", "pid": "", "raw_age": "", "birth": "", "sex": "",
+        "study_date": "", "study_uid": "", "study_desc": "", "modality": "",
+    }
+    seen_ids: set[str] = set()
+    seen_names: set[str] = set()
+    seen_birth_dates: set[str] = set()
+    seen_sexes: set[str] = set()
+    for p in discover_dicom_files(Path(dicom_dir))[:80]:
+        try:
+            ds = pydicom.dcmread(
+                str(p),
+                stop_before_pixels=True,
+                force=True,
+                specific_tags=[
+                    "PatientName", "PatientID", "PatientAge", "PatientBirthDate",
+                    "PatientSex", "StudyDate", "StudyInstanceUID", "StudyDescription",
+                    "Modality",
+                ],
+            )
+            name = str(getattr(ds, "PatientName", "") or "").strip()
+            pid = str(getattr(ds, "PatientID", "") or "").strip()
+            if pid:
+                seen_ids.add(_identity_token(pid))
+            if name:
+                seen_names.add(_identity_token(name))
+            raw_birth = str(getattr(ds, "PatientBirthDate", "") or "").strip()
+            raw_sex = str(getattr(ds, "PatientSex", "") or "").strip().upper()
+            normalised_birth = _normalise_dicom_date(raw_birth)
+            if normalised_birth:
+                seen_birth_dates.add(normalised_birth)
+            if raw_sex:
+                seen_sexes.add(raw_sex)
+            if (
+                len(seen_ids) > 1
+                or len(seen_names) > 1
+                or len(seen_birth_dates) > 1
+                or len(seen_sexes) > 1
+            ):
+                raise PatientIdentityConflictError(
+                    "DICOM trong cùng folder chứa nhiều định danh bệnh nhân khác nhau."
+                )
+            candidates = {
+                "name": name,
+                "pid": pid,
+                "raw_age": str(getattr(ds, "PatientAge", "") or "").strip(),
+                "birth": raw_birth,
+                "sex": raw_sex,
+                "study_date": str(getattr(ds, "StudyDate", "") or "").strip(),
+                "study_uid": str(getattr(ds, "StudyInstanceUID", "") or "").strip(),
+                "study_desc": str(getattr(ds, "StudyDescription", "") or "").strip(),
+                "modality": str(getattr(ds, "Modality", "") or "").strip().upper(),
+            }
+            for key, value in candidates.items():
+                if value and not values[key]:
+                    values[key] = value
+        except PatientIdentityConflictError:
+            raise
+        except Exception:
+            continue
+    if not any(values.values()):
+        return {}
+
+    birth_date = _normalise_dicom_date(values["birth"])
+    study_date = _normalise_dicom_date(values["study_date"])
+    age, age_years, age_source = _normalise_patient_age(
+        values["raw_age"], birth_date, study_date,
+    )
+    raw_name = values["name"]
+    return {
+        "PatientID": values["pid"] or "KHONG_RO_ID",
+        "PatientName": _patient_display_name(raw_name) or "KHONG_RO_TEN",
+        "PatientNameRaw": raw_name,
+        "PatientBirthDate": birth_date,
+        "PatientSex": values["sex"],
+        "PatientAge": age,
+        "PatientAgeRaw": values["raw_age"],
+        "PatientAgeYears": age_years,
+        "PatientAgeSource": age_source,
+        "StudyDate": study_date,
+        "StudyInstanceUID": values["study_uid"],
+        "StudyDescription": values["study_desc"],
+        "Modality": values["modality"],
+    }
+
+
+def patient_download_folder_name(metadata: dict, download_date: str = "") -> str:
+    """Build `<name> - <age> - <patient id> - <download date>` safely."""
+    name = _safe_name(_patient_display_name(metadata.get("PatientName")) or "KHONG_RO_TEN")[:40]
+    patient_id = _safe_name(metadata.get("PatientID") or "KHONG_RO_ID")
+    date = _normalise_dicom_date(download_date) or datetime.now().strftime("%Y-%m-%d")
+    current_age, _current_age_years = _age_from_dates(
+        _normalise_dicom_date(metadata.get("PatientBirthDate")),
+        date,
+    )
+    age = _safe_name(current_age or metadata.get("PatientAge") or "KHONG_RO_TUOI")
+    return f"{name} - {age} - {patient_id} - {date}"
+
+
+def _merge_manifest_demographics(manifest: dict, metadata: dict) -> None:
+    mappings = {
+        "patientBirthDate": "PatientBirthDate",
+        "patientSex": "PatientSex",
+        "dicomPatientName": "PatientNameRaw",
+    }
+    for target, source in mappings.items():
+        incoming = metadata.get(source)
+        if incoming and not manifest.get(target):
+            manifest[target] = incoming
+
+
+def _assert_patient_metadata_matches(
+    expected_id: str,
+    expected_name: str,
+    metadata: dict,
+    expected_birth_date: str = "",
+    expected_sex: str = "",
+) -> None:
+    actual_id = str(metadata.get("PatientID") or "")
+    actual_name = str(metadata.get("PatientName") or "")
+    if actual_id and actual_id != "KHONG_RO_ID" and expected_id:
+        if _identity_token(actual_id) != _identity_token(expected_id):
+            raise PatientIdentityConflictError(
+                f"PatientID DICOM '{actual_id}' không khớp mã RIS '{expected_id}'."
+            )
+    if actual_name and actual_name != "KHONG_RO_TEN" and expected_name:
+        if _patient_name_conflicts(actual_name, expected_name):
+            raise PatientIdentityConflictError(
+                f"PatientName DICOM '{actual_name}' không khớp tên RIS '{expected_name}'."
+            )
+    actual_birth_date = _normalise_dicom_date(metadata.get("PatientBirthDate"))
+    expected_birth_date = _normalise_dicom_date(expected_birth_date)
+    if actual_birth_date and expected_birth_date and actual_birth_date != expected_birth_date:
+        raise PatientIdentityConflictError(
+            f"Ngày sinh DICOM '{actual_birth_date}' không khớp hồ sơ '{expected_birth_date}'."
+        )
+    actual_sex = str(metadata.get("PatientSex") or "").strip().upper()
+    expected_sex = str(expected_sex or "").strip().upper()
+    if actual_sex and expected_sex and actual_sex != expected_sex:
+        raise PatientIdentityConflictError(
+            f"Giới DICOM '{actual_sex}' không khớp hồ sơ '{expected_sex}'."
+        )
+
+
+def rename_patient_download_root(
+    download_root: Path,
+    jpg_dir: Path,
+    metadata: dict,
+    *,
+    log: LogFn = _default_log,
+    download_date: str = "",
+    allow_collision_suffix: bool = True,
+) -> tuple[Path, Path]:
+    """Rename one direct/CLI download root and remap its JPG path."""
+    root = Path(download_root)
+    jpg = Path(jpg_dir)
+    if not root.exists() or not metadata:
+        return root, jpg
+    desired_name = patient_download_folder_name(metadata, download_date)
+    if root.name == desired_name or root.name.startswith(f"{desired_name} ("):
+        return root, jpg
+    try:
+        jpg_relative = jpg.relative_to(root)
+    except ValueError:
+        jpg_relative = Path(jpg.name)
+    target = root.with_name(desired_name)
+    if target.exists() and target != root and not allow_collision_suffix:
+        log(f"Không thể đổi tên thư mục: đích đã tồn tại ({target.name}).")
+        return root, jpg
+    counter = 1
+    while target.exists() and target != root:
+        target = root.with_name(f"{desired_name} ({counter})")
+        counter += 1
+    try:
+        root.rename(target)
+    except OSError as exc:
+        log(f"Không thể đổi tên thư mục: {exc}")
+        return root, jpg
+    return target, target / jpg_relative
+
+
+def write_direct_patient_manifest(
+    download_root: Path,
+    jpg_dir: Path,
+    metadata: dict,
+    *,
+    image_count: int,
+    complete: bool,
+) -> None:
+    """Persist demographics for direct/CLI downloads, not only RIS archives."""
+    root = Path(download_root)
+    now = _now_local()
+    manifest = _read_patient_manifest(root)
+    if manifest:
+        _assert_patient_metadata_matches(
+            str(manifest.get("patientId") or ""),
+            str(manifest.get("patientName") or ""),
+            metadata,
+            str(manifest.get("patientBirthDate") or ""),
+            str(manifest.get("patientSex") or ""),
+        )
+    else:
+        manifest = {
+            "format": PATIENT_MANIFEST_FORMAT,
+            "patientId": metadata.get("PatientID") or "",
+            "patientName": metadata.get("PatientName") or "",
+            "hospitalKey": "direct",
+            "hospitalName": "",
+            "createdAt": now,
+            "updatedAt": now,
+            "studies": {},
+        }
+    _merge_manifest_demographics(manifest, metadata)
+    uid = str(metadata.get("StudyInstanceUID") or "").strip()
+    if uid:
+        previous = manifest["studies"].get(uid) or {}
+        try:
+            relative = str(Path(jpg_dir).relative_to(root))
+        except ValueError:
+            relative = Path(jpg_dir).name
+        manifest["studies"][uid] = {
+            **previous,
+            "studyUid": uid,
+            "date": metadata.get("StudyDate") or "",
+            "modality": metadata.get("Modality") or "",
+            "description": metadata.get("StudyDescription") or "",
+            "folder": relative,
+            "status": (
+                "complete"
+                if complete or previous.get("status") == "complete"
+                else "incomplete"
+            ),
+            "imageCount": max(int(image_count or 0), int(previous.get("imageCount") or 0)),
+            "downloadedAt": now if complete else previous.get("downloadedAt", ""),
+            "selectedSeries": previous.get("selectedSeries") or [],
+            "patientAgeRaw": metadata.get("PatientAgeRaw") or "",
+            "patientAgeAtStudy": metadata.get("PatientAge") or "",
+            "patientAgeAtStudyYears": metadata.get("PatientAgeYears"),
+            "patientAgeSource": metadata.get("PatientAgeSource") or "",
+            "patientBirthDate": metadata.get("PatientBirthDate") or "",
+            "patientSex": metadata.get("PatientSex") or "",
+        }
+    manifest["updatedAt"] = now
+    _write_patient_manifest(root, manifest)
+
+
 def _jpg_folder_name(dicom_dir: Path) -> str:
     """
-    Tính tên thư mục JPG theo header DICOM: '<ngày chụp> - <tuổi> - <Mô tả study> _ <Modality>'.
-    Các trường này còn nguyên kể cả khi hồ sơ đã ẩn danh. Trả 'JPG' nếu không đọc được gì.
+    Tính tên thư mục JPG theo header DICOM: '<ngày chụp> - <Loại phim> - <Mô tả ca chụp>'.
     """
     try:
         import pydicom
     except Exception:
         return "JPG"
 
-    date = age = desc = modality = ""
-    for p in sorted(Path(dicom_dir).rglob("*.dcm"))[:40]:
+    date = desc = modality = ""
+    for p in discover_dicom_files(Path(dicom_dir))[:40]:
         try:
             ds = pydicom.dcmread(str(p), stop_before_pixels=True, force=True)
             date = date or str(getattr(ds, "StudyDate", "") or "")
-            age = age or str(getattr(ds, "PatientAge", "") or "")
             desc = desc or str(getattr(ds, "StudyDescription", "") or "")
             modality = modality or str(getattr(ds, "Modality", "") or "")
-            if date and age and desc and modality:
+            if date and desc and modality:
                 break
         except Exception:
             pass
 
     parts = []
     if len(date) == 8 and date.isdigit():
-        parts.append(f"{date[:4]}-{date[4:6]}-{date[6:8]}")   # 20260617 -> 2026-06-17
+        parts.append(f"{date[:4]}-{date[4:6]}-{date[6:8]}")
     elif date:
-        parts.append(date)
-    if age:
-        parts.append(age.lstrip("0") or age)                 # 023Y -> 23Y
-    if desc:
-        parts.append(desc)
+        parts.append(_safe_name(date))
+    else:
+        parts.append("KHONG_RO_NGAY")
 
-    left = _safe_name(" - ".join(parts))[:70]                 # chừa chỗ cho Modality
-    name = f"{left} _ {modality}" if modality else left
+    if modality:
+        parts.append(_safe_name(modality))
+    else:
+        parts.append("UNKNOWN")
+
+    if desc:
+        parts.append(_safe_name(desc)[:40])
+    else:
+        parts.append("KHONG_RO_MO_TA")
+
+    name = " - ".join(parts).strip()
     name = re.sub(r'[\\/:*?"<>|]+', "_", name).strip()
     return name or "JPG"
 
@@ -2482,6 +2858,7 @@ def run_pipeline(
     should_stop: Optional[Callable[[], bool]] = None,
     resume: bool = False,
     selected_series_ids: Optional[list[str]] = None,
+    rename_patient_root: bool = True,
 ):
     out_base = Path(out_base)
     dicom_dir = out_base / "DICOM"
@@ -2500,7 +2877,7 @@ def run_pipeline(
 
     summarize_dicom(dicom_dir, log=log)
 
-    # Thư mục JPG đặt tên theo hồ sơ: '<ngày> - <tuổi> - <Mô tả study> _ <Modality>'
+    # Thư mục JPG: '<ngày chụp> - <loại phim> - <mô tả ca chụp>'.
     jpg_dir = out_base / _jpg_folder_name(dicom_dir)
 
     log("=" * 60)
@@ -2508,6 +2885,30 @@ def run_pipeline(
     cv = convert_all(dicom_dir, jpg_dir, log=log, quality=quality,
                      save_png=save_png, contrast_mode=contrast_mode,
                      should_stop=should_stop)
+    if rename_patient_root:
+        metadata = extract_patient_metadata(dicom_dir)
+        if metadata:
+            link_match = re.match(r"^LINK_(\d{4})(\d{2})(\d{2})_", out_base.name)
+            should_rename = not resume or bool(link_match)
+            if should_rename:
+                original_date = (
+                    f"{link_match.group(1)}-{link_match.group(2)}-{link_match.group(3)}"
+                    if link_match else ""
+                )
+                out_base, jpg_dir = rename_patient_download_root(
+                    out_base,
+                    jpg_dir,
+                    metadata,
+                    log=log,
+                    download_date=original_date,
+                )
+            write_direct_patient_manifest(
+                out_base,
+                jpg_dir,
+                metadata,
+                image_count=dl.total(),
+                complete=dl.is_complete(),
+            )
     log("=" * 60)
     log(f"HOÀN TẤT. Ảnh JPG nằm ở: {jpg_dir}")
     return dl, cv, jpg_dir
@@ -3038,13 +3439,13 @@ def search_patient_studies(
                         continue
                     m_dicom = str(s.get("modalityDicom") or s.get("modality") or "").strip().upper()
                     desc = str(s.get("studyDescription") or "").strip().upper()
-                    
+
                     # Phân loại MR/MRI (Cộng hưởng từ)
                     is_mr = (m_dicom in ("MR", "MRI")) or ("MR" in m_dicom) or desc.startswith("MR") or ("CONG HUONG TU" in desc) or ("CỘNG HƯỞNG TỪ" in desc)
-                    
+
                     # Phân loại CT/CLVT (Cắt lớp vi tính)
                     is_ct = (m_dicom in ("CT", "CLVT", "CAT")) or ("CT" in m_dicom) or desc.startswith("CT") or desc.startswith("CLVT") or ("CAT LOP" in desc) or ("CẮT LỚP" in desc)
-                    
+
                     if target_mod in ("ALL", "*"):
                         match = True
                     elif target_mod in ("MR_CT", "NEURO", "BRAIN", "MR/CT", "CT/MR"):
@@ -3063,6 +3464,12 @@ def search_patient_studies(
                                 "uid": uid,
                                 "patient_id": _study_patient_id(s) or patient_id,
                                 "patient_name": _study_patient_name(s),
+                                "patient_birth_date": _study_patient_value(
+                                    s, "patientBirthDate", "PatientBirthDate", "birthDate", "dateOfBirth",
+                                ),
+                                "patient_sex": _study_patient_value(
+                                    s, "patientSex", "PatientSex", "sex", "gender",
+                                ),
                                 "date": s.get("date", ""),
                                 "modality": m_dicom or ("CT" if is_ct else "MR"),
                                 "desc": s.get("studyDescription", "") or ""
@@ -3181,6 +3588,12 @@ def download_studies_list(
     first = studies[0]
     patient_id = str(patient_id or first.get("patient_id") or "").strip()
     patient_name = str(patient_name or first.get("patient_name") or "").strip()
+    patient_birth_date = _study_patient_value(
+        first, "patientBirthDate", "PatientBirthDate", "patient_birth_date", "birthDate",
+    )
+    patient_sex = _study_patient_value(
+        first, "patientSex", "PatientSex", "patient_sex", "sex", "gender",
+    )
     hospital_key = str(hospital_key or first.get("hospital_key") or "").strip().lower()
     hospital_name = str(
         hospital_name
@@ -3197,6 +3610,8 @@ def download_studies_list(
             patient_name=patient_name,
             hospital_key=hospital_key,
             hospital_name=hospital_name,
+            patient_birth_date=patient_birth_date,
+            patient_sex=patient_sex,
         )
         if created:
             log(f"Đã tạo hồ sơ bệnh nhân: {patient_folder.name}")
@@ -3214,6 +3629,7 @@ def download_studies_list(
         image_count: int,
         selected_series_ids: Optional[list[str]] = None,
         selection_complete: bool = False,
+        patient_metadata: Optional[dict] = None,
     ) -> None:
         if not managed_patient:
             return
@@ -3223,6 +3639,7 @@ def download_studies_list(
                 complete=complete, image_count=image_count,
                 selected_series_ids=selected_series_ids,
                 selection_complete=selection_complete,
+                patient_metadata=patient_metadata,
             )
         except Exception as exc:
             log(f"      ⚠ Không ghi được trạng thái ca vào hồ sơ: {exc}")
@@ -3272,6 +3689,7 @@ def download_studies_list(
                 should_stop=should_stop,
                 resume=resume_study,
                 selected_series_ids=selected_series_ids,
+                rename_patient_root=False,
             )
             downloaded = dl.total() if dl else 0
             total_downloaded += downloaded
@@ -3279,6 +3697,36 @@ def download_studies_list(
             # "Xong" nghĩa là ĐỦ so với manifest của viewer, không phải "có tải
             # được cái gì đó". Đây chính là chỗ trước kia báo xong cho cả ca 4/348.
             complete = bool(dl and dl.is_complete() and not stopped)
+            metadata = extract_patient_metadata(st_out_dir / "DICOM")
+            if metadata:
+                existing_manifest = _read_patient_manifest(patient_folder) or {}
+                _assert_patient_metadata_matches(
+                    patient_id,
+                    patient_name,
+                    metadata,
+                    str(existing_manifest.get("patientBirthDate") or ""),
+                    str(existing_manifest.get("patientSex") or ""),
+                )
+                if metadata.get("PatientAge") not in {None, "", "KHONG_RO_TUOI"}:
+                    old_patient_folder = patient_folder
+                    study_relative = st_out_dir.relative_to(old_patient_folder)
+                    manifest = _read_patient_manifest(old_patient_folder) or {}
+                    created_date = str(manifest.get("createdAt") or "")[:10]
+                    naming_metadata = {
+                        **metadata,
+                        "PatientID": patient_id or metadata.get("PatientID"),
+                        "PatientName": patient_name or metadata.get("PatientName"),
+                    }
+                    patient_folder, jpg_dir = rename_patient_download_root(
+                        old_patient_folder,
+                        jpg_dir,
+                        naming_metadata,
+                        log=log,
+                        download_date=created_date,
+                        allow_collision_suffix=False,
+                    )
+                    st_out_dir = patient_folder / study_relative
+
             mark(
                 st,
                 st_out_dir,
@@ -3286,6 +3734,7 @@ def download_studies_list(
                 image_count=downloaded,
                 selected_series_ids=selected_series_ids,
                 selection_complete=complete and selective,
+                patient_metadata=metadata,
             )
             if complete:
                 if selective:
@@ -3300,6 +3749,9 @@ def download_studies_list(
                 log(f"⚠ CA {idx} CHƯA ĐỦ ẢNH ({downloaded}/{expected}) — đánh dấu CHƯA ĐỦ. "
                     f"Bấm tải lại ca này để bù, ảnh trùng tự bỏ.")
                 unfinished.append(f"{label}: thiếu ảnh ({downloaded}/{expected})")
+        except PatientIdentityConflictError as e:
+            log(f"❌ CHẶN GỘP CA {idx} DO MÂU THUẪN ĐỊNH DANH: {e}")
+            unfinished.append(f"{label}: mâu thuẫn định danh ({e})")
         except Exception as e:
             mark(st, st_out_dir, complete=False, image_count=0)
             log(f"❌ Lỗi khi tải ca {idx}: {e}")

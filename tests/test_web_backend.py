@@ -7,6 +7,7 @@ import urllib.request
 from pathlib import Path
 
 import numpy as np
+import pydicom
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.sequence import Sequence
 from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage, generate_uid
@@ -475,6 +476,28 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(2, series["sliceCount"])
             self.assertEqual(16, series["pixelData"]["bitsAllocated"])
             self.assertFalse(any(root.rglob("*.jpg")))
+
+    def test_direct_dicom_manifest_preserves_patient_demographics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "patient.dcm"
+            write_local_dicom(path, position=0.0)
+            dataset = pydicom.dcmread(str(path), force=True)
+            dataset.PatientID = "BN001"
+            dataset.PatientName = "NGUYEN^VAN^A"
+            dataset.PatientBirthDate = "20001231"
+            dataset.PatientSex = "F"
+            dataset.PatientAge = "025Y"
+            dataset.save_as(str(path), enforce_file_format=True)
+
+            catalog = ArchiveCatalog()
+            snapshot = catalog.open(root)
+            manifest = catalog.get(snapshot["series"][0]["id"]).manifest
+
+            self.assertEqual("BN001", manifest["patient_id"])
+            self.assertEqual("2000-12-31", manifest["patient_birth_date"])
+            self.assertEqual("F", manifest["patient_sex"])
+            self.assertEqual("025Y", manifest["patient_age"])
 
     def test_local_extensionless_dicom_import_converts_and_opens_archive(self):
         with tempfile.TemporaryDirectory() as tmp:

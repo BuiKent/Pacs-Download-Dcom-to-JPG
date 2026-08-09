@@ -28,6 +28,30 @@ def study(uid: str, *, date: str = "2026-08-02", description: str = "MR BRAIN") 
     }
 
 
+def write_patient_dicom(
+    path: Path,
+    *,
+    patient_id: str = "BN001",
+    patient_name: str = "NGUYEN^VAN^A",
+    patient_age: str = "023Y",
+    birth_date: str = "20021231",
+    study_date: str = "20261230",
+    patient_sex: str = "M",
+) -> str:
+    write_local_dicom(path)
+    dataset = pydicom.dcmread(str(path), force=True)
+    dataset.PatientID = patient_id
+    dataset.PatientName = patient_name
+    if patient_age:
+        dataset.PatientAge = patient_age
+    dataset.PatientBirthDate = birth_date
+    dataset.PatientSex = patient_sex
+    dataset.StudyDate = study_date
+    dataset.StudyDescription = "MR BRAIN"
+    dataset.save_as(str(path), enforce_file_format=True)
+    return str(dataset.StudyInstanceUID)
+
+
 class PatientArchiveTests(unittest.TestCase):
     @staticmethod
     def wait_for_job(controller: WebController) -> dict:
@@ -62,7 +86,7 @@ class PatientArchiveTests(unittest.TestCase):
                 hospital_name="Bệnh viện Hữu nghị Việt Đức",
             )
             self.assertTrue(created)
-            self.assertTrue(folder.name.startswith("2605032022 - Nguyễn Văn A - Bệnh viện Hữu nghị Việt Đức - "))
+            self.assertTrue(folder.name.startswith("Nguyễn Văn A - KHONG_RO_TUOI - 2605032022 - "))
             first_study_folder = folder / dcom_pipeline.study_archive_folder_name(studies[0])
             first_study_folder.mkdir()
             dcom_pipeline.record_patient_study(
@@ -451,6 +475,239 @@ class PatientArchiveTests(unittest.TestCase):
                 )
             with self.assertRaisesRegex(ValueError, "nhiều bệnh nhân"):
                 ArchiveCatalog().open(root)
+
+
+class PatientDemographicsTests(unittest.TestCase):
+    def test_dicom_metadata_preserves_birth_sex_and_exact_age_at_study(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dicom_dir = Path(tmp)
+            write_patient_dicom(
+                dicom_dir / "one.dcm",
+                patient_age="099Y",
+                birth_date="20001231",
+                study_date="20261230",
+                patient_sex="F",
+            )
+
+            metadata = dcom_pipeline.extract_patient_metadata(dicom_dir)
+
+            self.assertEqual("BN001", metadata["PatientID"])
+            self.assertEqual("NGUYEN VAN A", metadata["PatientName"])
+            self.assertEqual("2000-12-31", metadata["PatientBirthDate"])
+            self.assertEqual("F", metadata["PatientSex"])
+            self.assertEqual("25T", metadata["PatientAge"])
+            self.assertEqual(25, metadata["PatientAgeYears"])
+            self.assertEqual("DICOM.PatientBirthDate+StudyDate", metadata["PatientAgeSource"])
+
+    def test_manifest_keeps_demographics_and_age_at_each_study(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder, _manifest, _created = dcom_pipeline.ensure_patient_archive(
+                root,
+                patient_id="BN001",
+                patient_name="NGUYEN VAN A",
+                hospital_key="vduh",
+                hospital_name="Hospital",
+            )
+            item = {
+                **study("1.2.3.demo"),
+                "patient_id": "BN001",
+                "patient_name": "NGUYEN VAN A",
+            }
+            study_folder = folder / dcom_pipeline.study_folder_base_name(item)
+            dicom_dir = study_folder / "DICOM"
+            dicom_dir.mkdir(parents=True)
+            write_patient_dicom(dicom_dir / "one.dcm")
+            metadata = dcom_pipeline.extract_patient_metadata(dicom_dir)
+
+            dcom_pipeline.record_patient_study(
+                folder,
+                item,
+                study_folder,
+                complete=True,
+                image_count=1,
+                patient_metadata=metadata,
+            )
+
+            manifest = json.loads((folder / dcom_pipeline.PATIENT_MANIFEST_NAME).read_text(encoding="utf-8"))
+            entry = manifest["studies"][item["study_uid"]]
+            self.assertEqual("2002-12-31", manifest["patientBirthDate"])
+            self.assertEqual("M", manifest["patientSex"])
+            self.assertEqual("023Y", entry["patientAgeRaw"])
+            self.assertEqual("23T", entry["patientAgeAtStudy"])
+            self.assertEqual(23, entry["patientAgeAtStudyYears"])
+            self.assertNotIn("ageAtDiagnosisYears", manifest)
+            status = dcom_pipeline.patient_archive_status(
+                root,
+                patient_id="BN001",
+                patient_name="NGUYEN VAN A",
+                hospital_key="vduh",
+                hospital_name="Hospital",
+                studies=[item],
+            )
+            self.assertEqual("2002-12-31", status["patientBirthDate"])
+            self.assertEqual("M", status["patientSex"])
+            self.assertIsInstance(status["currentAgeYears"], int)
+
+    def test_run_pipeline_renames_direct_root_and_writes_patient_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original = Path(tmp) / "LINK_case"
+
+            def fake_download(_url, dicom_dir, **_kwargs):
+                dicom_dir.mkdir(parents=True)
+                write_patient_dicom(dicom_dir / "one.dcm")
+                return dcom_pipeline.DownloadStats(dicom=1, expected=1, completed_tasks=1)
+
+            def fake_convert(_dicom_dir, jpg_dir, **_kwargs):
+                jpg_dir.mkdir(parents=True)
+                return dcom_pipeline.ConvertStats(converted=1)
+
+            with patch("dcom_pipeline.download_all", side_effect=fake_download), patch(
+                "dcom_pipeline.convert_all", side_effect=fake_convert,
+            ), patch("dcom_pipeline.summarize_dicom"):
+                _dl, _cv, jpg_dir = dcom_pipeline.run_pipeline(
+                    "https://viewer.test/direct", original, log=lambda _message: None,
+                )
+
+            renamed = Path(jpg_dir).parent
+            self.assertFalse(original.exists())
+            self.assertIn("NGUYEN VAN A - 23T - BN001 - ", renamed.name)
+            manifest = json.loads(
+                (renamed / dcom_pipeline.PATIENT_MANIFEST_NAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual("2002-12-31", manifest["patientBirthDate"])
+            self.assertEqual("M", manifest["patientSex"])
+
+    def test_resuming_named_direct_root_keeps_original_download_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "NGUYEN VAN A - 23T - BN001 - 2026-01-02"
+            dicom_dir = root / "DICOM"
+            dicom_dir.mkdir(parents=True)
+            write_patient_dicom(dicom_dir / "one.dcm")
+
+            def fake_convert(_dicom_dir, jpg_dir, **_kwargs):
+                jpg_dir.mkdir(parents=True, exist_ok=True)
+                return dcom_pipeline.ConvertStats(converted=1)
+
+            with patch(
+                "dcom_pipeline.download_all",
+                return_value=dcom_pipeline.DownloadStats(
+                    dicom=1, expected=1, completed_tasks=1,
+                ),
+            ), patch("dcom_pipeline.convert_all", side_effect=fake_convert), patch(
+                "dcom_pipeline.summarize_dicom",
+            ):
+                _dl, _cv, jpg_dir = dcom_pipeline.run_pipeline(
+                    "https://viewer.test/direct",
+                    root,
+                    resume=True,
+                    log=lambda _message: None,
+                )
+
+            self.assertEqual(root, Path(jpg_dir).parent)
+            self.assertTrue(root.exists())
+
+    def test_ris_download_renames_patient_root_after_dicom_arrives(self):
+        item = {
+            "study_uid": "1.2.3.ris",
+            "patient_id": "BN001",
+            "patient_name": "NGUYEN VAN A",
+            "hospital_key": "vduh",
+            "hospital_name": "Hospital",
+            "date": "2026-12-30",
+            "modality": "MR",
+            "desc": "MR BRAIN",
+        }
+
+        def fake_run_pipeline(**kwargs):
+            dicom_dir = Path(kwargs["out_base"]) / "DICOM"
+            dicom_dir.mkdir(parents=True)
+            write_patient_dicom(dicom_dir / "one.dcm")
+            jpg_dir = Path(kwargs["out_base"]) / "2026-12-30 - MR - MR BRAIN"
+            jpg_dir.mkdir()
+            return (
+                dcom_pipeline.DownloadStats(dicom=1, expected=1, completed_tasks=1),
+                dcom_pipeline.ConvertStats(converted=1),
+                jpg_dir,
+            )
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "dcom_pipeline.resolve_study_viewer_url", return_value="https://viewer.test/ris",
+        ), patch("dcom_pipeline.run_pipeline", side_effect=fake_run_pipeline):
+            root = Path(tmp)
+            dcom_pipeline.download_studies_list(
+                studies=[item],
+                out_base=root,
+                patient_id="BN001",
+                patient_name="NGUYEN VAN A",
+                hospital_key="vduh",
+                hospital_name="Hospital",
+                log=lambda _message: None,
+            )
+
+            patient_dirs = [path for path in root.iterdir() if path.is_dir()]
+            self.assertEqual(1, len(patient_dirs))
+            self.assertIn("NGUYEN VAN A - 23T - BN001 - ", patient_dirs[0].name)
+            manifest = json.loads(
+                (patient_dirs[0] / dcom_pipeline.PATIENT_MANIFEST_NAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual("M", manifest["patientSex"])
+            self.assertEqual("23T", manifest["studies"][item["study_uid"]]["patientAgeAtStudy"])
+
+    def test_long_patient_name_never_truncates_id_or_download_date(self):
+        name = dcom_pipeline.patient_download_folder_name(
+            {
+                "PatientName": "A" * 100,
+                "PatientAge": "20T",
+                "PatientBirthDate": "2000-12-31",
+                "PatientID": "BN001",
+            },
+            "2026-08-09",
+        )
+        self.assertIn(" - 25T - ", name)
+        self.assertIn("BN001", name)
+        self.assertTrue(name.endswith("2026-08-09"))
+
+    def test_patient_manifest_rejects_conflicting_birth_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder, _manifest, _created = dcom_pipeline.ensure_patient_archive(
+                root,
+                patient_id="BN001",
+                patient_name="NGUYEN VAN A",
+                hospital_key="vduh",
+                hospital_name="Hospital",
+                patient_birth_date="2000-12-31",
+                patient_sex="F",
+            )
+            metadata = {
+                "PatientID": "BN001",
+                "PatientName": "NGUYEN VAN A",
+                "PatientBirthDate": "2001-12-31",
+                "PatientSex": "F",
+            }
+
+            with self.assertRaisesRegex(ValueError, "Ngày sinh DICOM"):
+                dcom_pipeline.write_direct_patient_manifest(
+                    folder,
+                    folder / "JPG",
+                    metadata,
+                    image_count=1,
+                    complete=True,
+                )
+
+    def test_extensionless_dicom_still_names_the_study_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dicom_dir = Path(tmp)
+            with_suffix = dicom_dir / "one.dcm"
+            write_patient_dicom(with_suffix)
+            extensionless = dicom_dir / "one"
+            with_suffix.rename(extensionless)
+
+            self.assertEqual(
+                "2026-12-30 - MR - MR BRAIN",
+                dcom_pipeline._jpg_folder_name(dicom_dir),
+            )
 
 
 class SeriesSelectionTests(unittest.TestCase):

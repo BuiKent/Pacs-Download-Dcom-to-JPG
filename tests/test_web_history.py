@@ -86,42 +86,82 @@ class DirectDownloadResumeTests(unittest.TestCase):
         self.root = Path(self._temp.name)
         self.addCleanup(self._temp.cleanup)
         self.url = "https://viewer.example/study?token=abc"
+        self.controller = WebController()
+        self.controller.history.path = self.root / "history.json"
+        self.controller.history.reload()
 
     def test_a_fresh_download_creates_its_own_folder(self):
-        folder, resumed = WebController._direct_download_root(self.root, self.url, False)
+        folder, resumed = self.controller._direct_download_root(self.root, self.url, False)
         self.assertFalse(resumed)
         self.assertTrue(folder.name.startswith("LINK_"))
 
     def test_a_retry_merges_into_the_folder_the_first_attempt_created(self):
-        first, _ = WebController._direct_download_root(self.root, self.url, False)
+        first, _ = self.controller._direct_download_root(self.root, self.url, False)
         first.mkdir(parents=True)
-        folder, resumed = WebController._direct_download_root(self.root, self.url, True)
+        self.controller.history.add(first, self.url)
+        folder, resumed = self.controller._direct_download_root(self.root, self.url, True)
         self.assertTrue(resumed)
         self.assertEqual(first, folder)
 
     def test_a_retry_picks_the_newest_attempt_when_several_exist(self):
-        token = WebController._direct_download_root(self.root, self.url, False)[0].name.split("_")[-1]
+        token = self.controller._direct_download_root(self.root, self.url, False)[0].name.split("_")[-1]
         older = self.root / f"LINK_20260101_000000_{token}"
         newer = self.root / f"LINK_20260105_000000_{token}"
         older.mkdir(parents=True)
         newer.mkdir(parents=True)
-        folder, resumed = WebController._direct_download_root(self.root, self.url, True)
+        self.controller.history.add(older, self.url)
+        self.controller.history.add(newer, self.url)
+        folder, resumed = self.controller._direct_download_root(self.root, self.url, True)
         self.assertTrue(resumed)
         self.assertEqual(newer, folder)
 
     def test_a_retry_without_a_previous_folder_falls_back_to_a_new_download(self):
-        folder, resumed = WebController._direct_download_root(self.root, self.url, True)
+        folder, resumed = self.controller._direct_download_root(self.root, self.url, True)
         self.assertFalse(resumed, "resume must not be reported when nothing was reused")
         self.assertFalse(folder.exists())
 
     def test_a_different_link_never_merges_into_another_link_folder(self):
-        first, _ = WebController._direct_download_root(self.root, self.url, False)
+        first, _ = self.controller._direct_download_root(self.root, self.url, False)
         first.mkdir(parents=True)
-        other, resumed = WebController._direct_download_root(
+        self.controller.history.add(first, self.url)
+        other, resumed = self.controller._direct_download_root(
             self.root, "https://viewer.example/other", True,
         )
         self.assertFalse(resumed)
         self.assertNotEqual(first, other)
+
+    def test_history_outside_current_output_root_is_not_reused(self):
+        other_root = self.root / "old-output"
+        current_root = self.root / "current-output"
+        previous = other_root / "PATIENT - 23T - BN001 - 2026-08-09"
+        previous.mkdir(parents=True)
+        current_root.mkdir()
+        self.controller.history.add(previous, self.url)
+
+        folder, resumed = self.controller._direct_download_root(current_root, self.url, True)
+
+        self.assertFalse(resumed)
+        self.assertEqual(current_root, folder.parent)
+
+    def test_renamed_folder_is_resumed_from_marker_without_history(self):
+        renamed = self.root / "PATIENT - 23T - BN001 - 2026-08-09"
+        renamed.mkdir()
+        self.controller._write_direct_download_marker(renamed, self.url)
+        self.controller.history.reload()
+
+        folder, resumed = self.controller._direct_download_root(self.root, self.url, True)
+
+        self.assertTrue(resumed)
+        self.assertEqual(renamed, folder)
+
+    def test_legacy_link_folder_is_still_resumed_without_history(self):
+        legacy, _resumed = self.controller._direct_download_root(self.root, self.url, False)
+        legacy.mkdir()
+
+        folder, resumed = self.controller._direct_download_root(self.root, self.url, True)
+
+        self.assertTrue(resumed)
+        self.assertEqual(legacy, folder)
 
 
 class ControllerSettingsTests(unittest.TestCase):

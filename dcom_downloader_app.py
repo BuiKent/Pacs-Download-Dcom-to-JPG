@@ -1223,7 +1223,11 @@ class App:
                 quality=quality, save_png=save_png, contrast_mode=contrast_mode,
                 should_stop=self.stop_flag.is_set, resume=resume,
             )
-            self.msg_q.put(("jpgdir", str(jpg_dir)))
+            actual_root = Path(jpg_dir).parent
+            if actual_root != Path(out_base):
+                self.msg_q.put(("directroot", (str(out_base), str(actual_root), str(jpg_dir), url)))
+            else:
+                self.msg_q.put(("jpgdir", str(jpg_dir)))
             if dl and dl.total():
                 self.msg_q.put(("log", self._t("Tải được {} ảnh.").format(dl.total())))
             self.msg_q.put(("done", True))
@@ -1239,6 +1243,17 @@ class App:
                     self._log(str(payload))
                 elif kind == "jpgdir":
                     self.last_jpg_dir = Path(str(payload))
+                elif kind == "directroot":
+                    old_root, folder, jpg_dir, url = payload
+                    old_key = str(old_root).lower()
+                    self.history = [
+                        item for item in self.history
+                        if str(item.get("folder", "")).lower() != old_key
+                    ]
+                    self.last_out_base = Path(str(folder))
+                    self.last_jpg_dir = Path(str(jpg_dir))
+                    self.out_var.set(str(self.last_out_base))
+                    self._add_history(self.last_out_base, str(url))
                 elif kind == "patientfolder":
                     folder, label = payload
                     self.last_out_base = Path(str(folder))

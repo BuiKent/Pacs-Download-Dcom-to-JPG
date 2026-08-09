@@ -36,6 +36,7 @@ ANNOTATIONS_NAME = "viewer-annotations.json"
 HISTORY_FILE = Path.home() / ".dcom_downloader_history.json"
 HISTORY_MAX = 30
 SUPPORTED_LANGUAGES = ("vi", "en")
+DIRECT_DOWNLOAD_META_NAME = ".direct-download.json"
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -130,6 +131,8 @@ class DicomHeader:
     patient_id: str = ""
     patient_name: str = ""
     patient_birth_date: str = ""
+    patient_sex: str = ""
+    patient_age: str = ""
     number_of_frames: int = 1
     # Which frame inside `path` this header stands for. Always 0 for classic
     # single-frame files; an enhanced multi-frame file yields one header per
@@ -253,25 +256,27 @@ def _read_dicom_header(path: Path) -> list[DicomHeader]:
     window_width_value = getattr(ds, "WindowWidth", None)
     window_center = _dicom_number(window_center_value, math.nan)
     window_width = _dicom_number(window_width_value, math.nan)
-    
+
     study_date = str(getattr(ds, "StudyDate", "") or "").strip()
     if study_date and len(study_date) == 8 and study_date.isdigit():
         study_date = f"{study_date[:4]}-{study_date[4:6]}-{study_date[6:]}"
-    
+
     study_time = str(getattr(ds, "StudyTime", "") or "").strip()
     if study_time and len(study_time) >= 6 and study_time[:6].isdigit():
         study_time = f"{study_time[:2]}:{study_time[2:4]}:{study_time[4:6]}"
-    
+
     if study_time:
         study_date = f"{study_date} {study_time}".strip()
     study_desc = str(getattr(ds, "StudyDescription", "") or "").strip()
-    
+
     patient_id = str(getattr(ds, "PatientID", "") or "").strip()
     patient_name = str(getattr(ds, "PatientName", "") or "").strip()
-    
+
     patient_birth_date = str(getattr(ds, "PatientBirthDate", "") or "").strip()
     if patient_birth_date and len(patient_birth_date) == 8 and patient_birth_date.isdigit():
         patient_birth_date = f"{patient_birth_date[:4]}-{patient_birth_date[4:6]}-{patient_birth_date[6:]}"
+    patient_sex = str(getattr(ds, "PatientSex", "") or "").strip().upper()
+    patient_age = str(getattr(ds, "PatientAge", "") or "").strip().upper()
 
     pixel_spacing = _dicom_numbers(getattr(ds, "PixelSpacing", None), 2)
     orientation = _dicom_numbers(getattr(ds, "ImageOrientationPatient", None), 6)
@@ -333,6 +338,8 @@ def _read_dicom_header(path: Path) -> list[DicomHeader]:
             patient_id=patient_id,
             patient_name=patient_name,
             patient_birth_date=patient_birth_date,
+            patient_sex=patient_sex,
+            patient_age=patient_age,
             number_of_frames=frames,
             frame_index=frame_index,
         )
@@ -469,6 +476,8 @@ def _direct_dicom_manifest(headers: list[DicomHeader]) -> tuple[Optional[dict], 
         "patient_id": first.patient_id,
         "patient_name": first.patient_name,
         "patient_birth_date": first.patient_birth_date,
+        "patient_sex": first.patient_sex,
+        "patient_age": first.patient_age,
         "study_instance_uid": first.study_uid,
         "series_instance_uid": first.series_uid,
         "frame_of_reference_uid": first.frame_uid or first.study_uid or first.series_uid,
@@ -1121,7 +1130,7 @@ class ArchiveCatalog:
             digest = hashlib.sha256(str(folder).casefold().encode("utf-8")).hexdigest()[:20]
             ready, reason = validate_mpr_manifest(folder, manifest)
             relative_name = str(folder.relative_to(root)) if folder != root else folder.name
-            
+
             study_group = ""
             if " - " in folder.name:
                 parts = folder.name.rsplit(" - ", 1)
@@ -1655,26 +1664,71 @@ class WebController:
         self.job.start("download", target)
         return self.job.snapshot()
 
-    @staticmethod
-    def _direct_download_root(output_root: Path, url: str, resume: bool) -> tuple[Path, bool]:
+    def _direct_download_root(self, output_root: Path, url: str, resume: bool) -> tuple[Path, bool]:
         """Pick the folder a direct link downloads into.
 
-        A retry must merge into the folder the first attempt created, otherwise
-        the already-downloaded slices are re-fetched into a second folder and
-        the study ends up split. The link token is derived from the URL, so the
-        previous attempt for the same link is recoverable even though its
-        timestamp is not.
+        A retry must merge into the folder the first attempt created. We find the
+        previous attempt by searching the history for the same URL.
         """
+        output_root = Path(output_root).expanduser()
+        resolved_output_root = output_root.resolve()
         link_token = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
         if resume:
+            for entry in self.history.snapshot():
+                if entry.get("url") == url:
+                    folder = Path(entry["folder"]).expanduser()
+                    resolved_folder = folder.resolve()
+                    try:
+                        resolved_folder.relative_to(resolved_output_root)
+                    except ValueError:
+                        continue
+                    if folder.is_dir():
+                        return folder, True
+
+            marked: list[Path] = []
+            try:
+                children = [item for item in output_root.iterdir() if item.is_dir()]
+            except OSError:
+                children = []
+            for item in children:
+                marker = item / DIRECT_DOWNLOAD_META_NAME
+                try:
+                    data = json.loads(marker.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError):
+                    continue
+                if data.get("linkHash") == link_token:
+                    marked.append(item)
+            if marked:
+                marked.sort(key=lambda item: item.stat().st_mtime)
+                return marked[-1], True
+
+            # Compatibility fallback for folders created before patient naming.
             existing = sorted(
                 (item for item in output_root.glob(f"LINK_*_{link_token}") if item.is_dir()),
                 key=lambda item: item.name,
             )
             if existing:
                 return existing[-1], True
+
         stamp = time.strftime("%Y%m%d_%H%M%S")
         return output_root / f"LINK_{stamp}_{link_token}", False
+
+    def _write_direct_download_marker(self, folder: Path, url: str) -> None:
+        marker = Path(folder) / DIRECT_DOWNLOAD_META_NAME
+        temporary = marker.with_suffix(marker.suffix + ".tmp")
+        payload = {
+            "format": "dcom-direct-download-v1",
+            "linkHash": hashlib.sha256(url.encode("utf-8")).hexdigest()[:8],
+            "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        try:
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temporary.replace(marker)
+        except OSError as exc:
+            self.job.log(f"Không thể ghi metadata tải tiếp: {exc}")
 
     def start_direct_download(self, payload: dict) -> dict:
         url = str(payload.get("url") or "").strip()
@@ -1713,10 +1767,14 @@ class WebController:
                 resume=resumed,
                 selected_series_ids=selected_series_ids,
             )
+            jpg_dir = Path(jpg_dir)
+            if jpg_dir.parent.is_dir():
+                direct_root = jpg_dir.parent
+
             archive = self.catalog.open(jpg_dir if Path(jpg_dir).exists() else direct_root)
             # The link is stored with the folder so a later retry from history
-            # can reuse it; these viewer links expire fast, but an expired link
-            # is still better than none when the user wants to edit and resend.
+            # can reuse it. We use the updated direct_root.
+            self._write_direct_download_marker(direct_root, url)
             self.history.add(direct_root, url)
             return {"archive": archive, "output": str(direct_root), "resumed": resumed}
 
