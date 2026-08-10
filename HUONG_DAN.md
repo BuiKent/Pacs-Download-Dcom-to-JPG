@@ -56,7 +56,7 @@ series T1 3D sau tiêm và T1 3D không tiêm đủ điều kiện:
 1. Mỗi series phải có **trên 100 vị trí lát duy nhất**.
 2. Phải có đủ geometry, cùng kích thước/hướng và khoảng cách lát đủ đều.
 3. T1 sau tiêm và T1 không tiêm được giữ thành các gói riêng; không còn cơ chế chọn một xung và bỏ xung còn lại.
-4. Tên folder có nhãn T1_POST/T1_PRE và mã rút gọn từ SeriesInstanceUID, nên hai xung trùng tên/số series không ghi đè nhau.
+4. Folder series dùng số và mô tả dễ đọc; `SeriesInstanceUID` vẫn được giữ trong metadata để nhận diện chính xác.
 
 Các series còn lại vẫn chuyển JPG theo luồng cũ. Series MPR được chuyển một
 lần với JPG quality 100, một cửa sổ cường độ chung cho toàn volume và file
@@ -102,11 +102,11 @@ NGUYEN VAN A - 23T - 2605032022 - 2026-08-02/
   patient-index.json        ← ID, tên, ngày sinh, giới và trạng thái các ca
   2026-07-28 - MR - MR BRAIN/
     DICOM/
-      Series_2_AX T2 FLAIR_<UID-hash>/
-      Series_5_3D AX T1+C_<UID-hash>/
+      Series_2_AX T2 FLAIR/
+      Series_5_3D AX T1+C/
     RAW_JPG/
-    2026-07-28 - MR - MR BRAIN/
-      Series_..._<UID-hash>/
+    JPG/
+      Series_.../
 ```
 
 `patient-index.json` lưu ngày sinh và giới ở cấp bệnh nhân, đồng thời suy và lưu
@@ -142,7 +142,7 @@ không phụ thuộc hoàn toàn vào lịch sử. Kết quả bên trong:
 ```
 NGUYEN VAN A - 23T - 2605032022 - 2026-08-02/
   patient-index.json
-  DICOM/     ← DICOM gốc, chia Series_<số>_<mô tả>_<UID-hash>/
+  DICOM/     ← DICOM gốc, chia Series_<số>_<mô tả>/
   RAW_JPG/   ← ảnh JPG viewer trả trực tiếp (nếu có)
   2026-07-28 - MR - MR BRAIN/  ← ẢNH JPG CHẤT LƯỢNG CAO
 ```

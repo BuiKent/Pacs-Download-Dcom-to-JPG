@@ -134,11 +134,12 @@ class PatientArchiveTests(unittest.TestCase):
                     hospital_name="Bệnh viện Hữu nghị Việt Đức",
                 )
 
-    def test_study_folder_uses_full_uid_hash_not_shared_prefix(self):
+    def test_study_folder_contains_only_requested_metadata(self):
         first = dcom_pipeline.study_archive_folder_name(study("1.2.840.113619.2.1.100"))
         second = dcom_pipeline.study_archive_folder_name(study("1.2.840.113619.2.1.200"))
-        self.assertNotEqual(first, second)
-        self.assertIn("2026-08-02 - MR - MR BRAIN - ", first)
+        self.assertEqual("2026-08-02 - MR - MR BRAIN", first)
+        self.assertEqual(first, second)
+        self.assertNotRegex(first, r"[0-9a-f]{8,10}$")
 
     def test_study_folder_name_stays_readable_until_two_studies_collide(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -158,9 +159,10 @@ class PatientArchiveTests(unittest.TestCase):
                 folder, first, folder / first_name, complete=True, image_count=3,
             )
 
-            # Same date/modality/description, different study: needs the token.
+            # Same requested metadata uses a simple numeric collision suffix;
+            # UIDs remain in patient-index.json instead of leaking into names.
             second_name = dcom_pipeline.resolve_study_folder_name(folder, second)
-            self.assertEqual(dcom_pipeline.study_archive_folder_name(second), second_name)
+            self.assertEqual(f"{first_name} (2)", second_name)
             # The first study keeps the folder it was already written into.
             self.assertEqual(first_name, dcom_pipeline.resolve_study_folder_name(folder, first))
 
@@ -168,8 +170,12 @@ class PatientArchiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             item = study("1.2.3.100")
-            legacy = dcom_pipeline.study_archive_folder_name(item)
+            legacy = f"{dcom_pipeline.study_folder_base_name(item)} - deadbeef01"
             (folder / legacy).mkdir()
+            dcom_pipeline._write_patient_manifest(folder, {
+                "format": dcom_pipeline.PATIENT_MANIFEST_FORMAT,
+                "studies": {item["study_uid"]: {"folder": legacy}},
+            })
             self.assertEqual(legacy, dcom_pipeline.resolve_study_folder_name(folder, item))
 
     def test_repeat_download_reuses_patient_and_resumes_existing_study(self):
@@ -478,6 +484,123 @@ class PatientArchiveTests(unittest.TestCase):
 
 
 class PatientDemographicsTests(unittest.TestCase):
+    def test_redacted_link_identity_uses_explicit_unknown_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dicom_dir = Path(tmp)
+            write_patient_dicom(
+                dicom_dir / "one.dcm",
+                patient_id="***",
+                patient_name="***",
+                patient_age="055Y",
+                birth_date="***",
+                patient_sex="M",
+                study_date="20241025",
+            )
+
+            metadata = dcom_pipeline.extract_patient_metadata(dicom_dir)
+            folder = dcom_pipeline.patient_download_folder_name(metadata, "2026-08-09")
+
+            self.assertEqual("KHONG_RO_ID", metadata["PatientID"])
+            self.assertEqual("KHONG_RO_TEN", metadata["PatientName"])
+            self.assertEqual("", metadata["PatientBirthDate"])
+            self.assertEqual("55T", metadata["PatientAge"])
+            self.assertEqual(
+                "KHONG_RO_TEN - 55T - KHONG_RO_ID - 2026-08-09",
+                folder,
+            )
+
+    def test_dicom_name_age_suffix_is_not_duplicated_in_patient_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dicom_dir = Path(tmp)
+            write_patient_dicom(
+                dicom_dir / "one.dcm",
+                patient_id="2606033997",
+                patient_name="NGUYEN THI CAM TU^23T",
+                patient_age="023Y",
+                birth_date="20030101",
+                patient_sex="F",
+                study_date="20260616",
+            )
+
+            metadata = dcom_pipeline.extract_patient_metadata(dicom_dir)
+            folder = dcom_pipeline.patient_download_folder_name(metadata, "2026-08-09")
+
+            self.assertEqual("NGUYEN THI CAM TU", metadata["PatientName"])
+            self.assertEqual(
+                "NGUYEN THI CAM TU - 23T - 2606033997 - 2026-08-09",
+                folder,
+            )
+
+            patient_root, _manifest, _created = dcom_pipeline.ensure_patient_archive(
+                dicom_dir / "archive",
+                patient_id="2606033997",
+                patient_name="",
+                hospital_key="dhy",
+                hospital_name="Hospital",
+            )
+            dcom_pipeline.write_direct_patient_manifest(
+                patient_root,
+                patient_root / "JPG",
+                metadata,
+                image_count=1,
+                complete=True,
+            )
+            manifest = json.loads(
+                (patient_root / dcom_pipeline.PATIENT_MANIFEST_NAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual("NGUYEN THI CAM TU", manifest["patientName"])
+
+    def test_dicom_name_age_suffix_does_not_create_a_false_identity_conflict(self):
+        metadata = {
+            "PatientID": "2606033997",
+            "PatientName": "NGUYEN THI CAM TU",
+        }
+        dcom_pipeline._assert_patient_metadata_matches(
+            "2606033997",
+            "NGUYEN THI CAM TU^23T",
+            metadata,
+        )
+
+    def test_windows_folder_rename_retries_a_temporary_access_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "LINK_20260809_case"
+            jpg = root / "JPG"
+            jpg.mkdir(parents=True)
+            metadata = {
+                "PatientID": "BN001",
+                "PatientName": "NGUYEN VAN A",
+                "PatientAge": "23T",
+            }
+            real_rename = Path.rename
+            attempts = 0
+
+            def flaky_rename(path, target):
+                nonlocal attempts
+                attempts += 1
+                if attempts < 3:
+                    error = PermissionError(13, "Access is denied")
+                    error.winerror = 5
+                    raise error
+                return real_rename(path, target)
+
+            with patch.object(Path, "rename", new=flaky_rename), patch(
+                "dcom_pipeline.time.sleep",
+            ):
+                renamed, remapped_jpg = dcom_pipeline.rename_patient_download_root(
+                    root,
+                    jpg,
+                    metadata,
+                    download_date="2026-08-09",
+                    log=lambda _message: None,
+                )
+
+            self.assertEqual(3, attempts)
+            self.assertEqual(
+                "NGUYEN VAN A - 23T - BN001 - 2026-08-09",
+                renamed.name,
+            )
+            self.assertEqual(renamed / "JPG", remapped_jpg)
+
     def test_dicom_metadata_preserves_birth_sex_and_exact_age_at_study(self):
         with tempfile.TemporaryDirectory() as tmp:
             dicom_dir = Path(tmp)
@@ -554,8 +677,13 @@ class PatientDemographicsTests(unittest.TestCase):
             original = Path(tmp) / "LINK_case"
 
             def fake_download(_url, dicom_dir, **_kwargs):
-                dicom_dir.mkdir(parents=True)
-                write_patient_dicom(dicom_dir / "one.dcm")
+                sample = Path(tmp) / "sample.dcm"
+                write_patient_dicom(sample)
+                data = sample.read_bytes()
+                sample.unlink()
+                resolved_dicom_dir = Path(_kwargs["dicom_output_resolver"](data))
+                resolved_dicom_dir.mkdir(parents=True)
+                (resolved_dicom_dir / "one.dcm").write_bytes(data)
                 return dcom_pipeline.DownloadStats(dicom=1, expected=1, completed_tasks=1)
 
             def fake_convert(_dicom_dir, jpg_dir, **_kwargs):
@@ -620,10 +748,15 @@ class PatientDemographicsTests(unittest.TestCase):
         }
 
         def fake_run_pipeline(**kwargs):
+            self.assertEqual("JPG", kwargs["jpg_folder_name_override"])
             dicom_dir = Path(kwargs["out_base"]) / "DICOM"
             dicom_dir.mkdir(parents=True)
             write_patient_dicom(dicom_dir / "one.dcm")
-            jpg_dir = Path(kwargs["out_base"]) / "2026-12-30 - MR - MR BRAIN"
+            metadata = dcom_pipeline.extract_patient_metadata(dicom_dir)
+            self.assertIs(kwargs["after_first_dicom"], kwargs["after_dicom_download"])
+            remapped_out = kwargs["after_first_dicom"](Path(kwargs["out_base"]), metadata)
+            self.assertIn("NGUYEN VAN A - 23T - BN001 - ", remapped_out.parent.name)
+            jpg_dir = remapped_out / "JPG"
             jpg_dir.mkdir()
             return (
                 dcom_pipeline.DownloadStats(dicom=1, expected=1, completed_tasks=1),
@@ -711,6 +844,10 @@ class PatientDemographicsTests(unittest.TestCase):
 
 
 class SeriesSelectionTests(unittest.TestCase):
+    @staticmethod
+    def _tag(value):
+        return {"Value": [value]}
+
     def test_vrad_inventory_keeps_exact_uid_description_and_hint(self):
         body = json.dumps({
             "data": [{
@@ -741,8 +878,7 @@ class SeriesSelectionTests(unittest.TestCase):
         self.assertEqual(176, choices[0]["imageCount"])
 
     def test_dicomweb_inventory_excludes_non_image_series(self):
-        def tag(value):
-            return {"Value": [value]}
+        tag = self._tag
 
         body = json.dumps([
             {
@@ -765,6 +901,189 @@ class SeriesSelectionTests(unittest.TestCase):
         self.assertEqual("1.2.3.mr", choices[0]["id"])
         self.assertEqual("T2", choices[0]["sequenceHint"])
 
+    def test_dicomweb_plan_never_hides_a_split_series_with_no_instances(self):
+        tag = self._tag
+        series = [
+            {
+                "0020000E": tag("plain"), "00200011": tag(2),
+                "0008103E": tag("PLAIN"), "00080060": tag("CT"),
+                "00201209": tag(115),
+            },
+            {
+                "0020000E": tag("bone"), "00200011": tag(3),
+                "0008103E": tag("BONE"), "00080060": tag("CT"),
+                "00201209": tag(229),
+            },
+            {
+                "0020000E": tag("scout"), "00200011": tag(1),
+                "0008103E": tag("SCOUT"), "00080060": tag("CT"),
+                "00201209": tag(1),
+            },
+        ]
+        instances = {
+            "plain": [],
+            "bone": [],
+            "scout": [{"00080018": tag("scout.1"), "0020000E": tag("scout")}],
+        }
+
+        tasks, count, _skipped, missing = dcom_pipeline._dicomweb_instance_plan(
+            series, instances,
+        )
+
+        self.assertEqual(3, count)
+        self.assertEqual(1, len(tasks))
+        self.assertEqual(2, len(missing))
+        self.assertTrue(any("PLAIN" in item and "0/115" in item for item in missing))
+        self.assertTrue(any("BONE" in item and "0/229" in item for item in missing))
+
+    def test_dicomweb_plan_recovers_instances_from_study_wide_listing(self):
+        tag = self._tag
+        series = [
+            {
+                "0020000E": tag("plain"), "00200011": tag(2),
+                "0008103E": tag("PLAIN"), "00080060": tag("CT"),
+                "00201209": tag(2),
+            },
+            {
+                "0020000E": tag("bone"), "00200011": tag(3),
+                "0008103E": tag("BONE"), "00080060": tag("CT"),
+                "00201209": tag(3),
+            },
+        ]
+        grouped = {
+            "plain": [
+                {"00080018": tag("plain.1")},
+                {"00080018": tag("plain.2")},
+            ],
+            "bone": [
+                {"00080018": tag("bone.1")},
+                {"00080018": tag("bone.2")},
+                {"00080018": tag("bone.3")},
+            ],
+        }
+
+        tasks, count, _skipped, missing = dcom_pipeline._dicomweb_instance_plan(
+            series, grouped,
+        )
+
+        self.assertEqual(2, count)
+        self.assertEqual(5, len(tasks))
+        self.assertEqual([], missing)
+
+    def test_dicomweb_downloader_uses_study_wide_fallback_for_split_series(self):
+        tag = self._tag
+        series = [
+            {
+                "0020000E": tag("plain"), "00200011": tag(2),
+                "0008103E": tag("PLAIN"), "00080060": tag("CT"),
+                "00201209": tag(2),
+            },
+            {
+                "0020000E": tag("bone"), "00200011": tag(3),
+                "0008103E": tag("BONE"), "00080060": tag("CT"),
+                "00201209": tag(3),
+            },
+            {
+                "0020000E": tag("scout"), "00200011": tag(1),
+                "0008103E": tag("SCOUT"), "00080060": tag("CT"),
+                "00201209": tag(1),
+            },
+        ]
+        study_instances = [
+            {"0020000E": tag(series_uid), "00080018": tag(f"{series_uid}.{index}")}
+            for series_uid, count in (("plain", 2), ("bone", 3), ("scout", 1))
+            for index in range(1, count + 1)
+        ]
+        requested: list[str] = []
+
+        class Response:
+            headers = {"Content-Type": "application/dicom+json"}
+
+            def __init__(self, payload):
+                self.payload = json.dumps(payload).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return self.payload
+
+        def fake_urlopen(request, **_kwargs):
+            url = request.full_url
+            requested.append(url)
+            if url.endswith("/studies/STUDY/series"):
+                return Response(series)
+            if "/series/scout/instances" in url:
+                return Response([study_instances[-1]])
+            if "/series/" in url:
+                return Response([])
+            if "/studies/STUDY/instances" in url:
+                return Response(study_instances)
+            return Response([])
+
+        planned: list[tuple] = []
+        captured = {
+            "qido_series": "https://pacs.test/rs/studies/STUDY/series",
+            "api_headers": {}, "cookies": [], "wado_tmpl": None,
+        }
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen), patch(
+            "dcom_pipeline._run_fetch_tasks",
+            side_effect=lambda tasks, *_args: planned.extend(tasks),
+        ), patch("dcom_pipeline._report_download_result"):
+            dcom_pipeline._download_via_dicomweb(
+                captured,
+                lambda _body: True,
+                dcom_pipeline.DownloadStats(),
+                lambda _message: None,
+                lambda: False,
+            )
+
+        self.assertEqual(6, len(planned))
+        self.assertTrue(any("/studies/STUDY/instances" in url for url in requested))
+
+    def test_dicomweb_downloader_fails_closed_when_split_series_stay_empty(self):
+        tag = self._tag
+        series = [{
+            "0020000E": tag("plain"), "00200011": tag(2),
+            "0008103E": tag("PLAIN"), "00080060": tag("CT"),
+            "00201209": tag(115),
+        }]
+
+        class Response:
+            headers = {"Content-Type": "application/dicom+json"}
+
+            def __init__(self, payload):
+                self.payload = json.dumps(payload).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return self.payload
+
+        def fake_urlopen(request, **_kwargs):
+            return Response(series if request.full_url.endswith("/studies/STUDY/series") else [])
+
+        captured = {
+            "qido_series": "https://pacs.test/rs/studies/STUDY/series",
+            "api_headers": {}, "cookies": [], "wado_tmpl": None,
+        }
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaisesRegex(RuntimeError, "PLAIN.*0/115"):
+                dcom_pipeline._download_via_dicomweb(
+                    captured,
+                    lambda _body: True,
+                    dcom_pipeline.DownloadStats(),
+                    lambda _message: None,
+                    lambda: False,
+                )
+
     def test_dicom_storage_name_is_readable_stable_and_series_scoped(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "source.dcm"
@@ -779,7 +1098,7 @@ class SeriesSelectionTests(unittest.TestCase):
 
             folder, filename = dcom_pipeline._dicom_storage_info(data, digest)
 
-            self.assertRegex(folder, r"^Series_7_AX T2 FLAIR_[0-9a-f]{8}$")
+            self.assertEqual("Series_7_AX T2 FLAIR", folder)
             self.assertRegex(filename, r"^IM_00012_[0-9a-f]{10}_[0-9a-f]{6}\.dcm$")
             self.assertEqual((folder, filename), dcom_pipeline._dicom_storage_info(data, digest))
 

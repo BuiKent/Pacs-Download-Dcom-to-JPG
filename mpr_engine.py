@@ -85,11 +85,17 @@ def series_folder_name(
     series_uid: str,
     kind: Optional[str] = None,
 ) -> str:
-    """Readable name plus a UID token — the disambiguated form of the name.
+    """Return the readable series folder name without exposing a UID hash."""
+    return series_folder_base_name(series_number, description, kind)
 
-    Only used when two different series would otherwise land in the same
-    folder; see `SeriesFolderNamer`.
-    """
+
+def _legacy_series_folder_name(
+    series_number,
+    description,
+    series_uid: str,
+    kind: Optional[str] = None,
+) -> str:
+    """Name written by older builds; retained only for resume compatibility."""
     uid_text = _series_uid_text(series_uid, series_number, description)
     uid_token = hashlib.sha1(uid_text.encode("utf-8")).hexdigest()[:10]
     return f"{series_folder_base_name(series_number, description, kind)}_{uid_token}"
@@ -122,13 +128,15 @@ class SeriesFolderNamer:
         if cached is not None:
             return cached
         plain = series_folder_base_name(series_number, description, kind)
-        tokened = series_folder_name(series_number, description, uid_text, kind)
-        if (self.root / tokened).is_dir():
-            chosen = tokened
-        elif plain.casefold() in self._claimed:
-            chosen = tokened
+        legacy = _legacy_series_folder_name(series_number, description, uid_text, kind)
+        if (self.root / legacy).is_dir():
+            chosen = legacy
         else:
             chosen = plain
+            counter = 2
+            while chosen.casefold() in self._claimed or (self.root / chosen).is_dir():
+                chosen = f"{plain} ({counter})"
+                counter += 1
         self._by_uid[uid_text] = chosen
         self._claimed.add(chosen.casefold())
         return chosen

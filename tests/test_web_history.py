@@ -6,9 +6,11 @@ retry that merges into the folder the first attempt created.
 """
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from web_backend import HistoryStore, WebController
 
@@ -172,6 +174,18 @@ class ControllerSettingsTests(unittest.TestCase):
         self.controller = WebController()
         self.controller.settings_path = self.root / "settings.json"
         self.controller.history = HistoryStore(self.root / "history.json")
+
+    def test_a_new_install_defaults_to_english(self):
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(self.root / "fresh-app-data")}):
+            controller = WebController()
+        self.assertEqual("en", controller.language)
+
+    def test_a_saved_vietnamese_choice_is_kept(self):
+        self.controller.settings_path.write_text(
+            json.dumps({"language": "vi", "outputRoot": ""}),
+            encoding="utf-8",
+        )
+        self.assertEqual("vi", self.controller._read_settings()["language"])
 
     def test_language_choice_survives_a_restart(self):
         self.controller.set_language("en")

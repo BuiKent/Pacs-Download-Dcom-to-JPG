@@ -386,6 +386,12 @@ const LOG_PATTERNS = [
     "DICOM birth date '$1' does not match the patient record '$2'."],
   [/Giới DICOM '(.+)' không khớp hồ sơ '(.+)'\./g,
     "DICOM sex '$1' does not match the patient record '$2'."],
+  [/DICOMweb chưa liệt kê đủ instance của mọi series ảnh; không đánh dấu ca là hoàn tất\. (.+)/g,
+    "DICOMweb did not list every image instance; the study was not marked complete. $1"],
+  [/(.+): tìm thấy (\d+)\/không rõ instance/g,
+    "$1: found $2/unknown instances"],
+  [/(.+): tìm thấy (\d+)\/(\d+) instance/g,
+    "$1: found $2/$3 instances"],
 ];
 
 export function translateLog(message) {

@@ -454,6 +454,54 @@ def _dicomweb_series_choices(body: bytes) -> list[dict]:
     return choices
 
 
+def _dicomweb_instance_plan(
+    series: list[dict],
+    instances_by_series: dict[str, list[dict]],
+    selected_series: Optional[set[str]] = None,
+) -> tuple[list[tuple[str, str, int, dict]], int, list[str], list[str]]:
+    """Validate and flatten QIDO instance listings without hiding empty series."""
+    tasks: list[tuple[str, str, int, dict]] = []
+    skipped_non_image: list[str] = []
+    missing: list[str] = []
+    image_series_count = 0
+    for item in series:
+        suid = str(_dicom_json_value(item, "0020000E") or "").strip()
+        if not suid:
+            continue
+        if selected_series is not None and suid not in selected_series:
+            continue
+        modality = _dicom_json_value(item, "00080060")
+        label = (
+            f"{_dicom_json_value(item, '00200011') or '?'} - "
+            f"{_dicom_json_value(item, '0008103E') or modality or '?'}"
+        )
+        if _is_non_image_modality(modality):
+            skipped_non_image.append(label)
+            continue
+        image_series_count += 1
+        try:
+            declared = int(str(_dicom_json_value(item, "00201209") or 0))
+        except (TypeError, ValueError):
+            declared = 0
+
+        unique: dict[str, dict] = {}
+        for instance in instances_by_series.get(suid, []):
+            iuid = str(_dicom_json_value(instance, "00080018") or "").strip()
+            if iuid:
+                unique[iuid] = instance
+        found = len(unique)
+        if found == 0 or (declared > 0 and found < declared):
+            expected_text = str(declared) if declared > 0 else "không rõ"
+            missing.append(f"{label}: tìm thấy {found}/{expected_text} instance")
+        for iuid, instance in unique.items():
+            try:
+                frames = int(str(_dicom_json_value(instance, "00280008") or 1))
+            except (TypeError, ValueError):
+                frames = 1
+            tasks.append((suid, iuid, max(1, frames), instance))
+    return tasks, image_series_count, skipped_non_image, missing
+
+
 def _dicom_storage_info(data: bytes, digest: str) -> tuple[str, str]:
     """Build stable readable series/file names without decoding pixel data."""
     try:
@@ -468,20 +516,16 @@ def _dicom_storage_info(data: bytes, digest: str) -> tuple[str, str]:
                 "InstanceNumber", "SOPInstanceUID",
             ],
         )
-        study_uid = str(getattr(ds, "StudyInstanceUID", "") or "").strip()
-        uid = str(getattr(ds, "SeriesInstanceUID", "") or "").strip()
         number = str(getattr(ds, "SeriesNumber", "") or "").strip() or "NA"
         description = _safe_name(getattr(ds, "SeriesDescription", "") or "UnknownSeries")[:64]
-        series_key = uid or f"{study_uid}:{number}:{description}"
-        uid_token = hashlib.sha1((series_key or digest).encode("utf-8")).hexdigest()[:8]
-        folder = f"Series_{_safe_name(number)}_{description}_{uid_token}"
+        folder = f"Series_{_safe_name(number)}_{description}"
         instance = str(getattr(ds, "InstanceNumber", "") or "").strip()
         sop = str(getattr(ds, "SOPInstanceUID", "") or "").strip()
         sop_token = hashlib.sha1((sop or digest).encode("utf-8")).hexdigest()[:10]
         instance_token = f"{int(instance):05d}" if instance.lstrip("-").isdigit() else _safe_name(instance or "NA")
         return folder, f"IM_{instance_token}_{sop_token}_{digest[:6]}.dcm"
     except Exception:
-        return f"Series_UNKNOWN_{digest[:8]}", f"IM_NA_{digest[:10]}.dcm"
+        return "Series_UNKNOWN", f"IM_NA_{digest[:10]}.dcm"
 
 
 @dataclass
@@ -522,6 +566,7 @@ def download_all(
     should_stop: Optional[Callable[[], bool]] = None,
     resume: bool = False,
     selected_series_ids: Optional[list[str]] = None,
+    dicom_output_resolver: Optional[Callable[[bytes], Path]] = None,
 ) -> DownloadStats:
     """
     Tải toàn bộ ảnh của study. Hai chế độ, tự chọn:
@@ -539,9 +584,14 @@ def download_all(
     from playwright.sync_api import sync_playwright
 
     dicom_dir = Path(dicom_dir)
-    dicom_dir.mkdir(parents=True, exist_ok=True)
     raw_jpg_dir = dicom_dir.parent / "RAW_JPG"
-    raw_jpg_dir.mkdir(parents=True, exist_ok=True)
+    # A fresh patient download can derive its final folder from the first DICOM
+    # before anything is written. This avoids renaming a populated Windows
+    # directory that Explorer/indexers may already have opened.
+    output_resolved = dicom_output_resolver is None or resume
+    if output_resolved:
+        dicom_dir.mkdir(parents=True, exist_ok=True)
+        raw_jpg_dir.mkdir(parents=True, exist_ok=True)
 
     stats = DownloadStats()
     selected_series = (
@@ -587,6 +637,7 @@ def download_all(
         Trả về True nếu ảnh đã nằm trên đĩa (mới lưu hoặc đã có sẵn) — chỗ gọi
         dựa vào đây để biết ảnh nào cần tải lại, thay vì nuốt lỗi.
         """
+        nonlocal dicom_dir, raw_jpg_dir, output_resolved
         if not body:
             return False
         data = _maybe_base64_decode(body)
@@ -601,6 +652,10 @@ def download_all(
             return False
         h = hashlib.sha1(data).hexdigest()
         with save_lock:
+            if ext == "dcm" and not output_resolved and dicom_output_resolver is not None:
+                dicom_dir = Path(dicom_output_resolver(data))
+                raw_jpg_dir = dicom_dir.parent / "RAW_JPG"
+                output_resolved = True
             if h in seen_hashes:
                 stats.duplicates += 1
                 return True
@@ -620,8 +675,10 @@ def download_all(
             if n % 25 == 0:
                 log(f"  ...đã tải {n} ảnh (DICOM: {stats.dicom})")
         elif ext == "jpg":
+            raw_jpg_dir.mkdir(parents=True, exist_ok=True)
             (raw_jpg_dir / f"img_{idx:05d}.jpg").write_bytes(data)
         else:
+            raw_jpg_dir.mkdir(parents=True, exist_ok=True)
             (raw_jpg_dir / f"img_{idx:05d}.png").write_bytes(data)
         return True
 
@@ -1216,8 +1273,7 @@ def _download_via_dicomweb(captured, save_body, stats,
         return json.loads(body.decode("utf-8", "replace"))
 
     def V(el, tag):
-        v = (el.get(tag, {}) or {}).get("Value", [None])
-        return v[0] if v else None
+        return _dicom_json_value(el, tag)
 
     try:
         series = get_json(f"{rs_base}/studies/{study}/series")
@@ -1225,23 +1281,17 @@ def _download_via_dicomweb(captured, save_body, stats,
         log(f"  Lỗi QIDO series ({e}) — bỏ qua."); return
 
     log(f"DICOMweb: {len(series)} series. Đang liệt kê ảnh...")
-    tasks = []  # (seriesUID, sopInstanceUID, số frame theo QIDO)
-    skipped_non_image = []
-    image_series_count = 0
+    instances_by_series: dict[str, list[dict]] = {}
     for s in series:
         if stop():
             break
-        suid = V(s, "0020000E")
+        suid = str(V(s, "0020000E") or "").strip()
         if not suid:
             continue
-        if selected_series is not None and str(suid) not in selected_series:
+        if selected_series is not None and suid not in selected_series:
             continue
         if _is_non_image_modality(V(s, "00080060")):
-            skipped_non_image.append(
-                f"{V(s, '00200011') or '?'} - {V(s, '0008103E') or V(s, '00080060')}"
-            )
             continue
-        image_series_count += 1
         try:
             insts = get_json(f"{rs_base}/studies/{study}/series/{suid}/instances")
         except Exception:
@@ -1251,14 +1301,48 @@ def _download_via_dicomweb(captured, save_body, stats,
                 insts = get_json(f"{rs_base}/studies/{study}/series/{suid}/metadata")
             except Exception:
                 insts = []
-        for i in insts:
-            iuid = V(i, "00080018")
-            if iuid:
-                try:
-                    nf = int(str(V(i, "00280008") or 1))
-                except Exception:
-                    nf = 1
-                tasks.append((suid, iuid, max(1, nf), i))
+        instances_by_series[suid] = insts if isinstance(insts, list) else []
+
+    if stop():
+        return
+
+    tasks, image_series_count, skipped_non_image, missing = _dicomweb_instance_plan(
+        series, instances_by_series, selected_series,
+    )
+
+    # Some PACS expose the series but reject `/series/<uid>/instances` for large
+    # diagnostic stacks. Recover from the study-wide instance/metadata endpoint
+    # and regroup by SeriesInstanceUID before declaring anything complete.
+    if missing and not stop():
+        for endpoint in (
+            f"{rs_base}/studies/{study}/instances?limit=100000",
+            f"{rs_base}/studies/{study}/instances",
+            f"{rs_base}/studies/{study}/metadata",
+        ):
+            if stop():
+                return
+            try:
+                candidate = get_json(endpoint)
+            except Exception:
+                continue
+            if not isinstance(candidate, list) or not candidate:
+                continue
+            for instance in candidate:
+                suid = str(V(instance, "0020000E") or "").strip()
+                if suid:
+                    instances_by_series.setdefault(suid, []).append(instance)
+            tasks, image_series_count, skipped_non_image, missing = _dicomweb_instance_plan(
+                series, instances_by_series, selected_series,
+            )
+            if not missing:
+                break
+
+    if missing:
+        details = "; ".join(missing)
+        raise RuntimeError(
+            "DICOMweb chưa liệt kê đủ instance của mọi series ảnh; "
+            f"không đánh dấu ca là hoàn tất. {details}"
+        )
 
     if skipped_non_image:
         log(f"  Bỏ qua {len(skipped_non_image)} series không phải ảnh "
@@ -1538,8 +1622,26 @@ def _study_patient_value(study: dict, *keys: str) -> str:
 
 def _patient_display_name(value: Any) -> str:
     """Turn a DICOM PN value into a readable folder component."""
-    text = str(value or "").replace("^", " ")
+    raw = str(value or "").strip()
+    if _is_redacted_patient_value(raw):
+        return ""
+    parts = [part.strip() for part in raw.split("^") if part.strip()]
+    if parts and re.fullmatch(r"\d{1,3}(?:T|TUOI|Y|YEAR|YEARS)", _identity_token(parts[-1])):
+        parts.pop()
+    text = " ".join(parts) if "^" in raw else raw
+    text = re.sub(r"\s+\d{1,3}\s*(?:T|TUỔI|TUOI|Y|YEARS?)\s*$", "", text, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _is_redacted_patient_value(value: Any) -> bool:
+    raw = str(value or "").strip()
+    token = _identity_token(raw)
+    if not raw or not token:
+        return True
+    return token in {
+        "ANON", "ANONYMOUS", "ANONYMIZED", "ANONYMISED", "REDACTED",
+        "MASKED", "REMOVED", "HIDDEN", "UNKNOWN", "XXX", "XXXX",
+    }
 
 
 def _normalise_dicom_date(value: Any) -> str:
@@ -1617,23 +1719,15 @@ def study_folder_base_name(study: dict) -> str:
 
 
 def study_archive_folder_name(study: dict) -> str:
-    """Readable study folder name with a full-UID-derived collision token.
-
-    Only used to disambiguate; see `resolve_study_folder_name`.
-    """
-    uid = str(study.get("study_uid") or study.get("uid") or "").strip()
-    uid_token = hashlib.sha1(uid.encode("utf-8")).hexdigest()[:10]
-    # Keep the UID token at the end; truncating the whole string would remove
-    # the part that actually prevents two similarly named studies colliding.
-    return f"{study_folder_base_name(study)} - {uid_token}"
+    """Return exactly `<date> - <modality> - <description>`."""
+    return study_folder_base_name(study)
 
 
 def resolve_study_folder_name(patient_folder: Path, study: dict) -> str:
     """Pick this study's folder name inside a patient archive.
 
-    Readable by default; the UID token is appended only when another study
-    already owns that name. A folder written by an older build always carried
-    the token, so it is reused as-is and a resumed download merges into it.
+    New folders never expose a UID/hash suffix. Existing manifest entries are
+    still reused verbatim so an older archive can resume without duplication.
     """
     patient_folder = Path(patient_folder)
     uid = str(study.get("study_uid") or study.get("uid") or "").strip()
@@ -1643,17 +1737,19 @@ def resolve_study_folder_name(patient_folder: Path, study: dict) -> str:
         return str(entry["folder"])
 
     plain = study_folder_base_name(study)
-    tokened = study_archive_folder_name(study)
-    if (patient_folder / tokened).is_dir():
-        return tokened
     taken = {
         str(item.get("folder") or "").casefold()
         for key, item in known.items()
         if isinstance(item, dict) and key != uid
     }
-    if plain.casefold() in taken or (patient_folder / plain).is_dir():
-        return tokened
-    return plain
+    if plain.casefold() not in taken and not (patient_folder / plain).exists():
+        return plain
+    counter = 2
+    while True:
+        candidate = f"{plain} ({counter})"
+        if candidate.casefold() not in taken and not (patient_folder / candidate).exists():
+            return candidate
+        counter += 1
 
 
 def _read_patient_manifest(folder: Path) -> Optional[dict]:
@@ -1753,7 +1849,13 @@ def _manifest_identity_matches(manifest: dict, patient_id: str, hospital_key: st
 
 
 def _patient_name_conflicts(stored: str, current: str) -> bool:
-    return bool(stored and current and _identity_token(stored) != _identity_token(current))
+    stored_name = _patient_display_name(stored)
+    current_name = _patient_display_name(current)
+    return bool(
+        stored_name
+        and current_name
+        and _identity_token(stored_name) != _identity_token(current_name)
+    )
 
 
 def _legacy_patient_folder_matches(folder: Path, patient_id: str, hospital_key: str) -> bool:
@@ -1913,10 +2015,10 @@ def ensure_patient_archive(
         ))
         folder = root / folder_name
         if folder.exists():
-            suffix = hashlib.sha1(
-                f"{hospital_key}:{patient_id}".encode("utf-8")
-            ).hexdigest()[:8]
-            folder = root / f"{folder_name} - {suffix}"
+            counter = 2
+            while (root / f"{folder_name} ({counter})").exists():
+                counter += 1
+            folder = root / f"{folder_name} ({counter})"
         folder.mkdir(parents=True, exist_ok=False)
         created = True
 
@@ -2550,6 +2652,51 @@ def summarize_dicom(dicom_dir: Path, log: LogFn = _default_log) -> None:
 #  CLI
 # --------------------------------------------------------------------------- #
 
+def extract_patient_metadata_bytes(data: bytes) -> dict:
+    """Read naming demographics from one in-memory DICOM before writing it."""
+    try:
+        import pydicom
+        ds = pydicom.dcmread(
+            io.BytesIO(data),
+            stop_before_pixels=True,
+            force=True,
+            specific_tags=[
+                "PatientName", "PatientID", "PatientAge", "PatientBirthDate",
+                "PatientSex", "StudyDate", "StudyInstanceUID", "StudyDescription",
+                "Modality",
+            ],
+        )
+    except Exception:
+        return {}
+    raw_name = str(getattr(ds, "PatientName", "") or "").strip()
+    raw_id = str(getattr(ds, "PatientID", "") or "").strip()
+    raw_birth = str(getattr(ds, "PatientBirthDate", "") or "").strip()
+    raw_age = str(getattr(ds, "PatientAge", "") or "").strip()
+    study_date = _normalise_dicom_date(getattr(ds, "StudyDate", ""))
+    birth_date = (
+        "" if _is_redacted_patient_value(raw_birth)
+        else _normalise_dicom_date(raw_birth)
+    )
+    age, age_years, age_source = _normalise_patient_age(
+        raw_age, birth_date, study_date,
+    )
+    return {
+        "PatientID": "KHONG_RO_ID" if _is_redacted_patient_value(raw_id) else raw_id,
+        "PatientName": _patient_display_name(raw_name) or "KHONG_RO_TEN",
+        "PatientNameRaw": raw_name,
+        "PatientBirthDate": birth_date,
+        "PatientSex": str(getattr(ds, "PatientSex", "") or "").strip().upper(),
+        "PatientAge": age,
+        "PatientAgeRaw": raw_age,
+        "PatientAgeYears": age_years,
+        "PatientAgeSource": age_source,
+        "StudyDate": study_date,
+        "StudyInstanceUID": str(getattr(ds, "StudyInstanceUID", "") or "").strip(),
+        "StudyDescription": str(getattr(ds, "StudyDescription", "") or "").strip(),
+        "Modality": str(getattr(ds, "Modality", "") or "").strip().upper(),
+    }
+
+
 def extract_patient_metadata(dicom_dir: Path) -> dict:
     """Read one patient's demographics and study context from local DICOM."""
     try:
@@ -2577,13 +2724,17 @@ def extract_patient_metadata(dicom_dir: Path) -> dict:
                     "Modality",
                 ],
             )
-            name = str(getattr(ds, "PatientName", "") or "").strip()
-            pid = str(getattr(ds, "PatientID", "") or "").strip()
+            raw_name = str(getattr(ds, "PatientName", "") or "").strip()
+            raw_pid = str(getattr(ds, "PatientID", "") or "").strip()
+            name = "" if _is_redacted_patient_value(raw_name) else raw_name
+            pid = "" if _is_redacted_patient_value(raw_pid) else raw_pid
             if pid:
                 seen_ids.add(_identity_token(pid))
             if name:
                 seen_names.add(_identity_token(name))
             raw_birth = str(getattr(ds, "PatientBirthDate", "") or "").strip()
+            if _is_redacted_patient_value(raw_birth):
+                raw_birth = ""
             raw_sex = str(getattr(ds, "PatientSex", "") or "").strip().upper()
             normalised_birth = _normalise_dicom_date(raw_birth)
             if normalised_birth:
@@ -2646,7 +2797,10 @@ def extract_patient_metadata(dicom_dir: Path) -> dict:
 def patient_download_folder_name(metadata: dict, download_date: str = "") -> str:
     """Build `<name> - <age> - <patient id> - <download date>` safely."""
     name = _safe_name(_patient_display_name(metadata.get("PatientName")) or "KHONG_RO_TEN")[:40]
-    patient_id = _safe_name(metadata.get("PatientID") or "KHONG_RO_ID")
+    raw_id = metadata.get("PatientID")
+    patient_id = _safe_name(
+        "KHONG_RO_ID" if _is_redacted_patient_value(raw_id) else raw_id
+    )
     date = _normalise_dicom_date(download_date) or datetime.now().strftime("%Y-%m-%d")
     current_age, _current_age_years = _age_from_dates(
         _normalise_dicom_date(metadata.get("PatientBirthDate")),
@@ -2666,6 +2820,42 @@ def _merge_manifest_demographics(manifest: dict, metadata: dict) -> None:
         incoming = metadata.get(source)
         if incoming and not manifest.get(target):
             manifest[target] = incoming
+    canonical_name = _patient_display_name(metadata.get("PatientName"))
+    if canonical_name and canonical_name != "KHONG_RO_TEN" and not manifest.get("patientName"):
+        manifest["patientName"] = canonical_name
+
+
+def _patient_manifest_naming_metadata(manifest: dict) -> dict:
+    """Recover the best patient-folder identity already persisted in an archive."""
+    if not manifest:
+        return {}
+    studies = [
+        entry for entry in (manifest.get("studies") or {}).values()
+        if isinstance(entry, dict)
+    ]
+    studies.sort(key=lambda entry: str(entry.get("date") or ""), reverse=True)
+    age = next(
+        (
+            str(entry.get("patientAgeAtStudy") or "").strip()
+            for entry in studies
+            if str(entry.get("patientAgeAtStudy") or "").strip()
+        ),
+        "",
+    )
+    metadata = {
+        "PatientID": manifest.get("patientId") or "",
+        "PatientName": manifest.get("patientName") or "",
+        "PatientBirthDate": manifest.get("patientBirthDate") or "",
+        "PatientSex": manifest.get("patientSex") or "",
+        "PatientAge": age,
+    }
+    if (
+        _patient_display_name(metadata["PatientName"])
+        and _patient_display_name(metadata["PatientName"]) != "KHONG_RO_TEN"
+        and (metadata["PatientBirthDate"] or metadata["PatientAge"])
+    ):
+        return metadata
+    return {}
 
 
 def _assert_patient_metadata_matches(
@@ -2726,14 +2916,27 @@ def rename_patient_download_root(
     if target.exists() and target != root and not allow_collision_suffix:
         log(f"Không thể đổi tên thư mục: đích đã tồn tại ({target.name}).")
         return root, jpg
-    counter = 1
+    counter = 2
     while target.exists() and target != root:
         target = root.with_name(f"{desired_name} ({counter})")
         counter += 1
-    try:
-        root.rename(target)
-    except OSError as exc:
-        log(f"Không thể đổi tên thư mục: {exc}")
+    last_error: Optional[OSError] = None
+    for attempt in range(6):
+        try:
+            root.rename(target)
+            last_error = None
+            break
+        except OSError as exc:
+            last_error = exc
+            if getattr(exc, "winerror", None) not in {5, 32} or attempt == 5:
+                break
+            # Windows Defender/indexing and image readers can briefly retain a
+            # directory handle after conversion. Give those handles time to close.
+            import gc
+            gc.collect()
+            time.sleep(0.15 * (attempt + 1))
+    if last_error is not None:
+        log(f"Không thể đổi tên thư mục: {last_error}")
         return root, jpg
     return target, target / jpg_relative
 
@@ -2859,16 +3062,53 @@ def run_pipeline(
     resume: bool = False,
     selected_series_ids: Optional[list[str]] = None,
     rename_patient_root: bool = True,
+    jpg_folder_name_override: Optional[str] = None,
+    after_dicom_download: Optional[Callable[[Path, dict], Path]] = None,
+    after_first_dicom: Optional[Callable[[Path, dict], Path]] = None,
 ):
     out_base = Path(out_base)
     dicom_dir = out_base / "DICOM"
     jpg_dir = out_base / "JPG"
+    first_metadata: dict = {}
+    original_out_base = out_base
+    link_match = re.match(r"^LINK_(\d{4})(\d{2})(\d{2})_", out_base.name)
+    original_date = (
+        f"{link_match.group(1)}-{link_match.group(2)}-{link_match.group(3)}"
+        if link_match else ""
+    )
+
+    def resolve_first_dicom(data: bytes) -> Path:
+        nonlocal out_base, dicom_dir, first_metadata
+        first_metadata = extract_patient_metadata_bytes(data)
+        if after_first_dicom is not None and first_metadata:
+            out_base = Path(after_first_dicom(out_base, first_metadata))
+        elif rename_patient_root and first_metadata:
+            desired_name = patient_download_folder_name(first_metadata, original_date)
+            target = original_out_base.with_name(desired_name)
+            counter = 2
+            while target.exists() and target != original_out_base:
+                target = original_out_base.with_name(f"{desired_name} ({counter})")
+                counter += 1
+            out_base = target
+            if out_base != original_out_base:
+                log(f"Đã xác định tên hồ sơ từ DICOM đầu tiên: {out_base.name}")
+        dicom_dir = out_base / "DICOM"
+        return dicom_dir
+
+    first_dicom_resolver = (
+        resolve_first_dicom
+        if not resume and (rename_patient_root or after_first_dicom is not None)
+        else None
+    )
 
     log("=" * 60)
     log("BƯỚC 1/2: Tải ảnh từ viewer" + (" (THỬ LẠI — gộp vào folder cũ)" if resume else ""))
     dl = download_all(url, dicom_dir, log=log, headless=headless,
                       should_stop=should_stop, resume=resume,
-                      selected_series_ids=selected_series_ids)
+                      selected_series_ids=selected_series_ids,
+                      dicom_output_resolver=first_dicom_resolver)
+    dicom_dir = out_base / "DICOM"
+    jpg_dir = out_base / "JPG"
     if should_stop and should_stop():
         return dl, None, jpg_dir
     if dl.dicom == 0 and dl.jpg == 0:
@@ -2877,38 +3117,45 @@ def run_pipeline(
 
     summarize_dicom(dicom_dir, log=log)
 
+    metadata = (
+        extract_patient_metadata(dicom_dir) or first_metadata
+        if rename_patient_root or after_dicom_download is not None
+        else {}
+    )
+    if metadata and after_dicom_download is not None:
+        out_base = Path(after_dicom_download(out_base, metadata))
+        dicom_dir = out_base / "DICOM"
+
     # Thư mục JPG: '<ngày chụp> - <loại phim> - <mô tả ca chụp>'.
-    jpg_dir = out_base / _jpg_folder_name(dicom_dir)
+    jpg_name = jpg_folder_name_override or _jpg_folder_name(dicom_dir)
+    jpg_dir = out_base / jpg_name
+
+    if metadata and rename_patient_root:
+        current_link_match = re.match(r"^LINK_(\d{4})(\d{2})(\d{2})_", out_base.name)
+        should_rename = not resume or bool(current_link_match)
+        if should_rename:
+            out_base, jpg_dir = rename_patient_download_root(
+                out_base,
+                jpg_dir,
+                metadata,
+                log=log,
+                download_date=original_date,
+            )
+            dicom_dir = out_base / "DICOM"
 
     log("=" * 60)
     log("BƯỚC 2/2: Chuyển DICOM -> JPG chất lượng cao")
     cv = convert_all(dicom_dir, jpg_dir, log=log, quality=quality,
                      save_png=save_png, contrast_mode=contrast_mode,
                      should_stop=should_stop)
-    if rename_patient_root:
-        metadata = extract_patient_metadata(dicom_dir)
-        if metadata:
-            link_match = re.match(r"^LINK_(\d{4})(\d{2})(\d{2})_", out_base.name)
-            should_rename = not resume or bool(link_match)
-            if should_rename:
-                original_date = (
-                    f"{link_match.group(1)}-{link_match.group(2)}-{link_match.group(3)}"
-                    if link_match else ""
-                )
-                out_base, jpg_dir = rename_patient_download_root(
-                    out_base,
-                    jpg_dir,
-                    metadata,
-                    log=log,
-                    download_date=original_date,
-                )
-            write_direct_patient_manifest(
-                out_base,
-                jpg_dir,
-                metadata,
-                image_count=dl.total(),
-                complete=dl.is_complete(),
-            )
+    if metadata and rename_patient_root:
+        write_direct_patient_manifest(
+            out_base,
+            jpg_dir,
+            metadata,
+            image_count=dl.total(),
+            complete=dl.is_complete(),
+        )
     log("=" * 60)
     log(f"HOÀN TẤT. Ảnh JPG nằm ở: {jpg_dir}")
     return dl, cv, jpg_dir
@@ -3604,7 +3851,7 @@ def download_studies_list(
     patient_folder = Path(out_base)
     managed_patient = bool(patient_id and hospital_key)
     if managed_patient:
-        patient_folder, _manifest, created = ensure_patient_archive(
+        patient_folder, manifest, created = ensure_patient_archive(
             out_base,
             patient_id=patient_id,
             patient_name=patient_name,
@@ -3617,9 +3864,63 @@ def download_studies_list(
             log(f"Đã tạo hồ sơ bệnh nhân: {patient_folder.name}")
         else:
             log(f"Bệnh nhân đã có trong kho; phim mới sẽ được thêm vào: {patient_folder}")
+            # A previous run may have learned the DICOM demographics only after
+            # Windows had opened files below this directory. Rename now, before
+            # this run opens any study, when no pipeline handles exist yet.
+            preflight_metadata = _patient_manifest_naming_metadata(manifest)
+            if preflight_metadata:
+                created_date = str(manifest.get("createdAt") or "")[:10]
+                patient_folder, _ = rename_patient_download_root(
+                    patient_folder,
+                    patient_folder,
+                    preflight_metadata,
+                    log=log,
+                    download_date=created_date,
+                    allow_collision_suffix=False,
+                )
 
     total_downloaded = 0
     unfinished: list[str] = []
+    pending_naming_metadata: dict = {}
+
+    def rename_patient_before_conversion(study_dir: Path, metadata: dict) -> Path:
+        """Rename the patient root after DICOM arrives but before image readers open it."""
+        nonlocal patient_folder, pending_naming_metadata
+        if not managed_patient or not metadata:
+            return Path(study_dir)
+        manifest = _read_patient_manifest(patient_folder) or {}
+        _assert_patient_metadata_matches(
+            patient_id,
+            patient_name,
+            metadata,
+            str(manifest.get("patientBirthDate") or ""),
+            str(manifest.get("patientSex") or ""),
+        )
+        if not (
+            metadata.get("PatientBirthDate")
+            or metadata.get("PatientAge") not in {None, "", "KHONG_RO_TUOI"}
+        ):
+            return Path(study_dir)
+        pending_naming_metadata = {
+            **metadata,
+            "PatientID": patient_id or metadata.get("PatientID"),
+            "PatientName": patient_name or metadata.get("PatientName"),
+        }
+        old_patient_folder = patient_folder
+        study_relative = Path(study_dir).relative_to(old_patient_folder)
+        created_date = str(manifest.get("createdAt") or "")[:10]
+        patient_folder, remapped_study = rename_patient_download_root(
+            old_patient_folder,
+            Path(study_dir),
+            pending_naming_metadata,
+            log=log,
+            download_date=created_date,
+            allow_collision_suffix=False,
+        )
+        if patient_folder != old_patient_folder:
+            log(f"Đã cập nhật tên hồ sơ bệnh nhân: {patient_folder.name}")
+            return remapped_study
+        return patient_folder / study_relative
 
     def mark(
         st: dict,
@@ -3690,7 +3991,12 @@ def download_studies_list(
                 resume=resume_study,
                 selected_series_ids=selected_series_ids,
                 rename_patient_root=False,
+                jpg_folder_name_override="JPG",
+                after_dicom_download=rename_patient_before_conversion,
+                after_first_dicom=rename_patient_before_conversion,
             )
+            # The pre-conversion callback may have renamed the patient root.
+            st_out_dir = Path(jpg_dir).parent
             downloaded = dl.total() if dl else 0
             total_downloaded += downloaded
             stopped = bool(should_stop and should_stop())
@@ -3707,25 +4013,15 @@ def download_studies_list(
                     str(existing_manifest.get("patientBirthDate") or ""),
                     str(existing_manifest.get("patientSex") or ""),
                 )
-                if metadata.get("PatientAge") not in {None, "", "KHONG_RO_TUOI"}:
-                    old_patient_folder = patient_folder
-                    study_relative = st_out_dir.relative_to(old_patient_folder)
-                    manifest = _read_patient_manifest(old_patient_folder) or {}
-                    created_date = str(manifest.get("createdAt") or "")[:10]
-                    naming_metadata = {
+                if (
+                    metadata.get("PatientBirthDate")
+                    or metadata.get("PatientAge") not in {None, "", "KHONG_RO_TUOI"}
+                ):
+                    pending_naming_metadata = {
                         **metadata,
                         "PatientID": patient_id or metadata.get("PatientID"),
                         "PatientName": patient_name or metadata.get("PatientName"),
                     }
-                    patient_folder, jpg_dir = rename_patient_download_root(
-                        old_patient_folder,
-                        jpg_dir,
-                        naming_metadata,
-                        log=log,
-                        download_date=created_date,
-                        allow_collision_suffix=False,
-                    )
-                    st_out_dir = patient_folder / study_relative
 
             mark(
                 st,
@@ -3756,6 +4052,25 @@ def download_studies_list(
             mark(st, st_out_dir, complete=False, image_count=0)
             log(f"❌ Lỗi khi tải ca {idx}: {e}")
             unfinished.append(f"{label}: lỗi khi tải ({e})")
+
+    if managed_patient:
+        # Do not rename a Windows directory while the DICOM/JPG pipeline is
+        # actively using descendants. At this point all studies are closed and
+        # the manifest has the canonical demographics learned from DICOM.
+        import gc
+        gc.collect()
+        manifest = _read_patient_manifest(patient_folder) or {}
+        naming_metadata = _patient_manifest_naming_metadata(manifest) or pending_naming_metadata
+        if naming_metadata:
+            created_date = str(manifest.get("createdAt") or "")[:10]
+            patient_folder, _ = rename_patient_download_root(
+                patient_folder,
+                patient_folder,
+                naming_metadata,
+                log=log,
+                download_date=created_date,
+                allow_collision_suffix=False,
+            )
 
     log("\n" + "=" * 70)
     done = len(studies) - len(unfinished)

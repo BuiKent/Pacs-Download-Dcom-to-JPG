@@ -100,6 +100,8 @@ describe("pipeline log translation", () => {
       .toBe("Could not write resume metadata: disk full");
     expect(translateLog("❌ CHẶN GỘP CA 2 DO MÂU THUẪN ĐỊNH DANH: Ngày sinh DICOM '2000-01-01' không khớp hồ sơ '2001-01-01'."))
       .toBe("❌ BLOCKED MERGING STUDY 2 DUE TO AN IDENTITY CONFLICT: DICOM birth date '2000-01-01' does not match the patient record '2001-01-01'.");
+    expect(translateLog("DICOMweb chưa liệt kê đủ instance của mọi series ảnh; không đánh dấu ca là hoàn tất. 2 - PLAIN: tìm thấy 4/115 instance"))
+      .toBe("DICOMweb did not list every image instance; the study was not marked complete. 2 - PLAIN: found 4/115 instances");
   });
 
   it("passes through a line it does not recognise", () => {
