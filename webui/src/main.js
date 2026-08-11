@@ -536,16 +536,16 @@ function render() {
     const visiblePanes = seriesVisiblePanes(item.id);
     const isVisible = visiblePanes.length > 0;
     return `<button class="series-card ${isVisible ? "active" : ""}"
-            data-series-id="${item.id}" title="${escapeHtml(item.mprReason || item.description)}"
+            data-series-id="${item.id}" title="${escapeHtml(item.description)}"
             ${isVisible ? `data-pane="${visiblePanes.join(",")}"` : ""}>
             <div class="series-thumb-box">
               <img class="series-card-thumb" data-thumb-id="${item.id}" alt="" />
-            </div>
-            <div class="series-card-header">
-              <b>${escapeHtml(item.description)}</b>
               ${item.mprReady ? `<span class="badge-3d">3D</span>` : ""}
+              <div class="series-thumb-overlay">
+                <b class="series-thumb-title">${escapeHtml(item.description)}</b>
+                <span class="series-thumb-count">${escapeHtml(seriesFrameLabel(item))}</span>
+              </div>
             </div>
-            <small>${escapeHtml(seriesFrameLabel(item))}</small>
           </button>`;
   }).join("")}
         </div>

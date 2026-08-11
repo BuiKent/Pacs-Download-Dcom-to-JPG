@@ -3477,16 +3477,16 @@ ${E}`.trim();let x="";if(typeof l.getCurrentImageIdIndex=="function"){const O=l.
 
         <div class="series-strip">
           ${_.archive.series.map(r=>{const i=Ey(r.id),a=i.length>0;return`<button class="series-card ${a?"active":""}"
-            data-series-id="${r.id}" title="${Z(r.mprReason||r.description)}"
+            data-series-id="${r.id}" title="${Z(r.description)}"
             ${a?`data-pane="${i.join(",")}"`:""}>
             <div class="series-thumb-box">
               <img class="series-card-thumb" data-thumb-id="${r.id}" alt="" />
-            </div>
-            <div class="series-card-header">
-              <b>${Z(r.description)}</b>
               ${r.mprReady?'<span class="badge-3d">3D</span>':""}
+              <div class="series-thumb-overlay">
+                <b class="series-thumb-title">${Z(r.description)}</b>
+                <span class="series-thumb-count">${Z(Ry(r))}</span>
+              </div>
             </div>
-            <small>${Z(Ry(r))}</small>
           </button>`}).join("")}
         </div>
 
