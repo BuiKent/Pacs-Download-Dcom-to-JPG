@@ -41,4 +41,4 @@ Adhere strictly to the core workflows defined in the `agent-skills` suite:
 
 - Be direct, factual, and concise.
 - Provide clear diffs and test logs when reporting completed work.
-- Never commit or push to Git repositories without explicit user instruction.
+- **Strict Prohibition on Unsolicited Git Commit/Push (ZERO TOLERANCE):** NEVER run `git commit`, `git push`, `git commit -am`, or any command that creates commits or pushes code to remote repositories unless the user explicitly instructs to commit or push in their current request. All AI models (Gemini / Claude / etc.) must strictly wait for explicit user approval/instruction before executing any git commit or push commands.
