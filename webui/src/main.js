@@ -1476,8 +1476,6 @@ function setStatus(message, isError = false) {
   }
 }
 
-function updateStatusOnly() {
-}
 
 const SHORTCUT_HINT = "Phím tắt: ←/→, PgUp/PgDn, Home/End: đổi lát · 1..8: bộ công cụ · C: định vị"
   + " · R/Shift+R: đặt lại · I: đảo màu · Space: chạy phim · S: lưu đo · P: lưu ảnh"
