@@ -56,6 +56,20 @@ def _default_log(msg: str) -> None:
         pass
 
 
+# Vật thể DICOM KHÔNG chứa điểm ảnh: báo cáo có cấu trúc (SR — vd "Dose SR" của
+# máy CT), trạng thái hiển thị, ảnh khóa, tài liệu, vùng phân đoạn, dữ liệu xạ
+# trị. Không chuyển được sang JPG, và có PACS còn trả 500 khi bị hỏi tới. Tính
+# chúng vào tổng số ảnh sẽ khiến một ca đã tải đủ bị gắn "thiếu ảnh" vĩnh viễn.
+_NON_IMAGE_MODALITIES = frozenset({
+    "SR", "PR", "KO", "DOC", "AU", "SEG", "REG", "FID", "PLAN",
+    "RTSTRUCT", "RTPLAN", "RTRECORD", "STAND",
+})
+
+
+def _is_non_image_modality(modality: Any) -> bool:
+    return str(modality or "").strip().upper() in _NON_IMAGE_MODALITIES
+
+
 def _guess_ext(data: bytes) -> Optional[str]:
     """Đoán loại file từ vài byte đầu."""
     if data[:3] == b"\xff\xd8\xff":
@@ -65,6 +79,132 @@ def _guess_ext(data: bytes) -> Optional[str]:
     if len(data) > 132 and data[128:132] == b"DICM":
         return "dcm"
     return None
+
+
+def _is_dicom_dataset_valid_for_decode(ds: Any) -> tuple[bool, str]:
+    """Kiểm tra dataset DICOM có đầy đủ dữ liệu pixel an toàn để giải mã C native không.
+
+    Ngăn chặn việc đưa codestream nén bị rách (JPEG2000, JPEG-LS, JPEG, RLE) vào openjpeg / pylibjpeg
+    gây STATUS_HEAP_CORRUPTION (0xC0000374).
+    """
+    if ds is None or "PixelData" not in ds:
+        return False, "Không có trường PixelData"
+
+    pixel_data = getattr(ds, "PixelData", b"")
+    if not isinstance(pixel_data, (bytes, bytearray, memoryview)) or len(pixel_data) == 0:
+        return False, "PixelData rỗng hoặc không phải dạng bytes"
+
+    file_meta = getattr(ds, "file_meta", None)
+    transfer_syntax_obj = getattr(file_meta, "TransferSyntaxUID", None)
+    ts_uid = str(transfer_syntax_obj or "")
+    is_encapsulated = bool(transfer_syntax_obj and getattr(transfer_syntax_obj, "is_encapsulated", False))
+
+    if not is_encapsulated:
+        rows = int(getattr(ds, "Rows", 0) or 0)
+        cols = int(getattr(ds, "Columns", 0) or 0)
+        samples = int(getattr(ds, "SamplesPerPixel", 1) or 1)
+        bits = int(getattr(ds, "BitsAllocated", 16) or 16)
+        frames = int(getattr(ds, "NumberOfFrames", 1) or 1)
+        bytes_per_sample = max(1, math.ceil(bits / 8))
+        expected_bytes = rows * cols * samples * bytes_per_sample * frames
+        if expected_bytes > 0 and len(pixel_data) < expected_bytes:
+            return False, f"PixelData raw bị thiếu: {len(pixel_data)}/{expected_bytes} bytes"
+    else:
+        try:
+            import struct
+            import pydicom.encaps as pe
+            frags = list(pe.generate_fragments(pixel_data))
+            if not frags:
+                return False, "Encapsulated PixelData không chứa fragment nào"
+
+            # Phân loại họ nén JPEG / JPEG-LS / JPEG 2000 (1.2.840.10008.1.2.4.50-93),
+            # không áp dụng marker EOI cho các cú pháp nén video (1.2.840.10008.1.2.4.100+).
+            is_jpeg_family = "1.2.840.10008.1.2.4." in ts_uid and not any(
+                ts_uid.startswith(v) for v in ("1.2.840.10008.1.2.4.10", "1.2.840.10008.1.2.4.11")
+            )
+
+            last_frag = frags[-1].rstrip(b"\x00")
+            if is_jpeg_family:
+                if not last_frag.endswith(b"\xff\xd9"):
+                    if len(frags) == 1 and not last_frag:
+                        return False, "Encapsulated PixelData chỉ chứa Basic Offset Table rỗng"
+                    return False, f"Encapsulated codestream bị cắt ngắn (thiếu marker kết thúc \\xff\\xd9, tail={last_frag[-6:]!r})"
+            elif ts_uid == "1.2.840.10008.1.2.5":  # RLE Lossless (Heuristic header check)
+                image_frags = frags[1:] if len(frags) > 1 else frags
+                for frag in image_frags:
+                    if len(frag) < 64:
+                        return False, f"RLE fragment quá ngắn ({len(frag)} < 64 bytes header)"
+                    num_segments = struct.unpack("<I", frag[:4])[0]
+                    if num_segments < 1 or num_segments > 15:
+                        return False, f"RLE header không hợp lệ: {num_segments} segments"
+                    offsets = struct.unpack(f"<{num_segments}I", frag[4:4 + num_segments * 4])
+                    if any(off > len(frag) for off in offsets):
+                        return False, "RLE segment offset vượt quá độ dài fragment"
+            else:
+                # Fragment đầu là Basic Offset Table — chuẩn cho phép rỗng, nên
+                # phải bỏ qua nó y như nhánh RLE, kẻo loại nhầm video MPEG/H.264.
+                image_frags = frags[1:] if len(frags) > 1 else frags
+                if any(len(frag) == 0 for frag in image_frags):
+                    return False, "Encapsulated fragment ảnh rỗng"
+        except Exception as exc:
+            return False, f"Lỗi phân tích fragment encapsulated: {exc}"
+
+    return True, ""
+
+
+def _validate_dicom_bytes_and_dataset(data: bytes) -> tuple[bool, str, Optional[Any]]:
+    """Kiểm tra tính toàn vẹn của dữ liệu nhị phân DICOM và trả về dataset nếu hợp lệ."""
+    if not data or len(data) <= 132:
+        return False, "Dữ liệu quá ngắn (<132 bytes)", None
+    if data[128:132] != b"DICM":
+        return False, "Thiếu magic header DICM tại offset 128", None
+
+    try:
+        import pydicom
+    except ImportError:
+        return True, "", None
+
+    ds = None
+    try:
+        bio = io.BytesIO(data)
+        ds = pydicom.dcmread(bio, force=False)
+    except Exception:
+        try:
+            bio.seek(0)
+            ds = pydicom.dcmread(bio, force=True)
+        except Exception as exc2:
+            return False, f"Không parse được cấu trúc DICOM: {exc2}", None
+
+    if ds is None or len(ds) == 0:
+        return False, "File DICOM bị cụt, dataset chính không chứa thẻ dữ liệu nào", None
+
+    modality = str(getattr(ds, "Modality", "") or "").strip().upper()
+    if _is_non_image_modality(modality):
+        return True, "", ds
+
+    file_meta = getattr(ds, "file_meta", None)
+    sop_class = str(getattr(file_meta, "MediaStorageSOPClassUID", "") or getattr(ds, "SOPClassUID", "") or "")
+    transfer_syntax_obj = getattr(file_meta, "TransferSyntaxUID", None)
+    is_encapsulated = bool(transfer_syntax_obj and getattr(transfer_syntax_obj, "is_encapsulated", False))
+
+    if "PixelData" not in ds:
+        if is_encapsulated or "Image" in sop_class or getattr(ds, "Rows", None) or getattr(ds, "Columns", None):
+            return False, "File ảnh DICOM nhưng bị mất trường PixelData do bị cắt ngắn", None
+        if not _is_non_image_modality(modality):
+            return False, "Thiếu trường PixelData trong file DICOM", None
+        return True, "", ds
+
+    valid, reason = _is_dicom_dataset_valid_for_decode(ds)
+    return valid, reason, (ds if valid else None)
+
+
+def _validate_dicom_bytes(data: bytes) -> tuple[bool, str]:
+    """Kiểm tra tính toàn vẹn của dữ liệu nhị phân DICOM trước khi ghi đĩa hoặc nạp lại.
+
+    Trả về (True, "") nếu hợp lệ, hoặc (False, lý do) nếu dữ liệu bị cụt/hỏng.
+    """
+    valid, reason, _ds = _validate_dicom_bytes_and_dataset(data)
+    return valid, reason
 
 
 def _maybe_base64_decode(body: bytes) -> bytes:
@@ -502,20 +642,21 @@ def _dicomweb_instance_plan(
     return tasks, image_series_count, skipped_non_image, missing
 
 
-def _dicom_storage_info(data: bytes, digest: str) -> tuple[str, str]:
+def _dicom_storage_info(data: bytes, digest: str, ds: Optional[Any] = None) -> tuple[str, str]:
     """Build stable readable series/file names without decoding pixel data."""
     try:
-        import pydicom
+        if ds is None:
+            import pydicom
 
-        ds = pydicom.dcmread(
-            io.BytesIO(data),
-            stop_before_pixels=True,
-            force=True,
-            specific_tags=[
-                "StudyInstanceUID", "SeriesInstanceUID", "SeriesNumber", "SeriesDescription",
-                "InstanceNumber", "SOPInstanceUID",
-            ],
-        )
+            ds = pydicom.dcmread(
+                io.BytesIO(data),
+                stop_before_pixels=True,
+                force=True,
+                specific_tags=[
+                    "StudyInstanceUID", "SeriesInstanceUID", "SeriesNumber", "SeriesDescription",
+                    "InstanceNumber", "SOPInstanceUID",
+                ],
+            )
         number = str(getattr(ds, "SeriesNumber", "") or "").strip() or "NA"
         description = _safe_name(getattr(ds, "SeriesDescription", "") or "UnknownSeries")[:64]
         folder = f"Series_{_safe_name(number)}_{description}"
@@ -604,11 +745,25 @@ def download_all(
     save_lock = threading.Lock()
 
     # Chế độ "thử lại/gộp": nạp sẵn ảnh đã có trong folder để KHÔNG ghi đè và KHÔNG
-    # tải trùng — chỉ bổ sung ảnh mới. Hữu ích khi lần trước mất mạng/dò hụt.
+    # tải trùng — chỉ bổ sung ảnh mới. Tự động dọn dẹp file .dcm.part hoặc .dcm cụt cũ.
     if resume:
+        for p in sorted(dicom_dir.rglob("*.dcm.part")):
+            try:
+                p.unlink()
+            except Exception:
+                pass
         for f in sorted(dicom_dir.rglob("*.dcm")):
             try:
-                seen_hashes.add(hashlib.sha1(f.read_bytes()).hexdigest())
+                raw_bytes = f.read_bytes()
+                valid, reason = _validate_dicom_bytes(raw_bytes)
+                if not valid:
+                    log(f"  [Dọn dẹp file hỏng cũ] {f.name}: {reason}")
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
+                    continue
+                seen_hashes.add(hashlib.sha1(raw_bytes).hexdigest())
                 stats.dicom += 1
             except Exception:
                 pass
@@ -642,14 +797,24 @@ def download_all(
             return False
         data = _maybe_base64_decode(body)
         ext = _guess_ext(data)
+        parsed_ds = None
         if ext is None:
             # WADO-RS thường gói DICOM trong multipart/related — bóc rồi thử lại
             if _depth == 0:
-                # Lưu HẾT các phần rồi mới tổng kết — `any(...)` sẽ đoản mạch và
-                # làm rơi những ảnh nằm sau phần đầu tiên lưu thành công.
-                saved = [save_body(part, 1) for _pct, part in _multipart_parts(data)]
-                return any(saved)
+                parts = _multipart_parts(data)
+                if not parts:
+                    return False
+                image_parts = [part for _pct, part in parts if _guess_ext(_maybe_base64_decode(part)) in ("dcm", "jpg", "png")]
+                if not image_parts:
+                    return False
+                saved = [save_body(part, 1) for part in image_parts]
+                return bool(saved and all(saved))
             return False
+        if ext == "dcm":
+            valid, reason, parsed_ds = _validate_dicom_bytes_and_dataset(data)
+            if not valid:
+                # File DICOM cụt / hỏng: từ chối lưu để bộ retry tự động tải lại
+                return False
         h = hashlib.sha1(data).hexdigest()
         with save_lock:
             if ext == "dcm" and not output_resolved and dicom_output_resolver is not None:
@@ -668,10 +833,20 @@ def download_all(
                 stats.png += 1; idx = stats.png
             n = stats.total()
         if ext == "dcm":
-            series_folder, filename = _dicom_storage_info(data, h)
+            series_folder, filename = _dicom_storage_info(data, h, ds=parsed_ds)
             destination = dicom_dir / series_folder / filename
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(data)
+            temp_dest = destination.with_suffix(".dcm.part")
+            try:
+                temp_dest.write_bytes(data)
+                temp_dest.replace(destination)
+            except Exception:
+                if temp_dest.exists():
+                    try:
+                        temp_dest.unlink()
+                    except Exception:
+                        pass
+                raise
             if n % 25 == 0:
                 log(f"  ...đã tải {n} ảnh (DICOM: {stats.dicom})")
         elif ext == "jpg":
@@ -988,20 +1163,6 @@ def discover_viewer_series(
             raise ValueError("Viewer không cung cấp manifest và không tìm thấy thumbnail series để chọn.")
         log(f"Đã quét {len(choices)} series; chưa tải file ảnh nào.")
         return {"source": source, "series": choices, "selectable": True}
-
-
-# Vật thể DICOM KHÔNG chứa điểm ảnh: báo cáo có cấu trúc (SR — vd "Dose SR" của
-# máy CT), trạng thái hiển thị, ảnh khóa, tài liệu, vùng phân đoạn, dữ liệu xạ
-# trị. Không chuyển được sang JPG, và có PACS còn trả 500 khi bị hỏi tới. Tính
-# chúng vào tổng số ảnh sẽ khiến một ca đã tải đủ bị gắn "thiếu ảnh" vĩnh viễn.
-_NON_IMAGE_MODALITIES = frozenset({
-    "SR", "PR", "KO", "DOC", "AU", "SEG", "REG", "FID", "PLAN",
-    "RTSTRUCT", "RTPLAN", "RTRECORD", "STAND",
-})
-
-
-def _is_non_image_modality(modality: Any) -> bool:
-    return str(modality or "").strip().upper() in _NON_IMAGE_MODALITIES
 
 
 def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
@@ -1368,18 +1529,18 @@ def _download_via_dicomweb(captured, save_body, stats,
         body, _ct = get_raw(wado_base + "?" + urlencode(params))
         if _guess_ext(_maybe_base64_decode(body)) is None and not _multipart_parts(body):
             return False
-        save_body(body)
-        return True
+        return save_body(body)
 
     def try_wadors(suid, iuid, nf, meta_in):
         u = f"{rs_base}/studies/{study}/series/{suid}/instances/{iuid}"
         body, ct = get_raw(u, accept='multipart/related; type="application/dicom", application/dicom')
-        ok = False
-        for _pct, d in (_multipart_parts(body, ct) or [("", body)]):
-            if _guess_ext(d) == "dcm":
-                save_body(d)
-                ok = True
-        return ok
+        parts = _multipart_parts(body, ct)
+        if parts:
+            saved = [save_body(d) for _pct, d in parts if _guess_ext(d) == "dcm"]
+            return bool(saved and all(saved))
+        if _guess_ext(body) == "dcm":
+            return save_body(body)
+        return False
 
     def try_frames(suid, iuid, nf, meta_in):
         base = f"{rs_base}/studies/{study}/series/{suid}/instances/{iuid}"
@@ -1406,8 +1567,7 @@ def _download_via_dicomweb(captured, save_body, stats,
         blob = _dicom_from_meta_frames(meta, frames, fct)
         if not blob:
             return False
-        save_body(blob)
-        return True
+        return save_body(blob)
 
     fetchers = {"wadouri": try_wadouri, "wadors": try_wadors, "frames": try_frames}
 
@@ -2266,6 +2426,9 @@ def _rgb_to_uint8(arr):
 
 
 def _dicom_to_frames(ds, contrast_mode: str = CLINICAL):
+    valid, reason = _is_dicom_dataset_valid_for_decode(ds)
+    if not valid:
+        raise ValueError(f"DICOM dataset không hợp lệ để giải mã: {reason}")
     import numpy as np
     try:
         from pydicom.pixels import apply_modality_lut
@@ -2514,8 +2677,10 @@ def convert_all(
             break
         try:
             ds = pydicom.dcmread(str(path), force=True)
-            if "PixelData" not in ds:
+            valid, reason = _is_dicom_dataset_valid_for_decode(ds)
+            if not valid:
                 stats.skipped += 1
+                log(f"  [Bỏ qua file hỏng] {path.name}: {reason}")
                 continue
 
             series_uid = str(getattr(ds, "SeriesInstanceUID", "") or "")
@@ -3315,9 +3480,13 @@ def _ris_session_key(hospital_key: str, base_url: str = "") -> str:
 
 def clear_ris_session_cache(hospital_key: Optional[str] = None) -> None:
     """Xóa phiên RIS trong RAM; cookie/token không bao giờ được ghi xuống ổ đĩa."""
+    global _CHROME_UNAVAILABLE
     with _RIS_SESSION_LOCK:
         if hospital_key is None:
             _RIS_SESSION_STATES.clear()
+            with _BROWSER_STATE_LOCK:
+                _CHROME_UNAVAILABLE = False
+                _BROWSER_NOTICES_LOGGED.clear()
             return
         prefix = f"{hospital_key.lower()}|"
         for key in [k for k in _RIS_SESSION_STATES if k.startswith(prefix)]:

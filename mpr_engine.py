@@ -510,6 +510,7 @@ def select_mpr_candidate(
 
 def _pixel_array(path: Path) -> tuple[np.ndarray, object]:
     import pydicom
+    from dcom_pipeline import _is_dicom_dataset_valid_for_decode
     try:
         # pydicom 3.x moved the public pixel helpers here.
         from pydicom.pixels import apply_modality_lut
@@ -517,6 +518,9 @@ def _pixel_array(path: Path) -> tuple[np.ndarray, object]:
         from pydicom.pixel_data_handlers.util import apply_modality_lut
 
     ds = pydicom.dcmread(str(path), force=True)
+    valid, reason = _is_dicom_dataset_valid_for_decode(ds)
+    if not valid:
+        raise ValueError(f"DICOM file {path.name} có PixelData không hợp lệ: {reason}")
     arr = ds.pixel_array
     if arr.ndim != 2:
         raise ValueError("MPR-JPG hiện chỉ hỗ trợ DICOM một khung 2D")

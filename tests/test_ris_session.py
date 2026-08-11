@@ -56,6 +56,12 @@ class _FakePlaywrightContext:
 
 
 class RisSessionTests(unittest.TestCase):
+    def setUp(self):
+        dcom_pipeline.clear_ris_session_cache()
+        dcom_pipeline._ENDPOINT_PROBE_CACHE.clear()
+        dcom_pipeline._CHROME_UNAVAILABLE = False
+        dcom_pipeline._BROWSER_NOTICES_LOGGED.clear()
+
     def tearDown(self):
         dcom_pipeline.clear_ris_session_cache()
         dcom_pipeline._ENDPOINT_PROBE_CACHE.clear()

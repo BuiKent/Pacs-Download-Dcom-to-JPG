@@ -136,34 +136,39 @@ class NativeApi:
         self._controller = controller
         self._window = None
 
-    def choose_archive(self):
+    def _safe_folder_dialog(self) -> str:
         import webview
 
-        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
-        if not result:
+        dialog_type = getattr(webview.FileDialog, "FOLDER", getattr(webview, "FOLDER_DIALOG", 20))
+        directory = str(self._controller.output_root if self._controller.output_root.is_dir() else Path.home())
+        try:
+            result = self._window.create_file_dialog(dialog_type, directory=directory)
+            if not result:
+                return ""
+            path = result[0] if isinstance(result, (list, tuple)) else result
+            return str(path or "")
+        except Exception:
+            return ""
+
+    def choose_archive(self):
+        path = self._safe_folder_dialog()
+        if not path:
             return None
-        path = result[0] if isinstance(result, (list, tuple)) else result
-        return self._controller.start_archive_scan(str(path))
+        return self._controller.start_archive_scan(path)
 
     def choose_dicom_folder(self, options=None):
-        import webview
-
-        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
-        if not result:
+        path = self._safe_folder_dialog()
+        if not path:
             return None
-        path = result[0] if isinstance(result, (list, tuple)) else result
         return self._controller.start_local_dicom_import(
-            str(path), options if isinstance(options, dict) else {},
+            path, options if isinstance(options, dict) else {},
         )
 
     def choose_output(self):
-        import webview
-
-        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
-        if not result:
+        path = self._safe_folder_dialog()
+        if not path:
             return None
-        path = result[0] if isinstance(result, (list, tuple)) else result
-        return self._controller.set_output_root(str(path))
+        return self._controller.set_output_root(path)
 
     def read_clipboard(self):
         """Report clipboard text that matches a viewer link or a patient code.

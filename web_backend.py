@@ -571,9 +571,13 @@ def _dicom_color_payload(ds: Any, pixels: Any, photometric: str) -> tuple[bytes,
 def _dicom_pixel_payload(path: Path, frame: int = 0) -> tuple[bytes, dict[str, str]]:
     import numpy as np
     import pydicom
+    from dcom_pipeline import _is_dicom_dataset_valid_for_decode
 
     try:
         ds = pydicom.dcmread(str(path), force=True)
+        valid, reason = _is_dicom_dataset_valid_for_decode(ds)
+        if not valid:
+            raise ValueError(f"Dữ liệu pixel không toàn vẹn: {reason}")
         pixels = np.asarray(ds.pixel_array)
     except Exception as exc:
         raise ValueError(f"Không giải mã được pixel DICOM: {path.name} ({exc})") from exc
