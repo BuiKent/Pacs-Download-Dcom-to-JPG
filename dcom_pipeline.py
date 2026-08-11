@@ -2593,6 +2593,7 @@ def convert_all(
     save_png: bool = False,
     contrast_mode: str = CLINICAL,
     should_stop: Optional[Callable[[], bool]] = None,
+    metadata: Optional[dict] = None,
 ) -> ConvertStats:
     """Chuyển toàn bộ DICOM trong `dicom_dir` sang JPG (và tùy chọn PNG) ở `jpg_dir`."""
     import pydicom
@@ -2718,6 +2719,20 @@ def convert_all(
                 study_time = _format_time(str(getattr(ds, "StudyTime", "") or "").strip())
                 patient_birth = _format_date(str(getattr(ds, "PatientBirthDate", "") or "").strip())
 
+                p_name = str(getattr(ds, "PatientName", "") or "").strip()
+                p_id = str(getattr(ds, "PatientID", "") or "").strip()
+                p_birth = patient_birth
+                if metadata:
+                    meta_name = str(metadata.get("PatientName") or "").strip()
+                    meta_id = str(metadata.get("PatientID") or "").strip()
+                    meta_dob = str(metadata.get("PatientBirthDate") or "").strip()
+                    if _is_redacted_patient_value(p_name) and not _is_redacted_patient_value(meta_name):
+                        p_name = meta_name
+                    if _is_redacted_patient_value(p_id) and not _is_redacted_patient_value(meta_id):
+                        p_id = meta_id
+                    if not p_birth and meta_dob:
+                        p_birth = _format_date(meta_dob)
+
                 generic_manifests[manifest_path] = {
                     "format": "dcom-mpr-jpg",
                     "version": 1,
@@ -2728,9 +2743,9 @@ def convert_all(
                     "study_instance_uid": str(getattr(ds, "StudyInstanceUID", "") or "").strip(),
                     "study_date": study_date,
                     "study_time": study_time,
-                    "patient_id": str(getattr(ds, "PatientID", "") or "").strip(),
-                    "patient_name": str(getattr(ds, "PatientName", "") or "").strip(),
-                    "patient_birth_date": patient_birth,
+                    "patient_id": p_id,
+                    "patient_name": p_name,
+                    "patient_birth_date": p_birth,
                     "patient_sex": str(getattr(ds, "PatientSex", "") or "").strip().upper(),
                     "patient_age": str(getattr(ds, "PatientAge", "") or "").strip().upper(),
                     "series_instance_uid": series_uid,
@@ -3356,7 +3371,7 @@ def run_pipeline(
     log("BƯỚC 2/2: Chuyển DICOM -> JPG chất lượng cao")
     cv = convert_all(dicom_dir, jpg_dir, log=log, quality=quality,
                      save_png=save_png, contrast_mode=contrast_mode,
-                     should_stop=should_stop)
+                     should_stop=should_stop, metadata=metadata)
     if metadata and rename_patient_root:
         write_direct_patient_manifest(
             out_base,

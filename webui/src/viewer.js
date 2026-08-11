@@ -937,6 +937,18 @@ function getOrientationStringLPS(vector) {
   return "";
 }
 
+function validOverlayDemographic(value) {
+  const str = String(value || "").trim();
+  if (!str || /^[\*\?\s]+$/.test(str)) return "";
+  const token = str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]+/g, "").toUpperCase();
+  const blocked = [
+    "ANON", "ANONYMOUS", "ANONYMIZED", "ANONYMISED", "REDACTED", "MASKED",
+    "REMOVED", "HIDDEN", "UNKNOWN", "XXX", "XXXX", "KHONGROTEN", "KHONGROID",
+  ];
+  if (blocked.includes(token)) return "";
+  return str;
+}
+
 function updateViewportOverlays(viewportId, tl, tr, bl, br, ot, ob, ol, or) {
   const viewport = renderingEngine?.getViewport(viewportId);
   if (!viewport) return;
@@ -944,9 +956,10 @@ function updateViewportOverlays(viewportId, tl, tr, bl, br, ot, ob, ol, or) {
   if (!series) return;
   const manifest = manifestRegistry.get(series.id) || {};
   
-  const patientName = manifest.patientName || manifest.patient_name || "";
-  const patientId = manifest.patientId || manifest.patient_id || "";
-  const dob = manifest.patientBirthDate ? `DOB: ${manifest.patientBirthDate}` : "";
+  const patientName = validOverlayDemographic(manifest.patientName) || validOverlayDemographic(manifest.patient_name) || "";
+  const patientId = validOverlayDemographic(manifest.patientId) || validOverlayDemographic(manifest.patient_id) || "";
+  const dobVal = validOverlayDemographic(manifest.patientBirthDate) || validOverlayDemographic(manifest.patient_birth_date) || "";
+  const dob = dobVal ? `DOB: ${dobVal}` : "";
   tl.innerText = [patientName, patientId, dob].filter(Boolean).join("\n");
   
   const modality = series.modality || manifest.modality || "";

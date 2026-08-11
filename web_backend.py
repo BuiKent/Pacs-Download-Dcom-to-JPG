@@ -1096,10 +1096,41 @@ class ArchiveCatalog:
                 raise ValueError(
                     "Folder tổng chứa nhiều bệnh nhân. Hãy mở đúng folder có tên bắt đầu bằng mã bệnh nhân để tránh trộn phim."
                 )
+        patient_manifest = dcom_pipeline._read_patient_manifest(root)
+        if patient_manifest is None:
+            for parent in root.parents:
+                parent_manifest = dcom_pipeline._read_patient_manifest(parent)
+                if parent_manifest:
+                    patient_manifest = parent_manifest
+                    break
+
+        def _enrich_manifest_records(recs: dict[str, SeriesRecord]) -> None:
+            if not patient_manifest:
+                return
+            m_name = patient_manifest.get("patientName") or ""
+            m_id = patient_manifest.get("patientId") or ""
+            m_dob = patient_manifest.get("patientBirthDate") or ""
+            m_sex = patient_manifest.get("patientSex") or ""
+            for rec in recs.values():
+                if rec.manifest and isinstance(rec.manifest, dict):
+                    if dcom_pipeline._is_redacted_patient_value(rec.manifest.get("patient_name")) and not dcom_pipeline._is_redacted_patient_value(m_name):
+                        rec.manifest["patient_name"] = m_name
+                        rec.manifest["patientName"] = m_name
+                    if dcom_pipeline._is_redacted_patient_value(rec.manifest.get("patient_id")) and not dcom_pipeline._is_redacted_patient_value(m_id):
+                        rec.manifest["patient_id"] = m_id
+                        rec.manifest["patientId"] = m_id
+                    if not rec.manifest.get("patient_birth_date") and m_dob:
+                        rec.manifest["patient_birth_date"] = m_dob
+                        rec.manifest["patientBirthDate"] = m_dob
+                    if not rec.manifest.get("patient_sex") and m_sex:
+                        rec.manifest["patient_sex"] = m_sex
+                        rec.manifest["patientSex"] = m_sex
+
         dicom_records, unsupported_dicom, dicom_candidates = self._dicom_records(
             root, log=log, should_stop=should_stop,
         )
         if dicom_records:
+            _enrich_manifest_records(dicom_records)
             if log:
                 log(f"Đã nhận diện {len(dicom_records)} series DICOM, mở trực tiếp không chuyển JPG.")
             with self._lock:
@@ -1160,6 +1191,7 @@ class ArchiveCatalog:
             log=log,
             should_stop=should_stop,
         )
+        _enrich_manifest_records(records)
         if log:
             log(f"Đã quét {scanned} thư mục, tìm thấy {len(records)} series ảnh.")
         if not records and dicom_candidates:
