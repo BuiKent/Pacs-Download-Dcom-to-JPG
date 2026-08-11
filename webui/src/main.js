@@ -485,13 +485,9 @@ function render() {
         <div class="manual-info-toggle">
           <label><input type="checkbox" id="manual-info-toggle" ${state.showManualInfo ? "checked" : ""}> ${escapeHtml(t("Bổ sung thông tin bệnh nhân"))}</label>
         </div>
-        ${state.showManualInfo ? `
-        <div class="manual-info-panel">
-          <label>${escapeHtml(t("Tên bệnh nhân"))} <input id="manual-patient-name" type="text" value="${escapeHtml(state.manualPatientName)}" autocomplete="off"></label>
-          <label>${escapeHtml(t("Mã BN (ID)"))} <input id="manual-patient-id" type="text" value="${escapeHtml(state.manualPatientId)}" autocomplete="off"></label>
-          <label>${escapeHtml(t("Năm sinh / Ngày sinh"))} <input id="manual-patient-dob" type="text" value="${escapeHtml(state.manualPatientDob)}" autocomplete="off" placeholder="DD/MM/YYYY hoặc YYYY"></label>
+        <div id="manual-info-container">
+          ${renderManualInfoPanel()}
         </div>
-        ` : ""}
         <div class="download-options">
           <label title="${escapeHtml(t("Chất lượng JPG (70-100)"))}">JPG
             <input id="quality" type="number" min="70" max="100" value="100"></label>
@@ -587,6 +583,47 @@ function renderStudies() {
     new: "Phim mới",
   }[study.local_status] || "Phim mới"))}</em></span>
     </label>`).join("");
+}
+
+function renderManualInfoPanel() {
+  if (!state.showManualInfo) return "";
+  return `
+    <div class="manual-info-panel">
+      <label>${escapeHtml(t("Tên bệnh nhân"))} <input id="manual-patient-name" type="text" value="${escapeHtml(state.manualPatientName)}" autocomplete="off"></label>
+      <label>${escapeHtml(t("Mã BN (ID)"))} <input id="manual-patient-id" type="text" value="${escapeHtml(state.manualPatientId)}" autocomplete="off"></label>
+      <label>${escapeHtml(t("Năm sinh / Ngày sinh"))} <input id="manual-patient-dob" type="text" value="${escapeHtml(state.manualPatientDob)}" autocomplete="off" placeholder="DD/MM/YYYY hoặc YYYY"></label>
+    </div>
+  `;
+}
+
+function renderManualInfoPanelOnly() {
+  const container = app.querySelector("#manual-info-container");
+  if (container) {
+    container.innerHTML = renderManualInfoPanel();
+    bindManualInfoEvents();
+  }
+}
+
+function bindManualInfoEvents() {
+  app.querySelector("#manual-patient-name")?.addEventListener("input", (e) => {
+    state.manualPatientName = e.target.value;
+  });
+  app.querySelector("#manual-patient-id")?.addEventListener("input", (e) => {
+    state.manualPatientId = e.target.value;
+  });
+  app.querySelector("#manual-patient-dob")?.addEventListener("input", (e) => {
+    state.manualPatientDob = e.target.value;
+  });
+}
+
+function syncManualInfoVisibility(urlValue) {
+  const hasUrl = Boolean(String(urlValue || "").trim());
+  if (state.showManualInfo !== hasUrl) {
+    state.showManualInfo = hasUrl;
+    const toggle = app.querySelector("#manual-info-toggle");
+    if (toggle) toggle.checked = state.showManualInfo;
+    renderManualInfoPanelOnly();
+  }
 }
 
 function renderSeriesPicker() {
@@ -730,7 +767,9 @@ function bindEvents() {
     app.querySelector("#series-picker")?.classList.toggle("hidden", state.downloadAllFiles);
     syncDownloadButton();
   });
-  app.querySelector("#direct-url")?.addEventListener("input", () => {
+  app.querySelector("#direct-url")?.addEventListener("input", (e) => {
+    state.lastDirectUrl = e.target.value;
+    syncManualInfoVisibility(e.target.value);
     if (state.seriesInventory.some((group) => group.studyUid === "direct")) {
       state.seriesInventory = [];
       delete state.rememberedSeriesSelections.direct;
@@ -746,17 +785,9 @@ function bindEvents() {
   });
   app.querySelector("#manual-info-toggle")?.addEventListener("change", (e) => {
     state.showManualInfo = e.target.checked;
-    render();
+    renderManualInfoPanelOnly();
   });
-  app.querySelector("#manual-patient-name")?.addEventListener("input", (e) => {
-    state.manualPatientName = e.target.value;
-  });
-  app.querySelector("#manual-patient-id")?.addEventListener("input", (e) => {
-    state.manualPatientId = e.target.value;
-  });
-  app.querySelector("#manual-patient-dob")?.addEventListener("input", (e) => {
-    state.manualPatientDob = e.target.value;
-  });
+  bindManualInfoEvents();
   bindSeriesPickerEvents();
   syncDownloadButton();
 }
@@ -821,6 +852,7 @@ async function openHistoryEntry(entry) {
     state.lastDirectUrl = entry.url || "";
     const field = app.querySelector("#direct-url");
     if (field) field.value = state.lastDirectUrl;
+    syncManualInfoVisibility(state.lastDirectUrl);
     state.bootstrap.job = await api("/api/history/open", {
       method: "POST",
       body: JSON.stringify({ folder: entry.folder }),
@@ -1604,14 +1636,20 @@ async function fillFromClipboard(field, kind) {
   if (!value || value === field.value.trim()) return false;
   if (field.dataset.dismissed === value) return false;
   field.value = value;
-  if (kind === "url") state.lastDirectUrl = value;
+  if (kind === "url") {
+    state.lastDirectUrl = value;
+    syncManualInfoVisibility(value);
+  }
   syncClearButton(field);
   return true;
 }
 
 async function clearClipboardField(field, kind) {
   field.value = "";
-  if (kind === "url") state.lastDirectUrl = "";
+  if (kind === "url") {
+    state.lastDirectUrl = "";
+    syncManualInfoVisibility("");
+  }
   // Record what the clipboard holds before focusing, otherwise the focus
   // handler would immediately paste back the value just cleared.
   const clip = await clipboardValueFor(kind);
@@ -1698,6 +1736,7 @@ async function boot() {
   applyTextPromptLanguage();
   state.history = Array.isArray(state.bootstrap.history) ? state.bootstrap.history : [];
   state.lastDirectUrl = state.bootstrap.lastDirectUrl || "";
+  state.showManualInfo = Boolean(state.lastDirectUrl.trim());
   state.status = "Đang khởi động...";
   state.archive = state.bootstrap.archive;
   state.selectedId = state.archive.series[0]?.id || "";
