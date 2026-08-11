@@ -710,9 +710,8 @@ def _dicom_thumbnail_image(path: Path, frame: int) -> Any:
             low, high = float(np.min(values)), float(np.max(values))
         if high <= low:
             high = low + 1.0
-    scaled = np.clip((values - low) / (high - low) * 255.0, 0, 255).astype(np.uint8)
-    if headers.get("X-DCom-Photometric", "MONOCHROME2") == "MONOCHROME1":
-        scaled = 255 - scaled
+    invert = headers.get("X-DCom-Photometric", "MONOCHROME2") == "MONOCHROME1"
+    scaled = mpr_engine._to_uint8(values, low, high, invert)
     return Image.fromarray(scaled, mode="L").convert("RGB")
 
 

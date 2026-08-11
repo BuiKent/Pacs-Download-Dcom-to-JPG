@@ -1,3 +1,4 @@
+import io
 import json
 import tempfile
 import time
@@ -752,7 +753,12 @@ class ServerSecurityTests(unittest.TestCase):
         ) as response:
             self.assertEqual(response.status, 200)
             self.assertEqual(response.headers["Content-Type"], "image/jpeg")
-            self.assertTrue(response.read().startswith(b"\xff\xd8\xff"))
+            data = response.read()
+            self.assertTrue(data.startswith(b"\xff\xd8\xff"))
+            image = Image.open(io.BytesIO(data))
+            extrema = image.getextrema()
+            max_pixels = [b_max for _min, b_max in extrema]
+            self.assertTrue(any(val > 0 for val in max_pixels))
 
     def test_direct_dicom_image_returns_original_16_bit_pixels(self):
         root = Path(self.tmp.name) / "dicom"

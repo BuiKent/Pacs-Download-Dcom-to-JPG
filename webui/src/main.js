@@ -561,7 +561,8 @@ function render() {
         </section>
         <footer class="status-bar">
           <span class="status-dot ${state.busyViewer ? "busy" : ""}"></span>
-          <span class="status-root">${escapeHtml(state.archive.root)}</span>
+          <span class="status-text">${escapeHtml(state.status || "")}</span>
+          <span class="status-root" title="${escapeHtml(state.archive.root || "")}">${escapeHtml(state.archive.root || "")}</span>
         </footer>
       </main>
     </div>
@@ -654,6 +655,8 @@ function bindManualInfoEvents() {
   });
 }
 
+// NOTE: Tự động tick lại "Bổ sung thông tin bệnh nhân" khi dán/nhập link viewer
+// là hành vi MONG MUỐN (DESIRED BEHAVIOR) để sẵn sàng nhận diện/bổ sung thông tin BN.
 function syncManualInfoVisibility(urlValue) {
   const hasUrl = Boolean(String(urlValue || "").trim());
   if (state.showManualInfo !== hasUrl) {
@@ -1256,7 +1259,6 @@ async function action(name) {
     if (name === "cine") {
       state.cine = toggleCine(selectedSeries(), (index) => {
         state.sliceText = `${index + 1}/${selectedSeries().sliceCount}`;
-        updateStatusOnly();
       });
       const button = app.querySelector("[data-action='cine']");
       if (button) {
@@ -1468,6 +1470,10 @@ function setStatus(message, isError = false) {
   const bar = app.querySelector(".status-bar");
   if (bar) {
     bar.classList.toggle("error", isError);
+    const textEl = bar.querySelector(".status-text");
+    if (textEl) {
+      textEl.textContent = message;
+    }
   }
 }
 
