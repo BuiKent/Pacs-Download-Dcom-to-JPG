@@ -1,5 +1,5 @@
 import "./styles.css";
-import { api, configureApi } from "./api.js";
+import { api, apiBlob, configureApi, thumbnailPath } from "./api.js";
 import { getLanguage, setLanguage, t, tf, translateLog } from "./i18n.js";
 import {
   hasCompleteSeriesSelection,
@@ -538,7 +538,7 @@ function render() {
             data-series-id="${item.id}" title="${escapeHtml(item.mprReason || item.description)}"
             ${isVisible ? `data-pane="${visiblePanes.join(",")}"` : ""}>
             <div class="series-thumb-box">
-              <img src="/api/series/${item.id}/thumbnail" class="series-card-thumb" alt="" loading="lazy" />
+              <img class="series-card-thumb" data-thumb-id="${item.id}" alt="" />
             </div>
             <div class="series-card-header">
               <b>${escapeHtml(item.description)}</b>
@@ -567,6 +567,43 @@ function render() {
     </div>
   `;
   bindEvents();
+  hydrateSeriesThumbs();
+}
+
+// The thumbnail endpoint sits behind the same bearer token as every other
+// /api route, and an <img src> cannot carry the X-DCom-Token header. Each
+// thumbnail is fetched once as a blob and kept as an object URL so the
+// frequent full re-renders reuse it instead of decoding the slice again.
+const seriesThumbs = new Map();
+
+function seriesThumbUrl(seriesId) {
+  let pending = seriesThumbs.get(seriesId);
+  if (!pending) {
+    pending = apiBlob(thumbnailPath(seriesId)).then((blob) => URL.createObjectURL(blob));
+    // Drop failures so a later render can retry instead of caching the error.
+    pending.catch(() => seriesThumbs.delete(seriesId));
+    seriesThumbs.set(seriesId, pending);
+  }
+  return pending;
+}
+
+function hydrateSeriesThumbs() {
+  const live = new Set(state.archive.series.map((item) => item.id));
+  for (const [seriesId, pending] of seriesThumbs) {
+    if (live.has(seriesId)) continue;
+    seriesThumbs.delete(seriesId);
+    pending.then((url) => URL.revokeObjectURL(url)).catch(() => {});
+  }
+  for (const img of app.querySelectorAll(".series-card-thumb[data-thumb-id]")) {
+    const seriesId = img.dataset.thumbId;
+    seriesThumbUrl(seriesId)
+      .then((url) => {
+        img.src = url;
+      })
+      .catch(() => {
+        img.remove();
+      });
+  }
 }
 
 function renderStudies() {

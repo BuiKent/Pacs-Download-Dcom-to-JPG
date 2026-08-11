@@ -79,3 +79,7 @@ export async function apiPixelData(path) {
 export function imagePath(seriesId, index) {
   return `/api/series/${seriesId}/image/${index}`;
 }
+
+export function thumbnailPath(seriesId) {
+  return `/api/series/${seriesId}/thumbnail`;
+}

@@ -661,6 +661,79 @@ def _dicom_pixel_payload(path: Path, frame: int = 0) -> tuple[bytes, dict[str, s
     return pixels.tobytes(order="C"), headers
 
 
+THUMBNAIL_BOX = (240, 240)
+
+
+def _encode_thumbnail(image: Any) -> bytes:
+    import io
+
+    from PIL import Image
+
+    image.thumbnail(THUMBNAIL_BOX, Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=92, subsampling=0)
+    return buffer.getvalue()
+
+
+def _dicom_thumbnail_image(path: Path, frame: int) -> Any:
+    """Render one DICOM slice into a display-space PIL image.
+
+    The viewer windows pixels itself in the browser, but a thumbnail has to
+    arrive already in display space because an <img> cannot apply a modality
+    LUT. Colour payloads are handed over untouched; grayscale ones go through
+    the slice's own window/level, falling back to a percentile stretch when
+    the file declares none.
+    """
+    import numpy as np
+    from PIL import Image
+
+    body, headers = _dicom_pixel_payload(path, frame)
+    rows = int(headers["X-DCom-Rows"])
+    columns = int(headers["X-DCom-Columns"])
+    if int(headers.get("X-DCom-Samples", "1")) == 3:
+        pixels = np.frombuffer(body, dtype=np.uint8).reshape((rows, columns, 3))
+        return Image.fromarray(pixels, mode="RGB")
+
+    pixels = np.frombuffer(
+        body, dtype=np.dtype(headers.get("X-DCom-Pixel-Type", "uint16"))
+    ).reshape((rows, columns))
+    values = pixels.astype("float32") * float(headers.get("X-DCom-Slope", "1.0")) + float(
+        headers.get("X-DCom-Intercept", "0.0")
+    )
+    center = float(headers.get("X-DCom-Window-Center", "nan"))
+    width = float(headers.get("X-DCom-Window-Width", "nan"))
+    if math.isfinite(center) and math.isfinite(width) and width > 0:
+        low, high = center - width / 2.0, center + width / 2.0
+    else:
+        low, high = (float(bound) for bound in np.percentile(values, (0.5, 99.5)))
+        if not math.isfinite(low) or not math.isfinite(high) or high <= low:
+            low, high = float(np.min(values)), float(np.max(values))
+        if high <= low:
+            high = low + 1.0
+    scaled = np.clip((values - low) / (high - low) * 255.0, 0, 255).astype(np.uint8)
+    if headers.get("X-DCom-Photometric", "MONOCHROME2") == "MONOCHROME1":
+        scaled = 255 - scaled
+    return Image.fromarray(scaled, mode="L").convert("RGB")
+
+
+def build_series_thumbnail(record: "SeriesRecord") -> bytes:
+    """Encode a JPEG preview of the series' middle slice.
+
+    Raises when the slice cannot be decoded; the caller decides what a failed
+    preview should look like, so a transient decode error is never cached as
+    the series' permanent thumbnail.
+    """
+    from PIL import Image
+
+    middle = len(record.images) // 2
+    path = record.images[middle]
+    if record.source_type == "dicom":
+        frame = record.frame_indices[middle] if record.frame_indices else 0
+        return _encode_thumbnail(_dicom_thumbnail_image(path, frame))
+    with Image.open(path) as handle:
+        return _encode_thumbnail(handle.convert("RGB"))
+
+
 def validate_mpr_manifest(folder: Path, manifest: Optional[dict]) -> tuple[bool, str]:
     """Validate geometry/completeness before exposing MPR or 3D controls."""
     if not manifest:
@@ -762,6 +835,9 @@ class SeriesRecord:
     # Parallel to `images`: which frame of that file each slice refers to.
     # Empty for series where every file holds exactly one frame.
     frame_indices: list[int] = field(default_factory=list)
+    # JPEG preview of the middle slice, built on first request. Decoding a
+    # slice is expensive and the strip re-requests it on every re-render.
+    thumbnail_bytes: Optional[bytes] = None
 
     def public_dict(self) -> dict:
         data = {
@@ -2033,78 +2109,15 @@ class LocalApiServer:
                 record = owner.controller.catalog.get(match.group(1))
                 if not record.images:
                     raise IndexError("Series không có ảnh.")
-                cached_bytes = getattr(record, "_thumbnail_bytes", None)
-                if cached_bytes is not None:
-                    self._send(
-                        HTTPStatus.OK,
-                        cached_bytes,
-                        "image/jpeg",
-                        {"Cache-Control": "public, max-age=86400"},
-                    )
-                    return True
-
-                import io
-                from PIL import Image
-                import numpy as np
-
-                mid_idx = len(record.images) // 2
-                image_path = record.images[mid_idx]
-
-                try:
-                    if record.source_type != "dicom":
-                        with Image.open(image_path) as img:
-                            img = img.convert("RGB")
-                            img.thumbnail((240, 240), Image.Resampling.LANCZOS)
-                            buf = io.BytesIO()
-                            img.save(buf, format="JPEG", quality=92, subsampling=0)
-                            thumb_bytes = buf.getvalue()
-                    else:
-                        frame = record.frame_indices[mid_idx] if record.frame_indices else 0
-                        body, headers = _dicom_pixel_payload(image_path, frame)
-                        rows = int(headers["X-DCom-Rows"])
-                        cols = int(headers["X-DCom-Columns"])
-                        samples = int(headers.get("X-DCom-Samples", "1"))
-                        if samples == 3:
-                            arr = np.frombuffer(body, dtype=np.uint8).reshape((rows, cols, 3))
-                            img = Image.fromarray(arr, mode="RGB")
-                        else:
-                            pixel_type = headers.get("X-DCom-Pixel-Type", "uint16")
-                            arr = np.frombuffer(body, dtype=np.dtype(pixel_type)).reshape((rows, cols))
-                            slope = float(headers.get("X-DCom-Slope", "1.0"))
-                            intercept = float(headers.get("X-DCom-Intercept", "0.0"))
-                            val = arr.astype("float32") * slope + intercept
-                            wc = float(headers.get("X-DCom-Window-Center", "0.0"))
-                            ww = float(headers.get("X-DCom-Window-Width", "0.0"))
-                            photometric = headers.get("X-DCom-Photometric", "MONOCHROME2")
-                            invert = photometric == "MONOCHROME1"
-                            if ww > 0:
-                                low = wc - ww / 2.0
-                                high = wc + ww / 2.0
-                            else:
-                                low, high = np.percentile(val, (0.5, 99.5))
-                                if not math.isfinite(float(low)) or not math.isfinite(float(high)) or high <= low:
-                                    low, high = float(np.min(val)), float(np.max(val))
-                                if high <= low:
-                                    high = low + 1.0
-                            scaled = _to_uint8(val, low, high, invert)
-                            img = Image.fromarray(scaled, mode="L").convert("RGB")
-
-                        img.thumbnail((240, 240), Image.Resampling.LANCZOS)
-                        buf = io.BytesIO()
-                        img.save(buf, format="JPEG", quality=92, subsampling=0)
-                        thumb_bytes = buf.getvalue()
-                except Exception:
-                    img = Image.new("RGB", (200, 200), color=(10, 15, 20))
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=70)
-                    thumb_bytes = buf.getvalue()
-
-                setattr(record, "_thumbnail_bytes", thumb_bytes)
+                if record.thumbnail_bytes is None:
+                    record.thumbnail_bytes = build_series_thumbnail(record)
                 self._send(
                     HTTPStatus.OK,
-                    thumb_bytes,
+                    record.thumbnail_bytes,
                     "image/jpeg",
-                    {"Cache-Control": "public, max-age=86400"},
+                    # Patient imagery must not land in a shared proxy cache,
+                    # and the token is not part of the URL that keys it.
+                    {"Cache-Control": "private, max-age=86400"},
                 )
                 return True
 

@@ -712,8 +712,32 @@ class ServerSecurityTests(unittest.TestCase):
         ) as response:
             self.assertEqual(response.status, 200)
             self.assertEqual(response.headers["Content-Type"], "image/jpeg")
-            body = response.read()
-            self.assertTrue(len(body) > 0)
+            self.assertTrue(response.read().startswith(b"\xff\xd8\xff"))
+
+    def test_thumbnail_rejects_missing_token(self):
+        # The strip must fetch previews with the bearer token; a bare
+        # <img src> carries no header and would only ever render broken.
+        series_id = self.controller.catalog.snapshot()["series"][0]["id"]
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.request(f"/api/series/{series_id}/thumbnail")
+        self.assertEqual(caught.exception.code, 401)
+        caught.exception.close()
+
+    def test_thumbnail_is_cached_after_first_request(self):
+        series_id = self.controller.catalog.snapshot()["series"][0]["id"]
+        record = self.controller.catalog.get(series_id)
+        self.assertIsNone(record.thumbnail_bytes)
+        with self.request(
+            f"/api/series/{series_id}/thumbnail",
+            self.server.token,
+        ) as response:
+            first = response.read()
+        self.assertEqual(record.thumbnail_bytes, first)
+        with self.request(
+            f"/api/series/{series_id}/thumbnail",
+            self.server.token,
+        ) as response:
+            self.assertEqual(response.read(), first)
 
     def test_direct_dicom_thumbnail_returns_jpeg(self):
         root = Path(self.tmp.name) / "dicom"
@@ -728,8 +752,7 @@ class ServerSecurityTests(unittest.TestCase):
         ) as response:
             self.assertEqual(response.status, 200)
             self.assertEqual(response.headers["Content-Type"], "image/jpeg")
-            body = response.read()
-            self.assertTrue(len(body) > 0)
+            self.assertTrue(response.read().startswith(b"\xff\xd8\xff"))
 
     def test_direct_dicom_image_returns_original_16_bit_pixels(self):
         root = Path(self.tmp.name) / "dicom"
