@@ -1376,6 +1376,7 @@ class WebController:
         settings = self._read_settings()
         self.language = settings.get("language", "en")
         self.output_root = Path(settings.get("outputRoot") or (Path.home() / "DCom JPG PACS"))
+        self.window_settings = settings.get("window")
 
     def _read_settings(self) -> dict:
         try:
@@ -1385,9 +1386,12 @@ class WebController:
         if not isinstance(value, dict):
             return {}
         language = str(value.get("language") or "en")
+        window_raw = value.get("window")
+        window_settings = window_raw if isinstance(window_raw, dict) else None
         return {
             "language": language if language in SUPPORTED_LANGUAGES else "en",
             "outputRoot": str(value.get("outputRoot") or ""),
+            "window": window_settings,
         }
 
     def _write_settings(self) -> None:
@@ -1395,9 +1399,15 @@ class WebController:
         try:
             self.settings_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.settings_path.with_suffix(".json.tmp")
+            payload = {
+                "language": self.language,
+                "outputRoot": str(self.output_root),
+            }
+            if isinstance(self.window_settings, dict):
+                payload["window"] = self.window_settings
             temporary.write_text(
                 json.dumps(
-                    {"language": self.language, "outputRoot": str(self.output_root)},
+                    payload,
                     ensure_ascii=False,
                     indent=1,
                 ),
@@ -1406,6 +1416,11 @@ class WebController:
             temporary.replace(self.settings_path)
         except Exception:
             pass
+
+    def save_window_settings(self, win_dict: dict) -> None:
+        if isinstance(win_dict, dict):
+            self.window_settings = win_dict
+            self._write_settings()
 
     def set_language(self, language: str) -> dict:
         value = str(language or "").casefold()

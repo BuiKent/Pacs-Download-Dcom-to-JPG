@@ -209,6 +209,13 @@ class ControllerSettingsTests(unittest.TestCase):
         self.controller.set_output_root(str(target))
         self.assertEqual(str(target.resolve()), self.controller._read_settings()["outputRoot"])
 
+    def test_window_settings_are_remembered_across_restart(self):
+        win_dict = {"width": 1400, "height": 900, "x": 50, "y": 50, "maximized": False}
+        self.controller.save_window_settings(win_dict)
+        restarted = WebController()
+        restarted.settings_path = self.controller.settings_path
+        self.assertEqual(win_dict, restarted._read_settings()["window"])
+
     def test_opening_a_missing_history_folder_reports_a_clear_error(self):
         with self.assertRaises(ValueError):
             self.controller.start_history_open(str(self.root / "khong-ton-tai"))

@@ -47,5 +47,16 @@ class ClipboardAutoPasteTests(unittest.TestCase):
         self.assertEqual({"url": "", "patientId": ""}, self.read(""))
 
 
+class WindowGeometryResolutionTests(unittest.TestCase):
+    def test_first_launch_defaults_to_maximized(self):
+        params = dcom_web_app.resolve_window_parameters(None)
+        self.assertEqual({"width": 1500, "height": 940, "maximized": True, "x": None, "y": None}, params)
+
+    def test_saved_window_parameters_are_restored(self):
+        saved = {"width": 1300, "height": 850, "x": 100, "y": 100, "maximized": False}
+        params = dcom_web_app.resolve_window_parameters(saved)
+        self.assertEqual({"width": 1300, "height": 850, "maximized": False, "x": 100, "y": 100}, params)
+
+
 if __name__ == "__main__":
     unittest.main()

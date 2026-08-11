@@ -480,6 +480,104 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
         window.destroy()
 
 
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class WINDOWPLACEMENT(ctypes.Structure):
+    _fields_ = [
+        ("length", ctypes.c_uint),
+        ("flags", ctypes.c_uint),
+        ("showCmd", ctypes.c_uint),
+        ("ptMinPosition", POINT),
+        ("ptMaxPosition", POINT),
+        ("rcNormalPosition", RECT),
+    ]
+
+
+def get_window_geometry(window) -> dict | None:
+    """Extract current window location, size, and maximized state."""
+    try:
+        user32 = ctypes.windll.user32
+        native = getattr(window, "native", None)
+        if native and hasattr(native, "Handle"):
+            hwnd = int(native.Handle.ToInt64())
+            wp = WINDOWPLACEMENT()
+            wp.length = ctypes.sizeof(WINDOWPLACEMENT)
+            if user32.GetWindowPlacement(hwnd, ctypes.byref(wp)):
+                rect = wp.rcNormalPosition
+                is_maximized = bool(user32.IsZoomed(hwnd))
+                return {
+                    "x": int(rect.left),
+                    "y": int(rect.top),
+                    "width": max(1100, int(rect.right - rect.left)),
+                    "height": max(700, int(rect.bottom - rect.top)),
+                    "maximized": is_maximized,
+                }
+    except Exception:
+        pass
+    try:
+        return {
+            "x": int(window.x),
+            "y": int(window.y),
+            "width": max(1100, int(window.width)),
+            "height": max(700, int(window.height)),
+            "maximized": False,
+        }
+    except Exception:
+        return None
+
+
+def resolve_window_parameters(win_config: dict | None) -> dict:
+    """Resolve initial window kwargs from saved settings.
+
+    First launch defaults to maximized=True so the viewer occupies full screen.
+    Subsequent launches restore the saved position, dimensions, and state.
+    """
+    if not win_config or not isinstance(win_config, dict):
+        return {
+            "width": 1500,
+            "height": 940,
+            "maximized": True,
+            "x": None,
+            "y": None,
+        }
+
+    width = max(1100, int(win_config.get("width", 1500)))
+    height = max(700, int(win_config.get("height", 940)))
+    maximized = bool(win_config.get("maximized", True))
+    x = int(win_config["x"]) if "x" in win_config and isinstance(win_config.get("x"), int) else None
+    y = int(win_config["y"]) if "y" in win_config and isinstance(win_config.get("y"), int) else None
+
+    if x is not None and y is not None:
+        try:
+            pt = POINT(x, y)
+            if not ctypes.windll.user32.MonitorFromPoint(pt, 0):
+                x, y = None, None
+        except Exception:
+            x, y = None, None
+
+    kwargs: dict = {
+        "width": width,
+        "height": height,
+        "maximized": maximized,
+    }
+    if x is not None:
+        kwargs["x"] = x
+    if y is not None:
+        kwargs["y"] = y
+    return kwargs
+
+
 def launch_web(
     debug: bool = False,
     archive: str = "",
@@ -502,23 +600,33 @@ def launch_web(
     url = server.start()
     _write_smoke_stage(smoke_result, result, "server-started")
     native_api = NativeApi(controller)
+    win_kwargs = resolve_window_parameters(controller.window_settings)
     window = webview.create_window(
         "DICOM/JPG Downloader & Viewer",
         url=url,
         js_api=native_api,
-        width=1500,
-        height=940,
         min_size=(1100, 700),
         # WebView2 can defer navigation for a minimized top-level window on
         # some Windows builds. The smoke gate must exercise the same visible
         # window lifecycle as the real application.
         minimized=False,
         background_color="#060a10",
+        **win_kwargs,
     )
     native_api._window = window
     _write_smoke_stage(smoke_result, result, "window-created")
     closed_event = threading.Event()
-    window.events.closed += lambda: closed_event.set()
+
+    def persist_geometry() -> None:
+        geom = get_window_geometry(window)
+        if geom:
+            controller.save_window_settings(geom)
+
+    def on_closed() -> None:
+        closed_event.set()
+
+    window.events.closing += persist_geometry
+    window.events.closed += on_closed
 
     def keep_backend_responsive() -> None:
         while not closed_event.is_set():
@@ -533,6 +641,7 @@ def launch_web(
             private_mode=True,
         )
     finally:
+        persist_geometry()
         controller.job.stop_event.set()
         server.stop()
     if result.get("error"):
