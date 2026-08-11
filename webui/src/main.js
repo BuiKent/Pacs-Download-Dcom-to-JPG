@@ -534,12 +534,10 @@ function render() {
           ${state.archive.series.map((item) => {
     const visiblePanes = seriesVisiblePanes(item.id);
     const isVisible = visiblePanes.length > 0;
-    const dateInfo = seriesDateInfo(item);
     return `<button class="series-card ${isVisible ? "active" : ""}"
             data-series-id="${item.id}" title="${escapeHtml(item.mprReason || item.description)}"
             ${isVisible ? `data-pane="${visiblePanes.join(",")}"` : ""}>
             <span>${item.mprReady ? "3D" : "2D"}</span>
-            <b>${escapeHtml([dateInfo, item.modality].filter(Boolean).join(" · "))}</b>
             <b>${escapeHtml(item.description)}</b>
             <small>${escapeHtml(seriesFrameLabel(item))}</small>
           </button>`;

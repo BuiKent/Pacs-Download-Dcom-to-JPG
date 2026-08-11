@@ -511,10 +511,11 @@ button:disabled { opacity: .35; cursor: default; }
 }
 .series-card {
   display: grid;
-  grid-template: auto auto auto / 34px minmax(100px, 190px);
+  grid-template: auto auto / 34px minmax(100px, 190px);
+  align-content: center;
   flex: 0 0 auto;
-  min-width: 165px;
-  padding: 7px;
+  min-width: 155px;
+  padding: 6px 7px;
   color: #9eb0be;
   text-align: left;
   border: 1px solid #1e2b36;
