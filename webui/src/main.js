@@ -224,87 +224,95 @@ function iconButton(id, icon, title, active = false, disabled = false, label = "
 /* The toolbar reads left to right in the order a study is actually worked:
    what the mouse does (navigate → measure → annotate), then what happens to the
    view (orient → reset), then the mark-up, then the output. */
-function renderInteractionTools(series) {
-  const navigate = {
-    crosshair: iconButton("tool-crosshair", icons.crosshair, t("Định vị MPR"), state.tool === "crosshair"),
-    orbit3d: iconButton("tool-orbit3d", icons.orbit3d, t("Xoay khối 3D tự do"), state.tool === "orbit3d"),
-    window: iconButton("tool-window", icons.window, t("Sáng/tương phản"), state.tool === "window"),
-    pan: iconButton("tool-pan", icons.pan, t("Di chuyển"), state.tool === "pan"),
-    zoom: iconButton("tool-zoom", icons.zoom, t("Thu/phóng"), state.tool === "zoom"),
-  };
+function renderToolbarGroups(series) {
   if (state.mode === "volume3d") {
-    return [navigate.orbit3d, navigate.crosshair, navigate.pan, navigate.zoom].join("");
+    const nav3d = [
+      iconButton("tool-orbit3d", icons.orbit3d, t("Xoay khối 3D tự do"), state.tool === "orbit3d"),
+      iconButton("tool-crosshair", icons.crosshair, t("Định vị MPR"), state.tool === "crosshair"),
+      iconButton("tool-pan", icons.pan, t("Di chuyển"), state.tool === "pan"),
+      iconButton("tool-zoom", icons.zoom, t("Thu/phóng"), state.tool === "zoom"),
+    ].join("");
+    const orient3d = [
+      iconButton("rotate-clockwise", icons.rotateClockwise, t("Xoay khung đang chọn 90° theo chiều kim đồng hồ")),
+      iconButton("flip-horizontal", icons.flipHorizontal, t("Lật ngang khung đang chọn")),
+      iconButton("flip-vertical", icons.flipVertical, t("Lật dọc khung đang chọn")),
+      iconButton("invert", icons.invert, t("Đảo màu")),
+      iconButton("reset", icons.reset, t("Đặt lại góc nhìn")),
+    ].join("");
+    const output3d = iconButton("capture", icons.capture, t("Lưu ảnh 3D"));
+
+    return [
+      `<div class="tool-cluster nav-tools">${nav3d}</div>`,
+      `<span class="toolbar-divider"></span>`,
+      `<div class="tool-cluster orientation-tools">${orient3d}</div>`,
+      `<span class="toolbar-divider"></span>`,
+      `<div class="tool-cluster output-tools">${output3d}</div>`,
+    ].join("");
   }
+
+  const nav = (state.mode === "mpr"
+    ? [
+        iconButton("tool-crosshair", icons.crosshair, t("Định vị MPR"), state.tool === "crosshair"),
+        iconButton("tool-window", icons.window, t("Sáng/tương phản"), state.tool === "window"),
+        iconButton("tool-pan", icons.pan, t("Di chuyển"), state.tool === "pan"),
+        iconButton("tool-zoom", icons.zoom, t("Thu/phóng"), state.tool === "zoom"),
+      ]
+    : [
+        iconButton("tool-window", icons.window, t("Sáng/tương phản"), state.tool === "window"),
+        iconButton("tool-pan", icons.pan, t("Di chuyển"), state.tool === "pan"),
+        iconButton("tool-zoom", icons.zoom, t("Thu/phóng"), state.tool === "zoom"),
+      ]
+  ).join("");
+
   const measure = [
-    iconButton("tool-length", icons.length,
-      t(state.mode === "mpr" || series?.geometry ? "Đo chiều dài (mm)" : "Đo chiều dài (pixel)"),
-      state.tool === "length"),
+    iconButton("tool-length", icons.length, t(state.mode === "mpr" || series?.geometry ? "Đo chiều dài (mm)" : "Đo chiều dài (pixel)"), state.tool === "length"),
     iconButton("tool-angle", icons.angle, t("Đo góc"), state.tool === "angle"),
     iconButton("tool-ellipse", icons.ellipse, t("ROI ellipse"), state.tool === "ellipse"),
     iconButton("tool-freehand", icons.freehand, t("ROI tự do"), state.tool === "freehand"),
     iconButton("tool-text", icons.text, t("Ghi chú chữ lên ảnh"), state.tool === "text"),
-  ];
-  const head = state.mode === "mpr"
-    ? [navigate.crosshair, navigate.window, navigate.pan, navigate.zoom]
-    : [navigate.window, navigate.pan, navigate.zoom];
-  return [...head, ...measure].join("");
-}
+  ].join("");
 
-function renderUtilityTools(series) {
-  // Orientation acts on the pane under the cursor in every layout.
   const orientation = [
-    iconButton("rotate-clockwise", icons.rotateClockwise,
-      t("Xoay khung đang chọn 90° theo chiều kim đồng hồ")),
+    iconButton("rotate-clockwise", icons.rotateClockwise, t("Xoay khung đang chọn 90° theo chiều kim đồng hồ")),
     iconButton("flip-horizontal", icons.flipHorizontal, t("Lật ngang khung đang chọn")),
     iconButton("flip-vertical", icons.flipVertical, t("Lật dọc khung đang chọn")),
     iconButton("invert", icons.invert, t("Đảo màu")),
-    iconButton("reset", icons.reset, t(state.mode === "mpr"
-      ? "Đặt lại ba mặt phẳng"
-      : state.mode === "volume3d"
-        ? "Đặt lại góc nhìn"
-        : "Đặt lại hiển thị")),
-  ];
-  if (state.mode === "volume3d") {
-    // A 3D volume render carries no annotations, so only the view controls and
-    // the capture apply here.
-    return [...orientation, iconButton("capture", icons.capture, t("Lưu ảnh 3D"))].join("");
-  }
+    iconButton("reset", icons.reset, t(state.mode === "mpr" ? "Đặt lại ba mặt phẳng" : "Đặt lại hiển thị")),
+  ].join("");
+
   const markup = [
-    iconButton("clear-annotations", icons.clearAnnotations,
-      t("Xóa mọi phép đo, ROI và ghi chú")),
+    iconButton("clear-annotations", icons.clearAnnotations, t("Xóa mọi phép đo, ROI và ghi chú")),
     iconButton("save-annotations", icons.save, t("Lưu đo/ROI/ghi chú")),
     iconButton("roi-volume", icons.volume, t("Tính thể tích ROI"), false, !series?.mprReady),
-  ];
-  // Only the comparison layouts can lock panes together.
+  ].join("");
+
   const compareTools = isCompareMode()
-    ? [iconButton("scroll-sync", icons.scrollSync,
-      t(state.scrollSync
-        ? "Đang khoá cuộn theo vị trí — bấm để cuộn từng khung riêng"
-        : "Cuộn từng khung riêng — bấm để khoá theo độ lệch hiện tại"),
-      state.scrollSync),
-      iconButton("reference-lines", icons.referenceLines,
-        t(state.referenceLines
-          ? "Đường tham chiếu đang bật — bấm để tắt"
-          : "Đường tham chiếu đang tắt — bấm để bật"),
-        state.referenceLines),
-      iconButton("reference-cursor", icons.referenceCursor,
-        t(state.referenceCursor
-          ? "Con trỏ tham chiếu đang bật — bấm để tắt"
-          : "Con trỏ tham chiếu đang tắt — bấm để bật"),
-        state.referenceCursor)]
+    ? [
+        `<span class="toolbar-divider"></span>`,
+        `<div class="tool-cluster compare-tools">
+          ${iconButton("scroll-sync", icons.scrollSync, t(state.scrollSync ? "Đang khoá cuộn theo vị trí — bấm để cuộn từng khung riêng" : "Cuộn từng khung riêng — bấm để khoá theo độ lệch hiện tại"), state.scrollSync)}
+          ${iconButton("reference-lines", icons.referenceLines, t(state.referenceLines ? "Đường tham chiếu đang bật — bấm để tắt" : "Đường tham chiếu đang tắt — bấm để bật"), state.referenceLines)}
+          ${iconButton("reference-cursor", icons.referenceCursor, t(state.referenceCursor ? "Con trỏ tham chiếu đang bật — bấm để tắt" : "Con trỏ tham chiếu đang tắt — bấm để bật"), state.referenceCursor)}
+        </div>`,
+      ]
     : [];
+
   const output = [
-    iconButton("cine", state.cine ? "Ⅱ" : icons.cine,
-      t(state.cine ? "Dừng chạy phim" : "Chạy phim"), state.cine),
+    ...(state.mode === "mpr" ? [] : [iconButton("cine", state.cine ? "Ⅱ" : icons.cine, t(state.cine ? "Dừng chạy phim" : "Chạy phim"), state.cine)]),
     iconButton("capture", icons.capture, t("Lưu ảnh")),
-  ];
-  // Cine only means anything on a single stack; MPR drops it rather than
-  // showing a control that can never be used.
+  ].join("");
+
   return [
+    `<div class="tool-cluster nav-tools">${nav}</div>`,
+    `<span class="toolbar-divider"></span>`,
+    `<div class="tool-cluster measure-tools">${measure}</div>`,
+    `<span class="toolbar-divider"></span>`,
+    `<div class="tool-cluster orientation-tools">${orientation}</div>`,
+    `<span class="toolbar-divider"></span>`,
+    `<div class="tool-cluster markup-tools">${markup}</div>`,
     ...compareTools,
-    ...orientation,
-    ...markup,
-    ...(state.mode === "mpr" ? output.slice(1) : output),
+    `<span class="toolbar-divider"></span>`,
+    `<div class="tool-cluster output-tools">${output}</div>`,
   ].join("");
 }
 
@@ -524,9 +532,8 @@ function render() {
             </select>
           </label>` : ""}
           <span class="toolbar-divider"></span>
-          <div class="tool-cluster interaction-tools">${renderInteractionTools(series)}</div>
-          <span class="toolbar-spacer"></span>
-          <div class="tool-cluster utility-tools">${renderUtilityTools(series)}</div>
+          ${renderToolbarGroups(series)}
+          <span class="toolbar-divider"></span>
           ${iconButton("shortcuts", "⌨", t("Xem danh sách phím tắt"))}
         </nav>
 

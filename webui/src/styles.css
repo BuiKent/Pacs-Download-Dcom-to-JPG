@@ -490,16 +490,13 @@ button:disabled { opacity: .35; cursor: default; }
   font-size: 9px;
   line-height: 1;
 }
-.toolbar-divider { width: 1px; height: 18px; background: #2a3743; }
-.toolbar-spacer { flex: 1; }
-
-/* MPR has eight interaction tools. Keep the complete measurement group on
-   one visible row and move utility actions to the next row when space is
-   tight instead of hiding Angle/ROI behind a horizontal scrollbar. */
-.toolbar.mode-mpr .interaction-tools { order: 3; }
-.toolbar.mode-mpr .toolbar-spacer { order: 4; min-width: 0; }
-.toolbar.mode-mpr .utility-tools { order: 5; }
-.toolbar.mode-mpr > [data-action="shortcuts"] { order: 6; }
+.toolbar-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: #2a3743;
+  flex-shrink: 0;
+}
 
 .series-strip {
   display: flex;
