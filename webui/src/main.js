@@ -558,8 +558,6 @@ function render() {
         </section>
         <footer class="status-bar">
           <span class="status-dot ${state.busyViewer ? "busy" : ""}"></span>
-          <span>${escapeHtml(state.status)}</span>
-          <span class="status-slice">${escapeHtml(state.sliceText)}</span>
           <span class="status-root">${escapeHtml(state.archive.root)}</span>
         </footer>
       </main>
@@ -1430,14 +1428,10 @@ function setStatus(message, isError = false) {
   const bar = app.querySelector(".status-bar");
   if (bar) {
     bar.classList.toggle("error", isError);
-    const span = bar.querySelector("span:nth-child(2)");
-    if (span) span.textContent = message;
   }
 }
 
 function updateStatusOnly() {
-  const element = app.querySelector(".status-slice");
-  if (element) element.textContent = state.sliceText;
 }
 
 const SHORTCUT_HINT = "Phím tắt: ←/→, PgUp/PgDn, Home/End: đổi lát · 1..8: bộ công cụ · C: định vị"

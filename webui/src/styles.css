@@ -779,11 +779,10 @@ button:disabled { opacity: .35; cursor: default; }
   background: #0c131a;
   font-size: 10px;
 }
-.status-dot { width: 7px; height: 7px; border-radius: 50%; background: #27bd72; }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; background: #27bd72; flex-shrink: 0; }
 .status-dot.busy { background: #f2b447; box-shadow: 0 0 8px #f2b447; }
 .status-bar.error { color: #ff9e9e; }
-.status-slice { margin-left: auto; color: #a4c5d9; }
-.status-root { max-width: 36%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-root { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fatal-error { padding: 40px; color: #ff9696; }
 .fatal-error pre { max-width: 900px; overflow: auto; text-align: left; white-space: pre-wrap; }
 
