@@ -525,12 +525,11 @@ function render() {
             ${iconButton("mode-mpr", icons.mpr, mprDisabled ? series?.mprReason || t("Series không đủ MPR") : t("MPR ba mặt phẳng"), state.mode === "mpr", mprDisabled)}
             ${iconButton("mode-volume3d", icons.volume3d, mprDisabled ? series?.mprReason || t("Series không đủ 3D") : t("Dựng volume 3D toàn màn hình"), state.mode === "volume3d", mprDisabled, "3D")}
           </div>
-          ${state.mode !== "volume3d" ? `<label class="window-preset-control">
-            ${escapeHtml(t("Hiển thị"))}
-            <select data-field="window-preset" title="${escapeHtml(t(windowPresetHint(series)))}">
+          ${state.mode !== "volume3d" ? `<div class="window-preset-control">
+            <select data-field="window-preset" aria-label="${escapeHtml(t("Cài đặt hiển thị"))}" title="${escapeHtml(t(windowPresetHint(series)))}">
               ${availableWindowPresets(series).map((preset) => `<option value="${preset.id}" ${state.windowPreset === preset.id ? "selected" : ""}>${escapeHtml(preset.detail ? `${t(preset.label)} · ${preset.detail}` : t(preset.label))}</option>`).join("")}
             </select>
-          </label>` : ""}
+          </div>` : ""}
           <span class="toolbar-divider"></span>
           ${renderToolbarGroups(series)}
           <span class="toolbar-divider"></span>

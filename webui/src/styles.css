@@ -403,8 +403,8 @@ button:disabled { opacity: .35; cursor: default; }
 .window-preset-control {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 7px;
+  gap: 4px;
+  padding: 0 2px;
   color: #8fa9bc;
   white-space: nowrap;
   font-size: 10px;

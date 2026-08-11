@@ -3466,12 +3466,11 @@ ${E}`.trim();let x="";if(typeof l.getCurrentImageIdIndex=="function"){const O=l.
             ${Me("mode-mpr",Re.mpr,n?t?.mprReason||W("Series không đủ MPR"):W("MPR ba mặt phẳng"),_.mode==="mpr",n)}
             ${Me("mode-volume3d",Re.volume3d,n?t?.mprReason||W("Series không đủ 3D"):W("Dựng volume 3D toàn màn hình"),_.mode==="volume3d",n,"3D")}
           </div>
-          ${_.mode!=="volume3d"?`<label class="window-preset-control">
-            ${Z(W("Hiển thị"))}
-            <select data-field="window-preset" title="${Z(W(Dj(t)))}">
+          ${_.mode!=="volume3d"?`<div class="window-preset-control">
+            <select data-field="window-preset" aria-label="${Z(W("Cài đặt hiển thị"))}" title="${Z(W(Dj(t)))}">
               ${ym(t).map(r=>`<option value="${r.id}" ${_.windowPreset===r.id?"selected":""}>${Z(r.detail?`${W(r.label)} · ${r.detail}`:W(r.label))}</option>`).join("")}
             </select>
-          </label>`:""}
+          </div>`:""}
           <span class="toolbar-divider"></span>
           ${Oj(t)}
           <span class="toolbar-divider"></span>
