@@ -391,15 +391,15 @@ button:disabled { opacity: .35; cursor: default; }
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
-  min-height: 48px;
-  padding: 6px 9px;
+  min-height: 36px;
+  padding: 4px 6px;
   overflow: visible;
   background: #0c131b;
   border-bottom: 1px solid #1d2a36;
 }
-.tool-cluster { display: flex; flex: 0 0 auto; gap: 3px; }
+.tool-cluster { display: flex; flex: 0 0 auto; gap: 2px; }
 .window-preset-control {
   display: flex;
   align-items: center;
@@ -421,24 +421,24 @@ button:disabled { opacity: .35; cursor: default; }
   position: relative;
   display: grid;
   place-items: center;
-  min-width: 34px;
-  height: 34px;
-  padding: 0 6px;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 4px;
   color: #aabccc;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 4px;
   background: transparent;
 }
 .icon-button > span {
   display: grid;
   place-items: center;
-  min-width: 20px;
-  font-size: 20px;
+  min-width: 14px;
+  font-size: 14px;
   line-height: 1;
 }
 .icon-button > span svg {
-  width: 23px;
-  height: 23px;
+  width: 15px;
+  height: 15px;
   overflow: visible;
   fill: none;
   stroke: currentColor;
@@ -447,12 +447,12 @@ button:disabled { opacity: .35; cursor: default; }
   stroke-linejoin: round;
 }
 .icon-button[data-action="tool-zoom"] > span {
-  min-width: 24px;
+  min-width: 16px;
   text-shadow: 0 0 8px #67cfff66;
 }
 .icon-button[data-action="tool-zoom"] > span svg {
-  width: 25px;
-  height: 25px;
+  width: 16px;
+  height: 16px;
   stroke-width: 2.8;
 }
 .icon-button[data-action="clear-annotations"] {
@@ -466,31 +466,31 @@ button:disabled { opacity: .35; cursor: default; }
   background: #a51f2a;
 }
 .icon-button[data-action="clear-annotations"] > span {
-  font-size: 27px;
+  font-size: 18px;
   font-weight: 800;
 }
 .icon-button:hover { color: #fff; background: #172430; }
 .icon-button.active { color: #8bd8ff; border-color: #1a78a7; background: #123247; }
 .icon-button.with-label {
   display: inline-flex;
-  gap: 5px;
+  gap: 4px;
   min-width: max-content;
-  padding: 0 8px;
+  padding: 0 6px;
 }
 .icon-button small {
   position: absolute;
-  right: 2px;
-  bottom: 0;
+  right: 1px;
+  bottom: -1px;
   color: #6fd2ff;
-  font-size: 8px;
+  font-size: 7px;
 }
 .icon-button.with-label small {
   position: static;
   color: inherit;
-  font-size: 10px;
+  font-size: 9px;
   line-height: 1;
 }
-.toolbar-divider { width: 1px; height: 24px; background: #2a3743; }
+.toolbar-divider { width: 1px; height: 18px; background: #2a3743; }
 .toolbar-spacer { flex: 1; }
 
 /* MPR has eight interaction tools. Keep the complete measurement group on
@@ -867,7 +867,7 @@ button:disabled { opacity: .35; cursor: default; }
 
 @media (max-width: 1200px) {
   .app-shell { grid-template-columns: 280px 1fr; }
-  .icon-button { min-width: 31px; }
+  .icon-button { min-width: 24px; }
   .series-strip { width: 145px; min-width: 130px; }
 }
 
