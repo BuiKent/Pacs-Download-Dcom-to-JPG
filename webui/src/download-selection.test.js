@@ -16,6 +16,7 @@ const studies = [
 ];
 
 const mainSource = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+const cssSource = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 
 describe("download-all UI contract", () => {
   it("keeps the default-on checkbox wired to discovery and both download paths", () => {
@@ -63,5 +64,54 @@ describe("patient study selection", () => {
     const selected = restoreSeriesSelections(groups, { "study-a": ["a-t2"] });
     expect(seriesSelections(selected)).toEqual({ "study-a": ["a-t2"] });
     expect(rememberSeriesSelections(selected)).toEqual({ "study-a": ["a-t2"] });
+  });
+});
+
+describe("manual patient info UI contract", () => {
+  it("keeps manual info state and inputs wired to downloadOptions and events", () => {
+    // State properties
+    expect(mainSource).toContain("showManualInfo: false");
+    expect(mainSource).toContain('manualPatientName: ""');
+    expect(mainSource).toContain('manualPatientId: ""');
+    expect(mainSource).toContain('manualPatientDob: ""');
+
+    // Markup & Form controls
+    expect(mainSource).toContain('id="manual-info-toggle"');
+    expect(mainSource).toContain('class="manual-info-panel"');
+    expect(mainSource).toContain('id="manual-patient-name"');
+    expect(mainSource).toContain('id="manual-patient-id"');
+    expect(mainSource).toContain('id="manual-patient-dob"');
+
+    // downloadOptions serialization
+    expect(mainSource).toContain("if (state.showManualInfo)");
+    expect(mainSource).toContain("options.manualInfo = {");
+    expect(mainSource).toContain("patientName: state.manualPatientName");
+    expect(mainSource).toContain("patientId: state.manualPatientId");
+    expect(mainSource).toContain("patientDob: state.manualPatientDob");
+
+    // Event listener bindings
+    expect(mainSource).toContain('querySelector("#manual-info-toggle")?.addEventListener("change"');
+    expect(mainSource).toContain('querySelector("#manual-patient-name")?.addEventListener("input"');
+    expect(mainSource).toContain('querySelector("#manual-patient-id")?.addEventListener("input"');
+    expect(mainSource).toContain('querySelector("#manual-patient-dob")?.addEventListener("input"');
+  });
+
+  it("ensures manual info CSS panel displays correctly with scoped design tokens", () => {
+    const panelCss = cssSource.match(/\.manual-info-panel\s*\{[^}]*\}/)?.[0] ?? "";
+    const inputCss = cssSource.match(/\.manual-info-panel input\s*\{[^}]*\}/)?.[0] ?? "";
+
+    // Panel styling & display
+    expect(panelCss).toContain("display: flex;");
+    expect(panelCss).toContain("var(--panel-bg)");
+    expect(panelCss).toContain("var(--field-border)");
+    expect(cssSource).not.toContain(".manual-info-panel.open");
+
+    // Input styling
+    expect(inputCss).toContain("var(--field-bg)");
+    expect(inputCss).toContain("var(--field-fg)");
+    expect(inputCss).toContain("var(--field-border)");
+
+    // No dead --color-* variables anywhere in the stylesheet
+    expect(cssSource).not.toContain("var(--color-");
   });
 });
