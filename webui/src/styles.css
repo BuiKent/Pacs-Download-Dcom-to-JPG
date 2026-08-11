@@ -520,42 +520,79 @@ button:disabled { opacity: .35; cursor: default; }
   display: none;
 }
 .series-card {
-  display: grid;
-  grid-template: auto auto / 30px minmax(0, 1fr);
-  align-content: center;
-  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   width: 100%;
   min-width: 0;
-  padding: 6px 7px;
+  padding: 6px 8px;
   color: #9eb0be;
   text-align: left;
   border: 1px solid #1e2b36;
   border-radius: 6px;
   background: #0e161f;
   cursor: pointer;
+  position: relative;
   transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.series-card[data-pane] {
+  padding-right: 22px;
 }
 .series-card:hover {
   border-color: #2c4456;
   background: #13202c;
   color: #d6e8f5;
 }
-.series-card > span {
-  grid-row: 1 / -1;
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  color: #6ebee9;
-  border-radius: 4px;
-  background: #172b38;
-  font-size: 10px;
-  font-weight: 700;
+.series-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
 }
-.series-card b, .series-card small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.series-card b { font-size: 10px; color: #d0e0ed; }
-.series-card small { color: #60798c; font-size: 9px; }
-.series-card.active { color: #eff9ff; border-color: #007fbd; background: #0e2838; }
+.series-card b {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #d0e0ed;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.series-card .badge-3d {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 4px;
+  color: #38bdf8;
+  border-radius: 3px;
+  background: #0c283d;
+  border: 1px solid #0369a1;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.1;
+  flex-shrink: 0;
+}
+.series-card small {
+  color: #60798c;
+  font-size: 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.series-card.active {
+  color: #eff9ff;
+  border-color: #007fbd;
+  background: #0e2838;
+}
+.series-card.active b {
+  color: #ffffff;
+}
+.series-card.active .badge-3d {
+  background: #0284c7;
+  color: #ffffff;
+  border-color: #38bdf8;
+}
 
 .safety-notice {
   display: flex;

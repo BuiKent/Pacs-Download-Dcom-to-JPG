@@ -537,8 +537,10 @@ function render() {
     return `<button class="series-card ${isVisible ? "active" : ""}"
             data-series-id="${item.id}" title="${escapeHtml(item.mprReason || item.description)}"
             ${isVisible ? `data-pane="${visiblePanes.join(",")}"` : ""}>
-            <span>${item.mprReady ? "3D" : "2D"}</span>
-            <b>${escapeHtml(item.description)}</b>
+            <div class="series-card-header">
+              <b>${escapeHtml(item.description)}</b>
+              ${item.mprReady ? `<span class="badge-3d">3D</span>` : ""}
+            </div>
             <small>${escapeHtml(seriesFrameLabel(item))}</small>
           </button>`;
   }).join("")}
