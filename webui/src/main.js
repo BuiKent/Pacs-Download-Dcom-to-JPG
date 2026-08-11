@@ -543,7 +543,7 @@ function render() {
               ${item.mprReady ? `<span class="badge-3d">3D</span>` : ""}
               <div class="series-thumb-overlay">
                 <b class="series-thumb-title">${escapeHtml(item.description)}</b>
-                <span class="series-thumb-count">${escapeHtml(seriesFrameLabel(item))}</span>
+                <span class="series-thumb-count">${item.sliceCount || 0}</span>
               </div>
             </div>
           </button>`;
