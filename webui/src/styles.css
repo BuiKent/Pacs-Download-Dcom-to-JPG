@@ -504,13 +504,13 @@ button:disabled { opacity: .35; cursor: default; }
 .series-strip {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  width: 175px;
-  min-width: 155px;
-  max-width: 210px;
+  gap: 5px;
+  width: 120px;
+  min-width: 105px;
+  max-width: 135px;
   min-height: 0;
   height: 100%;
-  padding: 6px;
+  padding: 5px;
   overflow-y: auto;
   overflow-x: hidden;
   background: #080d13;
@@ -522,14 +522,14 @@ button:disabled { opacity: .35; cursor: default; }
 .series-card {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   width: 100%;
   min-width: 0;
-  padding: 6px;
+  padding: 5px;
   color: #9eb0be;
   text-align: left;
   border: 1px solid #1e2b36;
-  border-radius: 6px;
+  border-radius: 5px;
   background: #0e161f;
   cursor: pointer;
   position: relative;
@@ -539,7 +539,7 @@ button:disabled { opacity: .35; cursor: default; }
   width: 100%;
   aspect-ratio: 1 / 1;
   background: #04070a;
-  border-radius: 4px;
+  border-radius: 3px;
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -551,6 +551,7 @@ button:disabled { opacity: .35; cursor: default; }
   height: 100%;
   object-fit: cover;
   display: block;
+  image-rendering: -webkit-optimize-contrast;
 }
 .series-card[data-pane] {
   padding-right: 6px;

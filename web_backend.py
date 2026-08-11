@@ -2054,9 +2054,9 @@ class LocalApiServer:
                     if record.source_type != "dicom":
                         with Image.open(image_path) as img:
                             img = img.convert("RGB")
-                            img.thumbnail((160, 160))
+                            img.thumbnail((240, 240), Image.Resampling.LANCZOS)
                             buf = io.BytesIO()
-                            img.save(buf, format="JPEG", quality=80)
+                            img.save(buf, format="JPEG", quality=92, subsampling=0)
                             thumb_bytes = buf.getvalue()
                     else:
                         frame = record.frame_indices[mid_idx] if record.frame_indices else 0
@@ -2075,24 +2075,28 @@ class LocalApiServer:
                             val = arr.astype("float32") * slope + intercept
                             wc = float(headers.get("X-DCom-Window-Center", "0.0"))
                             ww = float(headers.get("X-DCom-Window-Width", "0.0"))
+                            photometric = headers.get("X-DCom-Photometric", "MONOCHROME2")
+                            invert = photometric == "MONOCHROME1"
                             if ww > 0:
                                 low = wc - ww / 2.0
                                 high = wc + ww / 2.0
                             else:
-                                low, high = float(np.min(val)), float(np.max(val))
+                                low, high = np.percentile(val, (0.5, 99.5))
+                                if not math.isfinite(float(low)) or not math.isfinite(float(high)) or high <= low:
+                                    low, high = float(np.min(val)), float(np.max(val))
                                 if high <= low:
                                     high = low + 1.0
-                            scaled = np.clip((val - low) / (high - low) * 255.0, 0, 255).astype("uint8")
+                            scaled = _to_uint8(val, low, high, invert)
                             img = Image.fromarray(scaled, mode="L").convert("RGB")
 
-                        img.thumbnail((160, 160))
+                        img.thumbnail((240, 240), Image.Resampling.LANCZOS)
                         buf = io.BytesIO()
-                        img.save(buf, format="JPEG", quality=80)
+                        img.save(buf, format="JPEG", quality=92, subsampling=0)
                         thumb_bytes = buf.getvalue()
                 except Exception:
-                    img = Image.new("RGB", (160, 160), color=(10, 15, 20))
+                    img = Image.new("RGB", (200, 200), color=(10, 15, 20))
                     buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=50)
+                    img.save(buf, format="JPEG", quality=70)
                     thumb_bytes = buf.getvalue()
 
                 setattr(record, "_thumbnail_bytes", thumb_bytes)
