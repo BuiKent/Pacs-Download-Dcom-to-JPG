@@ -4,13 +4,17 @@
   background: #060a10;
   font-synthesis: none;
 
-  /* One source of truth for control metrics and colours. Every button, input
-     and select below sizes itself from these instead of carrying its own
-     numbers, so the panel keeps a single rhythm as it grows. */
+  /* Form & General Control Tokens */
   --control-height: 34px;
   --control-height-sm: 30px;
   --control-radius: 6px;
   --control-pad: 0 11px;
+
+  /* Viewing Toolbar & Icon Tokens */
+  --toolbar-height: 36px;
+  --toolbar-btn-size: 26px;
+  --toolbar-icon-size: 15px;
+  --toolbar-divider-height: 16px;
 
   --control-fg: #d6e9f6;
   --control-border: #304a60;
@@ -393,7 +397,7 @@ button:disabled { opacity: .35; cursor: default; }
   align-items: center;
   gap: 4px;
   min-width: 0;
-  min-height: 36px;
+  min-height: var(--toolbar-height);
   padding: 4px 6px;
   overflow: visible;
   background: #0c131b;
@@ -421,8 +425,8 @@ button:disabled { opacity: .35; cursor: default; }
   position: relative;
   display: grid;
   place-items: center;
-  min-width: 26px;
-  height: 26px;
+  min-width: var(--toolbar-btn-size);
+  height: var(--toolbar-btn-size);
   padding: 0 4px;
   color: #aabccc;
   border: 1px solid transparent;
@@ -432,13 +436,13 @@ button:disabled { opacity: .35; cursor: default; }
 .icon-button > span {
   display: grid;
   place-items: center;
-  min-width: 14px;
-  font-size: 14px;
+  min-width: calc(var(--toolbar-icon-size) - 1px);
+  font-size: var(--toolbar-icon-size);
   line-height: 1;
 }
 .icon-button > span svg {
-  width: 15px;
-  height: 15px;
+  width: var(--toolbar-icon-size);
+  height: var(--toolbar-icon-size);
   overflow: visible;
   fill: none;
   stroke: currentColor;
@@ -447,12 +451,12 @@ button:disabled { opacity: .35; cursor: default; }
   stroke-linejoin: round;
 }
 .icon-button[data-action="tool-zoom"] > span {
-  min-width: 16px;
+  min-width: calc(var(--toolbar-icon-size) + 1px);
   text-shadow: 0 0 8px #67cfff66;
 }
 .icon-button[data-action="tool-zoom"] > span svg {
-  width: 16px;
-  height: 16px;
+  width: calc(var(--toolbar-icon-size) + 1px);
+  height: calc(var(--toolbar-icon-size) + 1px);
   stroke-width: 2.8;
 }
 .icon-button[data-action="clear-annotations"] {
@@ -492,7 +496,7 @@ button:disabled { opacity: .35; cursor: default; }
 }
 .toolbar-divider {
   width: 1px;
-  height: 16px;
+  height: var(--toolbar-divider-height);
   margin: 0 3px;
   background: #2a3743;
   flex-shrink: 0;
