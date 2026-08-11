@@ -87,6 +87,10 @@ const state = {
   // The last folder a direct link filled. A retry has to merge into it instead
   // of creating a second folder for the same study.
   lastDirectUrl: "",
+  showManualInfo: false,
+  manualPatientName: "",
+  manualPatientId: "",
+  manualPatientDob: "",
 };
 let viewerQueue = Promise.resolve();
 let viewerRequestId = 0;
@@ -478,6 +482,16 @@ function render() {
           <button data-action="download-retry"
             title="${escapeHtml(t("Thử lại link vừa dán và gộp vào folder cũ, bỏ qua ảnh đã có"))}">${escapeHtml(t("Thử lại"))}</button>
         </div>
+        <div class="manual-info-toggle">
+          <label><input type="checkbox" id="manual-info-toggle" ${state.showManualInfo ? "checked" : ""}> ${escapeHtml(t("Bổ sung thông tin bệnh nhân"))}</label>
+        </div>
+        ${state.showManualInfo ? `
+        <div class="manual-info-panel">
+          <label>${escapeHtml(t("Tên bệnh nhân"))} <input id="manual-patient-name" type="text" value="${escapeHtml(state.manualPatientName)}" autocomplete="off"></label>
+          <label>${escapeHtml(t("Mã BN (ID)"))} <input id="manual-patient-id" type="text" value="${escapeHtml(state.manualPatientId)}" autocomplete="off"></label>
+          <label>${escapeHtml(t("Năm sinh / Ngày sinh"))} <input id="manual-patient-dob" type="text" value="${escapeHtml(state.manualPatientDob)}" autocomplete="off" placeholder="DD/MM/YYYY hoặc YYYY"></label>
+        </div>
+        ` : ""}
         <div class="download-options">
           <label title="${escapeHtml(t("Chất lượng JPG (70-100)"))}">JPG
             <input id="quality" type="number" min="70" max="100" value="100"></label>
@@ -729,6 +743,19 @@ function bindEvents() {
       state.rememberedSeriesSelections = {};
       renderSeriesPickerOnly();
     });
+  });
+  app.querySelector("#manual-info-toggle")?.addEventListener("change", (e) => {
+    state.showManualInfo = e.target.checked;
+    render();
+  });
+  app.querySelector("#manual-patient-name")?.addEventListener("input", (e) => {
+    state.manualPatientName = e.target.value;
+  });
+  app.querySelector("#manual-patient-id")?.addEventListener("input", (e) => {
+    state.manualPatientId = e.target.value;
+  });
+  app.querySelector("#manual-patient-dob")?.addEventListener("input", (e) => {
+    state.manualPatientDob = e.target.value;
   });
   bindSeriesPickerEvents();
   syncDownloadButton();
@@ -1224,12 +1251,20 @@ function humanError(error) {
 }
 
 function downloadOptions() {
-  return {
+  const options = {
     outputRoot: state.bootstrap.outputRoot,
     quality: Number(app.querySelector("#quality").value || 100),
     showBrowser: app.querySelector("#show-browser").checked,
     downloadAllFiles: state.downloadAllFiles,
   };
+  if (state.showManualInfo) {
+    options.manualInfo = {
+      patientName: state.manualPatientName,
+      patientId: state.manualPatientId,
+      patientDob: state.manualPatientDob,
+    };
+  }
+  return options;
 }
 
 function applyArchive(archive) {

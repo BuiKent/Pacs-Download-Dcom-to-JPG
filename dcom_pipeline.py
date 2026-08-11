@@ -1655,6 +1655,26 @@ def _normalise_dicom_date(value: Any) -> str:
     return parsed.strftime("%Y-%m-%d")
 
 
+def _normalise_manual_birth_date(dob: str) -> str:
+    dob = str(dob).strip()
+    if not dob:
+        return ""
+    if re.fullmatch(r"\d{8}", dob):
+        return _normalise_dicom_date(dob)
+    match = re.search(r"(\d{1,4})[/-](\d{1,2})[/-](\d{1,4})", dob)
+    if match:
+        p1, p2, p3 = match.groups()
+        if len(p1) == 4:
+            dicom_date = f"{p1}{int(p2):02d}{int(p3):02d}"
+        else:
+            dicom_date = f"{p3}{int(p2):02d}{int(p1):02d}"
+        return _normalise_dicom_date(dicom_date)
+    match = re.search(r"\b(\d{4})\b", dob)
+    if match:
+        return _normalise_dicom_date(f"{match.group(1)}0101")
+    return ""
+
+
 def _age_from_dates(birth_date: str, study_date: str) -> tuple[str, Optional[int]]:
     """Return a human label and completed years at the study date."""
     try:
@@ -2652,7 +2672,8 @@ def summarize_dicom(dicom_dir: Path, log: LogFn = _default_log) -> None:
 #  CLI
 # --------------------------------------------------------------------------- #
 
-def extract_patient_metadata_bytes(data: bytes) -> dict:
+
+def extract_patient_metadata_bytes(data: bytes, manual_info: Optional[dict] = None) -> dict:
     """Read naming demographics from one in-memory DICOM before writing it."""
     try:
         import pydicom
@@ -2677,6 +2698,17 @@ def extract_patient_metadata_bytes(data: bytes) -> dict:
         "" if _is_redacted_patient_value(raw_birth)
         else _normalise_dicom_date(raw_birth)
     )
+
+    if manual_info:
+        if _is_redacted_patient_value(raw_name):
+            raw_name = str(manual_info.get("patientName") or raw_name).strip()
+        if _is_redacted_patient_value(raw_id):
+            raw_id = str(manual_info.get("patientId") or raw_id).strip()
+        if not birth_date:
+            manual_dob = str(manual_info.get("patientDob") or "").strip()
+            if manual_dob:
+                birth_date = _normalise_manual_birth_date(manual_dob)
+
     age, age_years, age_source = _normalise_patient_age(
         raw_age, birth_date, study_date,
     )
@@ -2697,7 +2729,7 @@ def extract_patient_metadata_bytes(data: bytes) -> dict:
     }
 
 
-def extract_patient_metadata(dicom_dir: Path) -> dict:
+def extract_patient_metadata(dicom_dir: Path, manual_info: Optional[dict] = None) -> dict:
     """Read one patient's demographics and study context from local DICOM."""
     try:
         import pydicom
@@ -2773,6 +2805,17 @@ def extract_patient_metadata(dicom_dir: Path) -> dict:
 
     birth_date = _normalise_dicom_date(values["birth"])
     study_date = _normalise_dicom_date(values["study_date"])
+
+    if manual_info:
+        if _is_redacted_patient_value(values["name"]):
+            values["name"] = str(manual_info.get("patientName") or values["name"]).strip()
+        if _is_redacted_patient_value(values["pid"]):
+            values["pid"] = str(manual_info.get("patientId") or values["pid"]).strip()
+        if not birth_date:
+            manual_dob = str(manual_info.get("patientDob") or "").strip()
+            if manual_dob:
+                birth_date = _normalise_manual_birth_date(manual_dob)
+
     age, age_years, age_source = _normalise_patient_age(
         values["raw_age"], birth_date, study_date,
     )
@@ -3065,6 +3108,7 @@ def run_pipeline(
     jpg_folder_name_override: Optional[str] = None,
     after_dicom_download: Optional[Callable[[Path, dict], Path]] = None,
     after_first_dicom: Optional[Callable[[Path, dict], Path]] = None,
+    manual_info: Optional[dict] = None,
 ):
     out_base = Path(out_base)
     dicom_dir = out_base / "DICOM"
@@ -3079,7 +3123,7 @@ def run_pipeline(
 
     def resolve_first_dicom(data: bytes) -> Path:
         nonlocal out_base, dicom_dir, first_metadata
-        first_metadata = extract_patient_metadata_bytes(data)
+        first_metadata = extract_patient_metadata_bytes(data, manual_info=manual_info)
         if after_first_dicom is not None and first_metadata:
             out_base = Path(after_first_dicom(out_base, first_metadata))
         elif rename_patient_root and first_metadata:
@@ -3118,7 +3162,7 @@ def run_pipeline(
     summarize_dicom(dicom_dir, log=log)
 
     metadata = (
-        extract_patient_metadata(dicom_dir) or first_metadata
+        extract_patient_metadata(dicom_dir, manual_info=manual_info) or first_metadata
         if rename_patient_root or after_dicom_download is not None
         else {}
     )

@@ -1749,6 +1749,15 @@ class WebController:
         else:
             selected_series_ids = None
 
+        raw_manual_info = payload.get("manualInfo")
+        manual_info = None
+        if isinstance(raw_manual_info, dict):
+            manual_info = {
+                "patientName": str(raw_manual_info.get("patientName") or "").strip(),
+                "patientId": str(raw_manual_info.get("patientId") or "").strip(),
+                "patientDob": str(raw_manual_info.get("patientDob") or "").strip(),
+            }
+
         def target() -> dict:
             direct_root, resumed = self._direct_download_root(output_root, url, requested_resume)
             if requested_resume and not resumed:
@@ -1766,6 +1775,7 @@ class WebController:
                 should_stop=self.job.stop_event.is_set,
                 resume=resumed,
                 selected_series_ids=selected_series_ids,
+                manual_info=manual_info,
             )
             jpg_dir = Path(jpg_dir)
             if jpg_dir.parent.is_dir():
