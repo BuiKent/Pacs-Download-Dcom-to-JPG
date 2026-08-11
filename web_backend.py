@@ -2026,6 +2026,84 @@ class LocalApiServer:
                     return owner.controller.save_annotations(match.group(1), payload)
                 raise KeyError("API không tồn tại.")
 
+            def _serve_thumbnail(self, path: str) -> bool:
+                match = re.fullmatch(r"/api/series/([a-f0-9]{20})/thumbnail", path)
+                if not match:
+                    return False
+                record = owner.controller.catalog.get(match.group(1))
+                if not record.images:
+                    raise IndexError("Series không có ảnh.")
+                cached_bytes = getattr(record, "_thumbnail_bytes", None)
+                if cached_bytes is not None:
+                    self._send(
+                        HTTPStatus.OK,
+                        cached_bytes,
+                        "image/jpeg",
+                        {"Cache-Control": "public, max-age=86400"},
+                    )
+                    return True
+
+                import io
+                from PIL import Image
+                import numpy as np
+
+                mid_idx = len(record.images) // 2
+                image_path = record.images[mid_idx]
+
+                try:
+                    if record.source_type != "dicom":
+                        with Image.open(image_path) as img:
+                            img = img.convert("RGB")
+                            img.thumbnail((160, 160))
+                            buf = io.BytesIO()
+                            img.save(buf, format="JPEG", quality=80)
+                            thumb_bytes = buf.getvalue()
+                    else:
+                        frame = record.frame_indices[mid_idx] if record.frame_indices else 0
+                        body, headers = _dicom_pixel_payload(image_path, frame)
+                        rows = int(headers["X-DCom-Rows"])
+                        cols = int(headers["X-DCom-Columns"])
+                        samples = int(headers.get("X-DCom-Samples", "1"))
+                        if samples == 3:
+                            arr = np.frombuffer(body, dtype=np.uint8).reshape((rows, cols, 3))
+                            img = Image.fromarray(arr, mode="RGB")
+                        else:
+                            pixel_type = headers.get("X-DCom-Pixel-Type", "uint16")
+                            arr = np.frombuffer(body, dtype=np.dtype(pixel_type)).reshape((rows, cols))
+                            slope = float(headers.get("X-DCom-Slope", "1.0"))
+                            intercept = float(headers.get("X-DCom-Intercept", "0.0"))
+                            val = arr.astype("float32") * slope + intercept
+                            wc = float(headers.get("X-DCom-Window-Center", "0.0"))
+                            ww = float(headers.get("X-DCom-Window-Width", "0.0"))
+                            if ww > 0:
+                                low = wc - ww / 2.0
+                                high = wc + ww / 2.0
+                            else:
+                                low, high = float(np.min(val)), float(np.max(val))
+                                if high <= low:
+                                    high = low + 1.0
+                            scaled = np.clip((val - low) / (high - low) * 255.0, 0, 255).astype("uint8")
+                            img = Image.fromarray(scaled, mode="L").convert("RGB")
+
+                        img.thumbnail((160, 160))
+                        buf = io.BytesIO()
+                        img.save(buf, format="JPEG", quality=80)
+                        thumb_bytes = buf.getvalue()
+                except Exception:
+                    img = Image.new("RGB", (160, 160), color=(10, 15, 20))
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=50)
+                    thumb_bytes = buf.getvalue()
+
+                setattr(record, "_thumbnail_bytes", thumb_bytes)
+                self._send(
+                    HTTPStatus.OK,
+                    thumb_bytes,
+                    "image/jpeg",
+                    {"Cache-Control": "public, max-age=86400"},
+                )
+                return True
+
             def _serve_image(self, path: str) -> bool:
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/image/(\d+)", path)
                 if not match:
@@ -2074,7 +2152,7 @@ class LocalApiServer:
                         self._json(HTTPStatus.UNAUTHORIZED, {"error": "Không được phép."})
                         return
                     try:
-                        if self._serve_image(path):
+                        if self._serve_thumbnail(path) or self._serve_image(path):
                             return
                         self._json(HTTPStatus.OK, self._api_get(path))
                     except KeyError as exc:

@@ -704,6 +704,33 @@ class ServerSecurityTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(response.headers["Content-Type"], "image/jpeg")
 
+    def test_authorized_thumbnail_returns_jpeg(self):
+        series_id = self.controller.catalog.snapshot()["series"][0]["id"]
+        with self.request(
+            f"/api/series/{series_id}/thumbnail",
+            self.server.token,
+        ) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+            body = response.read()
+            self.assertTrue(len(body) > 0)
+
+    def test_direct_dicom_thumbnail_returns_jpeg(self):
+        root = Path(self.tmp.name) / "dicom"
+        root.mkdir()
+        write_local_dicom(root / "slice.dcm", instance_number=3)
+        self.controller.open_archive(str(root))
+        series_id = self.controller.catalog.snapshot()["series"][0]["id"]
+
+        with self.request(
+            f"/api/series/{series_id}/thumbnail",
+            self.server.token,
+        ) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+            body = response.read()
+            self.assertTrue(len(body) > 0)
+
     def test_direct_dicom_image_returns_original_16_bit_pixels(self):
         root = Path(self.tmp.name) / "dicom"
         root.mkdir()

@@ -522,10 +522,10 @@ button:disabled { opacity: .35; cursor: default; }
 .series-card {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   width: 100%;
   min-width: 0;
-  padding: 6px 8px;
+  padding: 6px;
   color: #9eb0be;
   text-align: left;
   border: 1px solid #1e2b36;
@@ -535,8 +535,25 @@ button:disabled { opacity: .35; cursor: default; }
   position: relative;
   transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
+.series-thumb-box {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: #04070a;
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #162430;
+}
+.series-card-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
 .series-card[data-pane] {
-  padding-right: 22px;
+  padding-right: 6px;
 }
 .series-card:hover {
   border-color: #2c4456;

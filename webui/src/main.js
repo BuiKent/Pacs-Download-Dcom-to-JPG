@@ -537,6 +537,9 @@ function render() {
     return `<button class="series-card ${isVisible ? "active" : ""}"
             data-series-id="${item.id}" title="${escapeHtml(item.mprReason || item.description)}"
             ${isVisible ? `data-pane="${visiblePanes.join(",")}"` : ""}>
+            <div class="series-thumb-box">
+              <img src="/api/series/${item.id}/thumbnail" class="series-card-thumb" alt="" loading="lazy" />
+            </div>
             <div class="series-card-header">
               <b>${escapeHtml(item.description)}</b>
               ${item.mprReady ? `<span class="badge-3d">3D</span>` : ""}

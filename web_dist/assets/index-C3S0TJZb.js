@@ -3479,6 +3479,9 @@ ${E}`.trim();let x="";if(typeof l.getCurrentImageIdIndex=="function"){const O=l.
           ${_.archive.series.map(r=>{const i=Ey(r.id),a=i.length>0;return`<button class="series-card ${a?"active":""}"
             data-series-id="${r.id}" title="${J(r.mprReason||r.description)}"
             ${a?`data-pane="${i.join(",")}"`:""}>
+            <div class="series-thumb-box">
+              <img src="/api/series/${r.id}/thumbnail" class="series-card-thumb" alt="" loading="lazy" />
+            </div>
             <div class="series-card-header">
               <b>${J(r.description)}</b>
               ${r.mprReady?'<span class="badge-3d">3D</span>':""}
