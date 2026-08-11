@@ -297,10 +297,7 @@ function renderToolbarGroups(series) {
       ]
     : [];
 
-  const output = [
-    ...(state.mode === "mpr" ? [] : [iconButton("cine", state.cine ? "Ⅱ" : icons.cine, t(state.cine ? "Dừng chạy phim" : "Chạy phim"), state.cine)]),
-    iconButton("capture", icons.capture, t("Lưu ảnh")),
-  ].join("");
+  const output = iconButton("capture", icons.capture, t("Lưu ảnh"));
 
   return [
     `<div class="tool-cluster nav-tools">${nav}</div>`,
@@ -532,8 +529,6 @@ function render() {
           </div>` : ""}
           <span class="toolbar-divider"></span>
           ${renderToolbarGroups(series)}
-          <span class="toolbar-divider"></span>
-          ${iconButton("shortcuts", "⌨", t("Xem danh sách phím tắt"))}
         </nav>
 
         <div class="series-strip">
@@ -1211,10 +1206,7 @@ async function action(name) {
         : "Con trỏ tham chiếu đã tắt."));
       return;
     }
-    if (name === "shortcuts") {
-      setStatus(t(SHORTCUT_HINT));
-      return;
-    }
+
     if (name === "reset") {
       state.windowPreset = defaultWindowPreset(selectedSeries());
       resetView();
@@ -1262,16 +1254,7 @@ async function action(name) {
       window.__viewerDiagnostics = viewerDiagnostics();
       if (!panes) throw new Error(t("Khung đang xem không đảo màu được."));
     }
-    if (name === "cine") {
-      state.cine = toggleCine(selectedSeries());
-      const button = app.querySelector("[data-action='cine']");
-      if (button) {
-        button.classList.toggle("active", state.cine);
-        // icons.cine is SVG markup, so it has to be parsed, not written as text.
-        button.querySelector("span").innerHTML = state.cine ? "Ⅱ" : icons.cine;
-        button.title = t(state.cine ? "Dừng chạy phim" : "Chạy phim");
-      }
-    }
+
     if (name === "capture") {
       const pane = await captureActiveViewport();
       setStatus(tf('Đã lưu ảnh PNG của khung "{}".', pane));
