@@ -929,6 +929,31 @@ class FrameOfReferenceSyntheticTests(unittest.TestCase):
             self.assertIn("2026-07-07", series["studyGroup"])
             self.assertIn("CT so nao", series["studyGroup"])
 
+    def test_start_local_dicom_import_places_jpg_side_by_side(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            study_folder = root / "2026-07-07 - CT - CT so nao"
+            dicom_folder = study_folder / "DICOM" / "Series_1"
+            dicom_folder.mkdir(parents=True, exist_ok=True)
+            dcm_path = dicom_folder / "image.dcm"
+            write_local_dicom(dcm_path)
+
+            controller = WebController()
+            # Pass the study folder containing DICOM subfolder
+            job_info = controller.start_local_dicom_import(str(study_folder))
+
+            # Wait briefly for thread to finish
+            for _ in range(50):
+                if controller.job.status in {"complete", "error"}:
+                    break
+                time.sleep(0.1)
+
+            self.assertEqual(controller.job.status, "complete")
+            # Verify JPG folder was created side-by-side with DICOM inside study_folder
+            expected_jpg_folder = study_folder / "JPG"
+            self.assertTrue(expected_jpg_folder.is_dir())
+            self.assertTrue(any(expected_jpg_folder.glob("**/mpr-volume.json")))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1591,36 +1591,101 @@ class WebController:
         output_root.mkdir(parents=True, exist_ok=True)
 
         def target() -> dict:
-            stamp = f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1_000_000:06d}"
-            source_token = hashlib.sha256(str(source).casefold().encode("utf-8")).hexdigest()[:8]
-            destination = output_root / f"LOCAL_DICOM_{stamp}_{source_token}" / "JPG"
             self.job.log(f"Đang quét folder DICOM local và chuyển sang JPG chất lượng {quality}…")
-            stats = dcom_pipeline.convert_all(
-                source,
-                destination,
-                log=self.job.log,
-                quality=quality,
-                save_png=False,
-                contrast_mode=dcom_pipeline.CLINICAL,
-                should_stop=self.job.stop_event.is_set,
-            )
-            if not self.job.stop_event.is_set() and stats.converted <= 0:
+
+            dicom_subdirs = [
+                d for d in source.glob("**/DICOM")
+                if d.is_dir() and d != source
+            ]
+
+            total_stats = dcom_pipeline.ConvertStats()
+            primary_destination: Optional[Path] = None
+
+            if source.name.casefold() == "dicom":
+                src_dicom = source
+                dst_jpg = source.parent / "JPG"
+                primary_destination = dst_jpg
+                stats = dcom_pipeline.convert_all(
+                    src_dicom,
+                    dst_jpg,
+                    log=self.job.log,
+                    quality=quality,
+                    save_png=False,
+                    contrast_mode=dcom_pipeline.CLINICAL,
+                    should_stop=self.job.stop_event.is_set,
+                )
+                total_stats.converted += stats.converted
+                total_stats.failed += stats.failed
+                total_stats.skipped += stats.skipped
+            elif (source / "DICOM").is_dir():
+                src_dicom = source / "DICOM"
+                dst_jpg = source / "JPG"
+                primary_destination = dst_jpg
+                stats = dcom_pipeline.convert_all(
+                    src_dicom,
+                    dst_jpg,
+                    log=self.job.log,
+                    quality=quality,
+                    save_png=False,
+                    contrast_mode=dcom_pipeline.CLINICAL,
+                    should_stop=self.job.stop_event.is_set,
+                )
+                total_stats.converted += stats.converted
+                total_stats.failed += stats.failed
+                total_stats.skipped += stats.skipped
+            elif dicom_subdirs:
+                primary_destination = source
+                for dcm_dir in sorted(dicom_subdirs):
+                    if self.job.stop_event.is_set():
+                        break
+                    dst_jpg = dcm_dir.parent / "JPG"
+                    stats = dcom_pipeline.convert_all(
+                        dcm_dir,
+                        dst_jpg,
+                        log=self.job.log,
+                        quality=quality,
+                        save_png=False,
+                        contrast_mode=dcom_pipeline.CLINICAL,
+                        should_stop=self.job.stop_event.is_set,
+                    )
+                    total_stats.converted += stats.converted
+                    total_stats.failed += stats.failed
+                    total_stats.skipped += stats.skipped
+            else:
+                dst_jpg = source / "JPG"
+                primary_destination = dst_jpg
+                stats = dcom_pipeline.convert_all(
+                    source,
+                    dst_jpg,
+                    log=self.job.log,
+                    quality=quality,
+                    save_png=False,
+                    contrast_mode=dcom_pipeline.CLINICAL,
+                    should_stop=self.job.stop_event.is_set,
+                )
+                total_stats.converted += stats.converted
+                total_stats.failed += stats.failed
+                total_stats.skipped += stats.skipped
+
+            if not self.job.stop_event.is_set() and total_stats.converted <= 0:
                 raise ValueError(
                     "Không tìm thấy ảnh DICOM có PixelData "
                     "(.dcm, .dicom, .ima hoặc file DICOM không đuôi)."
                 )
+
+            open_path = primary_destination if primary_destination else source
             archive = self.catalog.open(
-                destination,
+                open_path,
                 log=self.job.log,
                 should_stop=self.job.stop_event.is_set,
             )
-            self.history.add(destination)
+            self.history.add(open_path)
             return {
                 "archive": archive,
                 "source": str(source),
-                "output": str(destination),
-                "converted": stats.converted,
-                "failed": stats.failed,
+                "output": str(open_path),
+                "converted": total_stats.converted,
+                "failed": total_stats.failed,
             }
 
         self.job.start("local-import", target)
