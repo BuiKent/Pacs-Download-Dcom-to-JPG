@@ -78,7 +78,7 @@ const state = {
   seriesInventory: [],
   rememberedSeriesSelections: {},
   status: "Đang khởi động...",
-  sliceText: "",
+  isError: false,
   busyViewer: false,
   cine: false,
   mprPrimary: "axial",
@@ -559,7 +559,7 @@ function render() {
               <span>${escapeHtml(t("DICOM được đọc trực tiếp với pixel gốc; không tạo JPG trung gian. Geometry hợp lệ sẽ bật MPR/3D."))}</span>
               <div class="empty-actions"><button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder trong viewer"))}</button></div></div>`}
         </section>
-        <footer class="status-bar">
+        <footer class="status-bar ${state.isError ? "error" : ""}">
           <span class="status-dot ${state.busyViewer ? "busy" : ""}"></span>
           <span class="status-text">${escapeHtml(state.status || "")}</span>
           <span class="status-root" title="${escapeHtml(state.archive.root || "")}">${escapeHtml(state.archive.root || "")}</span>
@@ -1257,9 +1257,7 @@ async function action(name) {
       if (!panes) throw new Error(t("Khung đang xem không đảo màu được."));
     }
     if (name === "cine") {
-      state.cine = toggleCine(selectedSeries(), (index) => {
-        state.sliceText = `${index + 1}/${selectedSeries().sliceCount}`;
-      });
+      state.cine = toggleCine(selectedSeries());
       const button = app.querySelector("[data-action='cine']");
       if (button) {
         button.classList.toggle("active", state.cine);
@@ -1467,9 +1465,10 @@ function renderViewer() {
 
 function setStatus(message, isError = false) {
   state.status = message;
+  state.isError = Boolean(isError);
   const bar = app.querySelector(".status-bar");
   if (bar) {
-    bar.classList.toggle("error", isError);
+    bar.classList.toggle("error", state.isError);
     const textEl = bar.querySelector(".status-text");
     if (textEl) {
       textEl.textContent = message;
@@ -1794,10 +1793,6 @@ async function boot() {
       if (workspace && progress) {
         workspace.dataset.loadingText = `${message} (${progress.loaded}/${progress.total})`;
       }
-    },
-    onSlice: ({ label, index, count }) => {
-      state.sliceText = `${label ? `${label} · ` : ""}${index + 1}/${count}`;
-      updateStatusOnly();
     },
   });
   app.addEventListener("mprprimarychange", (event) => {
