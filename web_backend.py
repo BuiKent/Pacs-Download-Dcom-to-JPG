@@ -1101,10 +1101,30 @@ class ArchiveCatalog:
             common = Path(os.path.commonpath([str(item.path.parent) for item in headers_ordered]))
             modality = "MR" if first.modality == "MRI" else first.modality
 
+            study_date = first.study_date
+            study_desc = first.study_desc
+
+            # Fallback: If StudyDate or StudyDescription is missing from DICOM header,
+            # try to recover date/desc from enclosing study folder path.
+            if not study_date or not study_desc:
+                folder_ptr = common
+                while folder_ptr and folder_ptr != root and folder_ptr != folder_ptr.parent:
+                    match = re.match(r'^(\d{4}-\d{2}-\d{2})\s*-\s*([^-]+)\s*-\s*(.+)$', folder_ptr.name)
+                    if match:
+                        if not study_date:
+                            study_date = match.group(1)
+                        if not study_desc:
+                            study_desc = match.group(3)
+                        break
+                    match_date = re.match(r'^(\d{4}-\d{2}-\d{2}|\d{8})', folder_ptr.name)
+                    if match_date and not study_date:
+                        study_date = match_date.group(1)
+                    folder_ptr = folder_ptr.parent
+
             parts = []
-            if first.study_date: parts.append(first.study_date)
+            if study_date: parts.append(study_date)
             parts.append(modality if modality in {"CT", "MR"} else first.modality)
-            if first.study_desc: parts.append(first.study_desc)
+            if study_desc: parts.append(study_desc)
             study_group = " - ".join(parts) if parts else "Không rõ ca chụp"
 
             records[digest] = SeriesRecord(
@@ -1121,7 +1141,7 @@ class ArchiveCatalog:
                 modality=modality if modality in {"CT", "MR"} else "UNKNOWN",
                 source_type="dicom",
                 study_group=study_group,
-                study_date=first.study_date,
+                study_date=study_date,
                 pixel_data={
                     "rows": first.rows,
                     "columns": first.columns,

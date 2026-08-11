@@ -906,6 +906,29 @@ class FrameOfReferenceSyntheticTests(unittest.TestCase):
             self.assertIn(study_uid, unique_fors)
             self.assertIn(other_study_uid, unique_fors)
 
+    def test_dicom_missing_study_date_falls_back_to_folder_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            study_folder = root / "2026-07-07 - CT - CT so nao" / "DICOM" / "Series_KEY_IMAGE"
+            study_folder.mkdir(parents=True, exist_ok=True)
+            dcm_path = study_folder / "key_image.dcm"
+            write_local_dicom(dcm_path)
+
+            # Clear StudyDate and StudyDescription from DICOM header
+            ds = pydicom.dcmread(str(dcm_path))
+            if "StudyDate" in ds:
+                del ds.StudyDate
+            if "StudyDescription" in ds:
+                del ds.StudyDescription
+            ds.save_as(str(dcm_path))
+
+            snapshot = ArchiveCatalog().open(root)
+            self.assertEqual(len(snapshot["series"]), 1)
+            series = snapshot["series"][0]
+            self.assertEqual(series["studyDate"], "2026-07-07")
+            self.assertIn("2026-07-07", series["studyGroup"])
+            self.assertIn("CT so nao", series["studyGroup"])
+
 
 if __name__ == "__main__":
     unittest.main()
