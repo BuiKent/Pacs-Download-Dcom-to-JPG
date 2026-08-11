@@ -326,38 +326,188 @@ function renderHistoryOptions() {
   return `<option value="" disabled selected hidden>${icons.history} ${escapeHtml(t("Lịch sử"))}…</option>${options}`;
 }
 
-function formatGroupLabel(groupKey) {
-  if (!groupKey || groupKey === "Không rõ ca chụp") return t("📁 Ca chụp chưa phân loại");
-  const parts = groupKey.split(" - ");
-  if (parts.length >= 2) {
-    const dateStr = parts[0];
-    const modality = parts[1];
-    const desc = parts.slice(2).join(" - ");
-    let dateFmt = dateStr;
-    const dp = dateStr.split("-");
-    if (dp.length === 3) dateFmt = `${dp[2]}/${dp[1]}`;
-    const extra = [modality, desc].filter(Boolean).join(" ");
-    return getLanguage() === "en"
-      ? `📁 ${dateFmt} (${extra})`
-      : `📁 Ngày ${dateFmt} (${extra})`;
+export function toRoman(num) {
+  const lookup = [
+    [1000, "M"], [900, "CM"], [500, "D"], [400, "CD"],
+    [100, "C"], [90, "XC"], [50, "L"], [40, "XL"],
+    [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]
+  ];
+  let n = Math.max(1, Math.floor(num));
+  let roman = "";
+  for (const [val, char] of lookup) {
+    while (n >= val) {
+      roman += char;
+      n -= val;
+    }
   }
-  return `📁 ${groupKey}`;
+  return roman || "I";
 }
 
-function renderSeriesOptions(archive, selectedId) {
-  const groups = {};
-  for (const item of archive.series) {
-    const groupKey = item.studyGroup || "Khác";
-    if (!groups[groupKey]) groups[groupKey] = [];
-    groups[groupKey].push(item);
+export function toAlpha(index) {
+  let result = "";
+  let i = index;
+  while (i >= 0) {
+    result = String.fromCharCode(97 + (i % 26)) + result;
+    i = Math.floor(i / 26) - 1;
   }
-  return Object.entries(groups).map(([groupKey, items]) => {
-    const options = items.map((item) =>
+  return result;
+}
+
+export function formatDisplayDate(dateStr) {
+  if (!dateStr) return t("Chưa rõ ngày");
+  const clean = String(dateStr).replace(/\D/g, "");
+  if (clean.length === 8) {
+    const yyyy = clean.slice(0, 4);
+    const mm = clean.slice(4, 6);
+    const dd = clean.slice(6, 8);
+    return `${dd}/${mm}/${yyyy}`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    const [yyyy, mm, dd] = dateStr.split("-");
+    return `${dd}/${mm}/${yyyy}`;
+  }
+  return dateStr;
+}
+
+export function groupSeriesHierarchically(seriesList) {
+  if (!Array.isArray(seriesList) || !seriesList.length) return [];
+
+  const dateMap = new Map();
+
+  for (const item of seriesList) {
+    let dateKey = "";
+    let rawDate = item.studyDate || "";
+    if (!rawDate && item.studyGroup) {
+      const parts = item.studyGroup.split(" - ");
+      if (/^\d{4}-\d{2}-\d{2}/.test(parts[0])) {
+        rawDate = parts[0];
+      } else if (/^\d{8}/.test(parts[0])) {
+        rawDate = parts[0];
+      }
+    }
+    const cleanDigits = String(rawDate || "").replace(/\D/g, "");
+    if (cleanDigits.length >= 8) {
+      dateKey = `${cleanDigits.slice(0, 4)}-${cleanDigits.slice(4, 6)}-${cleanDigits.slice(6, 8)}`;
+    } else if (/^\d{4}-\d{2}-\d{2}/.test(rawDate)) {
+      dateKey = rawDate.slice(0, 10);
+    } else {
+      dateKey = "0000-00-00";
+    }
+
+    if (!dateMap.has(dateKey)) {
+      dateMap.set(dateKey, new Map());
+    }
+    const studyMap = dateMap.get(dateKey);
+
+    let studyTitle = item.studyGroup || "";
+    if (studyTitle) {
+      const parts = studyTitle.split(" - ");
+      if (parts.length >= 2 && (/^\d{4}-\d{2}-\d{2}/.test(parts[0]) || /^\d{8}/.test(parts[0]))) {
+        studyTitle = parts.slice(1).join(" - ");
+      }
+    }
+    if (!studyTitle || studyTitle === "Không rõ ca chụp") {
+      const mod = item.modality && item.modality !== "UNKNOWN" ? item.modality : "";
+      const desc = item.studyDescription || "";
+      studyTitle = [mod, desc].filter(Boolean).join(" · ") || t("Ca chụp chưa phân loại");
+    }
+
+    if (!studyMap.has(studyTitle)) {
+      studyMap.set(studyTitle, []);
+    }
+    studyMap.get(studyTitle).push(item);
+  }
+
+  const sortedDates = Array.from(dateMap.keys()).sort((a, b) => {
+    if (a === "0000-00-00") return 1;
+    if (b === "0000-00-00") return -1;
+    return b.localeCompare(a);
+  });
+
+  const result = [];
+  sortedDates.forEach((dateKey, dateIdx) => {
+    const romanNumeral = toRoman(dateIdx + 1);
+    const displayDate = dateKey === "0000-00-00" ? t("Chưa rõ ngày chụp") : formatDisplayDate(dateKey);
+    const studyMap = dateMap.get(dateKey);
+
+    let studyIdx = 1;
+    for (const [studyTitle, items] of studyMap.entries()) {
+      const seriesItems = items.map((item, itemIdx) => ({
+        ...item,
+        letterIndex: toAlpha(itemIdx),
+        displayLabel: `${toAlpha(itemIdx)}. ${item.description || item.name || t("Series")}`,
+      }));
+
+      result.push({
+        dateKey,
+        dateIdx: dateIdx + 1,
+        romanNumeral,
+        displayDate,
+        studyIdx,
+        studyTitle,
+        items: seriesItems,
+      });
+      studyIdx++;
+    }
+  });
+
+  return result;
+}
+
+export function renderSeriesOptions(archive, selectedId) {
+  const groups = groupSeriesHierarchically(archive.series);
+  if (!groups.length) return "";
+  return groups.map((group) => {
+    const optgroupLabel = getLanguage() === "en"
+      ? `📁 ${group.displayDate} (${group.studyTitle})`
+      : `📁 Ngày ${group.displayDate} (${group.studyTitle})`;
+
+    const options = group.items.map((item) =>
       `<option value="${item.id}" ${item.id === selectedId ? "selected" : ""}>
-        ▪ ${escapeHtml(item.description)} · ${escapeHtml(seriesFrameLabel(item))}
+        &nbsp;&nbsp;${escapeHtml(item.displayLabel)} · ${escapeHtml(seriesFrameLabel(item))}
       </option>`
     ).join("");
-    return `<optgroup label="${escapeHtml(formatGroupLabel(groupKey))}">${options}</optgroup>`;
+
+    return `<optgroup label="${escapeHtml(optgroupLabel)}">${options}</optgroup>`;
+  }).join("");
+}
+
+export function renderSeriesStripContent(seriesList) {
+  const groups = groupSeriesHierarchically(seriesList);
+  if (!groups.length) return "";
+
+  const multiGroup = groups.length > 1;
+
+  return groups.map((group) => {
+    const dateLabel = getLanguage() === "en"
+      ? `${group.displayDate}`
+      : `Ngày ${group.displayDate}`;
+
+    const groupHeader = multiGroup
+      ? `<div class="series-group-badge" title="${escapeHtml(`${dateLabel} - ${group.studyTitle}`)}">
+          <span class="badge-date">📁 ${escapeHtml(dateLabel)}</span>
+          <span class="badge-study">${escapeHtml(group.studyTitle)}</span>
+         </div>`
+      : "";
+
+    const cards = group.items.map((item) => {
+      const visiblePanes = seriesVisiblePanes(item.id);
+      const isVisible = visiblePanes.length > 0;
+      return `<button class="series-card ${isVisible ? "active" : ""}"
+              data-series-id="${item.id}" title="${escapeHtml(`${item.letterIndex}. ${item.description}`)}"
+              ${isVisible ? `data-pane="${visiblePanes.join(",")}"` : ""}>
+              <div class="series-thumb-box">
+                <img class="series-card-thumb" data-thumb-id="${item.id}" alt="" />
+                ${item.mprReady ? `<span class="badge-3d">3D</span>` : ""}
+                <div class="series-thumb-overlay">
+                  <b class="series-thumb-title">${escapeHtml(`${item.letterIndex}. ${item.description}`)}</b>
+                  <span class="series-thumb-count">${item.sliceCount || 0}</span>
+                </div>
+              </div>
+            </button>`;
+    }).join("");
+
+    return groupHeader + cards;
   }).join("");
 }
 
@@ -532,22 +682,7 @@ function render() {
         </nav>
 
         <div class="series-strip">
-          ${state.archive.series.map((item) => {
-    const visiblePanes = seriesVisiblePanes(item.id);
-    const isVisible = visiblePanes.length > 0;
-    return `<button class="series-card ${isVisible ? "active" : ""}"
-            data-series-id="${item.id}" title="${escapeHtml(item.description)}"
-            ${isVisible ? `data-pane="${visiblePanes.join(",")}"` : ""}>
-            <div class="series-thumb-box">
-              <img class="series-card-thumb" data-thumb-id="${item.id}" alt="" />
-              ${item.mprReady ? `<span class="badge-3d">3D</span>` : ""}
-              <div class="series-thumb-overlay">
-                <b class="series-thumb-title">${escapeHtml(item.description)}</b>
-                <span class="series-thumb-count">${item.sliceCount || 0}</span>
-              </div>
-            </div>
-          </button>`;
-  }).join("")}
+          ${renderSeriesStripContent(state.archive.series)}
         </div>
 
         <div class="safety-notice ${safety?.level || ""}" ${safety ? "" : "hidden"}>
@@ -1756,6 +1891,7 @@ function applyTextPromptLanguage() {
 }
 
 async function boot() {
+  if (!app) return;
   if (!hasSessionToken) throw new Error(t("Thiếu token phiên local."));
   state.bootstrap = await api("/api/bootstrap");
   setLanguage(state.bootstrap.language || "en");

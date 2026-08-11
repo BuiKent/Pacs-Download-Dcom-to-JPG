@@ -851,6 +851,7 @@ class SeriesRecord:
             "sourceType": self.source_type,
             "studyGroup": self.study_group,
             "studyDate": self.study_date or (self.manifest or {}).get("study_date") or (self.manifest or {}).get("studyDate", ""),
+            "studyDescription": (self.manifest or {}).get("study_description") or (self.manifest or {}).get("studyDescription", ""),
         }
         if self.pixel_data:
             data["pixelData"] = self.pixel_data
@@ -1246,6 +1247,10 @@ class ArchiveCatalog:
                 parts = folder.name.rsplit(" - ", 1)
                 if len(parts) == 2 and re.match(r'^[a-f0-9]+$', parts[1]):
                     study_group = parts[0]
+                else:
+                    study_group = folder.name
+            elif folder.name:
+                study_group = folder.name
             if not study_group:
                 study_group = "Không rõ ca chụp"
 
