@@ -1748,6 +1748,8 @@ class WebController:
                 log=self.job.log,
                 headless=not bool(payload.get("showBrowser")),
                 should_stop=self.job.stop_event.is_set,
+                custom_username=payload.get("customUsername") or payload.get("username"),
+                custom_password=payload.get("customPassword") or payload.get("password"),
             )
             names = {
                 dcom_pipeline._identity_token(item.get("patient_name")): item.get("patient_name")
@@ -1802,6 +1804,8 @@ class WebController:
                     viewer_url = dcom_pipeline._viewer_url_for_study(
                         study, hospital or str(study.get("hospital_key") or ""),
                         self.job.log, not show_browser,
+                        custom_username=payload.get("customUsername") or payload.get("username"),
+                        custom_password=payload.get("customPassword") or payload.get("password"),
                     )
                     inventory = dcom_pipeline.discover_viewer_series(
                         viewer_url,
@@ -1889,6 +1893,8 @@ class WebController:
                 hospital_key=hospital,
                 hospital_name=hospital_name,
                 selected_series_by_study=normalised_selections,
+                custom_username=payload.get("customUsername") or payload.get("username"),
+                custom_password=payload.get("customPassword") or payload.get("password"),
             )
             patient_folder, _manifest = dcom_pipeline.find_patient_archive(
                 output_root, patient_id, hospital,

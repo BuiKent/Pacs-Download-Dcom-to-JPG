@@ -91,6 +91,8 @@ const state = {
   manualPatientName: "",
   manualPatientId: "",
   manualPatientDob: "",
+  showLoginCard: false,
+  loginCardAction: null,
 };
 let viewerQueue = Promise.resolve();
 let viewerRequestId = 0;
@@ -643,10 +645,33 @@ function render() {
           <span class="status-root" title="${escapeHtml(state.archive.root || "")}">${escapeHtml(state.archive.root || "")}</span>
         </footer>
       </main>
+      ${renderLoginCard()}
     </div>
   `;
   bindEvents();
   hydrateSeriesThumbs();
+}
+
+function renderLoginCard() {
+  if (!state.showLoginCard) return "";
+  return `
+    <div class="modal-overlay">
+      <div class="login-card">
+        <h3>${escapeHtml(t("Đăng nhập RIS thất bại"))}</h3>
+        <p>${escapeHtml(t("Vui lòng nhập tài khoản RIS dự phòng:"))}</p>
+        <label class="field">${escapeHtml(t("Tài khoản"))}
+          <input id="custom-ris-user" type="text" autocomplete="off" autofocus>
+        </label>
+        <label class="field">${escapeHtml(t("Mật khẩu"))}
+          <input id="custom-ris-pass" type="password">
+        </label>
+        <div class="login-card-actions">
+          <button data-action="cancel-login">${escapeHtml(t("Huỷ"))}</button>
+          <button class="primary" data-action="retry-login">${escapeHtml(t("Đăng nhập & Thử lại"))}</button>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 // The thumbnail endpoint sits behind the same bearer token as every other
@@ -999,6 +1024,34 @@ async function refreshHistory() {
 
 async function action(name) {
   try {
+    if (name === "cancel-login") {
+      state.showLoginCard = false;
+      state.loginCardAction = null;
+      render();
+      return;
+    }
+    if (name === "retry-login") {
+      const user = app.querySelector("#custom-ris-user")?.value.trim();
+      const pass = app.querySelector("#custom-ris-pass")?.value;
+      if (!user) throw new Error("Chưa nhập tài khoản dự phòng.");
+      
+      const retryAction = state.loginCardAction;
+      state.showLoginCard = false;
+      state.loginCardAction = null;
+      render();
+      
+      // Inject the credentials into the global context for the next action
+      // Or we can just modify the specific fetch calls to pull from these fields if they exist?
+      // Since action() will just call api('/api/search', { body: JSON.stringify({...}) }),
+      // we can inject credentials by temporarily storing them in state, and have downloadOptions() or the fetch payloads read them.
+      // Wait, in my previous plan, I said I'll pass them in payload.
+      // Let me just store them in state and read them in the corresponding handlers.
+      state.customRisUser = user;
+      state.customRisPass = pass;
+      
+      return action(retryAction);
+    }
+    
     if (name === "toggle-download") {
       state.downloadOpen = !state.downloadOpen;
       app.querySelector(".app-shell")?.classList.toggle("download-collapsed", !state.downloadOpen);
@@ -1105,7 +1158,12 @@ async function action(name) {
       state.rememberedSeriesSelections = {};
       renderStudyList();
       renderSeriesPickerOnly();
-      await api("/api/search", { method: "POST", body: JSON.stringify({ patientId, hospital }) });
+      await api("/api/search", { method: "POST", body: JSON.stringify({ 
+        patientId, 
+        hospital,
+        customUsername: state.customRisUser,
+        customPassword: state.customRisPass,
+      }) });
       startJobPolling();
       return;
     }
@@ -1145,6 +1203,8 @@ async function action(name) {
           hospital: state.patient?.hospitalKey
             || app.querySelector("input[name='hospital']:checked")?.value,
           showBrowser: app.querySelector("#show-browser").checked,
+          customUsername: state.customRisUser,
+          customPassword: state.customRisPass,
         }),
       });
       setStatus(t("Đang quét danh sách series; chưa tải file ảnh…"));
@@ -1350,6 +1410,13 @@ async function action(name) {
       await window.pywebview.api.restart_classic();
     }
   } catch (error) {
+    const errorMsg = String(error?.message || error);
+    if (errorMsg.includes("Không đăng nhập được RIS") || errorMsg.includes("Không thể đăng nhập vào RIS")) {
+      state.showLoginCard = true;
+      state.loginCardAction = name;
+      render();
+      return;
+    }
     setStatus(humanError(error), true);
   }
 }
@@ -1390,6 +1457,8 @@ function downloadOptions() {
     quality: Number(app.querySelector("#quality").value || 100),
     showBrowser: app.querySelector("#show-browser").checked,
     downloadAllFiles: state.downloadAllFiles,
+    customUsername: state.customRisUser,
+    customPassword: state.customRisPass,
   };
   if (state.showManualInfo) {
     options.manualInfo = {
@@ -1693,6 +1762,18 @@ async function pollJob() {
   if (["complete", "error", "stopped"].includes(job.status)) {
     window.clearInterval(jobPoll);
     jobPoll = null;
+    
+    // Intercept RIS login errors from background jobs
+    if (job.status === "error" && 
+        (String(job.message).includes("Không đăng nhập được RIS") || 
+         String(job.message).includes("Không thể đăng nhập vào RIS"))) {
+      state.showLoginCard = true;
+      state.loginCardAction = job.kind === "search" ? "search" : 
+                              job.kind === "series-discovery" ? "discover-series" : "download-selected";
+      render();
+      return;
+    }
+    
     // Any finished job may have added a folder worth remembering.
     refreshHistory();
   }

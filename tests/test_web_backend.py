@@ -1099,5 +1099,29 @@ class StudyFromFolderPathTests(unittest.TestCase):
         self.assertEqual(_study_from_folder_path(Path("/archive/phim/Series_1")), ("", "", ""))
 
 
+class CustomCredentialsTests(unittest.TestCase):
+    """Test custom credentials passing in WebController."""
+
+    def test_start_search_extracts_custom_credentials(self) -> None:
+        from unittest.mock import MagicMock, patch
+        controller = WebController()
+        controller.output_root = Path(tempfile.mkdtemp())
+        with patch("dcom_pipeline.search_patient_studies") as mock_search:
+            mock_search.return_value = {"patient": None, "studies": []}
+            controller.start_search({
+                "patientId": "12345",
+                "hospital": "dhy",
+                "customUsername": "testuser",
+                "customPassword": "testpass",
+            })
+            # Give background job time to invoke target
+            time.sleep(0.2)
+            mock_search.assert_called_once()
+            _, kwargs = mock_search.call_args
+            self.assertEqual(kwargs.get("custom_username"), "testuser")
+            self.assertEqual(kwargs.get("custom_password"), "testpass")
+
+
 if __name__ == "__main__":
     unittest.main()
+

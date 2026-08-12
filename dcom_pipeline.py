@@ -3403,8 +3403,8 @@ HOSPITALS = {
     "dhy": {
         "name": "BV Đại học Y Hà Nội",
         "base_urls": ["http://192.168.50.105", "https://dhy.cdhaviet.vn"],
-        "username_enc": "NSQ7JDM/Lg==",
-        "password_enc": "Ez8uF2ZlZGNi",
+        "username_enc": "NSQ1Ij4kODk=",
+        "password_enc": "Ez8uF2ZlZGI=",
         "is_default": True,
     },
     "vduh": {
@@ -3667,6 +3667,8 @@ def resolve_study_viewer_url(
     study_uid: str,
     log: LogFn = _default_log,
     headless: bool = True,
+    custom_username: Optional[str] = None,
+    custom_password: Optional[str] = None,
 ) -> str:
     """Xin link viewer MỚI cho một study, ngay trước lúc tải nó.
 
@@ -3687,8 +3689,14 @@ def resolve_study_viewer_url(
     base_url = _pick_hospital_base_url(info, log)
     login_url = _ris_login_url(base_url)
     wrapper_url = f"{base_url}/ris/vrViewer?studyUID={uid}&viewType=VIEWERV2"
-    username = _dec_cred(info["username_enc"]) if "username_enc" in info else info.get("username", "")
-    password = _dec_cred(info["password_enc"]) if "password_enc" in info else info.get("password", "")
+    if custom_username and custom_password:
+        username = custom_username
+        password = custom_password
+        # Force clear session cache when using custom credentials to ensure clean login
+        clear_ris_session_cache(hospital_key)
+    else:
+        username = _dec_cred(info["username_enc"]) if "username_enc" in info else info.get("username", "")
+        password = _dec_cred(info["password_enc"]) if "password_enc" in info else info.get("password", "")
     reading_url = f"{base_url}/ris/study/reading"
 
     with sync_playwright() as p:
@@ -3824,6 +3832,8 @@ def search_patient_studies(
     log: LogFn = _default_log,
     headless: bool = True,
     should_stop: Optional[Callable[[], bool]] = None,
+    custom_username: Optional[str] = None,
+    custom_password: Optional[str] = None,
 ) -> list[dict]:
     """
     Đăng nhập cổng RIS bệnh viện (Việt Đức / ĐH Y), tìm kiếm theo Mã Bệnh Nhân,
@@ -3838,8 +3848,14 @@ def search_patient_studies(
 
     base_url = _pick_hospital_base_url(info, log)
     login_url = _ris_login_url(base_url)
-    username = _dec_cred(info["username_enc"]) if "username_enc" in info else info.get("username", "")
-    password = _dec_cred(info["password_enc"]) if "password_enc" in info else info.get("password", "")
+    if custom_username and custom_password:
+        username = custom_username
+        password = custom_password
+        # Force clear session cache when using custom credentials to ensure clean login
+        clear_ris_session_cache(hospital_key)
+    else:
+        username = _dec_cred(info["username_enc"]) if "username_enc" in info else info.get("username", "")
+        password = _dec_cred(info["password_enc"]) if "password_enc" in info else info.get("password", "")
 
     reading_url = f"{base_url}/ris/study/reading"
     cached_state = _get_ris_session_state(hospital_key, base_url)
@@ -4005,7 +4021,7 @@ def search_patient_studies(
     return studies_found
 
 
-def _viewer_url_for_study(study: dict, hospital_key: str, log: LogFn, headless: bool) -> str:
+def _viewer_url_for_study(study: dict, hospital_key: str, log: LogFn, headless: bool, custom_username: Optional[str] = None, custom_password: Optional[str] = None) -> str:
     """Link tải cho MỘT ca: ưu tiên xin mới từ RIS, và chặn link không dùng được.
 
     Thà ném lỗi để ca đó hiện rõ là hỏng, còn hơn đưa cho trình tải một link
@@ -4018,7 +4034,10 @@ def _viewer_url_for_study(study: dict, hospital_key: str, log: LogFn, headless: 
             "      Bước 1/2: Tạo vé viewer tạm thời cho StudyUID đã chọn "
             "(không tìm lại mã bệnh nhân)..."
         )
-        return resolve_study_viewer_url(hosp, uid, log=log, headless=headless)
+        return resolve_study_viewer_url(
+            hosp, uid, log=log, headless=headless,
+            custom_username=custom_username, custom_password=custom_password
+        )
 
     stored = str(study.get("direct_url") or "").strip()
     if not stored:
@@ -4047,6 +4066,8 @@ def download_studies_list(
     hospital_key: str = "",
     hospital_name: str = "",
     selected_series_by_study: Optional[dict[str, list[str]]] = None,
+    custom_username: Optional[str] = None,
+    custom_password: Optional[str] = None,
 ) -> int:
     """
     Tải danh sách ca phim đã chọn.
@@ -4193,7 +4214,11 @@ def download_studies_list(
         log(f"[{idx}/{len(studies)}] BẮT ĐẦU TẢI CA {idx}: StudyUID={st['study_uid']}")
 
         try:
-            viewer_url = _viewer_url_for_study(st, hospital_key, log, headless)
+            viewer_url = _viewer_url_for_study(
+                st, hospital_key, log, headless,
+                custom_username=custom_username,
+                custom_password=custom_password,
+            )
         except Exception as e:
             log(f"❌ BỎ QUA CA {idx} — không lấy được link viewer: {e}")
             mark(st, st_out_dir, complete=False, image_count=0)

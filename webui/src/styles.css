@@ -963,3 +963,67 @@ button:disabled { opacity: .35; cursor: default; }
   background: var(--field-bg);
   color: var(--field-fg);
 }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(2px);
+}
+
+.login-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(340px, 90vw);
+  padding: 20px;
+  background: #0f1620;
+  border: 1px solid #1c2a38;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+.login-card h3 {
+  margin: 0;
+  color: #ffb1b1;
+  font-size: 16px;
+}
+
+.login-card p {
+  margin: 0 0 4px 0;
+  font-size: 13px;
+  color: #aebfd0;
+}
+
+.login-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.login-card-actions button {
+  height: var(--control-height);
+  padding: 0 16px;
+  border-radius: var(--control-radius);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--control-fg);
+}
+
+.login-card-actions button:hover {
+  background: var(--control-bg-hover);
+}
+
+.login-card-actions button.primary {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
+.login-card-actions button.primary:hover {
+  background: #008be0;
+}
+
