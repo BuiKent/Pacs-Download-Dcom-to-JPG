@@ -328,33 +328,6 @@ function renderHistoryOptions() {
   return `<option value="" disabled selected hidden>${icons.history} ${escapeHtml(t("Lịch sử"))}…</option>${options}`;
 }
 
-export function toRoman(num) {
-  const lookup = [
-    [1000, "M"], [900, "CM"], [500, "D"], [400, "CD"],
-    [100, "C"], [90, "XC"], [50, "L"], [40, "XL"],
-    [10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]
-  ];
-  let n = Math.max(1, Math.floor(num));
-  let roman = "";
-  for (const [val, char] of lookup) {
-    while (n >= val) {
-      roman += char;
-      n -= val;
-    }
-  }
-  return roman || "I";
-}
-
-export function toAlpha(index) {
-  let result = "";
-  let i = index;
-  while (i >= 0) {
-    result = String.fromCharCode(97 + (i % 26)) + result;
-    i = Math.floor(i / 26) - 1;
-  }
-  return result;
-}
-
 export function formatDisplayDate(dateStr) {
   if (!dateStr) return t("Chưa rõ ngày");
   const clean = String(dateStr).replace(/\D/g, "");
@@ -427,54 +400,31 @@ export function groupSeriesHierarchically(seriesList) {
   });
 
   const result = [];
-  sortedDates.forEach((dateKey, dateIdx) => {
-    const romanNumeral = toRoman(dateIdx + 1);
+  for (const dateKey of sortedDates) {
     const displayDate = dateKey === "0000-00-00" ? t("Chưa rõ ngày chụp") : formatDisplayDate(dateKey);
-    const studyMap = dateMap.get(dateKey);
-
-    let studyIdx = 1;
-    for (const [studyTitle, items] of studyMap.entries()) {
-      const seriesItems = items.map((item, itemIdx) => ({
-        ...item,
-        letterIndex: toAlpha(itemIdx),
-        displayLabel: `${toAlpha(itemIdx)}. ${item.description || item.name || t("Series")}`,
-      }));
-
-      result.push({
-        dateKey,
-        dateIdx: dateIdx + 1,
-        romanNumeral,
-        displayDate,
-        studyIdx,
-        studyTitle,
-        items: seriesItems,
-      });
-      studyIdx++;
+    for (const [studyTitle, items] of dateMap.get(dateKey).entries()) {
+      result.push({ dateKey, displayDate, studyTitle, items });
     }
-  });
+  }
 
   return result;
 }
 
-/* Three levels of outline numbering, so a series can be named out loud and
-   found again: I, II per study date · 1, 2 per study within that date ·
-   a, b, c per series within that study. */
-export function groupOutlineIndex(group) {
-  return `${group.romanNumeral}.${group.studyIdx}`;
+function seriesLabel(item) {
+  return item.description || item.name || t("Series");
 }
 
 export function renderSeriesOptions(archive, selectedId) {
   const groups = groupSeriesHierarchically(archive.series);
   if (!groups.length) return "";
   return groups.map((group) => {
-    const outline = groupOutlineIndex(group);
     const optgroupLabel = getLanguage() === "en"
-      ? `${outline}. 📁 ${group.displayDate} (${group.studyTitle})`
-      : `${outline}. 📁 Ngày ${group.displayDate} (${group.studyTitle})`;
+      ? `📁 ${group.displayDate} (${group.studyTitle})`
+      : `📁 Ngày ${group.displayDate} (${group.studyTitle})`;
 
     const options = group.items.map((item) =>
       `<option value="${item.id}" ${item.id === selectedId ? "selected" : ""}>
-        &nbsp;&nbsp;${escapeHtml(item.displayLabel)} · ${escapeHtml(seriesFrameLabel(item))}
+        ${escapeHtml(seriesLabel(item))} · ${escapeHtml(seriesFrameLabel(item))}
       </option>`
     ).join("");
 
@@ -493,10 +443,8 @@ export function renderSeriesStripContent(seriesList) {
       ? `${group.displayDate}`
       : `Ngày ${group.displayDate}`;
 
-    const outline = groupOutlineIndex(group);
     const groupHeader = multiGroup
-      ? `<div class="series-group-badge" title="${escapeHtml(`${outline}. ${dateLabel} - ${group.studyTitle}`)}">
-          <span class="badge-index">${escapeHtml(outline)}</span>
+      ? `<div class="series-group-badge" title="${escapeHtml(`${dateLabel} - ${group.studyTitle}`)}">
           <span class="badge-date">${escapeHtml(dateLabel)}</span>
           <span class="badge-study">${escapeHtml(group.studyTitle)}</span>
          </div>`
@@ -505,14 +453,15 @@ export function renderSeriesStripContent(seriesList) {
     const cards = group.items.map((item) => {
       const visiblePanes = seriesVisiblePanes(item.id);
       const isVisible = visiblePanes.length > 0;
+      const label = seriesLabel(item);
       return `<button class="series-card ${isVisible ? "active" : ""}"
-              data-series-id="${item.id}" title="${escapeHtml(`${item.letterIndex}. ${item.description}`)}"
+              data-series-id="${item.id}" title="${escapeHtml(label)}"
               ${isVisible ? `data-pane="${visiblePanes.join(",")}"` : ""}>
               <div class="series-thumb-box">
                 <img class="series-card-thumb" data-thumb-id="${item.id}" alt="" />
                 ${item.mprReady ? `<span class="badge-3d">3D</span>` : ""}
                 <div class="series-thumb-overlay">
-                  <b class="series-thumb-title">${escapeHtml(`${item.letterIndex}. ${item.description}`)}</b>
+                  <b class="series-thumb-title">${escapeHtml(label)}</b>
                   <span class="series-thumb-count">${item.sliceCount || 0}</span>
                 </div>
               </div>

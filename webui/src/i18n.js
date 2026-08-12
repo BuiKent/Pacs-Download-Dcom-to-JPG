@@ -18,11 +18,8 @@ const EN = {
   // Header, layout and shell
   "DICOM/JPG Downloader & Viewer": "DICOM/JPG Downloader & Viewer",
   Series: "Series",
-  "So sánh với": "Compare with",
-  "Và với": "And with",
   "So sánh ba series cạnh nhau": "Compare three series side by side",
   "Khoá cuộn theo vị trí": "Lock scrolling by position",
-  "Đã khoá cuộn theo vị trí hiện tại: {}.": "Scroll locked at the current position: {}.",
   "Đã bỏ khoá: mỗi khung cuộn riêng.": "Unlocked: each pane scrolls on its own.",
   "Thu gọn khu tải phim": "Collapse download panel",
   "Mở khu tải phim": "Expand download panel",
@@ -44,7 +41,6 @@ const EN = {
   "Mã bệnh nhân": "Patient code",
   "Tìm ca": "Find studies",
   "Tìm các ca MRI/CT của mã bệnh nhân này trên RIS": "Search RIS for this patient's MRI/CT studies",
-  "Hoặc dán link viewer": "Or paste a viewer link",
   "Link viewer": "Viewer link",
   "Xóa mã bệnh nhân": "Clear the patient code",
   "Xóa link viewer": "Clear the viewer link",
@@ -88,7 +84,6 @@ const EN = {
   "Dừng an toàn tác vụ đang chạy": "Safely stop the running task",
   "Chưa tìm ca chụp.": "No studies found yet.",
   "Đã tải": "Downloaded",
-  "Đã tải series đã chọn": "Selected series downloaded",
   "Tải chưa hoàn tất": "Incomplete",
   "Phim mới": "New study",
 
@@ -96,14 +91,11 @@ const EN = {
   "Không tự động gộp bệnh nhân": "Automatic patient merge blocked",
   "Mã {} đã lưu tên “{}”, nhưng RIS trả “{}”. Hãy kiểm tra lại.":
     "Code {} is stored under the name “{}”, but RIS returned “{}”. Please re-check.",
-  "RIS chưa trả tên bệnh nhân. App vẫn có thể tải nhưng folder sẽ ghi CHUA_RO_TEN; hãy kiểm tra tên trên RIS/DICOM.":
-    "RIS did not return a patient name. The download still works but the folder will be named CHUA_RO_TEN; check the name in RIS/DICOM.",
   "Đã có trong kho · {} ca đã tải · {} ca mới · {} ca chưa hoàn tất":
     "Already in the archive · {} downloaded · {} new · {} incomplete",
   "{} ca chưa có trong kho; app sẽ tạo một folder bệnh nhân.":
     "{} studies are not in the archive yet; a patient folder will be created.",
   "Đã nhận diện {} ca từ folder Classic cũ": "Recognised {} studies from an old Classic folder",
-  "{} ca đã tải theo series được chọn": "{} studies downloaded as selected series",
 
   // Toolbar
   "Một khung ảnh": "Single pane",
@@ -114,7 +106,6 @@ const EN = {
   "Series không đủ MPR": "Series cannot support MPR",
   "Dựng volume 3D toàn màn hình": "Full-screen 3D volume rendering",
   "Series không đủ 3D": "Series cannot support 3D",
-  "Hiển thị": "Display",
   "DICOM mặc định": "DICOM default",
   "Toàn dải": "Full range",
   "Cửa sổ rộng": "Wide window",
@@ -150,7 +141,6 @@ const EN = {
   "Đặt lại ba mặt phẳng": "Reset all three planes",
   "Đặt lại góc nhìn": "Reset the camera",
   "Đặt lại hiển thị": "Reset the display",
-  "Xóa tất cả đo dài, đo góc và ROI": "Clear every length, angle and ROI measurement",
   "Xoay khung đang chọn 90° theo chiều kim đồng hồ": "Rotate the active pane 90° clockwise",
   "Lật ngang khung đang chọn": "Flip the active pane horizontally",
   "Lưu ảnh 3D": "Save the 3D image",
@@ -159,7 +149,6 @@ const EN = {
   "Tính thể tích ROI": "Compute ROI volume",
   "Đảo màu": "Invert",
   "Chạy phim": "Play cine",
-  "Dừng chạy phim": "Stop cine",
   "Đang chạy phim — nhấn Space để dừng.": "Cine running — press Space to stop.",
   "Đã dừng chạy phim.": "Cine stopped.",
 
@@ -171,8 +160,6 @@ const EN = {
   "Đang mở ảnh…": "Opening images…",
   "Không mở được khung xem": "Could not open the layout",
   "An toàn hiển thị": "Display safety",
-  "DICOM multi-frame: viewer hiện chỉ hiển thị khung đầu tiên; không dùng MPR/3D cho series này.":
-    "Multi-frame DICOM: the viewer currently shows only the first frame; do not use MPR/3D for this series.",
   "khung": "frames",
   "chỉ đồng bộ các cặp tương thích; mặt phẳng khác hướng giữ lát độc lập":
     "only compatible pairs are synchronized; differently oriented planes remain independent",
@@ -186,7 +173,6 @@ const EN = {
   "Thiếu token phiên local.": "The local session token is missing.",
   "Sẵn sàng. Nhấn ⌨ trên thanh công cụ để xem phím tắt.":
     "Ready. Click ⌨ on the toolbar for the keyboard shortcuts.",
-  "📁 Ca chụp chưa phân loại": "📁 Unsorted study",
   "lát": "slices",
 
   // Action feedback
@@ -213,7 +199,6 @@ const EN = {
     "Could not save measurements before changing the layout.",
   "Khung xem hiện tại không có phép đo/ROI để xóa.":
     "The current layout has no measurements or ROIs to clear.",
-  "Chưa chọn mục lịch sử.": "No history entry is selected.",
   "Đang mở lại thư mục từ lịch sử…": "Reopening the folder from history…",
   "Đã xóa {} phép đo/ROI.": "Cleared {} measurements/ROIs.",
   "Đã lưu {} phép đo/ROI.": "Saved {} measurements/ROIs.",

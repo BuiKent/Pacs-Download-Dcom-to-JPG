@@ -547,19 +547,6 @@ button:disabled { opacity: .35; cursor: default; }
 .series-group-badge:first-child {
   margin-top: 0;
 }
-/* The outline index (I.1, I.2, II.1) is what a reader says out loud, so it
-   leads the badge and stays readable when the study title is truncated. */
-.series-group-badge .badge-index {
-  align-self: flex-start;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: #78471255;
-  border: 1px solid #a16207;
-  color: #fde68a;
-  font-weight: 800;
-  font-size: 9px;
-  letter-spacing: 0.5px;
-}
 .series-group-badge .badge-date {
   font-weight: 800;
   color: #f59e0b;
