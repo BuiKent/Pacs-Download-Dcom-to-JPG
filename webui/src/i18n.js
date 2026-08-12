@@ -21,10 +21,7 @@ const EN = {
   "So sánh với": "Compare with",
   "Và với": "And with",
   "So sánh ba series cạnh nhau": "Compare three series side by side",
-  "Đang khoá cuộn theo vị trí — bấm để cuộn từng khung riêng":
-    "Scroll is locked by position — click to scroll each pane on its own",
-  "Cuộn từng khung riêng — bấm để khoá theo độ lệch hiện tại":
-    "Each pane scrolls on its own — click to lock them at the current offset",
+  "Khoá cuộn theo vị trí": "Lock scrolling by position",
   "Đã khoá cuộn theo vị trí hiện tại: {}.": "Scroll locked at the current position: {}.",
   "Đã bỏ khoá: mỗi khung cuộn riêng.": "Unlocked: each pane scrolls on its own.",
   "Thu gọn khu tải phim": "Collapse download panel",
@@ -124,12 +121,9 @@ const EN = {
   "Mô mềm JPG": "JPG soft tissue",
   "Cửa sổ hẹp": "Narrow window",
   "Tương phản cao": "High contrast",
-  "Cửa sổ hiển thị trên pixel DICOM gốc": "Display window over original DICOM pixels",
-  "Preset thị giác trên dữ liệu ảnh 8-bit": "Visual preset over 8-bit image data",
-  "Cửa sổ Hounsfield chuẩn, tính trực tiếp trên pixel CT gốc":
-    "Standard Hounsfield windows, computed directly on original CT pixels",
-  "Cửa sổ hiển thị trên pixel DICOM gốc, quy chiếu theo WC/WW trong file":
-    "Display window over original DICOM pixels, scaled from the file's own WC/WW",
+  "Cửa sổ Hounsfield (HU)": "Hounsfield window (HU)",
+  "Cửa sổ theo WC/WW trong file": "Window from the file's own WC/WW",
+  "Preset thị giác 8-bit": "8-bit visual preset",
   "Não": "Brain",
   "Đột quỵ / hố sau": "Stroke / posterior fossa",
   "Máu tụ dưới màng cứng": "Subdural",
@@ -166,12 +160,11 @@ const EN = {
   "Đảo màu": "Invert",
   "Chạy phim": "Play cine",
   "Dừng chạy phim": "Stop cine",
-  "Xem danh sách phím tắt": "Show the keyboard shortcuts",
+  "Đang chạy phim — nhấn Space để dừng.": "Cine running — press Space to stop.",
+  "Đã dừng chạy phim.": "Cine stopped.",
 
   // Workspace and status
   "Mở folder DICOM hoặc JPG/PNG": "Open a DICOM or JPG/PNG folder",
-  "DICOM được đọc trực tiếp với pixel gốc; không tạo JPG trung gian. Geometry hợp lệ sẽ bật MPR/3D.":
-    "DICOM is read directly at original pixel depth with no intermediate JPG. Valid geometry enables MPR/3D.",
   "Mở folder trong viewer": "Open a folder in the viewer",
   "Đang khởi động...": "Starting up...",
   "Đang dựng khung xem…": "Building the layout…",
@@ -245,8 +238,7 @@ const EN = {
     "The GPU renderer failed. Restart the application; if it repeats, update your graphics driver.",
   "chi tiết": "details",
 
-  "Phím tắt: ←/→ hoặc PgUp/PgDn đổi lát · Home/End lát đầu/cuối · 1 sáng · 2 pan · 3 zoom · 4 đo dài · 5 góc · 6 ROI ellipse · 7 ROI tự do · 8 ghi chú chữ · C định vị · R đặt lại · I đảo màu · Space chạy phim · S lưu đo · P lưu ảnh.":
-    "Shortcuts: ←/→ or PgUp/PgDn change slice · Home/End first/last slice · 1 window · 2 pan · 3 zoom · 4 length · 5 angle · 6 ellipse ROI · 7 freehand ROI · 8 text note · C crosshair · R reset · I invert · Space cine · S save measurements · P save image.",
+  "Con trỏ tham chiếu đã bật.": "Reference cursor on.",
 };
 
 export function t(text) {

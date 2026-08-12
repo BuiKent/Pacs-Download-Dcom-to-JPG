@@ -289,10 +289,12 @@ function renderToolbarGroups(series) {
   const compareTools = isCompareMode()
     ? [
         `<span class="toolbar-divider"></span>`,
+        // Toggles name what they do; whether they are on is already visible
+        // from the pressed state, so the tooltip does not spell it out.
         `<div class="tool-cluster compare-tools">
-          ${iconButton("scroll-sync", icons.scrollSync, t(state.scrollSync ? "Đang khoá cuộn theo vị trí — bấm để cuộn từng khung riêng" : "Cuộn từng khung riêng — bấm để khoá theo độ lệch hiện tại"), state.scrollSync)}
-          ${iconButton("reference-lines", icons.referenceLines, t(state.referenceLines ? "Đường tham chiếu đang bật — bấm để tắt" : "Đường tham chiếu đang tắt — bấm để bật"), state.referenceLines)}
-          ${iconButton("reference-cursor", icons.referenceCursor, t(state.referenceCursor ? "Con trỏ tham chiếu đang bật — bấm để tắt" : "Con trỏ tham chiếu đang tắt — bấm để bật"), state.referenceCursor)}
+          ${iconButton("scroll-sync", icons.scrollSync, t("Khoá cuộn theo vị trí"), state.scrollSync)}
+          ${iconButton("reference-lines", icons.referenceLines, t("Đường tham chiếu"), state.referenceLines)}
+          ${iconButton("reference-cursor", icons.referenceCursor, t("Con trỏ tham chiếu"), state.referenceCursor)}
         </div>`,
       ]
     : [];
@@ -454,13 +456,21 @@ export function groupSeriesHierarchically(seriesList) {
   return result;
 }
 
+/* Three levels of outline numbering, so a series can be named out loud and
+   found again: I, II per study date · 1, 2 per study within that date ·
+   a, b, c per series within that study. */
+export function groupOutlineIndex(group) {
+  return `${group.romanNumeral}.${group.studyIdx}`;
+}
+
 export function renderSeriesOptions(archive, selectedId) {
   const groups = groupSeriesHierarchically(archive.series);
   if (!groups.length) return "";
   return groups.map((group) => {
+    const outline = groupOutlineIndex(group);
     const optgroupLabel = getLanguage() === "en"
-      ? `📁 ${group.displayDate} (${group.studyTitle})`
-      : `📁 Ngày ${group.displayDate} (${group.studyTitle})`;
+      ? `${outline}. 📁 ${group.displayDate} (${group.studyTitle})`
+      : `${outline}. 📁 Ngày ${group.displayDate} (${group.studyTitle})`;
 
     const options = group.items.map((item) =>
       `<option value="${item.id}" ${item.id === selectedId ? "selected" : ""}>
@@ -483,9 +493,11 @@ export function renderSeriesStripContent(seriesList) {
       ? `${group.displayDate}`
       : `Ngày ${group.displayDate}`;
 
+    const outline = groupOutlineIndex(group);
     const groupHeader = multiGroup
-      ? `<div class="series-group-badge" title="${escapeHtml(`${dateLabel} - ${group.studyTitle}`)}">
-          <span class="badge-date">📁 ${escapeHtml(dateLabel)}</span>
+      ? `<div class="series-group-badge" title="${escapeHtml(`${outline}. ${dateLabel} - ${group.studyTitle}`)}">
+          <span class="badge-index">${escapeHtml(outline)}</span>
+          <span class="badge-date">${escapeHtml(dateLabel)}</span>
           <span class="badge-study">${escapeHtml(group.studyTitle)}</span>
          </div>`
       : "";
@@ -519,30 +531,12 @@ function seriesFrameLabel(series) {
   return `${series?.sliceCount || 0} ${unit}`;
 }
 
-function seriesDateInfo(series) {
-  if (series.studyDate) {
-    return series.studyDate; // From manifest or DICOM
-  }
-  const groupParts = (series.studyGroup || "").split(" - ");
-  if (groupParts.length > 0 && groupParts[0] !== "Không rõ ca chụp") {
-    // If the folder starts with a date, use it
-    if (/^\d{4}-\d{2}-\d{2}/.test(groupParts[0])) {
-      return `${groupParts[0]} (thư mục)`;
-    }
-  }
-  return "";
-}
-
 
 function windowPresetHint(series) {
-  if (seriesSupportsHounsfield(series)) {
-    return "Cửa sổ Hounsfield chuẩn, tính trực tiếp trên pixel CT gốc";
-  }
-  if (series?.sourceType === "dicom") {
-    // MR has no absolute intensity scale, so no fixed window can be offered.
-    return "Cửa sổ hiển thị trên pixel DICOM gốc, quy chiếu theo WC/WW trong file";
-  }
-  return "Preset thị giác trên dữ liệu ảnh 8-bit";
+  if (seriesSupportsHounsfield(series)) return "Cửa sổ Hounsfield (HU)";
+  // MR has no absolute intensity scale, so no fixed window can be offered.
+  if (series?.sourceType === "dicom") return "Cửa sổ theo WC/WW trong file";
+  return "Preset thị giác 8-bit";
 }
 
 function render() {
@@ -692,7 +686,6 @@ function render() {
           ${state.archive.series.length
       ? `<div class="viewer-loading">${state.busyViewer ? escapeHtml(t("Đang dựng khung xem…")) : ""}</div>`
       : `<div class="empty-state"><b>${escapeHtml(t("Mở folder DICOM hoặc JPG/PNG"))}</b>
-              <span>${escapeHtml(t("DICOM được đọc trực tiếp với pixel gốc; không tạo JPG trung gian. Geometry hợp lệ sẽ bật MPR/3D."))}</span>
               <div class="empty-actions"><button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder trong viewer"))}</button></div></div>`}
         </section>
         <footer class="status-bar ${state.isError ? "error" : ""}">
@@ -1289,9 +1282,6 @@ async function action(name) {
       if (button) {
         button.classList.toggle("active", state.scrollSync);
         button.setAttribute("aria-pressed", state.scrollSync ? "true" : "false");
-        button.title = t(state.scrollSync
-          ? "Đang khoá cuộn theo vị trí — bấm để cuộn từng khung riêng"
-          : "Cuộn từng khung riêng — bấm để khoá theo độ lệch hiện tại");
       }
       const { anchor, spatialMode } = compareScrollSyncState();
       if (state.scrollSync) {
@@ -1317,9 +1307,6 @@ async function action(name) {
       if (button) {
         button.classList.toggle("active", state.referenceLines);
         button.setAttribute("aria-pressed", state.referenceLines ? "true" : "false");
-        button.title = t(state.referenceLines
-          ? "Đường tham chiếu đang bật — bấm để tắt"
-          : "Đường tham chiếu đang tắt — bấm để bật");
       }
       setStatus(t(state.referenceLines
         ? "Đường tham chiếu đã bật."
@@ -1332,12 +1319,9 @@ async function action(name) {
       if (button) {
         button.classList.toggle("active", state.referenceCursor);
         button.setAttribute("aria-pressed", state.referenceCursor ? "true" : "false");
-        button.title = t(state.referenceCursor
-          ? "Con trỏ tham chiếu đang bật — bấm để tắt"
-          : "Con trỏ tham chiếu đang tắt — bấm để bật");
       }
       setStatus(t(state.referenceCursor
-        ? "Con trỏ tham chiếu đã bật: rê chuột trên một khung để thấy đúng điểm đó trên khung kia."
+        ? "Con trỏ tham chiếu đã bật."
         : "Con trỏ tham chiếu đã tắt."));
       return;
     }
@@ -1390,6 +1374,13 @@ async function action(name) {
       if (!panes) throw new Error(t("Khung đang xem không đảo màu được."));
     }
 
+    // Cine has no toolbar button any more, so Space is its only control and
+    // the status bar is the only place the user can see whether it is running.
+    if (name === "cine") {
+      state.cine = toggleCine(selectedSeries());
+      setStatus(t(state.cine ? "Đang chạy phim — nhấn Space để dừng." : "Đã dừng chạy phim."));
+      return;
+    }
     if (name === "capture") {
       const pane = await captureActiveViewport();
       setStatus(tf('Đã lưu ảnh PNG của khung "{}".', pane));
@@ -1600,10 +1591,6 @@ function setStatus(message, isError = false) {
   }
 }
 
-
-const SHORTCUT_HINT = "Phím tắt: ←/→, PgUp/PgDn, Home/End: đổi lát · 1..8: bộ công cụ · C: định vị"
-  + " · R/Shift+R: đặt lại · I: đảo màu · Space: chạy phim · S: lưu đo · P: lưu ảnh"
-  + " · Tab: xoay vòng series · Ctrl+Z: hoàn tác đo · Ctrl+Chuột Trái: chỉnh sáng tối.";
 
 const SHORTCUT_TOOLS = {
   1: "window",

@@ -3,6 +3,7 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { setLanguage } from "./i18n.js";
 import {
+  groupOutlineIndex,
   groupSeriesHierarchically,
   renderSeriesOptions,
   toAlpha,
@@ -89,9 +90,26 @@ describe("Series Grouping Hierarchy (I, 1, a...)", () => {
     };
 
     const html = renderSeriesOptions(archive, "s1");
-    expect(html).toContain('<optgroup label="📁 Ngày 11/08/2026 (MR - SO NAO)">');
+    expect(html).toContain('<optgroup label="I.1. 📁 Ngày 11/08/2026 (MR - SO NAO)">');
     expect(html).toContain('value="s1" selected');
     expect(html).toContain('a. T1 SAG · 24 lát');
     expect(html).toContain('b. T2 AX · 24 lát');
+  });
+
+  it("numbers the outline I/II per date and 1/2 per study within a date", () => {
+    // Newest date first, so the two studies of 11/08 are I.1 and I.2 and the
+    // older 10/08 study becomes II.1.
+    const archive = {
+      series: [
+        { id: "s1", studyDate: "2026-08-10", studyGroup: "2026-08-10 - MR - COT SONG", description: "T2 SAG", sliceCount: 20 },
+        { id: "s2", studyDate: "2026-08-11", studyGroup: "2026-08-11 - MR - SO NAO", description: "T1 SAG", sliceCount: 24 },
+        { id: "s3", studyDate: "2026-08-11", studyGroup: "2026-08-11 - CT - CHEST", description: "Chest 5mm", sliceCount: 60 },
+      ],
+    };
+
+    const outlines = groupSeriesHierarchically(archive.series).map(groupOutlineIndex);
+
+    expect(outlines).toEqual(["I.1", "I.2", "II.1"]);
+    expect(renderSeriesOptions(archive, "s2")).toContain('label="II.1. 📁 Ngày 10/08/2026 (MR - COT SONG)"');
   });
 });
