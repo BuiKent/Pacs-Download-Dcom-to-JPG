@@ -561,6 +561,22 @@ class PatientDemographicsTests(unittest.TestCase):
             metadata,
         )
 
+    def test_dicom_birth_date_discrepancy_does_not_create_false_identity_conflict(self):
+        # RIS record may store estimated DOB '2003-01-01' from age 23T while DICOM has exact '2003-04-02'
+        metadata = {
+            "PatientID": "2606033997",
+            "PatientName": "NGUYEN THI CAM TU",
+            "PatientBirthDate": "20030402",
+        }
+        # Must not raise PatientIdentityConflictError
+        dcom_pipeline._assert_patient_metadata_matches(
+            "2606033997",
+            "NGUYEN THI CAM TU",
+            metadata,
+            expected_birth_date="2003-01-01",
+        )
+
+
     def test_windows_folder_rename_retries_a_temporary_access_denied(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "LINK_20260809_case"

@@ -2956,8 +2956,6 @@ def extract_patient_metadata(dicom_dir: Path, manual_info: Optional[dict] = None
             if (
                 len(seen_ids) > 1
                 or len(seen_names) > 1
-                or len(seen_birth_dates) > 1
-                or len(seen_sexes) > 1
             ):
                 raise PatientIdentityConflictError(
                     "DICOM trong cùng folder chứa nhiều định danh bệnh nhân khác nhau."
@@ -3041,8 +3039,17 @@ def _merge_manifest_demographics(manifest: dict, metadata: dict) -> None:
     }
     for target, source in mappings.items():
         incoming = metadata.get(source)
-        if incoming and not manifest.get(target):
-            manifest[target] = incoming
+        if incoming:
+            current = manifest.get(target)
+            if not current:
+                manifest[target] = incoming
+            elif target == "patientBirthDate":
+                cur_norm = _normalise_dicom_date(str(current))
+                inc_norm = _normalise_dicom_date(str(incoming))
+                if cur_norm and inc_norm and cur_norm != inc_norm:
+                    # Upgrade placeholder 01-01 RIS date to exact DICOM birth date
+                    if cur_norm.endswith("-01-01") or not inc_norm.endswith("-01-01"):
+                        manifest[target] = inc_norm
     canonical_name = _patient_display_name(metadata.get("PatientName"))
     if canonical_name and canonical_name != "KHONG_RO_TEN" and not manifest.get("patientName"):
         manifest["patientName"] = canonical_name
@@ -3103,9 +3110,12 @@ def _assert_patient_metadata_matches(
     actual_birth_date = _normalise_dicom_date(metadata.get("PatientBirthDate"))
     expected_birth_date = _normalise_dicom_date(expected_birth_date)
     if actual_birth_date and expected_birth_date and actual_birth_date != expected_birth_date:
-        raise PatientIdentityConflictError(
-            f"Ngày sinh DICOM '{actual_birth_date}' không khớp hồ sơ '{expected_birth_date}'."
-        )
+        is_placeholder = expected_birth_date.endswith("-01-01") or actual_birth_date.endswith("-01-01")
+        same_year = actual_birth_date[:4] == expected_birth_date[:4]
+        if not (is_placeholder or same_year):
+            raise PatientIdentityConflictError(
+                f"Ngày sinh DICOM '{actual_birth_date}' không khớp hồ sơ '{expected_birth_date}'."
+            )
     actual_sex = str(metadata.get("PatientSex") or "").strip().upper()
     expected_sex = str(expected_sex or "").strip().upper()
     if actual_sex and expected_sex and actual_sex != expected_sex:
