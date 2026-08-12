@@ -257,16 +257,12 @@ def _read_dicom_header(path: Path) -> list[DicomHeader]:
     window_center = _dicom_number(window_center_value, math.nan)
     window_width = _dicom_number(window_width_value, math.nan)
 
+    # Date only, never StudyTime: the study group is keyed on this string, and
+    # a series whose header is missing the time would otherwise land in a
+    # second group of its own alongside the rest of the same study.
     study_date = str(getattr(ds, "StudyDate", "") or "").strip()
     if study_date and len(study_date) == 8 and study_date.isdigit():
         study_date = f"{study_date[:4]}-{study_date[4:6]}-{study_date[6:]}"
-
-    study_time = str(getattr(ds, "StudyTime", "") or "").strip()
-    if study_time and len(study_time) >= 6 and study_time[:6].isdigit():
-        study_time = f"{study_time[:2]}:{study_time[2:4]}:{study_time[4:6]}"
-
-    if study_time:
-        study_date = f"{study_date} {study_time}".strip()
     study_desc = str(getattr(ds, "StudyDescription", "") or "").strip()
 
     patient_id = str(getattr(ds, "PatientID", "") or "").strip()
@@ -1465,6 +1461,29 @@ class HistoryStore:
             return match.get("url", "") if match else ""
 
 
+def _local_import_plan(source: Path) -> tuple[list[tuple[Path, Path]], Path]:
+    """Pair every DICOM folder under `source` with the JPG folder beside it.
+
+    Converted output lands next to its own DICOM folder rather than in the
+    download root, so a study keeps both halves together and re-opening the
+    patient folder finds them. Returns those (dicom, jpg) pairs plus the
+    folder the viewer should open once the conversion finishes.
+    """
+    if source.name.casefold() == "dicom":
+        destination = source.parent / "JPG"
+        return [(source, destination)], destination
+    if (source / "DICOM").is_dir():
+        destination = source / "JPG"
+        return [(source / "DICOM", destination)], destination
+    nested = sorted(item for item in source.glob("**/DICOM") if item.is_dir() and item != source)
+    if nested:
+        # A patient folder holding several studies: each study keeps its own
+        # JPG sibling, so the viewer opens the patient folder as a whole.
+        return [(folder, folder.parent / "JPG") for folder in nested], source
+    destination = source / "JPG"
+    return [(source, destination)], destination
+
+
 class WebController:
     def __init__(self) -> None:
         self.catalog = ArchiveCatalog()
@@ -1593,69 +1612,13 @@ class WebController:
         def target() -> dict:
             self.job.log(f"Đang quét folder DICOM local và chuyển sang JPG chất lượng {quality}…")
 
-            dicom_subdirs = [
-                d for d in source.glob("**/DICOM")
-                if d.is_dir() and d != source
-            ]
-
+            pairs, open_path = _local_import_plan(source)
             total_stats = dcom_pipeline.ConvertStats()
-            primary_destination: Optional[Path] = None
-
-            if source.name.casefold() == "dicom":
-                src_dicom = source
-                dst_jpg = source.parent / "JPG"
-                primary_destination = dst_jpg
+            for src_dicom, dst_jpg in pairs:
+                if self.job.stop_event.is_set():
+                    break
                 stats = dcom_pipeline.convert_all(
                     src_dicom,
-                    dst_jpg,
-                    log=self.job.log,
-                    quality=quality,
-                    save_png=False,
-                    contrast_mode=dcom_pipeline.CLINICAL,
-                    should_stop=self.job.stop_event.is_set,
-                )
-                total_stats.converted += stats.converted
-                total_stats.failed += stats.failed
-                total_stats.skipped += stats.skipped
-            elif (source / "DICOM").is_dir():
-                src_dicom = source / "DICOM"
-                dst_jpg = source / "JPG"
-                primary_destination = dst_jpg
-                stats = dcom_pipeline.convert_all(
-                    src_dicom,
-                    dst_jpg,
-                    log=self.job.log,
-                    quality=quality,
-                    save_png=False,
-                    contrast_mode=dcom_pipeline.CLINICAL,
-                    should_stop=self.job.stop_event.is_set,
-                )
-                total_stats.converted += stats.converted
-                total_stats.failed += stats.failed
-                total_stats.skipped += stats.skipped
-            elif dicom_subdirs:
-                primary_destination = source
-                for dcm_dir in sorted(dicom_subdirs):
-                    if self.job.stop_event.is_set():
-                        break
-                    dst_jpg = dcm_dir.parent / "JPG"
-                    stats = dcom_pipeline.convert_all(
-                        dcm_dir,
-                        dst_jpg,
-                        log=self.job.log,
-                        quality=quality,
-                        save_png=False,
-                        contrast_mode=dcom_pipeline.CLINICAL,
-                        should_stop=self.job.stop_event.is_set,
-                    )
-                    total_stats.converted += stats.converted
-                    total_stats.failed += stats.failed
-                    total_stats.skipped += stats.skipped
-            else:
-                dst_jpg = source / "JPG"
-                primary_destination = dst_jpg
-                stats = dcom_pipeline.convert_all(
-                    source,
                     dst_jpg,
                     log=self.job.log,
                     quality=quality,
@@ -1673,7 +1636,6 @@ class WebController:
                     "(.dcm, .dicom, .ima hoặc file DICOM không đuôi)."
                 )
 
-            open_path = primary_destination if primary_destination else source
             archive = self.catalog.open(
                 open_path,
                 log=self.job.log,

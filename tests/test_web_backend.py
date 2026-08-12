@@ -14,7 +14,14 @@ from pydicom.sequence import Sequence
 from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage, generate_uid
 from PIL import Image
 
-from web_backend import ArchiveCatalog, LocalApiServer, WebController, validate_mpr_manifest, _dicom_pixel_payload
+from web_backend import (
+    ArchiveCatalog,
+    LocalApiServer,
+    WebController,
+    validate_mpr_manifest,
+    _dicom_pixel_payload,
+    _local_import_plan,
+)
 
 
 def write_local_dicom(
@@ -953,6 +960,65 @@ class FrameOfReferenceSyntheticTests(unittest.TestCase):
             expected_jpg_folder = study_folder / "JPG"
             self.assertTrue(expected_jpg_folder.is_dir())
             self.assertTrue(any(expected_jpg_folder.glob("**/mpr-volume.json")))
+
+
+class LocalImportPlanTests(unittest.TestCase):
+    """Every folder shape a user can hand to local import.
+
+    Only the `<study>/DICOM` shape had coverage, yet the other three decide
+    where converted JPGs land — getting one wrong writes a study's images
+    into the wrong folder, which is invisible until the viewer opens empty.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_dicom_folder_itself_writes_jpg_beside_it(self) -> None:
+        source = self.root / "study" / "DICOM"
+        source.mkdir(parents=True)
+
+        pairs, open_path = _local_import_plan(source)
+
+        self.assertEqual(pairs, [(source, source.parent / "JPG")])
+        self.assertEqual(open_path, source.parent / "JPG")
+
+    def test_study_folder_writes_jpg_next_to_its_dicom(self) -> None:
+        source = self.root / "2026-07-07 - CT - CT so nao"
+        (source / "DICOM").mkdir(parents=True)
+
+        pairs, open_path = _local_import_plan(source)
+
+        self.assertEqual(pairs, [(source / "DICOM", source / "JPG")])
+        self.assertEqual(open_path, source / "JPG")
+
+    def test_patient_folder_converts_every_study_and_opens_the_whole_folder(self) -> None:
+        source = self.root / "patient"
+        (source / "2026-07-07 - CT" / "DICOM").mkdir(parents=True)
+        (source / "2026-08-11 - MR" / "DICOM").mkdir(parents=True)
+
+        pairs, open_path = _local_import_plan(source)
+
+        self.assertEqual(
+            pairs,
+            [
+                (source / "2026-07-07 - CT" / "DICOM", source / "2026-07-07 - CT" / "JPG"),
+                (source / "2026-08-11 - MR" / "DICOM", source / "2026-08-11 - MR" / "JPG"),
+            ],
+        )
+        # The studies keep separate JPG siblings, so the viewer has to open the
+        # patient folder rather than any one study's output.
+        self.assertEqual(open_path, source)
+
+    def test_loose_dicom_folder_writes_jpg_inside_it(self) -> None:
+        source = self.root / "loose"
+        source.mkdir()
+
+        pairs, open_path = _local_import_plan(source)
+
+        self.assertEqual(pairs, [(source, source / "JPG")])
+        self.assertEqual(open_path, source / "JPG")
 
 
 if __name__ == "__main__":
