@@ -1097,31 +1097,17 @@ class ArchiveCatalog:
             common = Path(os.path.commonpath([str(item.path.parent) for item in headers_ordered]))
             modality = "MR" if first.modality == "MRI" else first.modality
 
-            study_date = first.study_date
-            study_desc = first.study_desc
-
-            # Fallback: If StudyDate or StudyDescription is missing from DICOM header,
-            # try to recover date/desc from enclosing study folder path.
-            if not study_date or not study_desc:
-                folder_ptr = common
-                while folder_ptr and folder_ptr != root and folder_ptr != folder_ptr.parent:
-                    match = re.match(r'^(\d{4}-\d{2}-\d{2})\s*-\s*([^-]+)\s*-\s*(.+)$', folder_ptr.name)
-                    if match:
-                        if not study_date:
-                            study_date = match.group(1)
-                        if not study_desc:
-                            study_desc = match.group(3)
-                        break
-                    match_date = re.match(r'^(\d{4}-\d{2}-\d{2}|\d{8})', folder_ptr.name)
-                    if match_date and not study_date:
-                        study_date = match_date.group(1)
-                    folder_ptr = folder_ptr.parent
-
-            parts = []
-            if study_date: parts.append(study_date)
-            parts.append(modality if modality in {"CT", "MR"} else first.modality)
-            if study_desc: parts.append(study_desc)
-            study_group = " - ".join(parts) if parts else "Không rõ ca chụp"
+            # A header can be missing StudyDate or StudyDescription — key images
+            # and secondary captures often are. The enclosing study folder still
+            # names both, so the series stays with the rest of its study.
+            folder_date, folder_modality, folder_desc = _study_from_folder_path(common)
+            study_date = first.study_date or folder_date
+            study_desc = first.study_desc or folder_desc
+            study_group = _study_group_label(
+                study_date,
+                modality if modality in {"CT", "MR"} else (first.modality or folder_modality),
+                study_desc,
+            )
 
             records[digest] = SeriesRecord(
                 series_id=digest,
@@ -1258,14 +1244,24 @@ class ArchiveCatalog:
             ready, reason = validate_mpr_manifest(folder, manifest)
             relative_name = str(folder.relative_to(root)) if folder != root else folder.name
 
+            modality = self._modality(folder, root, manifest)
+            # Converted JPGs sit in a `JPG` folder beside the `DICOM` one they
+            # came from, so both read the study off the same enclosing folder
+            # and end up in one group instead of two headers for one study.
+            study_date, folder_modality, study_desc = _study_from_folder_path(folder)
+            manifest_date = str((manifest or {}).get("study_date") or "").strip()
+            study_date = study_date or manifest_date
             study_group = ""
-            if " - " in folder.name:
+            if study_date or study_desc:
+                study_group = _study_group_label(
+                    study_date,
+                    modality if modality in {"CT", "MR"} else folder_modality,
+                    study_desc,
+                )
+            elif " - " in folder.name:
                 parts = folder.name.rsplit(" - ", 1)
-                if len(parts) == 2 and re.match(r'^[a-f0-9]+$', parts[1]):
-                    study_group = parts[0]
-                else:
-                    study_group = folder.name
-            elif folder.name:
+                study_group = parts[0] if re.fullmatch(r"[a-f0-9]+", parts[1]) else folder.name
+            else:
                 study_group = folder.name
             if not study_group:
                 study_group = "Không rõ ca chụp"
@@ -1278,8 +1274,9 @@ class ArchiveCatalog:
                 manifest=manifest,
                 mpr_ready=ready,
                 mpr_reason=reason,
-                modality=self._modality(folder, root, manifest),
+                modality=modality,
                 study_group=study_group,
+                study_date=study_date,
             )
         self._restore_legacy_jpg_geometry(
             records,
@@ -1461,6 +1458,73 @@ class HistoryStore:
             return match.get("url", "") if match else ""
 
 
+_STUDY_FOLDER_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s*-\s*([^-]+?)\s*-\s*(.+)$")
+_LEADING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|\d{8})")
+
+
+def _study_from_folder_path(start: Path) -> tuple[str, str, str]:
+    """Recover (date, modality, description) from an enclosing study folder.
+
+    A study is stored as `<date> - <modality> - <description>`, and its DICOM
+    and converted JPG halves sit side by side inside it. Reading the study off
+    the path is what lets both halves land in the same group: the JPG copies
+    carry no StudyDate header of their own, and the archive root for them is
+    the `JPG` folder itself, so the walk deliberately continues past it.
+    """
+    date = ""
+    folder = start
+    while folder != folder.parent:
+        match = _STUDY_FOLDER_RE.match(folder.name)
+        if match:
+            return match.group(1), match.group(2).strip().upper(), match.group(3).strip()
+        if not date:
+            leading = _LEADING_DATE_RE.match(folder.name)
+            if leading:
+                date = leading.group(1)
+        folder = folder.parent
+    return date, "", ""
+
+
+def _study_group_label(date: str, modality: str, description: str) -> str:
+    """The one string both halves of a study must agree on to group together."""
+    parts = [part for part in (date, modality, description) if part]
+    return " - ".join(parts) if parts else "Không rõ ca chụp"
+
+
+def _is_writable_dir(folder: Path) -> bool:
+    """Whether a new folder can be created inside `folder`.
+
+    Local import writes converted JPGs next to the DICOM they came from, which
+    cannot work on read-only media — a burned disc, a mounted image, a share
+    exported read-only. os.access reports directories as writable on Windows
+    regardless, so this probes with a real create and removes it again.
+    """
+    probe = folder / f".dcom-write-probe-{os.getpid()}"
+    try:
+        # Never `parents=True`: on a missing path that would create the whole
+        # chain and leave it behind, since only the leaf is removed below.
+        probe.mkdir(exist_ok=False)
+    except OSError:
+        return False
+    try:
+        probe.rmdir()
+    except OSError:
+        pass
+    return True
+
+
+def _redirect_plan(
+    pairs: list[tuple[Path, Path]],
+    base: Path,
+) -> tuple[list[tuple[Path, Path]], Path]:
+    """Re-aim a side-by-side plan at `base`, keeping each study's own folder."""
+    redirected = [
+        (source, base / (source.parent.name if source.name.casefold() == "dicom" else source.name) / "JPG")
+        for source, _ in pairs
+    ]
+    return redirected, base
+
+
 def _local_import_plan(source: Path) -> tuple[list[tuple[Path, Path]], Path]:
     """Pair every DICOM folder under `source` with the JPG folder beside it.
 
@@ -1613,6 +1677,16 @@ class WebController:
             self.job.log(f"Đang quét folder DICOM local và chuyển sang JPG chất lượng {quality}…")
 
             pairs, open_path = _local_import_plan(source)
+            if not _is_writable_dir(source):
+                self.job.log(
+                    "Folder nguồn chỉ đọc nên không ghi JPG cạnh DICOM được; "
+                    f"chuyển sang thư mục lưu: {output_root}."
+                )
+                stamp = time.strftime("%Y%m%d_%H%M%S")
+                pairs, open_path = _redirect_plan(
+                    pairs, output_root / f"LOCAL_DICOM_{stamp}_{source.name}"
+                )
+
             total_stats = dcom_pipeline.ConvertStats()
             for src_dicom, dst_jpg in pairs:
                 if self.job.stop_event.is_set():

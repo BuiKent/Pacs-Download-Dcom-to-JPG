@@ -20,7 +20,10 @@ from web_backend import (
     WebController,
     validate_mpr_manifest,
     _dicom_pixel_payload,
+    _is_writable_dir,
     _local_import_plan,
+    _redirect_plan,
+    _study_from_folder_path,
 )
 
 
@@ -1019,6 +1022,81 @@ class LocalImportPlanTests(unittest.TestCase):
 
         self.assertEqual(pairs, [(source, source / "JPG")])
         self.assertEqual(open_path, source / "JPG")
+
+    def test_redirect_keeps_each_study_folder_under_the_output_root(self) -> None:
+        # A read-only source (a burned disc) cannot take a JPG sibling, so the
+        # plan is re-aimed at the configured output root instead of failing.
+        source = self.root / "patient"
+        pairs = [
+            (source / "2026-07-07 - CT" / "DICOM", source / "2026-07-07 - CT" / "JPG"),
+            (source / "2026-08-11 - MR" / "DICOM", source / "2026-08-11 - MR" / "JPG"),
+        ]
+        base = self.root / "output" / "LOCAL_DICOM_20260811_120000_patient"
+
+        redirected, open_path = _redirect_plan(pairs, base)
+
+        self.assertEqual(
+            redirected,
+            [
+                (pairs[0][0], base / "2026-07-07 - CT" / "JPG"),
+                (pairs[1][0], base / "2026-08-11 - MR" / "JPG"),
+            ],
+        )
+        self.assertEqual(open_path, base)
+
+    def test_writable_probe_leaves_nothing_behind(self) -> None:
+        before = set(self.root.iterdir())
+
+        self.assertTrue(_is_writable_dir(self.root))
+        self.assertEqual(set(self.root.iterdir()), before)
+
+    def test_writable_probe_reports_false_for_a_missing_folder(self) -> None:
+        missing = self.root / "khong-ton-tai" / "sau"
+
+        self.assertFalse(_is_writable_dir(missing))
+        # The probe must not conjure the folder it was asked to test.
+        self.assertFalse(missing.parent.exists())
+
+
+class StudyFromFolderPathTests(unittest.TestCase):
+    """Reading the study off the folder path.
+
+    This is what keeps a study in one group: the converted JPGs carry no
+    StudyDate of their own, and key images often lack StudyDescription, so
+    without the path both halves would head their own group in the strip.
+    """
+
+    def test_reads_date_modality_and_description_from_the_study_folder(self) -> None:
+        folder = Path("/archive/2026-06-16 - CT - CT so nao 16 day/DICOM/Series_1")
+
+        self.assertEqual(
+            _study_from_folder_path(folder),
+            ("2026-06-16", "CT", "CT so nao 16 day"),
+        )
+
+    def test_reads_the_same_study_from_the_jpg_half(self) -> None:
+        # The archive root for converted output is the JPG folder itself, so
+        # the walk has to continue past it to reach the study folder.
+        dicom_side = Path("/archive/2026-06-16 - CT - CT so nao/DICOM/Series_1")
+        jpg_side = Path("/archive/2026-06-16 - CT - CT so nao/JPG/Series_1")
+
+        self.assertEqual(_study_from_folder_path(dicom_side), _study_from_folder_path(jpg_side))
+
+    def test_keeps_a_description_that_contains_its_own_hyphen(self) -> None:
+        folder = Path("/archive/2026-06-16 - MR - So nao - co tiem thuoc/JPG")
+
+        self.assertEqual(
+            _study_from_folder_path(folder),
+            ("2026-06-16", "MR", "So nao - co tiem thuoc"),
+        )
+
+    def test_falls_back_to_a_bare_leading_date(self) -> None:
+        folder = Path("/archive/2026-06-16 phim cu/Series_1")
+
+        self.assertEqual(_study_from_folder_path(folder), ("2026-06-16", "", ""))
+
+    def test_returns_nothing_when_no_folder_names_a_study(self) -> None:
+        self.assertEqual(_study_from_folder_path(Path("/archive/phim/Series_1")), ("", "", ""))
 
 
 if __name__ == "__main__":
