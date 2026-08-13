@@ -576,6 +576,55 @@ class PatientDemographicsTests(unittest.TestCase):
             expected_birth_date="2003-01-01",
         )
 
+    def test_birth_year_mismatch_is_still_an_identity_conflict(self):
+        """Nới lỏng cho ngày sinh ước lượng KHÔNG được nới sang cả năm sinh."""
+        metadata = {
+            "PatientID": "2606033997",
+            "PatientName": "NGUYEN THI CAM TU",
+            "PatientBirthDate": "19850703",
+        }
+        with self.assertRaises(dcom_pipeline.PatientIdentityConflictError):
+            dcom_pipeline._assert_patient_metadata_matches(
+                "2606033997",
+                "NGUYEN THI CAM TU",
+                metadata,
+                expected_birth_date="2003-01-01",
+            )
+
+    def test_two_exact_birth_dates_in_one_year_are_still_a_conflict(self):
+        """Cùng năm nhưng cả hai đều là ngày chính xác thì vẫn là hai người."""
+        metadata = {
+            "PatientID": "2606033997",
+            "PatientName": "NGUYEN THI CAM TU",
+            "PatientBirthDate": "20031122",
+        }
+        with self.assertRaises(dcom_pipeline.PatientIdentityConflictError):
+            dcom_pipeline._assert_patient_metadata_matches(
+                "2606033997",
+                "NGUYEN THI CAM TU",
+                metadata,
+                expected_birth_date="2003-04-02",
+            )
+
+    def test_manifest_upgrades_placeholder_birth_date_within_the_same_year(self):
+        manifest = {"patientBirthDate": "2003-01-01"}
+        dcom_pipeline._merge_manifest_demographics(
+            manifest, {"PatientBirthDate": "2003-04-02"},
+        )
+        self.assertEqual(manifest["patientBirthDate"], "2003-04-02")
+
+    def test_manifest_never_rewrites_the_birth_year(self):
+        for current, incoming in (
+            ("2003-01-01", "1985-07-03"),   # placeholder vs năm khác
+            ("2003-01-01", "1985-01-01"),   # hai placeholder khác năm
+            ("2003-04-02", "2003-11-22"),   # ngày chính xác đã có sẵn
+        ):
+            with self.subTest(current=current, incoming=incoming):
+                manifest = {"patientBirthDate": current}
+                dcom_pipeline._merge_manifest_demographics(
+                    manifest, {"PatientBirthDate": incoming},
+                )
+                self.assertEqual(manifest["patientBirthDate"], current)
 
     def test_windows_folder_rename_retries_a_temporary_access_denied(self):
         with tempfile.TemporaryDirectory() as tmp:

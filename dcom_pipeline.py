@@ -682,8 +682,33 @@ class DownloadStats:
     failed: int = 0
     completed_tasks: int = 0
 
+    # Nguồn gốc của ảnh DICOM. Một file .dcm KHÔNG mặc nhiên là bản gốc của máy
+    # chụp: khi PACS chỉ phát theo frame (BV Hà Tĩnh), app phải DỰNG LẠI file từ
+    # metadata + frame, nên nó thiếu bớt tag so với bản gốc. Người đọc phim cần
+    # biết mình đang cầm loại nào. JPG/PNG đã tự nói lên là ảnh render nên không
+    # cần đếm riêng.
+    #
+    # Chỉ đếm ảnh TẢI TRONG PHIÊN NÀY; file có sẵn lúc `resume` không rõ nguồn
+    # gốc nên không xếp vào đâu cả — vì thế tổng hai ô này có thể nhỏ hơn `dicom`.
+    original_dicom: int = 0
+    reconstructed_dicom: int = 0
+
     def total(self) -> int:
         return self.dicom + self.jpg + self.png
+
+    def fidelity_report(self) -> str:
+        """Một dòng kể rõ DICOM đến từ đâu; rỗng nếu phiên này không tải DICOM.
+
+        Chỉ nói ra khi có ít nhất một file dựng lại — lúc tất cả đều là bản gốc
+        thì thêm dòng này chỉ là nhiễu.
+        """
+        if not self.reconstructed_dicom:
+            return ""
+        return (
+            f"DICOM gốc {self.original_dicom}, "
+            f"DICOM app dựng lại từ frame {self.reconstructed_dicom} "
+            f"(thiếu một số tag so với bản gốc của máy chụp)"
+        )
 
     def is_complete(self) -> bool:
         """Đủ ảnh hay không — dùng để quyết định gắn nhãn 'xong' cho 1 ca.
@@ -695,6 +720,243 @@ class DownloadStats:
             return self.total() > 0
         counted = self.completed_tasks or (self.dicom if self.dicom else self.total())
         return counted >= self.expected
+
+
+# ---------------------------------------------------------------------------
+# Nhận diện dòng PACS
+#
+# Mỗi dòng viewer tự khai: nhìn response nào thì biết mình, cần gì mới đủ để
+# tải, và tải bằng hàm nào. Nhờ vậy thêm một bệnh viện mới chỉ là viết thêm một
+# lớp rồi đăng ký vào PACS_ADAPTERS — KHÔNG phải sửa `download_all()` lẫn
+# `discover_viewer_series()` như trước (hai chỗ đó vốn chép cùng một logic nhận
+# diện nên rất dễ lệch nhau).
+#
+# Phần TẢI vẫn nguyên vẹn: adapter chỉ gọi lại `_download_via_*()` sẵn có.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ViewerCapture:
+    """Những gì nhặt được từ chính phiên viewer đang mở.
+
+    Không tự đăng nhập và không vượt quyền: chỉ dùng lại cookie/header mà viewer
+    đã được server cho phép dùng.
+    """
+
+    getstudies: Optional[bytes] = None
+    template_url: Optional[str] = None
+
+    vrpacs: Optional[bytes] = None
+
+    qido_series: Optional[str] = None
+    qido_series_body: Optional[bytes] = None
+    wado_tmpl: Optional[str] = None
+
+    host: Optional[str] = None
+    cookies: Optional[list] = None
+    api_headers: Optional[dict] = None
+    session_error: Optional[str] = None
+
+    def as_legacy_dict(self) -> dict:
+        """Đúng cái dict mà `_download_via_*()` đang nhận.
+
+        Giữ nguyên kiểu tham số này để phần tải không phải sửa một dòng nào, và
+        để các test đang dựng dict bằng tay vẫn chạy được.
+        """
+        return {
+            "getstudies": self.getstudies,
+            "template_url": self.template_url,
+            "vrpacs": self.vrpacs,
+            "qido_series": self.qido_series,
+            "qido_series_body": self.qido_series_body,
+            "wado_tmpl": self.wado_tmpl,
+            "host": self.host,
+            "cookies": self.cookies,
+            "api_headers": self.api_headers,
+            "session_error": self.session_error,
+        }
+
+
+class PacsAdapter:
+    """Một dòng PACS: cách nhận ra nó, và cách tải ảnh của nó."""
+
+    name = "generic"
+    source = "generic"   # nhãn nguồn gắn vào từng series (giữ nguyên tên cũ)
+    priority = 0
+
+    def observe(self, response, cap: ViewerCapture) -> bool:
+        """Đọc một response của viewer và ghi lại thứ cần thiết.
+
+        Trả về True nếu response này CHÍNH LÀ manifest của dòng PACS này — chỗ
+        gọi dựa vào đó để thôi soi tiếp response ấy.
+        """
+        return False
+
+    def is_ready(self, cap: ViewerCapture) -> bool:
+        """Đã đủ dữ kiện để tải trực tiếp qua API chưa."""
+        return False
+
+    def has_series_manifest(self, cap: ViewerCapture) -> bool:
+        """Đã đủ để LIỆT KÊ series chưa.
+
+        Nhẹ hơn `is_ready`: liệt kê chỉ cần thân manifest, còn tải thì có dòng
+        (như VradViewer) còn cần thêm một URL ảnh thật làm khuôn.
+        """
+        return False
+
+    def series_choices(self, cap: ViewerCapture) -> list[dict]:
+        return []
+
+    def download(self, cap: ViewerCapture, save_body, stats,
+                 log: LogFn, stop, selected_series) -> None:
+        raise NotImplementedError
+
+
+class VradAdapter(PacsAdapter):
+    name = "VradViewer"
+    source = "vrad"
+    priority = 300
+
+    def observe(self, response, cap: ViewerCapture) -> bool:
+        url = response.url
+        if "StudyData/GetStudies" in url and cap.getstudies is None:
+            cap.getstudies = response.body()
+            return True
+        # URL ảnh thật, dùng làm khuôn để dựng link cho các ảnh còn lại.
+        if (cap.template_url is None
+                and "GetImage" in url and "Jpeg" not in url):
+            cap.template_url = url
+        return False
+
+    def is_ready(self, cap: ViewerCapture) -> bool:
+        return bool(cap.getstudies and cap.template_url)
+
+    def has_series_manifest(self, cap: ViewerCapture) -> bool:
+        return cap.getstudies is not None
+
+    def series_choices(self, cap: ViewerCapture) -> list[dict]:
+        return _vrad_series_choices(cap.getstudies)
+
+    def download(self, cap, save_body, stats, log, stop, selected_series) -> None:
+        _download_via_manifest(
+            cap.as_legacy_dict(), save_body, stats, log, stop, selected_series,
+        )
+
+
+class VrpacsAdapter(PacsAdapter):
+    name = "VRPACS"
+    source = "vrpacs"
+    priority = 250
+
+    def observe(self, response, cap: ViewerCapture) -> bool:
+        if "get-share-patient-image" in response.url and cap.vrpacs is None:
+            cap.vrpacs = response.body()
+            return True
+        return False
+
+    def is_ready(self, cap: ViewerCapture) -> bool:
+        return cap.vrpacs is not None
+
+    def has_series_manifest(self, cap: ViewerCapture) -> bool:
+        return cap.vrpacs is not None
+
+    def series_choices(self, cap: ViewerCapture) -> list[dict]:
+        return _vrpacs_series_choices(cap.vrpacs)
+
+    def download(self, cap, save_body, stats, log, stop, selected_series) -> None:
+        _download_via_vrpacs(
+            cap.as_legacy_dict(), save_body, stats, log, stop, selected_series,
+        )
+
+
+class DicomWebAdapter(PacsAdapter):
+    """OHIF / dcm4chee / Orthanc / static-wado (PACS BV Hà Tĩnh...)."""
+
+    name = "DICOMweb"
+    source = "dicomweb"
+    priority = 200
+
+    def observe(self, response, cap: ViewerCapture) -> bool:
+        url = response.url
+        if url.split("?")[0].rstrip("/").endswith("/series"):
+            if cap.qido_series is None:
+                cap.qido_series = url
+                # Giữ lại "giấy thông hành" viewer đang dùng (Authorization,
+                # X-...) để tải ngoài trình duyệt bằng đúng quyền đó. Việc LỌC
+                # header để đến lúc dùng, trong `_download_via_dicomweb()` — một
+                # chỗ lọc là đủ.
+                try:
+                    cap.api_headers = response.request.all_headers()
+                except Exception:
+                    try:
+                        cap.api_headers = dict(response.request.headers)
+                    except Exception:
+                        pass
+            # Đọc thân riêng: response đầu có thể đọc hỏng, và phần liệt kê
+            # series sống nhờ đúng thân này nên phải cho nó cơ hội thử lại.
+            if cap.qido_series_body is None:
+                try:
+                    cap.qido_series_body = response.body()
+                except Exception:
+                    pass
+            return True
+        ct = response.headers.get("content-type", "").lower()
+        if (cap.wado_tmpl is None and ct.startswith("application/dicom")
+                and "json" not in ct
+                and ("wado" in url.lower() or "objectuid" in url.lower())):
+            cap.wado_tmpl = url
+        return False
+
+    def is_ready(self, cap: ViewerCapture) -> bool:
+        # QIDO series một mình là đủ: `_download_via_dicomweb()` tự dò WADO-URI /
+        # WADO-RS / dựng lại từ frames (BV Hà Tĩnh không phát URL chứa "wado").
+        return bool(cap.qido_series)
+
+    def has_series_manifest(self, cap: ViewerCapture) -> bool:
+        return cap.qido_series_body is not None
+
+    def series_choices(self, cap: ViewerCapture) -> list[dict]:
+        return _dicomweb_series_choices(cap.qido_series_body)
+
+    def download(self, cap, save_body, stats, log, stop, selected_series) -> None:
+        _download_via_dicomweb(
+            cap.as_legacy_dict(), save_body, stats, log, stop, selected_series,
+        )
+
+
+# Không giữ trạng thái riêng — mọi thứ nhặt được nằm trong `ViewerCapture`, nên
+# dùng chung một bộ instance cho mọi phiên tải là an toàn.
+PACS_ADAPTERS: tuple[PacsAdapter, ...] = (
+    VradAdapter(),
+    VrpacsAdapter(),
+    DicomWebAdapter(),
+)
+
+
+def _observe_response(response, cap: ViewerCapture) -> bool:
+    """Cho mọi adapter soi một response. True = đây là manifest của một dòng PACS.
+
+    Một adapter hỏng không được phép làm hỏng cả phiên tải.
+    """
+    for adapter in PACS_ADAPTERS:
+        try:
+            if adapter.observe(response, cap):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _ready_adapter(cap: ViewerCapture) -> Optional[PacsAdapter]:
+    """Adapter đủ dữ kiện để TẢI, ưu tiên dòng chuyên biệt trước dòng chung."""
+    ready = [a for a in PACS_ADAPTERS if a.is_ready(cap)]
+    return max(ready, key=lambda a: a.priority) if ready else None
+
+
+def _series_manifest_adapter(cap: ViewerCapture) -> Optional[PacsAdapter]:
+    """Adapter đủ dữ kiện để LIỆT KÊ series."""
+    ready = [a for a in PACS_ADAPTERS if a.has_series_manifest(cap)]
+    return max(ready, key=lambda a: a.priority) if ready else None
 
 
 def download_all(
@@ -785,12 +1047,16 @@ def download_all(
     def stop() -> bool:
         return bool(should_stop and should_stop())
 
-    def save_body(body: bytes, _depth: int = 0) -> bool:
+    def save_body(body: bytes, _depth: int = 0, fidelity: str = "original") -> bool:
         """Lưu 1 ảnh (nhận diện theo NỘI DUNG, không phụ thuộc endpoint), tự loại
         trùng theo SHA-1. An toàn khi gọi từ nhiều luồng.
 
         Trả về True nếu ảnh đã nằm trên đĩa (mới lưu hoặc đã có sẵn) — chỗ gọi
         dựa vào đây để biết ảnh nào cần tải lại, thay vì nuốt lỗi.
+
+        `fidelity` cho biết ảnh này là bản gốc PACS phát ra ("original") hay do
+        app dựng lại từ metadata + frame ("reconstructed"). Mặc định "original"
+        để mọi chỗ gọi cũ giữ nguyên ý nghĩa; chỉ đường frames phải khai khác đi.
         """
         nonlocal dicom_dir, raw_jpg_dir, output_resolved
         if not body:
@@ -807,7 +1073,7 @@ def download_all(
                 image_parts = [part for _pct, part in parts if _guess_ext(_maybe_base64_decode(part)) in ("dcm", "jpg", "png")]
                 if not image_parts:
                     return False
-                saved = [save_body(part, 1) for part in image_parts]
+                saved = [save_body(part, 1, fidelity) for part in image_parts]
                 return bool(saved and all(saved))
             return False
         if ext == "dcm":
@@ -827,6 +1093,10 @@ def download_all(
             seen_hashes.add(h)
             if ext == "dcm":
                 stats.dicom += 1; idx = stats.dicom
+                if fidelity == "reconstructed":
+                    stats.reconstructed_dicom += 1
+                else:
+                    stats.original_dicom += 1
             elif ext == "jpg":
                 stats.jpg += 1; idx = stats.jpg
             else:  # png
@@ -857,13 +1127,8 @@ def download_all(
             (raw_jpg_dir / f"img_{idx:05d}.png").write_bytes(data)
         return True
 
-    # Thu thập manifest của các dòng viewer đã biết:
-    #   • VradViewer  -> StudyData/GetStudies (+ 1 URL ảnh thật làm khuôn)
-    #   • vrpacs/telerad -> vrpacs-file/get-share-patient-image
-    captured = {"getstudies": None, "template_url": None, "vrpacs": None,
-                "qido_series": None, "qido_series_body": None,
-                "wado_tmpl": None, "host": None, "cookies": None,
-                "api_headers": None, "session_error": None}
+    # Việc nhận diện dòng PACS nằm hết trong PACS_ADAPTERS ở trên.
+    cap = ViewerCapture()
     capture_bodies = selected_series is None
 
     def _want_capture(resp) -> bool:
@@ -876,55 +1141,21 @@ def download_all(
 
     def on_response(response) -> None:
         try:
-            u = response.url
-            ct = response.headers.get("content-type", "").lower()
             # Session/share bị server từ chối (vd PACS BV Hà Tĩnh trả 400 khi
             # link hết hạn: /ws/rest/v1/session/<uuid>)
-            if (captured["session_error"] is None and response.status >= 400
-                    and re.search(r"/(session|share)s?/[0-9a-fA-F\-]{8,}", u)):
-                captured["session_error"] = str(response.status)
-            if "StudyData/GetStudies" in u and captured["getstudies"] is None:
-                captured["getstudies"] = response.body()
+            if (cap.session_error is None and response.status >= 400
+                    and re.search(r"/(session|share)s?/[0-9a-fA-F\-]{8,}", response.url)):
+                cap.session_error = str(response.status)
+            # Manifest thì để adapter giữ, và KHÔNG đem đi lưu như ảnh.
+            if _observe_response(response, cap):
                 return
-            if "get-share-patient-image" in u and captured["vrpacs"] is None:
-                captured["vrpacs"] = response.body()
-                return
-            # DICOMweb QIDO: danh sách series (…/studies/<uid>/series)
-            if (captured["qido_series"] is None
-                    and u.split("?")[0].rstrip("/").endswith("/series")):
-                captured["qido_series"] = u
-                try:
-                    captured["qido_series_body"] = response.body()
-                except Exception:
-                    pass
-                # giữ lại "giấy thông hành" viewer dùng (Authorization, X-...)
-                # để tải trực tiếp ngoài trình duyệt bằng đúng quyền đó
-                try:
-                    captured["api_headers"] = response.request.all_headers()
-                except Exception:
-                    try:
-                        captured["api_headers"] = dict(response.request.headers)
-                    except Exception:
-                        pass
-                return
-            if _want_capture(response):
-                if (captured["template_url"] is None
-                        and "GetImage" in u and "Jpeg" not in u):
-                    captured["template_url"] = u
-                if (captured["wado_tmpl"] is None and ct.startswith("application/dicom")
-                        and "json" not in ct and ("wado" in u.lower() or "objectuid" in u.lower())):
-                    captured["wado_tmpl"] = u
-                if capture_bodies:
-                    save_body(response.body())  # bắt thụ động (bonus + an toàn cho fallback)
+            if _want_capture(response) and capture_bodies:
+                save_body(response.body())  # bắt thụ động (bonus + an toàn cho fallback)
         except Exception:
             pass  # không để lỗi 1 response làm hỏng cả phiên
 
     def _have_manifest() -> bool:
-        # QIDO series một mình là đủ: phần tải sẽ tự dò WADO-URI / WADO-RS /
-        # dựng lại từ frames (PACS BV Hà Tĩnh không phát URL chứa chữ "wado").
-        return bool((captured["getstudies"] and captured["template_url"])
-                    or captured["vrpacs"]
-                    or captured["qido_series"])
+        return _ready_adapter(cap) is not None
 
     used_manifest = False
     with sync_playwright() as p:
@@ -965,14 +1196,14 @@ def download_all(
         # Chờ manifest (hoặc 1 ảnh mẫu) xuất hiện (tối đa ~12s)
         log("Đang dò manifest của viewer...")
         for _ in range(24):
-            if stop() or _have_manifest() or captured["session_error"]:
+            if stop() or _have_manifest() or cap.session_error:
                 break
             page.wait_for_timeout(500)
 
         # Session chết (server trả 4xx cho API session, hoặc viewer hiện
         # "Cannot view images") -> báo rõ HẾT HẠN thay vì lặng lẽ ra 0 ảnh.
         if not _have_manifest():
-            expired = bool(captured["session_error"])
+            expired = bool(cap.session_error)
             if not expired:
                 try:
                     txt = (page.evaluate(
@@ -981,7 +1212,7 @@ def download_all(
                 except Exception:
                     pass
             if expired:
-                code = captured["session_error"] or "?"
+                code = cap.session_error or "?"
                 log(f"!!! Link đã HẾT HẠN / SESSION không còn hiệu lực (server trả {code}). "
                     f"Hãy lấy LINK MỚI từ trang xem rồi tải lại NGAY (loại link này sống rất ngắn).")
                 browser.close()
@@ -992,8 +1223,8 @@ def download_all(
             try:
                 from urllib.parse import urlparse as _up
                 pu = _up(page.url)
-                captured["host"] = f"{pu.scheme}://{pu.netloc}"
-                captured["cookies"] = context.cookies()
+                cap.host = f"{pu.scheme}://{pu.netloc}"
+                cap.cookies = context.cookies()
             except Exception:
                 pass
             log("✓ Có manifest → tải TRỰC TIẾP theo API (không cần click/cuộn).")
@@ -1013,23 +1244,24 @@ def download_all(
                 page.wait_for_timeout(settle_ms)
             browser.close()
 
-    # Tải trực tiếp (ngoài trình duyệt, bằng HTTP) nếu có manifest
+    # Tải trực tiếp (ngoài trình duyệt, bằng HTTP) nếu có manifest.
+    #
+    # `used_manifest` được chốt lúc đóng trình duyệt, KHÔNG tính lại ở đây: chế
+    # độ mô phỏng có thể làm viewer phát muộn một response manifest, và nếu chỉ
+    # nhìn `_ready_adapter(cap)` thì ca đó sẽ bị tải hai lượt.
     if used_manifest and not stop():
-        if captured["getstudies"] and captured["template_url"]:
-            _download_via_manifest(
-                captured, save_body, stats, log, stop, selected_series,
-            )      # VradViewer
-        elif captured["vrpacs"]:
-            _download_via_vrpacs(
-                captured, save_body, stats, log, stop, selected_series,
-            )        # vrpacs/telerad
-        elif captured["qido_series"]:
-            _download_via_dicomweb(
-                captured, save_body, stats, log, stop, selected_series,
-            )      # OHIF/DICOMweb
+        adapter = _ready_adapter(cap)
+        if adapter is not None:
+            log(f"✓ Nhận diện dòng PACS: {adapter.name} → tải trực tiếp bằng API.")
+            adapter.download(
+                cap, save_body, stats, log, stop, selected_series,
+            )
 
     log(f"Tải xong. Tổng ảnh: {stats.total()} "
         f"(DICOM {stats.dicom}, JPG {stats.jpg}, PNG {stats.png}, trùng bỏ {stats.duplicates}).")
+    fidelity = stats.fidelity_report()
+    if fidelity:
+        log(f"  Nguồn gốc ảnh: {fidelity}.")
     return stats
 
 
@@ -1042,29 +1274,20 @@ def discover_viewer_series(
     """Open a viewer read-only and return the selectable series inventory."""
     from playwright.sync_api import sync_playwright
 
-    captured = {
-        "getstudies": None,
-        "vrpacs": None,
-        "qido_series_body": None,
-        "session_error": None,
-    }
+    # Dùng CHUNG bộ adapter với `download_all()`. Trước đây chỗ này chép lại
+    # logic nhận diện lần thứ hai, nên thêm một PACS mới là phải sửa cả hai nơi
+    # và hai bản đã bắt đầu lệch nhau.
+    cap = ViewerCapture()
 
     def stop() -> bool:
         return bool(should_stop and should_stop())
 
     def on_response(response) -> None:
         try:
-            response_url = response.url
-            if (captured["session_error"] is None and response.status >= 400
-                    and re.search(r"/(session|share)s?/[0-9a-fA-F\-]{8,}", response_url)):
-                captured["session_error"] = str(response.status)
-            if "StudyData/GetStudies" in response_url and captured["getstudies"] is None:
-                captured["getstudies"] = response.body()
-            elif "get-share-patient-image" in response_url and captured["vrpacs"] is None:
-                captured["vrpacs"] = response.body()
-            elif (captured["qido_series_body"] is None
-                  and response_url.split("?")[0].rstrip("/").endswith("/series")):
-                captured["qido_series_body"] = response.body()
+            if (cap.session_error is None and response.status >= 400
+                    and re.search(r"/(session|share)s?/[0-9a-fA-F\-]{8,}", response.url)):
+                cap.session_error = str(response.status)
+            _observe_response(response, cap)
         except Exception:
             pass
 
@@ -1084,33 +1307,25 @@ def discover_viewer_series(
             log(f"  Cảnh báo khi mở viewer: {exc}")
 
         for _ in range(30):
-            if stop() or any((
-                captured["getstudies"], captured["vrpacs"],
-                captured["qido_series_body"], captured["session_error"],
-            )):
+            if stop() or _series_manifest_adapter(cap) or cap.session_error:
                 break
             page.wait_for_timeout(400)
 
         if stop():
             browser.close()
             return {"source": "stopped", "series": [], "selectable": False}
-        if captured["session_error"]:
-            code = captured["session_error"]
+        if cap.session_error:
+            code = cap.session_error
             browser.close()
             raise ValueError(f"Link viewer hết hạn hoặc session bị từ chối (HTTP {code}).")
 
         source = ""
         choices: list[dict] = []
         try:
-            if captured["getstudies"]:
-                source = "vrad"
-                choices = _vrad_series_choices(captured["getstudies"])
-            elif captured["vrpacs"]:
-                source = "vrpacs"
-                choices = _vrpacs_series_choices(captured["vrpacs"])
-            elif captured["qido_series_body"]:
-                source = "dicomweb"
-                choices = _dicomweb_series_choices(captured["qido_series_body"])
+            adapter = _series_manifest_adapter(cap)
+            if adapter is not None:
+                source = adapter.source
+                choices = adapter.series_choices(cap)
         except Exception as exc:
             log(f"Không đọc được danh sách series từ manifest: {exc}")
 
@@ -1567,7 +1782,9 @@ def _download_via_dicomweb(captured, save_body, stats,
         blob = _dicom_from_meta_frames(meta, frames, fct)
         if not blob:
             return False
-        return save_body(blob)
+        # File này do app tự dựng từ metadata + frame, không phải Part-10 gốc
+        # của PACS — phải khai đúng để báo cáo cuối nói thật.
+        return save_body(blob, fidelity="reconstructed")
 
     fetchers = {"wadouri": try_wadouri, "wadors": try_wadors, "frames": try_frames}
 
@@ -2953,9 +3170,16 @@ def extract_patient_metadata(dicom_dir: Path, manual_info: Optional[dict] = None
                 seen_birth_dates.add(normalised_birth)
             if raw_sex:
                 seen_sexes.add(raw_sex)
+            # Ngày sinh lệch ngày/tháng trong cùng MỘT NĂM là chuyện thường: RIS
+            # chỉ biết năm thì phát ra YYYY-01-01, còn DICOM có ngày đầy đủ. Lệch
+            # NĂM sinh thì vẫn là hai người khác nhau.
+            # Giới tính 'O' (Other) là giá trị "không rõ" của DICOM, không tính
+            # là mâu thuẫn.
             if (
                 len(seen_ids) > 1
                 or len(seen_names) > 1
+                or len({d[:4] for d in seen_birth_dates}) > 1
+                or len(seen_sexes - {"O"}) > 1
             ):
                 raise PatientIdentityConflictError(
                     "DICOM trong cùng folder chứa nhiều định danh bệnh nhân khác nhau."
@@ -3044,12 +3268,20 @@ def _merge_manifest_demographics(manifest: dict, metadata: dict) -> None:
             if not current:
                 manifest[target] = incoming
             elif target == "patientBirthDate":
+                # CHỈ nâng cấp ngày sinh ước lượng (RIS biết mỗi năm sinh nên
+                # phát ra YYYY-01-01) lên ngày sinh đầy đủ của DICOM TRONG CÙNG
+                # NĂM. Không bao giờ sửa NĂM sinh và không ghi đè ngày đã chính
+                # xác — hai việc đó là đổi định danh bệnh nhân, không phải làm
+                # rõ thêm.
                 cur_norm = _normalise_dicom_date(str(current))
                 inc_norm = _normalise_dicom_date(str(incoming))
-                if cur_norm and inc_norm and cur_norm != inc_norm:
-                    # Upgrade placeholder 01-01 RIS date to exact DICOM birth date
-                    if cur_norm.endswith("-01-01") or not inc_norm.endswith("-01-01"):
-                        manifest[target] = inc_norm
+                if (
+                    cur_norm and inc_norm and cur_norm != inc_norm
+                    and cur_norm.endswith("-01-01")
+                    and not inc_norm.endswith("-01-01")
+                    and cur_norm[:4] == inc_norm[:4]
+                ):
+                    manifest[target] = inc_norm
     canonical_name = _patient_display_name(metadata.get("PatientName"))
     if canonical_name and canonical_name != "KHONG_RO_TEN" and not manifest.get("patientName"):
         manifest["patientName"] = canonical_name
@@ -3110,9 +3342,18 @@ def _assert_patient_metadata_matches(
     actual_birth_date = _normalise_dicom_date(metadata.get("PatientBirthDate"))
     expected_birth_date = _normalise_dicom_date(expected_birth_date)
     if actual_birth_date and expected_birth_date and actual_birth_date != expected_birth_date:
-        is_placeholder = expected_birth_date.endswith("-01-01") or actual_birth_date.endswith("-01-01")
-        same_year = actual_birth_date[:4] == expected_birth_date[:4]
-        if not (is_placeholder or same_year):
+        # Hồ sơ RIS chỉ biết năm sinh thì ghi YYYY-01-01, còn DICOM có ngày đầy
+        # đủ — lệch kiểu đó KHÔNG phải hai người khác nhau. Nhưng lệch NĂM sinh
+        # thì vẫn phải chặn, kể cả khi một bên là 01-01: đó mới là dấu hiệu ảnh
+        # của bệnh nhân khác đang rơi vào hồ sơ này.
+        placeholder_gap = (
+            actual_birth_date[:4] == expected_birth_date[:4]
+            and (
+                expected_birth_date.endswith("-01-01")
+                or actual_birth_date.endswith("-01-01")
+            )
+        )
+        if not placeholder_gap:
             raise PatientIdentityConflictError(
                 f"Ngày sinh DICOM '{actual_birth_date}' không khớp hồ sơ '{expected_birth_date}'."
             )
@@ -3494,17 +3735,50 @@ _RIS_SESSION_LOCK = threading.Lock()
 _RIS_SESSION_STATES: dict[str, dict] = {}
 
 
-def _ris_session_key(hospital_key: str, base_url: str = "") -> str:
-    """Khóa phiên gắn với ĐÚNG địa chỉ đã đăng nhập.
+def _ris_session_key(hospital_key: str, base_url: str = "", account: str = "") -> str:
+    """Khóa phiên gắn với ĐÚNG địa chỉ và ĐÚNG tài khoản đã đăng nhập.
 
     Một bệnh viện có thể vào bằng địa chỉ LAN hoặc địa chỉ công cộng; cookie của
     host này không dùng được cho host kia, nên phải giữ riêng từng phiên.
+
+    `account` là vân tay của cặp user/mật khẩu (xem `_ris_credentials`). Nhờ nó,
+    đổi sang tài khoản tự nhập là tự trượt cache — không phải xóa phiên bằng
+    tay, nên N ca tải liên tiếp vẫn dùng chung một lần đăng nhập.
     """
-    return f"{str(hospital_key or '').lower()}|{str(base_url or '').rstrip('/').lower()}"
+    return (
+        f"{str(hospital_key or '').lower()}"
+        f"|{str(base_url or '').rstrip('/').lower()}"
+        f"|{account or ''}"
+    )
 
 
-def clear_ris_session_cache(hospital_key: Optional[str] = None) -> None:
-    """Xóa phiên RIS trong RAM; cookie/token không bao giờ được ghi xuống ổ đĩa."""
+def _ris_credentials(
+    info: dict,
+    custom_username: Optional[str] = None,
+    custom_password: Optional[str] = None,
+) -> tuple[str, str, str]:
+    """Chọn tài khoản đăng nhập RIS, kèm vân tay dùng làm khóa phiên.
+
+    Vân tay là băm của cặp user/mật khẩu — đủ để tách phiên của hai tài khoản
+    khác nhau mà không giữ mật khẩu ở dạng đọc được trong khóa cache.
+    """
+    if custom_username and custom_password:
+        username, password = custom_username, custom_password
+    else:
+        username = _dec_cred(info["username_enc"]) if "username_enc" in info else info.get("username", "")
+        password = _dec_cred(info["password_enc"]) if "password_enc" in info else info.get("password", "")
+    token = hashlib.sha1(f"{username}\x00{password}".encode("utf-8")).hexdigest()[:12]
+    return username, password, token
+
+
+def clear_ris_session_cache(
+    hospital_key: Optional[str] = None, account: str = "",
+) -> None:
+    """Xóa phiên RIS trong RAM; cookie/token không bao giờ được ghi xuống ổ đĩa.
+
+    Có `account` thì chỉ xóa phiên của đúng tài khoản đó — phiên của tài khoản
+    còn lại ở cùng bệnh viện vẫn dùng được.
+    """
     global _CHROME_UNAVAILABLE
     with _RIS_SESSION_LOCK:
         if hospital_key is None:
@@ -3514,12 +3788,18 @@ def clear_ris_session_cache(hospital_key: Optional[str] = None) -> None:
                 _BROWSER_NOTICES_LOGGED.clear()
             return
         prefix = f"{hospital_key.lower()}|"
-        for key in [k for k in _RIS_SESSION_STATES if k.startswith(prefix)]:
+        suffix = f"|{account}" if account else ""
+        for key in [
+            k for k in _RIS_SESSION_STATES
+            if k.startswith(prefix) and (not suffix or k.endswith(suffix))
+        ]:
             _RIS_SESSION_STATES.pop(key, None)
 
 
-def _get_ris_session_state(hospital_key: str, base_url: str = "") -> Optional[dict]:
-    key = _ris_session_key(hospital_key, base_url)
+def _get_ris_session_state(
+    hospital_key: str, base_url: str = "", account: str = "",
+) -> Optional[dict]:
+    key = _ris_session_key(hospital_key, base_url, account)
     now = time.monotonic()
     with _RIS_SESSION_LOCK:
         entry = _RIS_SESSION_STATES.get(key)
@@ -3532,9 +3812,11 @@ def _get_ris_session_state(hospital_key: str, base_url: str = "") -> Optional[di
         return copy.deepcopy(entry["storage_state"])
 
 
-def _store_ris_session_state(hospital_key: str, storage_state: dict, base_url: str = "") -> None:
+def _store_ris_session_state(
+    hospital_key: str, storage_state: dict, base_url: str = "", account: str = "",
+) -> None:
     with _RIS_SESSION_LOCK:
-        _RIS_SESSION_STATES[_ris_session_key(hospital_key, base_url)] = {
+        _RIS_SESSION_STATES[_ris_session_key(hospital_key, base_url, account)] = {
             "storage_state": copy.deepcopy(storage_state),
             "last_used": time.monotonic(),
         }
@@ -3699,14 +3981,9 @@ def resolve_study_viewer_url(
     base_url = _pick_hospital_base_url(info, log)
     login_url = _ris_login_url(base_url)
     wrapper_url = f"{base_url}/ris/vrViewer?studyUID={uid}&viewType=VIEWERV2"
-    if custom_username and custom_password:
-        username = custom_username
-        password = custom_password
-        # Force clear session cache when using custom credentials to ensure clean login
-        clear_ris_session_cache(hospital_key)
-    else:
-        username = _dec_cred(info["username_enc"]) if "username_enc" in info else info.get("username", "")
-        password = _dec_cred(info["password_enc"]) if "password_enc" in info else info.get("password", "")
+    username, password, account = _ris_credentials(
+        info, custom_username, custom_password,
+    )
     reading_url = f"{base_url}/ris/study/reading"
 
     with sync_playwright() as p:
@@ -3716,7 +3993,7 @@ def resolve_study_viewer_url(
             viewport={"width": 1600, "height": 1000},
             ignore_https_errors=True,
         )
-        cached = _get_ris_session_state(hospital_key, base_url)
+        cached = _get_ris_session_state(hospital_key, base_url, account)
         if cached:
             options["storage_state"] = cached
         context = browser.new_context(**options)
@@ -3728,7 +4005,7 @@ def resolve_study_viewer_url(
                     log("      Phiên RIS cũ đã hết hạn; app đang tự đăng nhập lại một lần.")
                 else:
                     log("      Chưa có phiên RIS hợp lệ; app đang tự đăng nhập một lần.")
-                clear_ris_session_cache(hospital_key)
+                clear_ris_session_cache(hospital_key, account)
                 if not _perform_ris_login(
                     page, login_url, reading_url, username, password,
                 ):
@@ -3743,7 +4020,9 @@ def resolve_study_viewer_url(
                 raise RuntimeError(
                     "RIS không trả về khung viewer sau 15 giây (mạng chậm hoặc PACS bận)."
                 )
-            _store_ris_session_state(hospital_key, context.storage_state(), base_url)
+            _store_ris_session_state(
+                hospital_key, context.storage_state(), base_url, account,
+            )
             return viewer_url
         except Exception as exc:
             friendly = _server_unreachable_message(exc, info["name"], base_url)
@@ -3858,17 +4137,12 @@ def search_patient_studies(
 
     base_url = _pick_hospital_base_url(info, log)
     login_url = _ris_login_url(base_url)
-    if custom_username and custom_password:
-        username = custom_username
-        password = custom_password
-        # Force clear session cache when using custom credentials to ensure clean login
-        clear_ris_session_cache(hospital_key)
-    else:
-        username = _dec_cred(info["username_enc"]) if "username_enc" in info else info.get("username", "")
-        password = _dec_cred(info["password_enc"]) if "password_enc" in info else info.get("password", "")
+    username, password, account = _ris_credentials(
+        info, custom_username, custom_password,
+    )
 
     reading_url = f"{base_url}/ris/study/reading"
-    cached_state = _get_ris_session_state(hospital_key, base_url)
+    cached_state = _get_ris_session_state(hospital_key, base_url, account)
     if cached_state:
         log(f"Đang tái sử dụng phiên RIS {info['name']} trong bộ nhớ...")
     else:
@@ -3899,7 +4173,7 @@ def search_patient_studies(
                     session_reused = False
 
             if not session_reused:
-                clear_ris_session_cache(hospital_key)
+                clear_ris_session_cache(hospital_key, account)
                 if not _perform_ris_login(
                     page, login_url, reading_url, username, password,
                 ):
@@ -3911,7 +4185,7 @@ def search_patient_studies(
             if api_result.get("authFailed"):
                 log("Phiên RIS đã hết hạn; đang tự đăng nhập lại một lần...")
                 session_reused = False
-                clear_ris_session_cache(hospital_key)
+                clear_ris_session_cache(hospital_key, account)
                 if not _perform_ris_login(
                     page, login_url, reading_url, username, password,
                 ):
@@ -3920,7 +4194,9 @@ def search_patient_studies(
                 if api_result.get("authFailed"):
                     raise RuntimeError("RIS tiếp tục từ chối phiên sau khi đăng nhập lại.")
 
-            _store_ris_session_state(hospital_key, context.storage_state(), base_url)
+            _store_ris_session_state(
+                hospital_key, context.storage_state(), base_url, account,
+            )
             if session_reused:
                 log(f"✓ Đã dùng lại phiên RIS {info['name']} — không cần đăng nhập lại.")
             else:

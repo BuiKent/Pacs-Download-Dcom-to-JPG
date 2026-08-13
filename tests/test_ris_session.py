@@ -150,6 +150,48 @@ class RisSessionTests(unittest.TestCase):
         self.assertIsNone(dcom_pipeline._get_ris_session_state("dhy", "http://192.168.50.105"))
         self.assertIsNone(dcom_pipeline._get_ris_session_state("dhy", "https://dhy.cdhaviet.vn"))
 
+    def test_sessions_are_kept_per_account(self):
+        """Tài khoản tự nhập và tài khoản mặc định giữ phiên riêng.
+
+        Nhờ vậy đổi tài khoản là tự trượt cache, không phải xóa phiên bằng tay —
+        và tải N ca liên tiếp vẫn dùng chung một lần đăng nhập.
+        """
+        info = {"username_enc": "", "password_enc": ""}
+        _u1, _p1, default_account = dcom_pipeline._ris_credentials(info)
+        _u2, _p2, custom_account = dcom_pipeline._ris_credentials(
+            info, "bacsi_khac", "matkhau",
+        )
+        self.assertNotEqual(default_account, custom_account)
+
+        base = "https://dhy.cdhaviet.vn"
+        dcom_pipeline._store_ris_session_state(
+            "dhy", {"cookies": [{"name": "sid", "value": "MACDINH"}]}, base, default_account,
+        )
+        dcom_pipeline._store_ris_session_state(
+            "dhy", {"cookies": [{"name": "sid", "value": "TUNHAP"}]}, base, custom_account,
+        )
+        self.assertEqual(
+            "MACDINH",
+            dcom_pipeline._get_ris_session_state("dhy", base, default_account)["cookies"][0]["value"],
+        )
+        self.assertEqual(
+            "TUNHAP",
+            dcom_pipeline._get_ris_session_state("dhy", base, custom_account)["cookies"][0]["value"],
+        )
+
+        # Xóa phiên của một tài khoản không được đụng vào tài khoản kia.
+        dcom_pipeline.clear_ris_session_cache("dhy", custom_account)
+        self.assertIsNone(dcom_pipeline._get_ris_session_state("dhy", base, custom_account))
+        self.assertIsNotNone(dcom_pipeline._get_ris_session_state("dhy", base, default_account))
+
+    def test_credentials_do_not_leak_into_the_session_key(self):
+        _u, _p, account = dcom_pipeline._ris_credentials(
+            {}, "bacsi_khac", "matkhau_bi_mat",
+        )
+        key = dcom_pipeline._ris_session_key("dhy", "https://dhy.cdhaviet.vn", account)
+        self.assertNotIn("matkhau_bi_mat", key)
+        self.assertNotIn("bacsi_khac", key)
+
     def test_dai_hoc_y_is_the_default_hospital(self):
         keys = list(dcom_pipeline.HOSPITALS)
         self.assertEqual("dhy", keys[0])

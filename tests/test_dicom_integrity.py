@@ -277,6 +277,29 @@ class DownloadPipelineIntegrityTests(unittest.TestCase):
             self.assertFalse(corrupt_file.exists())
             self.assertTrue(valid_file.exists())
             self.assertEqual(stats.dicom, 1)
+            # File có sẵn không rõ nguồn gốc nên không được khai là DICOM gốc.
+            self.assertEqual(stats.original_dicom, 0)
+            self.assertEqual(stats.reconstructed_dicom, 0)
+
+
+class FidelityReportTests(unittest.TestCase):
+    """Một file .dcm không mặc nhiên là bản gốc của máy chụp."""
+
+    def test_report_stays_silent_when_every_file_is_original(self):
+        stats = dcom_pipeline.DownloadStats(dicom=436, original_dicom=436)
+        self.assertEqual("", stats.fidelity_report())
+
+    def test_report_names_the_reconstructed_files(self):
+        stats = dcom_pipeline.DownloadStats(
+            dicom=488, original_dicom=436, reconstructed_dicom=52,
+        )
+        report = stats.fidelity_report()
+        self.assertIn("436", report)
+        self.assertIn("52", report)
+        self.assertIn("dựng lại", report)
+
+    def test_report_is_silent_on_an_empty_download(self):
+        self.assertEqual("", dcom_pipeline.DownloadStats().fidelity_report())
 
 
 class DecodeShieldTests(unittest.TestCase):
