@@ -1,0 +1,63 @@
+--- main.js.orig	2026-08-13 08:21:59.520555843 +0000
++++ main.new.js	2026-08-13 08:24:42.183320445 +0000
+@@ -93,6 +93,10 @@
+   manualPatientDob: "",
+   showLoginCard: false,
+   loginCardAction: null,
++  // "dark" is the original fixed DCom palette; the rest are optional chrome
++  // skins added on top of it (see styles.css [data-theme] blocks). Only the
++  // app chrome changes -- the viewer/image area stays dark in every skin.
++  theme: localStorage.getItem("dcom.theme") || "dark",
+ };
+ let viewerQueue = Promise.resolve();
+ let viewerRequestId = 0;
+@@ -523,6 +527,10 @@
+     )}
+           ${iconButton("choose-archive", icons.folder, t("Mở folder DICOM hoặc JPG/PNG trong viewer"))}
+           ${iconButton("refresh-archive", "⟳", t("Quét lại thư mục hiện tại"), false, !state.archive.root)}
++          <select class="soft-button theme-select" data-field="theme"
++            title="${escapeHtml(t("Giao diện"))}">${Object.entries(THEME_LABELS)
++              .map(([value, label]) => `<option value="${value}"${state.theme === value ? " selected" : ""}>${escapeHtml(label)}</option>`)
++              .join("")}</select>
+           <button class="soft-button" data-action="toggle-language"
+             title="${escapeHtml(t("Chuyển sang tiếng Anh"))}">${getLanguage() === "en" ? "VI" : "EN"}</button>
+           <button class="soft-button" data-action="classic"
+@@ -847,6 +855,10 @@
+     render();
+     renderViewer();
+   });
++  app.querySelector("[data-field='theme']")?.addEventListener("change", (event) => {
++    state.theme = event.target.value;
++    applyTheme();
++  });
+   app.querySelector("[data-field='history']")?.addEventListener("change", (event) => {
+     const entry = state.history[Number(event.target.value)];
+     event.target.selectedIndex = 0;
+@@ -1898,6 +1910,19 @@
+   }
+ }
+ 
++const THEME_LABELS = {
++  dark: "DCom",
++  notion: "Notion",
++  google: "Google",
++  win11: "Windows 11",
++};
++
++/** Apply state.theme to the document and remember the choice locally. */
++function applyTheme() {
++  document.documentElement.dataset.theme = state.theme;
++  localStorage.setItem("dcom.theme", state.theme);
++}
++
+ /** Keep the viewer's own text-note dialog in the selected language. */
+ function applyTextPromptLanguage() {
+   configureTextPrompt({
+@@ -1913,6 +1938,7 @@
+   state.bootstrap = await api("/api/bootstrap");
+   setLanguage(state.bootstrap.language || "en");
+   applyTextPromptLanguage();
++  applyTheme();
+   state.history = Array.isArray(state.bootstrap.history) ? state.bootstrap.history : [];
+   state.lastDirectUrl = state.bootstrap.lastDirectUrl || "";
+   state.showManualInfo = Boolean(state.lastDirectUrl.trim());
