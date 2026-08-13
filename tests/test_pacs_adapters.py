@@ -4,13 +4,54 @@ Trước đây logic này bị chép ở hai nơi (`download_all` và `discover_
 nên rất dễ lệch. Các test dưới đây khóa hành vi nhận diện lại một chỗ.
 """
 
+import json
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import dcom_pipeline
+
+
+def _vietmy_file(file_id: int) -> dict:
+    """Một ảnh trong manifest MSC PACS: có cả link gốc lẫn link JPEG dựng sẵn."""
+    return {
+        "fileId": file_id,
+        "instanceNo": str(file_id),
+        "imagePath": f"https://vietmy.pmr.vn/ws/getimagefile.ashx?fileId={file_id}&stoken=abc",
+        "filePath": f"https://vietmy.pmr.vn/ws/getfile.ashx?studyId=1&fileId={file_id}&zstd=true&stoken=abc",
+        "wanFilePath": f"https://vietmy.pmr.vn/ws/getfile.ashx?studyId=1&fileId={file_id}&zstd=true&stoken=abc",
+    }
+
+
+# ws.asmx bọc kết quả trong {"d": ...}; giữ nguyên hình dạng thật của server.
+VIETMY_MANIFEST = json.dumps({"d": {
+    "studyUID": "1.2.392.200036.9123.1.1",
+    "patientName": "NGUYEN THI VAN",
+    "modality": "MR",
+    "seriesList": [
+        {
+            "seriesId": 364804,
+            "seriesUID": "1.2.392.200036.9123.1.7",
+            "seriesDescription": "T2 SAG",
+            "seriesNumber": "7",
+            "numberOfFrames": 10,
+            "modality": ["MR"],
+            "fileList": [_vietmy_file(1), _vietmy_file(2)],
+        },
+        {
+            "seriesId": 364803,
+            "seriesUID": "1.2.392.200036.9123.1.8",
+            "seriesDescription": "T1 SAG",
+            "seriesNumber": "8",
+            "numberOfFrames": 10,
+            "modality": ["MR"],
+            "fileList": [_vietmy_file(3)],
+        },
+    ],
+}}).encode("utf-8")
 
 
 class FakeRequest:
@@ -80,6 +121,69 @@ class AdapterDetectionTests(unittest.TestCase):
         self.assertTrue(matched)
         adapter = dcom_pipeline._ready_adapter(cap)
         self.assertEqual("VRPACS", adapter.name)
+
+    def test_vietmy_is_ready_from_getlistimagefileinfo_alone(self):
+        """MSC PACS vẽ ảnh bằng WebGL — chỉ manifest này mới lần ra DICOM gốc."""
+        cap = dcom_pipeline.ViewerCapture()
+        # Mở trang chia sẻ thôi thì chưa nhận ra gì cả: chưa có manifest.
+        dcom_pipeline._observe_response(
+            FakeResponse("https://vietmy.pmr.vn/Pages/ShareStudy.aspx?stoken=abc12345", b""), cap,
+        )
+        self.assertIsNone(dcom_pipeline._ready_adapter(cap))
+
+        matched = dcom_pipeline._observe_response(
+            FakeResponse("https://vietmy.pmr.vn/WS/ws.asmx/GetListImageFileInfo",
+                         VIETMY_MANIFEST), cap,
+        )
+        self.assertTrue(matched)
+        adapter = dcom_pipeline._ready_adapter(cap)
+        self.assertEqual("VietMy", adapter.name)
+        self.assertEqual("vietmy", adapter.source)
+
+        choices = adapter.series_choices(cap)
+        self.assertEqual(2, len(choices))
+        self.assertEqual("T2 SAG", choices[0]["description"])
+        # Đếm theo `fileList`, không tin `numberOfFrames` (lệch khi multi-frame).
+        self.assertEqual(2, choices[0]["imageCount"])
+        self.assertEqual("MR", choices[0]["modality"])
+        # id phải là SeriesInstanceUID thật để chọn lọc series khớp giữa 2 lần mở.
+        self.assertEqual("1.2.392.200036.9123.1.7", choices[0]["id"])
+
+    def test_vietmy_download_uses_original_dicom_not_rendered_jpeg(self):
+        captured = {"vietmy": VIETMY_MANIFEST, "cookies": []}
+        stats = dcom_pipeline.DownloadStats()
+        fetched = []
+
+        def fake_run(tasks, fetch, *args, **kwargs):
+            fetched.extend(tasks)
+
+        with mock.patch.object(dcom_pipeline, "_run_fetch_tasks", fake_run), \
+             mock.patch.object(dcom_pipeline, "_report_download_result", lambda *a, **k: None):
+            dcom_pipeline._download_via_vietmy(
+                captured, lambda b: True, stats, lambda *a: None, lambda: False, None,
+            )
+
+        self.assertEqual(3, len(fetched))
+        self.assertTrue(all("getfile.ashx" in u for u in fetched),
+                        f"phải tải DICOM gốc qua getfile.ashx, đang lấy: {fetched}")
+        self.assertFalse(any("getimagefile.ashx" in u for u in fetched),
+                         "getimagefile.ashx là JPEG viewer dựng sẵn, không phải bản gốc")
+
+    def test_vietmy_download_honours_series_selection(self):
+        captured = {"vietmy": VIETMY_MANIFEST, "cookies": []}
+        stats = dcom_pipeline.DownloadStats()
+        fetched = []
+
+        with mock.patch.object(dcom_pipeline, "_run_fetch_tasks",
+                               lambda tasks, *a, **k: fetched.extend(tasks)), \
+             mock.patch.object(dcom_pipeline, "_report_download_result", lambda *a, **k: None):
+            dcom_pipeline._download_via_vietmy(
+                captured, lambda b: True, stats, lambda *a: None, lambda: False,
+                {"1.2.392.200036.9123.1.8"},
+            )
+
+        self.assertEqual(1, len(fetched))
+        self.assertIn("fileId=3", fetched[0])
 
     def test_dicomweb_is_ready_from_qido_series_alone(self):
         """BV Hà Tĩnh không phát URL nào chứa chữ 'wado' — QIDO phải là đủ."""
@@ -170,7 +274,7 @@ class LegacyDictTests(unittest.TestCase):
     def test_every_key_the_downloaders_read_is_present(self):
         keys = set(dcom_pipeline.ViewerCapture().as_legacy_dict())
         for needed in (
-            "getstudies", "template_url", "vrpacs", "qido_series",
+            "getstudies", "template_url", "vrpacs", "vietmy", "qido_series",
             "qido_series_body", "wado_tmpl", "host", "cookies",
             "api_headers", "session_error",
         ):

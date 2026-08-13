@@ -571,6 +571,36 @@ def _vrpacs_series_choices(body: bytes) -> list[dict]:
     return [_normalise_series_choice(item, "vrpacs", index) for index, item in enumerate(raw_series)]
 
 
+def _vietmy_study(body: bytes) -> dict:
+    """Bóc study ra khỏi vỏ ASP.NET `{"d": ...}` của ws.asmx.
+
+    Tuỳ endpoint mà `d` là object sẵn hay còn là chuỗi JSON lồng, nên phải thử
+    cả hai — sai một nước là mất sạch manifest.
+    """
+    payload = json.loads(body.decode("utf-8", "replace"))
+    data = payload.get("d", payload) if isinstance(payload, dict) else payload
+    if isinstance(data, str):
+        data = json.loads(data)
+    return data if isinstance(data, dict) else {}
+
+
+def _vietmy_series_choices(body: bytes) -> list[dict]:
+    study = _vietmy_study(body)
+    choices = []
+    for index, series in enumerate(study.get("seriesList", []) or []):
+        raw = dict(series)
+        # Manifest đếm ảnh bằng chính `fileList`; `numberOfFrames` là số frame
+        # của series nên với ảnh multi-frame hai con số này lệch nhau.
+        raw["imageCount"] = len(series.get("fileList", []) or [])
+        modality = series.get("modality")
+        if isinstance(modality, list) and modality:
+            raw["modality"] = modality[0]
+        if not raw.get("modality"):
+            raw["modality"] = study.get("modality") or ""
+        choices.append(_normalise_series_choice(raw, "vietmy", index))
+    return choices
+
+
 def _dicom_json_value(item: dict, tag: str) -> Any:
     values = (item.get(tag, {}) or {}).get("Value", [None])
     return values[0] if values else ""
@@ -748,6 +778,8 @@ class ViewerCapture:
 
     vrpacs: Optional[bytes] = None
 
+    vietmy: Optional[bytes] = None
+
     qido_series: Optional[str] = None
     qido_series_body: Optional[bytes] = None
     wado_tmpl: Optional[str] = None
@@ -767,6 +799,7 @@ class ViewerCapture:
             "getstudies": self.getstudies,
             "template_url": self.template_url,
             "vrpacs": self.vrpacs,
+            "vietmy": self.vietmy,
             "qido_series": self.qido_series,
             "qido_series_body": self.qido_series_body,
             "wado_tmpl": self.wado_tmpl,
@@ -924,11 +957,46 @@ class DicomWebAdapter(PacsAdapter):
         )
 
 
+class VietmyAdapter(PacsAdapter):
+    """MSC PACS (vietmy.pmr.vn — link chia sẻ ShareStudy.aspx).
+
+    Viewer vẽ ảnh bằng WebGL nên KHÔNG có request ảnh rời để bắt; bù lại nó gọi
+    `ws.asmx/GetListImageFileInfo` một lần, và chính manifest đó đã chứa link
+    DICOM gốc của từng ảnh. Bám vào manifest là lấy được bản gốc, không phải
+    ảnh màn hình.
+    """
+
+    name = "VietMy"
+    source = "vietmy"
+    priority = 270
+
+    def observe(self, response, cap: ViewerCapture) -> bool:
+        if "GetListImageFileInfo" in response.url and cap.vietmy is None:
+            cap.vietmy = response.body()
+            return True
+        return False
+
+    def is_ready(self, cap: ViewerCapture) -> bool:
+        return cap.vietmy is not None
+
+    def has_series_manifest(self, cap: ViewerCapture) -> bool:
+        return cap.vietmy is not None
+
+    def series_choices(self, cap: ViewerCapture) -> list[dict]:
+        return _vietmy_series_choices(cap.vietmy)
+
+    def download(self, cap, save_body, stats, log, stop, selected_series) -> None:
+        _download_via_vietmy(
+            cap.as_legacy_dict(), save_body, stats, log, stop, selected_series,
+        )
+
+
 # Không giữ trạng thái riêng — mọi thứ nhặt được nằm trong `ViewerCapture`, nên
 # dùng chung một bộ instance cho mọi phiên tải là an toàn.
 PACS_ADAPTERS: tuple[PacsAdapter, ...] = (
     VradAdapter(),
     VrpacsAdapter(),
+    VietmyAdapter(),
     DicomWebAdapter(),
 )
 
@@ -957,6 +1025,44 @@ def _series_manifest_adapter(cap: ViewerCapture) -> Optional[PacsAdapter]:
     """Adapter đủ dữ kiện để LIỆT KÊ series."""
     ready = [a for a in PACS_ADAPTERS if a.has_series_manifest(cap)]
     return max(ready, key=lambda a: a.priority) if ready else None
+
+
+# Chờ manifest theo NHỊP CỦA TRANG, không theo đồng hồ cứng: MSC PACS mất ~15s
+# mới gọi API manifest, nên hạn cứng 12s cũ khiến app bỏ cuộc ngay trước vạch rồi
+# rơi xuống chế độ mô phỏng (chỉ bắt được ảnh màn hình). Ngược lại, trang hỏng
+# hoặc không có manifest thì im lặng rất sớm — bám vào lúc mạng lặng đi để thôi
+# chờ, nhanh như cũ với trang chết mà vẫn kịp với viewer chậm.
+_MANIFEST_WAIT_MIN_S = 8.0
+_MANIFEST_WAIT_MAX_S = 30.0
+_MANIFEST_IDLE_S = 4.0
+
+
+def _wait_for_viewer_manifest(page, found: Callable[[], bool],
+                              stop: Callable[[], bool], poll_ms: int = 400) -> None:
+    last_activity = time.monotonic()
+
+    def _touch(*_args) -> None:
+        nonlocal last_activity
+        last_activity = time.monotonic()
+
+    page.on("request", _touch)
+    page.on("response", _touch)
+    started = time.monotonic()
+    try:
+        while not (stop() or found()):
+            now = time.monotonic()
+            elapsed = now - started
+            if elapsed >= _MANIFEST_WAIT_MAX_S:
+                return
+            if elapsed >= _MANIFEST_WAIT_MIN_S and now - last_activity >= _MANIFEST_IDLE_S:
+                return
+            page.wait_for_timeout(poll_ms)
+    finally:
+        for event in ("request", "response"):
+            try:
+                page.remove_listener(event, _touch)
+            except Exception:
+                pass
 
 
 def download_all(
@@ -1195,10 +1301,9 @@ def download_all(
 
         # Chờ manifest (hoặc 1 ảnh mẫu) xuất hiện (tối đa ~12s)
         log("Đang dò manifest của viewer...")
-        for _ in range(24):
-            if stop() or _have_manifest() or cap.session_error:
-                break
-            page.wait_for_timeout(500)
+        _wait_for_viewer_manifest(
+            page, lambda: _have_manifest() or bool(cap.session_error), stop,
+        )
 
         # Session chết (server trả 4xx cho API session, hoặc viewer hiện
         # "Cannot view images") -> báo rõ HẾT HẠN thay vì lặng lẽ ra 0 ảnh.
@@ -1306,10 +1411,11 @@ def discover_viewer_series(
         except Exception as exc:
             log(f"  Cảnh báo khi mở viewer: {exc}")
 
-        for _ in range(30):
-            if stop() or _series_manifest_adapter(cap) or cap.session_error:
-                break
-            page.wait_for_timeout(400)
+        _wait_for_viewer_manifest(
+            page,
+            lambda: bool(_series_manifest_adapter(cap) or cap.session_error),
+            stop,
+        )
 
         if stop():
             browser.close()
@@ -1577,6 +1683,59 @@ def _download_via_vrpacs(captured, save_body, stats,
 
     log(f"Manifest (vrpacs): {n_series} series, {len(tasks)} ảnh. "
         f"Đang tải trực tiếp (6 luồng song song)...")
+
+    def fetch_one(u) -> bool:
+        req = urllib.request.Request(u, headers={"Cookie": cj} if cj else {})
+        with urllib.request.urlopen(req, timeout=45, context=sslctx) as r:
+            return save_body(r.read())
+
+    _run_fetch_tasks(tasks, fetch_one, stats, log, stop)
+    _report_download_result(stats, len(tasks), log, stop)
+
+
+def _download_via_vietmy(captured, save_body, stats,
+                         log: LogFn, stop: Callable[[], bool],
+                         selected_series: Optional[set[str]] = None) -> None:
+    """
+    Tải DICOM gốc của MSC PACS (vietmy.pmr.vn) theo manifest
+    `ws.asmx/GetListImageFileInfo`.
+
+    Mỗi ảnh trong manifest có sẵn `filePath` — link `ws/getfile.ashx` đã kèm
+    `stoken` của chính link chia sẻ, trả về file .dcm nguyên bản của máy chụp.
+    KHÔNG dùng `imagePath`: đó là JPEG viewer đã dựng sẵn, mất dải xám 12 bit.
+    """
+    import ssl
+    import urllib.request
+
+    try:
+        study = _vietmy_study(captured["vietmy"])
+    except Exception as e:
+        log(f"  Lỗi đọc manifest VietMy ({e}) — bỏ qua.")
+        return
+
+    series_list = study.get("seriesList", []) or []
+    choices = _vietmy_series_choices(captured["vietmy"])
+    tasks, n_series = [], 0
+    for index, series in enumerate(series_list):
+        choice = choices[index]
+        if selected_series is not None and choice["id"] not in selected_series:
+            continue
+        n_series += 1
+        for item in (series.get("fileList", []) or []):
+            url = item.get("filePath") or item.get("wanFilePath")
+            if url:
+                tasks.append(url)
+
+    if selected_series is not None and n_series == 0:
+        raise ValueError("Không còn tìm thấy series đã chọn trong manifest VietMy mới.")
+
+    cj = "; ".join(f'{c.get("name")}={c.get("value")}' for c in (captured.get("cookies") or []))
+    sslctx = ssl.create_default_context()
+    sslctx.check_hostname = False
+    sslctx.verify_mode = ssl.CERT_NONE
+
+    log(f"Manifest (VietMy): {n_series} series, {len(tasks)} ảnh. "
+        f"Đang tải DICOM gốc trực tiếp (6 luồng song song)...")
 
     def fetch_one(u) -> bool:
         req = urllib.request.Request(u, headers={"Cookie": cj} if cj else {})

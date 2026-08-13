@@ -2022,7 +2022,7 @@ class WebController:
                 self.job.log(
                     "Không tìm thấy folder cũ của link này; sẽ tải mới vào folder riêng."
                 )
-            _, _, jpg_dir = dcom_pipeline.run_pipeline(
+            dl, _, jpg_dir = dcom_pipeline.run_pipeline(
                 url=url,
                 out_base=direct_root,
                 log=self.job.log,
@@ -2038,6 +2038,9 @@ class WebController:
             jpg_dir = Path(jpg_dir)
             if jpg_dir.parent.is_dir():
                 direct_root = jpg_dir.parent
+
+            if dl and dl.total() <= 0:
+                raise ValueError("Không tải được ảnh nào từ link viewer này. Vui lòng kiểm tra lại xem link có bị hết hạn hay không.")
 
             archive = self.catalog.open(jpg_dir if Path(jpg_dir).exists() else direct_root)
             # The link is stored with the folder so a later retry from history
