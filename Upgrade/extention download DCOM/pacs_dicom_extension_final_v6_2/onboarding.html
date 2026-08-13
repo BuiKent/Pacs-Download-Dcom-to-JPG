@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PACS DICOM Downloader</title><link rel="stylesheet" href="onboarding.css"></head>
+<body>
+<main class="wrap">
+  <div class="logo">D</div>
+  <h1>PACS DICOM Downloader</h1>
+  <p class="lead">Chọn cách cấp quyền truy cập PACS. Theo dõi và phân tích vẫn chỉ chạy khi bạn bật trên tab.</p>
+  <section class="card preferred">
+    <h2>Dùng cho nhiều bệnh viện</h2>
+    <p>Cấp quyền HTTP/HTTPS một lần. Sau đó không phải xác nhận từng PACS mới.</p>
+    <button id="allSitesBtn" class="primary">Cho phép một lần</button>
+  </section>
+  <section class="card">
+    <h2>Chỉ cấp từng site</h2>
+    <p>Không cấp quyền rộng. Extension sẽ hỏi khi bạn theo dõi một PACS chưa được cấp quyền.</p>
+    <button id="perSiteBtn" class="secondary">Dùng chế độ từng site</button>
+  </section>
+  <p id="status" class="status"></p>
+</main>
+<script src="onboarding.js"></script>
+</body></html>

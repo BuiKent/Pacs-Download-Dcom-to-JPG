@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PACS DICOM Downloader</title><link rel="stylesheet" href="sidepanel.css"></head>
+<body>
+<main class="shell">
+  <header class="topbar"><div class="brand"><div class="logo">D</div><div><h1>DICOM Downloader</h1><p id="tabLabel">—</p></div></div><span id="siteChip" class="chip neutral">—</span></header>
+
+  <section class="card status-card">
+    <div class="status-line"><div><h2 id="statusTitle">Đang kiểm tra tab</h2><p id="statusText">—</p></div><span id="scoreText" class="score"></span></div>
+    <div id="permissionBox" class="permission-box hidden"><span id="permissionText">Cần quyền truy cập site</span><button id="grantBtn" class="primary small">Cho phép</button></div>
+    <div class="toolbar"><button id="trackBtn" class="secondary">Theo dõi tab</button><button id="scanBtn" class="secondary">Quét lại</button><button id="deepScanBtn" class="secondary hidden">Nhận diện sâu</button></div>
+  </section>
+
+  <section id="learnCard" class="card hidden">
+    <div class="section-head"><div><h3>Học site</h3><p id="learnText">Ghi request của viewer trong tab này.</p></div><button id="learnToggleBtn" class="secondary small">Bắt đầu</button></div>
+    <div id="learnList" class="learn-list"></div>
+  </section>
+
+  <section id="doneCard" class="card hidden">
+    <div class="done-row"><div class="done-mark">✓</div><div class="grow"><h3>Study đã tải</h3><p id="doneMeta">—</p></div></div>
+    <div class="toolbar"><button id="revealDownloadedBtn" class="secondary">Hiện lại series</button><button id="historyOpenBtn" class="secondary">Lịch sử</button></div>
+  </section>
+
+  <section id="studyCard" class="card hidden">
+    <div class="section-head"><div><h3 id="studyTitle">Study</h3><p id="studySub">—</p></div><span id="adapterChip" class="chip good">—</span></div>
+    <div id="partialBanner" class="partial-banner hidden"></div>
+    <div class="study-grid">
+      <div><span>Patient</span><strong id="patientName">—</strong></div>
+      <div><span>Patient ID</span><strong id="patientId">—</strong></div>
+      <div><span>Ngày chụp</span><strong id="studyDate">—</strong></div>
+      <div><span>Series</span><strong id="seriesCount">0</strong></div>
+    </div>
+  </section>
+
+  <section id="seriesCard" class="card hidden">
+    <div class="section-head series-head"><div><h3>Series</h3><p id="selectedSummary">0 series</p></div><div class="mini-actions"><button id="selectAllBtn">Tất cả</button><button id="selectNoneBtn">Bỏ chọn</button></div></div>
+    <div id="seriesList" class="series-list"></div>
+  </section>
+
+  <section id="progressCard" class="card hidden">
+    <div class="section-head"><div><h3 id="jobTitle">Đang tải</h3><p id="jobMeta">—</p></div><span id="jobBadge" class="chip neutral">—</span></div>
+    <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+    <div class="progress-numbers"><strong id="progressText">0 / 0</strong><span id="failedText">0 lỗi</span></div>
+    <div id="currentFile" class="current-file"></div>
+    <div class="toolbar"><button id="cancelBtn" class="danger">Dừng tải</button></div>
+    <details id="errorDetails" class="errors hidden"><summary>Chi tiết lỗi</summary><pre id="errorLog"></pre></details>
+  </section>
+
+  <button id="historyToggle" class="history-toggle">Lịch sử <span>›</span></button>
+  <section id="historyCard" class="card hidden">
+    <div class="section-head"><div><h3>Lịch sử</h3><p>Tìm theo tên, ID hoặc ngày</p></div><button id="clearHistoryBtn" class="link-btn">Xóa</button></div>
+    <input id="historySearch" class="search" type="search" placeholder="Tên / Patient ID / ngày chụp">
+    <div id="historyList" class="history-list"></div>
+  </section>
+
+  <section class="card storage-card">
+    <div><h3>Thư mục lưu</h3><p id="folderText">—</p></div><button id="folderBtn" class="secondary small">Đổi</button>
+  </section>
+
+  <div id="stickyBar" class="sticky hidden"><div><strong id="stickyTitle">0 series</strong><span id="stickySub">—</span></div><button id="downloadBtn" class="primary">Tải DICOM</button></div>
+  <div id="toast" class="toast hidden"></div>
+</main>
+<script type="module" src="sidepanel.js"></script>
+</body></html>
