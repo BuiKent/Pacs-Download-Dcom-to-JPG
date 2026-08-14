@@ -550,6 +550,36 @@ class PatientDemographicsTests(unittest.TestCase):
             )
             self.assertEqual("NGUYEN THI CAM TU", manifest["patientName"])
 
+    def test_extract_patient_metadata_allow_mixed_does_not_raise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dicom_dir = Path(tmp)
+            write_patient_dicom(
+                dicom_dir / "one.dcm",
+                patient_id="PID_001",
+                patient_name="PATIENT ONE",
+                patient_age="050Y",
+                birth_date="19740101",
+                patient_sex="M",
+                study_date="20260814",
+            )
+            write_patient_dicom(
+                dicom_dir / "two.dcm",
+                patient_id="PID_002",
+                patient_name="PATIENT TWO",
+                patient_age="030Y",
+                birth_date="19940101",
+                patient_sex="F",
+                study_date="20260814",
+            )
+
+            # allow_mixed=False raises PatientIdentityConflictError
+            with self.assertRaises(dcom_pipeline.PatientIdentityConflictError):
+                dcom_pipeline.extract_patient_metadata(dicom_dir, allow_mixed=False)
+
+            # allow_mixed=True safely extracts available demographics without raising
+            metadata = dcom_pipeline.extract_patient_metadata(dicom_dir, allow_mixed=True)
+            self.assertTrue(metadata["PatientID"] in {"PID_001", "PID_002"})
+
     def test_dicom_name_age_suffix_does_not_create_a_false_identity_conflict(self):
         metadata = {
             "PatientID": "2606033997",

@@ -3602,7 +3602,11 @@ def extract_patient_metadata_bytes(data: bytes, manual_info: Optional[dict] = No
     }
 
 
-def extract_patient_metadata(dicom_dir: Path, manual_info: Optional[dict] = None) -> dict:
+def extract_patient_metadata(
+    dicom_dir: Path,
+    manual_info: Optional[dict] = None,
+    allow_mixed: bool = False,
+) -> dict:
     """Read one patient's demographics and study context from local DICOM."""
     try:
         import pydicom
@@ -3651,7 +3655,7 @@ def extract_patient_metadata(dicom_dir: Path, manual_info: Optional[dict] = None
             # NĂM sinh thì vẫn là hai người khác nhau.
             # Giới tính 'O' (Other) là giá trị "không rõ" của DICOM, không tính
             # là mâu thuẫn.
-            if (
+            if not allow_mixed and (
                 len(seen_ids) > 1
                 or len(seen_names) > 1
                 or len({d[:4] for d in seen_birth_dates}) > 1
@@ -4068,11 +4072,19 @@ def run_pipeline(
 
     summarize_dicom(dicom_dir, log=log)
 
-    metadata = (
-        extract_patient_metadata(dicom_dir, manual_info=manual_info) or first_metadata
-        if rename_patient_root or after_dicom_download is not None
-        else {}
-    )
+    try:
+        metadata = (
+            extract_patient_metadata(dicom_dir, manual_info=manual_info, allow_mixed=True) or first_metadata
+            if rename_patient_root or after_dicom_download is not None
+            else {}
+        )
+    except PatientIdentityConflictError as e:
+        log(f"⚠ Phát hiện nhiều định danh bệnh nhân trong folder DICOM ({e}); "
+            f"sử dụng thông tin DICOM đầu tiên để tạo tên thư mục và tiếp tục chuyển đổi JPG.")
+        metadata = first_metadata or {}
+    except Exception as e:
+        log(f"⚠ Lỗi trích xuất metadata ({e}); sử dụng thông tin DICOM đầu tiên.")
+        metadata = first_metadata or {}
     if metadata and after_dicom_download is not None:
         out_base = Path(after_dicom_download(out_base, metadata))
         dicom_dir = out_base / "DICOM"
@@ -4100,13 +4112,16 @@ def run_pipeline(
                      save_png=save_png, contrast_mode=contrast_mode,
                      should_stop=should_stop, metadata=metadata)
     if metadata and rename_patient_root:
-        write_direct_patient_manifest(
-            out_base,
-            jpg_dir,
-            metadata,
-            image_count=dl.total(),
-            complete=dl.is_complete(),
-        )
+        try:
+            write_direct_patient_manifest(
+                out_base,
+                jpg_dir,
+                metadata,
+                image_count=dl.total(),
+                complete=dl.is_complete(),
+            )
+        except Exception as e:
+            log(f"  (Ghi manifest hồ sơ bỏ qua: {e})")
     log("=" * 60)
     log(f"HOÀN TẤT. Ảnh JPG nằm ở: {jpg_dir}")
     return dl, cv, jpg_dir
