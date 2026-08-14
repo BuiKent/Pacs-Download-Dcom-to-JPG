@@ -32,6 +32,9 @@ assert 'chrome.debugger' not in off
 assert 'RECIPES_KEY' in bg and 'ENGINE_LEARNED_URL' in bg
 assert 'START_LEARNING' in bg and 'LEARN_CANDIDATE' in bg and 'materializeLearnedManifest' in bg
 assert "s.tracking!=='watching'" in bg
+# "Dung theo doi" la lenh dut khoat cua nguoi dung: tab da dung thi khong ghi
+# gi nua, ke ca URL trong dung la PACS.
+assert bg.count("s.tracking==='stopped')return") >= 2, 'webRequest phai ton trong trang thai stopped'
 assert 'PROBE_DICOM_URLS' in bg and 'PROBE_DICOM_URLS' in off
 assert 'binaryCandidates' in bg
 ui=(root/'sidepanel.html').read_text(encoding='utf-8')+ (root/'sidepanel.js').read_text(encoding='utf-8')
@@ -57,8 +60,18 @@ assert 'previousDownload:row' in bg, 'finalizeJob phai gan ket qua vao inventory
 # phai co duong dung DICOM tu pixel tho (khong co URL nao de fetch).
 assert (root/'zfp-hook.js').exists()
 hook = (root/'zfp-hook.js').read_text(encoding='utf-8')
-assert 'GET_DICOM_IMAGE' in hook and 'IT_RAW' in hook
 assert "world:'MAIN'" in bg and "runAt:'document_start'" in bg
+# Server ZFP tu choi 100% lenh xin anh gui tu ngoai (da do tren ca that: dung
+# socket cua trang, dung payload, correlationId UUID - van cam). Moc phai HUNG
+# anh viewer tu nap, tuyet doi khong gui lenh len socket anh nua.
+hook_code = '\n'.join(l for l in hook.splitlines()
+                      if not l.lstrip().startswith(('//', '/*', '*')))
+assert 'GET_DICOM_IMAGE' not in hook_code, 'moc ZFP phai hung anh, khong duoc gui lenh xin anh'
+assert 'watchImages' in hook and 'MAX_QUEUE_BYTES' in hook
 assert 'zfp-image' in off and 'zfpMetaToDicomJson' in off
+# Engine ZFP la vong DAY (hung) chu khong keo theo task nhu cac adapter khac.
+assert 'runZfpJob' in off and 'ZFP_TAKE_REQUEST' in off and 'ZFP_TAKE_REQUEST' in bg
+assert 'ZFP_RELOAD_REQUEST' in off and 'ZFP_RELOAD_REQUEST' in bg
+assert "ZFP_TAKE:'take'" in (root/'content.js').read_text(encoding='utf-8')
 
 print('Static architecture checks OK')

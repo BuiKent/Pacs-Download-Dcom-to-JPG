@@ -74,7 +74,7 @@ async function rememberDicomResponse(tabId,url,contentType,status,method='GET',c
   if(tabId<0||String(method).toUpperCase()!=='GET'||Number(status)>=400)return;
   const ct=String(contentType||'').toLowerCase(),hit=classifyPacsUrl(url),learned=isLearnedUrl(url),u=cleanUrl(url);if(!u)return;
   const strong=ct.includes('application/dicom')||/\.dcm(?:\?|$)/i.test(url)||(hit&&['WADO','DICOM_INSTANCE','DICOM_IMAGE_API','VRPACS_DICOM'].includes(hit.type))||(learned&&ct.includes('application/octet-stream'));
-  const s=await getTabState(tabId);if(!strong&&!['watching','candidate'].includes(s.tracking))return;
+  const s=await getTabState(tabId);if(s.tracking==='stopped')return;if(!strong&&!['watching','candidate'].includes(s.tracking))return;
   if(strong){s.genericDirectUrls=[...new Set([...(s.genericDirectUrls||[]),u])].slice(-5000);s.genericDirectMeta[u]={contentType:ct,learned};s.confidence=Math.max(Number(s.confidence)||0,learned?95:90);await saveTabState(tabId,s);scheduleAnalyze(tabId,500);return;}
   const binary=(ct.includes('application/octet-stream')||ct.includes('application/binary')||ct.includes('binary/octet-stream'))&&!/\.(?:js|css|woff2?|ttf|png|jpe?g|gif|svg|ico|mp4|webm)(?:\?|$)/i.test(u)&&!/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(u);
   if(binary&&s.tracking==='watching'){
@@ -86,6 +86,9 @@ chrome.webRequest.onBeforeRequest.addListener(d=>{
   const hit=classifyPacsUrl(d.url),learnedManifest=isLearnedManifestUrl(d.url);
   getTabState(d.tabId).then(s=>{
     if(s.learning?.active)rememberLearningRequest(d.tabId,d,s).catch(()=>{});
+    // "Dừng theo dõi" là lệnh dứt khoát của người dùng: tab đã dừng thì không
+    // ghi gì nữa, kể cả URL trông đúng là PACS.
+    if(s.tracking==='stopped')return;
     if(!hit&&!learnedManifest&&!['watching','candidate'].includes(s.tracking))return;
     const sensitive=/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(d.url);
     const body=!sensitive&&!['GET','HEAD'].includes(String(d.method||'GET').toUpperCase())?serializeRequestBody(d.requestBody):null;

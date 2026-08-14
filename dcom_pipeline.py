@@ -577,17 +577,87 @@ def _vrpacs_series_choices(body: bytes) -> list[dict]:
 # Dòng này KHÔNG chuyển ảnh qua HTTP: pixel chạy trong WebSocket `image-provider`
 # theo một giao thức JSON riêng của GE, nên không có response nào để quan sát như
 # mọi dòng PACS khác — `observe()` vô dụng ở đây. Cách duy nhất là gắn móc vào
-# WebSocket của chính trang viewer, đọc cấu trúc study rồi tự hỏi từng ảnh.
+# WebSocket của chính trang viewer.
 #
-# Đổi lại, server trả PIXEL THÔ 16 bit (OutputFormat IT_RAW) kèm một khối
-# metadata JSON đủ dựng lại DICOM Part-10. Vẫn là bản app dựng lại, thiếu một số
-# tag so với file gốc của máy chụp — `fidelity="reconstructed"` nói thẳng điều đó.
+# QUAN TRỌNG — chỉ HỨNG chứ không HỎI được:
+# bản trước gửi lệnh `GET_DICOM_IMAGE` y hệt viewer (đúng socket của trang, đúng
+# cấu trúc payload, correlationId dạng UUID) và server im lặng 100% số lần. Đã
+# loại trừ bằng thực nghiệm trên ca thật: định dạng correlationId (không phải),
+# chọn nhầm socket (thử cả 4, đều câm), series chưa hiển thị (series đang mở
+# cũng câm), server bỏ qua ảnh đã gửi rồi (ảnh chưa từng nạp cũng câm). Ngay
+# trong lúc server bơm 600 khung của chính viewer thì không khung nào mang SOP
+# mình hỏi. Server chỉ phục vụ ảnh do engine của nó quyết định.
+#
+# Nhưng chính viewer tự nạp gần trọn study khi mở trang — đo được 261/264 ảnh
+# trong ~45 giây. Nên móc ngồi hứng: ghép mỗi khung metadata với khung nhị phân
+# đi ngay sau nó trên cùng socket, xếp hàng đợi, app lấy dần ra. Hết ảnh mà còn
+# thiếu thì cho trang nạp lại để viewer bơm lại từ đầu.
+#
+# Server trả PIXEL THÔ 16 bit kèm một khối metadata JSON đủ dựng lại DICOM
+# Part-10. Vẫn là bản app dựng lại, thiếu một số tag so với file gốc của máy
+# chụp — `fidelity="reconstructed"` nói thẳng điều đó.
 # ---------------------------------------------------------------------------
 _ZFP_HOOK = r"""
 (() => {
   if (window.__zfp) return;
-  const store = {groups: [], study: null, imageSockets: [], seen: {}};
+  // Trần bộ nhớ hàng đợi ảnh trong trang. Giữ cả một ca 264 ảnh là ~138 MB,
+  // đủ để tab chết, nên lấy ra được cái nào là bỏ khỏi hàng đợi ngay.
+  const MAX_QUEUE_BYTES = 96 * 1024 * 1024;
+  const store = {groups: [], study: null, imageSockets: [], seen: {},
+                 queue: [], queueBytes: 0, waiters: [],
+                 captured: 0, dropped: 0, mismatched: 0, sopsQueued: {}};
   window.__zfp = store;
+
+  function pack(meta, bytes) {
+    let s = ''; const CH = 0x8000;
+    for (let i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    return {sop: String(meta.sopInstanceUid || ''), meta: meta, b64: btoa(s), size: bytes.length,
+            captured: store.captured, dropped: store.dropped, queued: store.queue.length};
+  }
+
+  function push(meta, bytes) {
+    const uid = String(meta.sopInstanceUid || '');
+    if (!uid) return;
+    store.captured++;
+    const w = store.waiters.shift();
+    if (w) { clearTimeout(w.timer); w.resolve(pack(meta, bytes)); return; }
+    if (store.sopsQueued[uid]) return;
+    store.sopsQueued[uid] = 1;
+    store.queue.push({meta: meta, bytes: bytes});
+    store.queueBytes += bytes.length;
+    while (store.queueBytes > MAX_QUEUE_BYTES && store.queue.length > 1) {
+      const old = store.queue.shift();
+      store.queueBytes -= old.bytes.length;
+      delete store.sopsQueued[String(old.meta.sopInstanceUid || '')];
+      store.dropped++;
+    }
+  }
+
+  function watchImages(ws) {
+    // Metadata và pixel là HAI khung liền nhau trên cùng socket; ghép lệch một
+    // nhịp là ghi pixel của ảnh khác vào file bệnh nhân. Số byte phải đúng
+    // rows*cols*bits/8*samples mới nhận — khung nào không khớp (JPEG xem nhanh,
+    // khung điều khiển) thì bỏ, thà thiếu còn hơn sai.
+    let meta = null;
+    ws.addEventListener('message', ev => {
+      if (typeof ev.data === 'string') {
+        let d = null;
+        try { d = JSON.parse(ev.data); } catch (e) { d = null; }
+        meta = (d && d.sopClassUid) ? d : null;
+        return;
+      }
+      const m = meta; meta = null;
+      if (!m) return;
+      const dim = m.dimensions || {};
+      const need = (dim.rows | 0) * (dim.columns | 0)
+                 * (((m.bitsAllocated | 0) || 16) / 8)
+                 * ((m.samplesPerPixel | 0) || 1);
+      const b = new Uint8Array(ev.data);
+      if (need && b.length !== need) { store.mismatched++; return; }
+      push(m, b);
+    });
+  }
+
   const Orig = window.WebSocket;
   const Hooked = function (url, protocols) {
     const ws = protocols === undefined ? new Orig(url) : new Orig(url, protocols);
@@ -609,6 +679,7 @@ _ZFP_HOOK = r"""
     } else if (u.indexOf('image-provider') >= 0) {
       try { ws.binaryType = 'arraybuffer'; } catch (e) {}
       store.imageSockets.push(ws);
+      watchImages(ws);
     }
     return ws;
   };
@@ -616,45 +687,52 @@ _ZFP_HOOK = r"""
   for (const k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) Hooked[k] = Orig[k];
   window.WebSocket = Hooked;
 
-  store.fetchImage = a => new Promise(resolve => {
-    const ws = store.imageSockets.find(s => s && s.readyState === 1);
-    if (!ws) { resolve({error: 'Không còn kết nối ảnh nào đang mở.'}); return; }
-    const want = String(a.sop).split('#')[0];
-    let meta = null;
-    const off = () => ws.removeEventListener('message', onMsg);
-    const timer = setTimeout(() => { off(); resolve({error: 'Quá hạn chờ ảnh.'}); }, a.timeoutMs || 45000);
-    function onMsg(ev) {
-      if (typeof ev.data === 'string') {
-        try { const d = JSON.parse(ev.data); if (d.sopClassUid) meta = d; } catch (e) {}
-        return;
-      }
-      // Viewer cũng đang xin ảnh trên đúng socket này, nên chỉ nhận khối nhị
-      // phân đi NGAY SAU metadata của đúng ảnh mình hỏi VÀ đúng số byte suy ra
-      // từ metadata. Thiếu một trong hai là rất dễ ghi nhầm pixel của ảnh khác.
-      if (!meta || meta.sopInstanceUid !== want) { meta = null; return; }
-      const dim = meta.dimensions || {};
-      const need = (dim.rows | 0) * (dim.columns | 0)
-                 * (((meta.bitsAllocated | 0) || 16) / 8)
-                 * ((meta.samplesPerPixel | 0) || 1);
-      const b = new Uint8Array(ev.data);
-      if (need && b.length !== need) { meta = null; return; }
-      clearTimeout(timer); off();
-      let s = ''; const CH = 0x8000;
-      for (let i = 0; i < b.length; i += CH) s += String.fromCharCode.apply(null, b.subarray(i, i + CH));
-      resolve({meta: meta, b64: btoa(s), size: b.length});
+  // Lấy ảnh kế tiếp trong hàng đợi; chưa có thì chờ tới khi viewer bơm ra.
+  store.take = ms => new Promise(resolve => {
+    if (store.queue.length) {
+      const it = store.queue.shift();
+      store.queueBytes -= it.bytes.length;
+      delete store.sopsQueued[String(it.meta.sopInstanceUid || '')];
+      resolve(pack(it.meta, it.bytes));
+      return;
     }
-    ws.addEventListener('message', onMsg);
-    ws.send(JSON.stringify({
-      command: 'GET_DICOM_IMAGE',
-      payLoad: JSON.stringify({
-        Token: {StudyInstanceUid: a.studyUid, GroupId: a.groupId, SopInstanceUid: a.sop},
-        Options: {MaxResolution: 0, QualityLevel: 75, OutputFormat: 'IT_RAW'}
-      }),
-      correlationId: 'dl-' + Math.random().toString(36).slice(2)
-    }));
+    const w = {};
+    w.timer = setTimeout(() => {
+      const i = store.waiters.indexOf(w);
+      if (i >= 0) store.waiters.splice(i, 1);
+      resolve({empty: true, captured: store.captured, dropped: store.dropped});
+    }, ms || 20000);
+    w.resolve = resolve;
+    store.waiters.push(w);
   });
+
+  store.stats = () => ({captured: store.captured, queued: store.queue.length,
+                        dropped: store.dropped, mismatched: store.mismatched,
+                        sockets: store.imageSockets.filter(s => s && s.readyState === 1).length});
 })();
 """
+
+
+_ZFP_TAKE_MS = 20000          # chờ ảnh kế tiếp trước khi coi là hàng đợi cạn
+_ZFP_MAX_RELOADS = 2          # số lần cho viewer nạp lại để bơm lại ảnh
+
+
+def _zfp_reload_viewer(page, log: LogFn) -> bool:
+    """Cho trang viewer nạp lại và chờ móc đọc xong cấu trúc study."""
+    try:
+        page.reload(wait_until="domcontentloaded", timeout=60000)
+    except Exception as exc:
+        log(f"  Không nạp lại được viewer: {exc}")
+        return False
+    for _ in range(45):
+        try:
+            if page.evaluate("() => (window.__zfp && window.__zfp.groups.length) || 0"):
+                return True
+        except Exception:
+            pass
+        time.sleep(1.0)
+    log("  Viewer nạp lại nhưng chưa đọc được cấu trúc study.")
+    return False
 
 
 def _zfp_series_choices(data: Optional[dict]) -> list[dict]:
@@ -1946,10 +2024,15 @@ def _download_via_zfp(captured, save_body, stats,
                       log: LogFn, stop: Callable[[], bool],
                       selected_series: Optional[set[str]] = None) -> None:
     """
-    Hỏi từng ảnh qua WebSocket của viewer GE ZFP rồi dựng lại DICOM Part-10.
+    Hứng ảnh do chính viewer GE ZFP nạp rồi dựng lại DICOM Part-10.
 
-    Chạy TUẦN TỰ chứ không song song như các dòng khác: mọi thứ đi qua đúng một
-    trang Playwright, mà `page` thì không dùng được từ nhiều luồng.
+    KHÔNG hỏi ảnh — server từ chối mọi lệnh gửi từ ngoài (xem ghi chú ở phần
+    `_ZFP_HOOK`). Thứ duy nhất làm nó phát pixel là chính viewer nạp study, và
+    lúc đó nó nạp gần trọn ca. Nên ở đây ta ngồi hứng theo thứ tự VIEWER bơm ra,
+    không phải thứ tự mình muốn; hết ảnh mà còn thiếu thì cho trang nạp lại.
+
+    Chạy TUẦN TỰ: mọi thứ đi qua đúng một trang Playwright, mà `page` thì không
+    dùng được từ nhiều luồng.
     """
     import base64
 
@@ -1974,40 +2057,57 @@ def _download_via_zfp(captured, save_body, stats,
         raise ValueError("Không còn tìm thấy series đã chọn trong cấu trúc ZFP mới.")
 
     study = data.get("study") or {}
-    log(f"Manifest (GE ZFP): {n_series} series, {len(plan)} ảnh. "
-        f"Đang hỏi từng ảnh qua WebSocket của viewer (tuần tự)...")
+    wanted = {sop["sopInstanceUid"]: (group, sop) for group, sop in plan}
+    total = len(plan)
+    log(f"Manifest (GE ZFP): {n_series} series, {total} ảnh. "
+        f"Đang hứng ảnh do viewer bơm qua WebSocket...")
 
     frame_ct = "application/octet-stream; transfer-syntax=1.2.840.10008.1.2.1"
-    saved = 0
-    for group, sop in plan:
-        if stop():
-            break
+    saved, done, reloads, dry = 0, set(), 0, 0
+    while not stop() and len(done) < total:
         try:
-            got = page.evaluate("(a) => window.__zfp.fetchImage(a)", {
-                "studyUid": group.get("studyInstanceUid"),
-                "groupId": group.get("groupId"),
-                "sop": f'{sop["sopInstanceUid"]}#0',
-                "timeoutMs": 45000,
-            })
+            got = page.evaluate("(ms) => window.__zfp.take(ms)", _ZFP_TAKE_MS)
         except Exception as exc:
-            stats.failed += 1
-            log(f"  Lỗi khi hỏi ảnh: {exc}")
-            continue
-        if not got or got.get("error") or not got.get("b64"):
-            stats.failed += 1
-            log(f"  Bỏ qua 1 ảnh: {(got or {}).get('error') or 'không nhận được dữ liệu'}")
+            log(f"  Mất kết nối với viewer: {exc}")
+            break
+
+        if got and got.get("b64"):
+            dry = 0
+            uid = got.get("sop") or ""
+            if uid not in wanted or uid in done:
+                continue                    # ảnh của series không chọn
+            done.add(uid)
+            group, sop = wanted[uid]
+            meta_json = _zfp_meta_to_dicom_json(got.get("meta") or {}, sop, group, study)
+            dicom = _dicom_from_meta_frames(meta_json, [base64.b64decode(got["b64"])], frame_ct)
+            if dicom and save_body(dicom, fidelity="reconstructed"):
+                saved += 1
+                if saved % 25 == 0:
+                    log(f"  ...đã lưu {saved}/{total} ảnh")
+            else:
+                stats.failed += 1
             continue
 
-        meta_json = _zfp_meta_to_dicom_json(got.get("meta") or {}, sop, group, study)
-        dicom = _dicom_from_meta_frames(meta_json, [base64.b64decode(got["b64"])], frame_ct)
-        if dicom and save_body(dicom, fidelity="reconstructed"):
-            saved += 1
-            if saved % 25 == 0:
-                log(f"  ...đã tải {saved}/{len(plan)} ảnh")
-        else:
-            stats.failed += 1
+        # Hàng đợi cạn. Viewer chỉ bơm ảnh lúc nạp study, nên muốn lấy nốt phần
+        # đã chảy qua trước khi mình kịp hứng thì phải cho nó nạp lại.
+        dry += 1
+        if dry == 1 and reloads < _ZFP_MAX_RELOADS:
+            reloads += 1
+            log(f"  Hết ảnh trong hàng đợi, còn thiếu {total - len(done)} — "
+                f"nạp lại viewer để bơm lại (lần {reloads}/{_ZFP_MAX_RELOADS})...")
+            if not _zfp_reload_viewer(page, log):
+                break
+            dry = 0
+            continue
+        if dry >= 3:
+            break
+        time.sleep(1.5)
 
-    _report_download_result(stats, len(plan), log, stop)
+    missing = total - len(done)
+    if missing > 0 and not stop():
+        stats.failed += missing
+        log(f"  {missing} ảnh viewer không tự nạp — mở đúng series đó trong viewer rồi chạy lại.")
+    _report_download_result(stats, total, log, stop)
 
 
 def _download_via_vietmy(captured, save_body, stats,

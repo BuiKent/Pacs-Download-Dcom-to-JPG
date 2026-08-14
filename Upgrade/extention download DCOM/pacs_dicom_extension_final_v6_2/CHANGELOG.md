@@ -1,3 +1,11 @@
+# 6.3.1
+
+- **VRPACS (link chia sẻ)**: dựng lại POST `get-share-patient-image` từ chính tham số `params` (base64 JSON) trên URL viewer, nên mở extension **sau** khi trang đã tải xong vẫn nhận được đủ series thay vì báo chưa thấy manifest.
+- Đọc họ tên / mã bệnh nhân từ `pName`, `pCode`, `pID` ở gốc payload VRPACS — trước chỉ đọc trong `studyList` nên thư mục lưu tụt thành `Unknown - NoID`.
+- `webRequest` ghi được request PACS ngay khi tab mới ở trạng thái `candidate`, không bắt buộc bấm "Theo dõi tab" trước.
+- Sửa: **"Dừng theo dõi" bị vô hiệu** — sau thay đổi trên, URL trông giống PACS vẫn được ghi và vẫn đẩy độ tin cậy lên dù người dùng đã bấm dừng. Nay tab ở trạng thái `stopped` thì không ghi gì nữa, và có static check khoá lại.
+- Thêm `tests/test_vrpacs_share.mjs`: khoá vòng base64 của body dựng lại (kể cả tên có dấu — sai một nhịp là server trả HTML kèm HTTP 200), Content-Type, và việc đọc `pName`/`pCode`.
+
 # 6.1
 
 - Nhận diện ShareStudy có query key rỗng: `?=<token>`.
@@ -26,10 +34,13 @@
 
 - **Hỗ trợ GE Centricity Universal Viewer — Zero Footprint (ZFP)**, dòng PACS đầu tiên không chuyển ảnh qua HTTP: pixel chạy trong WebSocket `image-provider` theo giao thức JSON riêng của GE, nên `chrome.webRequest` không thấy gì để học (đo được: ~124 MB ảnh qua WebSocket, 0 byte qua HTTP).
 - Thêm `zfp-hook.js` chạy ở **MAIN world từ document_start** (đăng ký động theo origin đã cấp quyền, tải lại trang đúng một lần): móc `WebSocket`, đọc cấu trúc study từ `ON_STUDY_ADDED` / `ON_DICOM_GROUP_ADDED`, và giữ tham chiếu socket ảnh.
-- Tải ảnh bằng lệnh `GET_DICOM_IMAGE` với `OutputFormat: IT_RAW` → **pixel thô 16-bit** (không phải JPEG viewer dựng sẵn), rồi ghép thành DICOM Part-10 qua `buildPart10FromFrames`.
-- Chỉ nhận khối nhị phân đi ngay sau metadata của đúng ảnh mình hỏi **và** đúng số byte suy từ metadata — viewer cũng xin ảnh trên cùng socket nên rất dễ ghi nhầm pixel của ảnh khác.
+- **Hứng ảnh chứ không xin ảnh.** Bản đầu gửi lệnh `GET_DICOM_IMAGE` y hệt viewer và server im lặng 100% số lần → mọi ảnh báo `Quá hạn chờ ảnh.`. Đã loại trừ bằng thực nghiệm trên ca thật: định dạng `correlationId` (không phải), chọn nhầm socket (thử cả 4, đều câm), series chưa hiển thị (series đang mở cũng câm), server bỏ qua ảnh đã gửi rồi (ảnh chưa từng nạp cũng câm). Ngay trong lúc server bơm 600 khung của chính viewer thì không khung nào mang SOP mình hỏi — server chỉ phục vụ ảnh do engine của nó quyết định.
+- Nhưng chính viewer tự nạp gần trọn study khi mở trang (**đo được 261/264 ảnh trong ~45 giây**), nên móc chuyển sang ghép mỗi khung metadata với khung nhị phân đi ngay sau nó trên cùng socket, xếp hàng đợi và đẩy dần sang engine. Lấy ra cái nào là bỏ khỏi hàng đợi ngay, trần 96 MB — giữ cả 264 ảnh trong trang là ~138 MB, đủ để tab chết.
+- Engine ZFP thành vòng **đẩy** (`runZfpJob`): thứ tự ảnh do viewer quyết, engine ghép về đúng task theo SOP. Ảnh của series không chọn thì bỏ. Hết ảnh mà còn thiếu thì nạp lại viewer (tối đa 2 lần) để nó bơm lại từ đầu; ảnh viewer không bao giờ nạp được báo rõ từng file thay vì "quá hạn".
+- Panel báo trước rằng tab viewer sẽ tự nạp lại và cần để yên trong lúc tải.
+- Vẫn giữ ràng buộc chống ghi nhầm pixel: chỉ nhận khối nhị phân đi **ngay sau** metadata trên cùng socket **và** đúng `rows*cols*bits/8*samples`; lệch một trong hai là bỏ.
 - Kết quả là **DICOM app dựng lại**, thiếu một số tag so với file gốc của máy chụp; extension khai báo `provenance: reconstructed`.
-- Thêm `tests/test_zfp.mjs` (fixture lấy từ ca MR thật) và các static check cho móc MAIN world.
+- Thêm `tests/test_zfp.mjs` (fixture lấy từ ca MR thật) và `tests/test_zfp_hook.mjs` chạy thật cả file móc trên window giả — **dùng chung cho cả bản trong app Python** (`_ZFP_HOOK`), hai bản lệch nhau là test đỏ.
 
 ## 6.2.4
 

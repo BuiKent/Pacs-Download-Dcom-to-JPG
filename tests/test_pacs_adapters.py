@@ -268,6 +268,137 @@ class AdapterDetectionTests(unittest.TestCase):
         self.assertIsNone(dcom_pipeline._series_manifest_adapter(cap))
 
 
+class ZfpHookTests(unittest.TestCase):
+    """
+    Móc WebSocket của GE ZFP.
+
+    Server ZFP từ chối 100% lệnh xin ảnh gửi từ ngoài (đã đo trên ca thật: đúng
+    socket của trang, đúng payload, correlationId UUID — vẫn câm, kể cả lúc nó
+    đang bơm 600 khung của chính viewer). Nên móc phải HỨNG ảnh viewer tự nạp.
+    Test này khóa lại điều đó, và chạy luôn bộ test JS dùng chung với extension
+    để hai bản không lệch nhau.
+    """
+
+    def test_hook_never_asks_the_server_for_an_image(self):
+        code = "\n".join(
+            line for line in dcom_pipeline._ZFP_HOOK.splitlines()
+            if not line.lstrip().startswith("//")
+        )
+        self.assertNotIn("GET_DICOM_IMAGE", code)
+        self.assertIn("watchImages", code)
+        self.assertIn("store.take", code)
+
+    def test_hook_behaves_the_same_as_the_extension_copy(self):
+        import shutil
+        import subprocess
+        import tempfile
+
+        node = shutil.which("node")
+        suite = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "Upgrade", "extention download DCOM",
+            "pacs_dicom_extension_final_v6_2", "tests", "test_zfp_hook.mjs",
+        )
+        if not node or not os.path.exists(suite):
+            self.skipTest("cần node và bộ test của extension")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "zfp-hook.js")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(dcom_pipeline._ZFP_HOOK)
+            proc = subprocess.run([node, suite, path], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+
+def _zfp_capture():
+    """Cấu trúc study GE ZFP: 2 series, mỗi series 2 ảnh."""
+    def group(gid, desc, sops):
+        return {"studyInstanceUid": "st.1", "groupId": gid, "description": desc,
+                "modalities": ["MR"],
+                "dicomSops": [{"sopInstanceUid": s, "instanceNumber": i + 1,
+                               "seriesInstanceUid": f"se.{gid}"} for i, s in enumerate(sops)]}
+    return {"groups": [group("g1", "Ax T2", ["a1", "a2"]),
+                       group("g2", "Screen Save", ["b1", "b2"])],
+            "study": {"patientDemographics": {"patientId": "1", "patientName": {"personNameString": "X"}},
+                      "studyDateTime": "2026-05-13 17:26:52"}}
+
+
+class FakeZfpPage:
+    """Trang viewer giả: bơm ảnh theo từng đợt, mỗi lần nạp lại là một đợt mới."""
+
+    def __init__(self, batches):
+        self.batches = [list(b) for b in batches]
+        self.queue = list(self.batches.pop(0)) if self.batches else []
+        self.reloads = 0
+
+    def evaluate(self, script, arg=None):
+        if "groups.length" in script:
+            return 1
+        if self.queue:
+            sop = self.queue.pop(0)
+            return {"sop": sop, "size": 8,
+                    "meta": {"sopInstanceUid": sop, "dimensions": {"rows": 2, "columns": 2},
+                             "bitsAllocated": 16, "samplesPerPixel": 1},
+                    "b64": "AAAAAAAAAAA="}
+        return {"empty": True}
+
+    def reload(self, **kwargs):
+        self.reloads += 1
+        self.queue = list(self.batches.pop(0)) if self.batches else []
+
+
+class ZfpDownloadTests(unittest.TestCase):
+    """
+    Vòng tải ZFP là DUY NHẤT trong app chạy kiểu hứng: thứ tự ảnh do viewer
+    quyết, không phải mình. Ba thứ dễ vỡ nhất được khóa ở đây.
+    """
+
+    def _run(self, page, selected=None):
+        captured = {"zfp_page": page, "zfp": _zfp_capture()}
+        stats = dcom_pipeline.DownloadStats()
+        saved, logs = [], []
+        with mock.patch.object(dcom_pipeline, "_report_download_result", lambda *a, **k: None), \
+             mock.patch.object(dcom_pipeline, "_zfp_meta_to_dicom_json", lambda *a: {}), \
+             mock.patch.object(dcom_pipeline, "_dicom_from_meta_frames", lambda *a: b"DICM"), \
+             mock.patch.object(dcom_pipeline.time, "sleep", lambda *_: None):
+            dcom_pipeline._download_via_zfp(
+                captured, lambda body, **kw: saved.append(kw.get("fidelity")) or True,
+                stats, logs.append, lambda: False, selected,
+            )
+        return stats, saved, logs
+
+    def test_images_are_matched_by_sop_not_by_order(self):
+        # Viewer bơm ngược thứ tự và xen ảnh của series khác — vẫn phải đủ 4.
+        page = FakeZfpPage([["b2", "a2", "b1", "a1"]])
+        stats, saved, _ = self._run(page)
+        self.assertEqual(4, len(saved))
+        self.assertEqual(["reconstructed"] * 4, saved)
+        self.assertEqual(0, stats.failed)
+        self.assertEqual(0, page.reloads)
+
+    def test_images_of_unselected_series_are_dropped_not_saved(self):
+        page = FakeZfpPage([["b1", "a1", "b2", "a2"]])
+        choices = dcom_pipeline._zfp_series_choices(_zfp_capture())
+        stats, saved, _ = self._run(page, {choices[0]["id"]})
+        self.assertEqual(2, len(saved))
+        self.assertEqual(0, stats.failed)
+
+    def test_viewer_is_reloaded_to_replay_images_that_already_streamed(self):
+        # Đợt đầu chỉ còn nửa cuối; nửa đầu đã chảy qua trước khi bấm Tải.
+        page = FakeZfpPage([["a2", "b2"], ["a1", "b1"]])
+        stats, saved, _ = self._run(page)
+        self.assertEqual(1, page.reloads)
+        self.assertEqual(4, len(saved))
+        self.assertEqual(0, stats.failed)
+
+    def test_images_the_viewer_never_streams_are_reported_missing(self):
+        page = FakeZfpPage([["a1", "b1"]])
+        stats, saved, logs = self._run(page)
+        self.assertEqual(2, len(saved))
+        self.assertEqual(2, stats.failed)          # a2, b2 không bao giờ tới
+        self.assertTrue(any("không tự nạp" in line for line in logs))
+        self.assertEqual(dcom_pipeline._ZFP_MAX_RELOADS, page.reloads)
+
+
 class LegacyDictTests(unittest.TestCase):
     """`_download_via_*()` vẫn nhận đúng dict cũ nên phần tải không phải sửa."""
 

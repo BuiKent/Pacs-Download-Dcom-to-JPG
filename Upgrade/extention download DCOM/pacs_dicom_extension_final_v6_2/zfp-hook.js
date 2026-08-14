@@ -149,6 +149,11 @@
             groups: store.groups.length};
   }
 
+  // Cùng bề mặt với bản trong app Python (`_ZFP_HOOK` của dcom_pipeline.py) để
+  // hai bên test được bằng đúng một bộ test, và gõ tay được từ console.
+  store.take = take;
+  store.stats = stats;
+
   // Cầu nối sang content script (ISOLATED world) — hai bên không thấy biến của
   // nhau nên phải đi qua postMessage.
   window.addEventListener('message', async ev => {
