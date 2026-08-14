@@ -39,4 +39,18 @@ assert "startIn:'downloads'" in ui and "id:'pacs-dicom'" in ui
 assert 'learnToggleBtn' in ui and 'learnList' in ui
 for bad in ['MVP','AI generated','Local only.']:
     assert bad not in ui
+
+# Moi id ma sidepanel.js dung phai ton tai trong sidepanel.html - go bo hoac doi
+# ten mot phan tu la panel vo ngay ($(...) tra null) ma khong bao gi.
+html_src = (root/'sidepanel.html').read_text(encoding='utf-8')
+js_src = (root/'sidepanel.js').read_text(encoding='utf-8')
+html_ids = set(re.findall(r'id="([A-Za-z0-9_-]+)"', html_src))
+js_ids = set(re.findall(r"\$\('([A-Za-z0-9_-]+)'\)", js_src)) | set(re.findall(r"show\('([A-Za-z0-9_-]+)'", js_src))
+missing = sorted(js_ids - html_ids)
+assert not missing, f'sidepanel.js dung id khong co trong sidepanel.html: {missing}'
+
+# Cac trang thai ket qua phai phan biet duoc trong lich su va tren the ket qua.
+for status in ['partial', 'done_with_errors', 'error', 'cancelled']:
+    assert status in js_src, f'thieu trang thai {status} trong sidepanel.js'
+assert 'previousDownload:row' in bg, 'finalizeJob phai gan ket qua vao inventory de panel doi trang thai ngay'
 print('Static architecture checks OK')

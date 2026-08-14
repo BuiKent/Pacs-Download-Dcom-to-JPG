@@ -22,6 +22,15 @@
 - Per-tab state/job.
 - Generic binary probe.
 
+## 6.2.4
+
+- Tải xong là panel đổi trạng thái **ngay**. Trước đây `finalizeJob` ghi lịch sử nhưng không gắn kết quả ngược vào inventory đang mở, mà `previousDownload` chỉ được đặt lúc `analyzeTab()` — nên phải tắt/mở lại trình duyệt (để analyze chạy lại) mới thấy "đã tải".
+- Tải xong thì **ẩn danh sách series**, giữ card thông tin bệnh nhân (họ tên / ID / ngày chụp / số series) và hiện thẻ kết quả kèm số ảnh đã lưu.
+- Phân biệt rõ kết quả thay vì chỉ có "xong/chưa": `Đã tải xong`, `Đã lưu (chưa đủ ảnh)`, `Đã tải, có lỗi`, `Tải lỗi`, `Đã dừng giữa chừng` — dùng chung cho thẻ kết quả và lịch sử.
+- Lịch sử hiện thêm số ảnh đã lưu trên tổng số và số ảnh lỗi, có màu riêng cho trạng thái dở dang.
+- Thêm lại card **Link viewer**: link thật trước khi rút gọn, gọn đúng một dòng, có nút Chép và bôi đen copy tay được; ghi rõ khi link này khác link trên thanh địa chỉ.
+- `static_checks.py` đối chiếu mọi id `sidepanel.js` dùng với `sidepanel.html`, và kiểm tra `finalizeJob` có gắn kết quả vào inventory.
+
 ## 6.2.3
 
 - Nút **Tải** không còn mở hộp thoại chọn thư mục. Luồng cũ: ô "Thư mục lưu" ghi sẵn `Downloads / PACS_DICOM` như thể đã cấu hình xong, nhưng bấm Tải vẫn bật Explorer; hủy hộp thoại thì vừa tải luôn vừa âm thầm ghi đè lựa chọn thành `downloads` nên lần sau lại không hỏi — nhìn một đằng chạy một nẻo. Giờ mặc định lưu vào Downloads như v2/v2.1, muốn thư mục riêng thì bấm "Đổi".

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PACS DICOM Downloader",
-  "version": "6.2.3",
+  "version": "6.2.4",
   "description": "Tải DICOM PACS theo từng tab, có adapter VietMy manifest/filePath, học site mới và kiểm tra bytes trước khi lưu.",
   "minimum_chrome_version": "125",
   "permissions": [

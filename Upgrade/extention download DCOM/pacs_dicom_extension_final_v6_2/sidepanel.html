@@ -11,13 +11,18 @@
     <div class="toolbar"><button id="trackBtn" class="secondary">Theo dõi tab</button><button id="scanBtn" class="secondary">Quét lại</button><button id="deepScanBtn" class="secondary hidden">Nhận diện sâu</button></div>
   </section>
 
+  <section id="linkCard" class="card hidden">
+    <div class="section-head"><div><h3>Link viewer</h3><p id="linkNote">—</p></div><button id="copyLinkBtn" class="secondary small">Chép</button></div>
+    <p id="viewerUrl" class="url-line" title="">—</p>
+  </section>
+
   <section id="learnCard" class="card hidden">
     <div class="section-head"><div><h3>Học site</h3><p id="learnText">Ghi request của viewer trong tab này.</p></div><button id="learnToggleBtn" class="secondary small">Bắt đầu</button></div>
     <div id="learnList" class="learn-list"></div>
   </section>
 
   <section id="doneCard" class="card hidden">
-    <div class="done-row"><div class="done-mark">✓</div><div class="grow"><h3>Study đã tải</h3><p id="doneMeta">—</p></div></div>
+    <div class="done-row"><div class="done-mark">✓</div><div class="grow"><h3 id="doneTitle">Đã tải xong</h3><p id="doneMeta">—</p></div><span id="doneBadge" class="chip neutral">—</span></div>
     <div class="toolbar"><button id="revealDownloadedBtn" class="secondary">Hiện lại series</button><button id="historyOpenBtn" class="secondary">Lịch sử</button></div>
   </section>
 
