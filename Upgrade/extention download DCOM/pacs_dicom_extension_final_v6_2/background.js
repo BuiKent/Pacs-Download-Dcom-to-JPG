@@ -63,7 +63,7 @@ async function startLearning(tabId){const s=await startTracking(tabId,true);s.le
 async function stopLearning(tabId){const s=await getTabState(tabId);s.learning={active:false,startedAt:s.learning?.startedAt||0};await saveTabState(tabId,s);chrome.runtime.sendMessage({type:'LEARN_UPDATED',tabId}).catch(()=>{});return s;}
 async function markLearnCandidate(tabId,url,role){const s=await getTabState(tabId),row=[...(s.learnCandidates||[])].reverse().find(x=>x.url===cleanUrl(url));if(!row)throw new Error('Request không còn trong phiên học.');if(role==='dicom'){await ensureOffscreen();const r=await chrome.runtime.sendMessage({target:'offscreen',type:'PROBE_DICOM_URLS',probes:[{url:row.url,headers:headersForUrl(s,row.url),method:row.method||'GET'}]});if(!r?.valid?.includes(row.url))throw new Error('Request này không trả DICOM Part-10.');await learnUrl(row.url,'dicom');pushUnique(s.genericDirectUrls,row.url,5000);s.genericDirectMeta[row.url]={contentType:row.contentType||'application/octet-stream',learned:true};await saveTabState(tabId,s);scheduleAnalyze(tabId,80);return{role,valid:1};}if(role==='manifest'){await learnUrl(row.url,'manifest');const r=await materializeLearnedManifest(tabId,row.url,row);return{role,...r};}throw new Error('Loại học site không hợp lệ.');}
 async function rememberRequest(tabId,raw,extra={}){if(tabId<0)return;const hit=classifyPacsUrl(raw);const learnedManifest=isLearnedManifestUrl(raw);const s=await getTabState(tabId);if(!hit&&s.tracking!=='watching'&&!learnedManifest)return;const generic=hit||(/\/(?:api|rest|services?)\//i.test(raw)&&/(study|series|instance|image|dicom|exam|patient)/i.test(raw)?{type:'PACS_GENERIC_API',url:cleanUrl(raw),score:35}:null)||(learnedManifest?{type:'LEARNED_MANIFEST',url:cleanUrl(raw),score:72}:null);if(!generic)return;const id=`${generic.type}|${generic.url}`;const i=s.pacsRequests.findIndex(x=>`${x.type}|${x.url}`===id);if(i>=0)s.pacsRequests.splice(i,1);s.pacsRequests.push({...generic,...extra,time:Date.now()});if(s.pacsRequests.length>MAX_REQUESTS)s.pacsRequests.splice(0,s.pacsRequests.length-MAX_REQUESTS);s.confidence=Math.max(Number(s.confidence)||0,Math.min(100,Number(generic.score)||0));if(s.tracking!=='stopped')s.tracking='watching';await saveTabState(tabId,s);await setBadge(tabId);if(Number(generic.score||0)>=80||['PACS_GENERIC_API','DICOM_IMAGE_API'].includes(generic.type))scheduleAnalyze(tabId,450);if(learnedManifest)scheduleLearnedManifest(tabId,generic.url,extra,450);chrome.runtime.sendMessage({type:'PACS_SIGNAL',tabId,signal:generic.type}).catch(()=>{});}
-async function rememberHeaders(tabId,url,rawHeaders){if(/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(url))return;const s=await getTabState(tabId);if(s.tracking!=='watching')return;const h={};for(const x of(rawHeaders||[]))if(x.name&&x.value!=null)h[x.name]=x.value;const safe=safeHeaders(h);if(!Object.keys(safe).length)return;let ct='';for(const[k,v]of Object.entries(safe))if(k.toLowerCase()==='content-type'&&v){ct=String(v);break;}
+async function rememberHeaders(tabId,url,rawHeaders){if(/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(url))return;const s=await getTabState(tabId);if(!['watching','candidate'].includes(s.tracking))return;const h={};for(const x of(rawHeaders||[]))if(x.name&&x.value!=null)h[x.name]=x.value;const safe=safeHeaders(h);if(!Object.keys(safe).length)return;let ct='';for(const[k,v]of Object.entries(safe))if(k.toLowerCase()==='content-type'&&v){ct=String(v);break;}
 // Content-Type phải bám theo TỪNG request, không dùng chung một ô cho cả origin:
 // một origin phát nhiều loại POST (ASMX JSON, SignalR urlencoded...), ô chung
 // ghi đè lẫn nhau nên lúc replay manifest rất dễ gửi sai kiểu. ASMX gặp sai kiểu
@@ -74,16 +74,38 @@ async function rememberDicomResponse(tabId,url,contentType,status,method='GET',c
   if(tabId<0||String(method).toUpperCase()!=='GET'||Number(status)>=400)return;
   const ct=String(contentType||'').toLowerCase(),hit=classifyPacsUrl(url),learned=isLearnedUrl(url),u=cleanUrl(url);if(!u)return;
   const strong=ct.includes('application/dicom')||/\.dcm(?:\?|$)/i.test(url)||(hit&&['WADO','DICOM_INSTANCE','DICOM_IMAGE_API','VRPACS_DICOM'].includes(hit.type))||(learned&&ct.includes('application/octet-stream'));
-  const s=await getTabState(tabId);if(s.tracking!=='watching')return;
+  const s=await getTabState(tabId);if(!strong&&!['watching','candidate'].includes(s.tracking))return;
   if(strong){s.genericDirectUrls=[...new Set([...(s.genericDirectUrls||[]),u])].slice(-5000);s.genericDirectMeta[u]={contentType:ct,learned};s.confidence=Math.max(Number(s.confidence)||0,learned?95:90);await saveTabState(tabId,s);scheduleAnalyze(tabId,500);return;}
   const binary=(ct.includes('application/octet-stream')||ct.includes('application/binary')||ct.includes('binary/octet-stream'))&&!/\.(?:js|css|woff2?|ttf|png|jpe?g|gif|svg|ico|mp4|webm)(?:\?|$)/i.test(u)&&!/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(u);
   if(binary&&s.tracking==='watching'){
     const sig=pathSignature(u);if(sig&&!(s.binaryProbed||[]).includes(sig)){const row={url:u,contentType:ct,contentLength:Number(contentLength)||0,time:Date.now()};const list=(s.binaryCandidates||[]).filter(x=>x.url!==u);list.push(row);s.binaryCandidates=list.slice(-80);await saveTabState(tabId,s);scheduleDeepProbe(tabId,900);}
   }
 }
-chrome.webRequest.onBeforeRequest.addListener(d=>{if(d.tabId<0)return;const hit=classifyPacsUrl(d.url);getTabState(d.tabId).then(s=>{if(s.learning?.active)rememberLearningRequest(d.tabId,d,s).catch(()=>{});if(s.tracking!=='watching')return;const sensitive=/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(d.url);const body=!sensitive&&!['GET','HEAD'].includes(String(d.method||'GET').toUpperCase())?serializeRequestBody(d.requestBody):null;rememberRequest(d.tabId,d.url,{method:d.method,requestBody:body,source:'webRequest'}).catch(()=>{});});},{urls:['http://*/*','https://*/*']},['requestBody','extraHeaders']);
-chrome.webRequest.onBeforeSendHeaders.addListener(d=>{if(d.tabId>=0)rememberHeaders(d.tabId,d.url,d.requestHeaders).catch(()=>{});},{urls:['http://*/*','https://*/*']},['requestHeaders','extraHeaders']);
-chrome.webRequest.onHeadersReceived.addListener(d=>{if(d.tabId<0)return;let ct='',len=0;for(const h of(d.responseHeaders||[])){const n=String(h.name).toLowerCase();if(n==='content-type')ct=String(h.value||'');else if(n==='content-length')len=Number(h.value)||0;}rememberDicomResponse(d.tabId,d.url,ct,d.statusCode,d.method,len).catch(()=>{});rememberLearningResponse(d.tabId,d,ct,len).catch(()=>{});},{urls:['http://*/*','https://*/*']},['responseHeaders','extraHeaders']);
+chrome.webRequest.onBeforeRequest.addListener(d=>{
+  if(d.tabId<0)return;
+  const hit=classifyPacsUrl(d.url),learnedManifest=isLearnedManifestUrl(d.url);
+  getTabState(d.tabId).then(s=>{
+    if(s.learning?.active)rememberLearningRequest(d.tabId,d,s).catch(()=>{});
+    if(!hit&&!learnedManifest&&!['watching','candidate'].includes(s.tracking))return;
+    const sensitive=/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(d.url);
+    const body=!sensitive&&!['GET','HEAD'].includes(String(d.method||'GET').toUpperCase())?serializeRequestBody(d.requestBody):null;
+    rememberRequest(d.tabId,d.url,{method:d.method,requestBody:body,source:'webRequest'}).catch(()=>{});
+  });
+},{urls:['<all_urls>']},['requestBody']);
+chrome.webRequest.onBeforeSendHeaders.addListener(d=>{
+  if(d.tabId>=0)rememberHeaders(d.tabId,d.url,d.requestHeaders).catch(()=>{});
+},{urls:['<all_urls>']},['requestHeaders','extraHeaders']);
+chrome.webRequest.onHeadersReceived.addListener(d=>{
+  if(d.tabId<0)return;
+  let ct='',len=0;
+  for(const h of(d.responseHeaders||[])){
+    const n=String(h.name).toLowerCase();
+    if(n==='content-type')ct=String(h.value||'');
+    else if(n==='content-length')len=Number(h.value)||0;
+  }
+  rememberDicomResponse(d.tabId,d.url,ct,d.statusCode,d.method,len).catch(()=>{});
+  rememberLearningResponse(d.tabId,d,ct,len).catch(()=>{});
+},{urls:['<all_urls>']},['responseHeaders','extraHeaders']);
 
 function scheduleDeepProbe(tabId,delay=1000){clearTimeout(probeTimers.get(tabId));probeTimers.set(tabId,setTimeout(()=>{probeTimers.delete(tabId);deepProbeTab(tabId).catch(()=>{});},delay));}
 async function deepProbeTab(tabId){
@@ -178,6 +200,18 @@ async function zfpAsk(tabId,type,args,timeoutMs){
   catch(e){return{error:String(e?.message||e)};}
 }
 async function zfpInfo(tabId){const r=await zfpAsk(tabId,'ZFP_INFO',{},8000);return r?.groups?.length?r:null;}
+// Server ZFP khong nhan lenh xin anh cua nguoi ngoai (da thu du kieu, im lang
+// 100% so lan). Cai duy nhat lam no bom anh la chinh viewer nap study. Nen muon
+// lay lai nhung anh da chay qua truoc luc bam Tai thi phai cho trang nap lai.
+async function zfpReloadViewer(tabId){
+  try{await chrome.tabs.reload(tabId);}catch(e){return{ok:false,error:String(e?.message||e)};}
+  for(let i=0;i<45;i++){
+    await new Promise(r=>setTimeout(r,1000));
+    const info=await zfpInfo(tabId);
+    if(info?.groups?.length)return{ok:true,groups:info.groups.length};
+  }
+  return{ok:false,error:'Viewer nạp lại nhưng chưa đọc được cấu trúc study.'};
+}
 // Moc dang ky xong chi an tu lan tai trang sau, nen phai tai lai dung MOT lan.
 async function maybeReloadForZfp(tabId,state){
   if(state.zfpReloadDone)return;
@@ -215,7 +249,8 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
   (async()=>{
     // Offscreen chi noi chuyen duoc bang chrome.runtime, khong voi toi tab nao,
     // nen viec hoi anh ZFP phai di vong qua day.
-    if(m?.type==='ZFP_IMAGE_REQUEST'){const r=await zfpAsk(Number(m.tabId),'ZFP_IMAGE',m.args,m.timeoutMs||50000);return{ok:!r?.error,...r};}
+    if(m?.type==='ZFP_TAKE_REQUEST'){const r=await zfpAsk(Number(m.tabId),'ZFP_TAKE',m.args,m.timeoutMs||50000);return{ok:!r?.error,...r};}
+    if(m?.type==='ZFP_RELOAD_REQUEST')return await zfpReloadViewer(Number(m.tabId));
     if(m?.type==='DOWNLOAD_BLOB'){await downloadBlobUrl(m.jobId,m.url,m.filename);return{ok:true};}
     if(m?.type==='DOWNLOAD_CANCEL'){cancelDownloads(m.jobId);return{ok:true};}
     if(m?.type==='PAGE_HINTS'){const id=Number(sender?.tab?.id??m.tabId);await applyPageHints(id,m.hint||{});return{ok:true};}

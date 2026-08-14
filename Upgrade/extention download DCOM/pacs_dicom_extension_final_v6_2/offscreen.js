@@ -59,23 +59,19 @@ async function prepareDicomweb(task,signal,frameConcurrency){
  * fetch. Doi bytes tho + metadata cua GE thanh DICOM Part-10 - la ban DUNG LAI,
  * thieu vai tag so voi file goc cua may chup.
  */
-async function prepareZfp(task){
-  const z=task.zfp||{};
-  const r=await chrome.runtime.sendMessage({type:'ZFP_IMAGE_REQUEST',tabId:task.tabId,
-    args:{studyUid:z.studyUid,groupId:z.groupId,sop:z.sop,timeoutMs:45000},timeoutMs:50000})
-    .catch(e=>({error:String(e?.message||e)}));
-  if(!r||r.error||!r.b64)throw new Error(r?.error||'Viewer không trả ảnh.');
-  const bin=atob(r.b64),pixels=new Uint8Array(bin.length);
+function zfpBytes(task,packet){
+  const bin=atob(packet.b64),pixels=new Uint8Array(bin.length);
   for(let i=0;i<bin.length;i++)pixels[i]=bin.charCodeAt(i);
-  const meta=zfpMetaToDicomJson(r.meta,z.sopRow,z.group,z.study);
+  const z=task.zfp||{};
+  const meta=zfpMetaToDicomJson(packet.meta,z.sopRow,z.group,z.study);
   const bytes=buildPart10FromFrames(meta,[pixels],'application/octet-stream; transfer-syntax=1.2.840.10008.1.2.1');
-  return{bytes,provenance:'reconstructed'};
+  const check=validatePart10(bytes);if(!check.ok)throw new Error(check.reason);
+  return{bytes,provenance:'reconstructed',meta:check.meta};
 }
 
 async function prepareTask(task,signal,frameConcurrency){
   let result;
-  if(task.strategy==='zfp-image')result=await prepareZfp(task);
-  else if(task.strategy==='dicomweb-instance')result=await prepareDicomweb(task,signal,frameConcurrency);
+  if(task.strategy==='dicomweb-instance')result=await prepareDicomweb(task,signal,frameConcurrency);
   else if(task.strategy==='fetch-dicom'){
     const got=await fetchRaw(task.url,task,'application/dicom, multipart/related; type="application/dicom", application/octet-stream, */*',signal);const bytes=dicomFromResponse(got.bytes,got.contentType);if(!bytes)throw new Error(responseProblem(got.bytes,got.contentType));result={bytes,provenance:'original'};
   }else throw new Error(`Strategy không hỗ trợ: ${task.strategy}`);
@@ -102,9 +98,71 @@ async function writeViaDownloads(studyFolder,relativePath,bytes,job){
 
 function emit(job,force=false){const now=Date.now();if(!force&&now-(job.lastEmit||0)<120)return;job.lastEmit=now;chrome.runtime.sendMessage({type:'ENGINE_PROGRESS',tabId:job.tabId,jobId:job.id,status:job.status,total:job.total,completed:job.completed,failed:job.failed,skipped:job.skipped,original:job.original||0,reconstructed:job.reconstructed||0,bytesWritten:job.bytesWritten,currentFile:job.currentFile||'',errors:job.errors.slice(-30),updatedAt:now}).catch(()=>{});}
 
+async function commit(job,task,got){
+  if(job.saveMode==='filesystem')await writeFile(job.studyRoot,task.relativePath,got.bytes);
+  else await writeViaDownloads(job.studyFolder,task.relativePath,got.bytes,job);
+  job.completed++;job.bytesWritten+=got.bytes.byteLength;
+  if(got.provenance==='reconstructed')job.reconstructed++;else job.original++;
+}
+function failTask(job,relativePath,message){job.failed++;job.errors.push(`${relativePath}: ${message}`);if(job.errors.length>80)job.errors.splice(0,job.errors.length-80);emit(job,true);}
+
 async function runTask(job,task,index){if(job.cancelled)throw new DOMException('Cancelled','AbortError');job.currentFile=task.relativePath;emit(job);if(job.saveMode==='filesystem'&&await existingValid(job.studyRoot,task.relativePath)){job.completed++;job.skipped++;emit(job,true);return;}
-  let last='';for(let attempt=1;attempt<=3;attempt++){if(job.cancelled)throw new DOMException('Cancelled','AbortError');try{const got=job.prefetched?.has(index)?job.prefetched.get(index):await prepareTask(task,job.controller.signal,job.frameConcurrency);if(job.prefetched?.has(index))job.prefetched.delete(index);if(job.saveMode==='filesystem')await writeFile(job.studyRoot,task.relativePath,got.bytes);else await writeViaDownloads(job.studyFolder,task.relativePath,got.bytes,job);job.completed++;job.bytesWritten+=got.bytes.byteLength;if(got.provenance==='reconstructed')job.reconstructed++;else job.original++;if(task.strategy==='fetch-dicom'&&task.url)chrome.runtime.sendMessage({type:'ENGINE_LEARNED_URL',tabId:job.tabId,url:task.url}).catch(()=>{});emit(job,true);return;}catch(e){last=String(e?.message||e);if(e?.name==='AbortError')throw e;if(attempt<3)await sleep(350*attempt);}}
-  job.failed++;job.errors.push(`${task.relativePath}: ${last}`);if(job.errors.length>80)job.errors.splice(0,job.errors.length-80);emit(job,true);
+  let last='';for(let attempt=1;attempt<=3;attempt++){if(job.cancelled)throw new DOMException('Cancelled','AbortError');try{const got=job.prefetched?.has(index)?job.prefetched.get(index):await prepareTask(task,job.controller.signal,job.frameConcurrency);if(job.prefetched?.has(index))job.prefetched.delete(index);await commit(job,task,got);if(task.strategy==='fetch-dicom'&&task.url)chrome.runtime.sendMessage({type:'ENGINE_LEARNED_URL',tabId:job.tabId,url:task.url}).catch(()=>{});emit(job,true);return;}catch(e){last=String(e?.message||e);if(e?.name==='AbortError')throw e;if(attempt<3)await sleep(350*attempt);}}
+  failTask(job,task.relativePath,last);
+}
+
+/**
+ * Vong tai cho GE ZFP — DAY chu khong KEO.
+ *
+ * Moi adapter khac deu keo: engine biet URL, tu goi tung anh. ZFP thi khong:
+ * server tu choi moi lenh xin anh gui tu ngoai (da chung minh bang thuc nghiem,
+ * xem dau file zfp-hook.js). Thu duy nhat lam no bom pixel la chinh viewer nap
+ * study — va luc do no bom gan nhu ca ca (do duoc 261/264 anh).
+ *
+ * Nen o day engine ngoi hung: moc tren trang xep anh vao hang doi, engine lay
+ * ra tung cai, tra ve sop nao thi ghi vao task cua sop do. Thu tu den la do
+ * viewer quyet, khong phai minh. Anh cua series khong chon thi bo qua. Het anh
+ * ma con thieu thi nap lai viewer (toi da 2 lan) de no bom lai tu dau.
+ */
+const ZFP_TAKE_MS=25000,ZFP_MAX_RELOADS=2,ZFP_DEADLINE_MS=20*60*1000;
+async function zfpTake(tabId,timeoutMs){
+  return await chrome.runtime.sendMessage({type:'ZFP_TAKE_REQUEST',tabId,args:{timeoutMs},timeoutMs:timeoutMs+8000})
+    .catch(e=>({error:String(e?.message||e)}));
+}
+async function zfpReload(tabId){
+  return await chrome.runtime.sendMessage({type:'ZFP_RELOAD_REQUEST',tabId}).catch(e=>({ok:false,error:String(e?.message||e)}));
+}
+async function runZfpJob(job,tasks){
+  const bySop=new Map();
+  for(const t of tasks){const s=String(t.zfp?.sop||'').split('#')[0];if(s)bySop.set(s,t);}
+  const done=new Set();let reloads=0,dry=0,lastMeta={};const until=Date.now()+ZFP_DEADLINE_MS;
+  while(!job.cancelled&&done.size<bySop.size&&Date.now()<until){
+    const r=await zfpTake(job.tabId,ZFP_TAKE_MS);
+    if(r&&r.b64){
+      dry=0;
+      const sop=String(r.sop||''),task=bySop.get(sop);
+      if(!task||done.has(sop))continue;          // anh cua series khong chon
+      done.add(sop);job.currentFile=task.relativePath;
+      try{
+        if(job.saveMode==='filesystem'&&await existingValid(job.studyRoot,task.relativePath)){job.completed++;job.skipped++;emit(job,true);continue;}
+        const got=zfpBytes(task,r);if(got.meta&&!lastMeta.patientId)lastMeta=got.meta;
+        await commit(job,task,got);emit(job,true);
+      }catch(e){failTask(job,task.relativePath,String(e?.message||e));}
+      continue;
+    }
+    dry++;
+    if(dry===1&&reloads<ZFP_MAX_RELOADS){
+      reloads++;job.currentFile=`Nạp lại viewer để lấy nốt ${bySop.size-done.size} ảnh…`;emit(job,true);
+      const rl=await zfpReload(job.tabId);
+      if(!rl?.ok){job.errors.push(`Không nạp lại được viewer: ${rl?.error||'không rõ lý do'}`);break;}
+      dry=0;continue;
+    }
+    if(dry>=3)break;
+    await sleep(1500);
+  }
+  if(!job.cancelled)for(const[sop,t]of bySop){if(done.has(sop))continue;failTask(job,t.relativePath,'viewer không nạp ảnh này — mở series đó trong viewer rồi tải lại.');}
+  job.currentFile='';emit(job,true);
+  return lastMeta;
 }
 
 function safeSegment(text,fallback){const s=String(text||'').normalize('NFKC').replace(/[<>:"/\\|?*\x00-\x1F]/g,'_').replace(/\s+/g,' ').trim().replace(/[. ]+$/g,'');return(s||fallback).slice(0,120);}
@@ -112,10 +170,14 @@ function studyFolderFromInfo(info={}){const name=safeSegment(String(info.patient
 
 async function runJob(spec){
   const saveMode=spec.saveMode==='downloads'?'downloads':'filesystem',root=saveMode==='filesystem'?await ensureWritableRoot():null;const controller=new AbortController();const prefetched=new Map();const info={...(spec.folderInfo||{})};let resolvedMeta={};
-  if(spec.tasks.length&&(!info.patientName||!info.patientId||!info.studyDate||!spec.studyUid)){try{const first=await prepareTask(spec.tasks[0],controller.signal,Math.min(6,Math.max(2,Number(spec.frameConcurrency)||6)));prefetched.set(0,first);const m=first.meta||{};resolvedMeta=m;if(!info.patientName&&m.patientName)info.patientName=m.patientName;if(!info.patientId&&m.patientId)info.patientId=m.patientId;if(!info.studyDate&&m.studyDate)info.studyDate=m.studyDate;}catch{}}
+  const isZfp=spec.tasks.some(t=>t.strategy==='zfp-image');
+  // ZFP khong keo duoc anh theo yeu cau nen khong the "tai truoc anh dau" de do
+  // thong tin benh nhan; may thay cau truc study cua GE da co san ho ten/ID.
+  if(!isZfp&&spec.tasks.length&&(!info.patientName||!info.patientId||!info.studyDate||!spec.studyUid)){try{const first=await prepareTask(spec.tasks[0],controller.signal,Math.min(6,Math.max(2,Number(spec.frameConcurrency)||6)));prefetched.set(0,first);const m=first.meta||{};resolvedMeta=m;if(!info.patientName&&m.patientName)info.patientName=m.patientName;if(!info.patientId&&m.patientId)info.patientId=m.patientId;if(!info.studyDate&&m.studyDate)info.studyDate=m.studyDate;}catch{}}
   const studyFolder=studyFolderFromInfo(info)||spec.studyFolder;const studyRoot=saveMode==='filesystem'?await getPathRoot(root,studyFolder):null;const job={id:spec.jobId,tabId:spec.tabId,status:'downloading',total:spec.tasks.length,completed:0,failed:0,skipped:0,original:0,reconstructed:0,bytesWritten:0,currentFile:'',errors:[],cancelled:false,controller,concurrency:Math.min(10,Math.max(2,Number(spec.concurrency)||6)),frameConcurrency:Math.min(10,Math.max(2,Number(spec.frameConcurrency)||6)),saveMode,studyFolder,studyRoot,prefetched,lastEmit:0};jobs.set(job.tabId,job);emit(job,true);
   let next=0;async function worker(){while(true){if(job.cancelled)return;const i=next++;if(i>=spec.tasks.length)return;try{await runTask(job,spec.tasks[i],i);}catch(e){if(e?.name==='AbortError')return;job.failed++;job.errors.push(`${spec.tasks[i]?.relativePath||i}: ${e?.message||e}`);emit(job,true);}}}
-  await Promise.all(Array.from({length:Math.min(job.concurrency,Math.max(1,spec.tasks.length))},worker));job.status=job.cancelled?'cancelled':job.failed?(job.completed?'done_with_errors':'error'):'done';job.currentFile='';emit(job,true);jobs.delete(job.tabId);return{status:job.status,total:job.total,completed:job.completed,failed:job.failed,skipped:job.skipped,original:job.original||0,reconstructed:job.reconstructed||0,bytesWritten:job.bytesWritten,errors:job.errors,folderInfo:info,resolvedMeta,studyFolder,saveMode};
+  if(isZfp){const m=await runZfpJob(job,spec.tasks);if(m&&!Object.keys(resolvedMeta).length)resolvedMeta=m;}
+  else await Promise.all(Array.from({length:Math.min(job.concurrency,Math.max(1,spec.tasks.length))},worker));job.status=job.cancelled?'cancelled':job.failed?(job.completed?'done_with_errors':'error'):'done';job.currentFile='';emit(job,true);jobs.delete(job.tabId);return{status:job.status,total:job.total,completed:job.completed,failed:job.failed,skipped:job.skipped,original:job.original||0,reconstructed:job.reconstructed||0,bytesWritten:job.bytesWritten,errors:job.errors,folderInfo:info,resolvedMeta,studyFolder,saveMode};
 }
 
 chrome.runtime.onMessage.addListener((m,_s,sendResponse)=>{

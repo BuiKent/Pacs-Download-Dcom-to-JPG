@@ -214,8 +214,8 @@ export function parseVrpacsManifest(payload) {
     rawSeries,
     series: rawSeries.map((s, i) => normalizeSeries(s, 'vrpacs', i)),
     patient: {
-      name: String(firstStudy?.patientName || firstStudy?.PatientName || ''),
-      id: String(firstStudy?.patientId || firstStudy?.PatientID || ''),
+      name: String(firstStudy?.patientName || firstStudy?.PatientName || data?.pName || data?.patientName || ''),
+      id: String(firstStudy?.patientId || firstStudy?.PatientID || data?.pCode || data?.pID || data?.patientId || ''),
       studyDate: String(firstStudy?.studyDate || firstStudy?.StudyDate || ''),
       description: String(firstStudy?.studyDescription || firstStudy?.StudyDescription || '')
     }

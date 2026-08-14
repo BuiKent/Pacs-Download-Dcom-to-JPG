@@ -2,17 +2,115 @@
  * Móc vào WebSocket của GE Centricity Universal Viewer (Zero Footprint).
  *
  * Chạy ở MAIN world, lúc document_start — viewer mở WebSocket ngay khi nạp
- * trang, gắn muộn là mất sạch cấu trúc study.
+ * trang, gắn muộn là mất sạch cấu trúc study lẫn những ảnh đầu tiên.
  *
  * Vì sao phải làm thế này: dòng ZFP KHÔNG chuyển ảnh qua HTTP. Pixel đi trong
- * `ws://.../image-provider` theo giao thức JSON riêng của GE, nên chrome.webRequest
- * không nhìn thấy gì để mà học. Ở đây ta nghe `data-provider` để lấy cấu trúc
- * study, giữ tham chiếu tới socket ảnh, rồi tự hỏi từng ảnh khi cần tải.
+ * `ws://.../image-provider` theo giao thức JSON riêng của GE, nên
+ * chrome.webRequest không nhìn thấy gì để mà học.
+ *
+ * QUAN TRỌNG — vì sao chỉ HỨNG chứ không HỎI:
+ * bản trước gửi lệnh `GET_DICOM_IMAGE` y hệt viewer (đúng socket của trang,
+ * đúng cấu trúc payload, correlationId dạng UUID) và server im lặng 100% số
+ * lần. Đã loại trừ bằng thực nghiệm trên ca thật: sai định dạng
+ * correlationId (không phải), sai socket (thử cả 4, đều câm), series chưa
+ * hiển thị (series đang mở cũng câm), server bỏ qua ảnh đã gửi rồi (ảnh chưa
+ * từng nạp cũng câm). Trong lúc server đang bơm 600 khung của chính viewer thì
+ * không khung nào mang SOP mình hỏi. Server chỉ phục vụ ảnh do engine của nó
+ * quyết định — không nhận lệnh của người ngoài.
+ *
+ * Nhưng chính viewer tự nạp gần trọn study khi mở trang (đo được 261/264 ảnh
+ * trong ~45 giây). Nên ở đây ta không xin: ta ghép mỗi khung metadata với khung
+ * nhị phân đi ngay sau nó trên cùng socket, xếp vào hàng đợi, rồi đẩy dần sang
+ * extension. Mỗi ảnh lấy ra là bỏ khỏi hàng đợi ngay — giữ cả 264 ảnh trong
+ * trang là ~138 MB, đủ để tab chết.
  */
 (() => {
   if (window.__zfp) return;
-  const store = {groups: [], study: null, imageSockets: [], seen: {}};
+
+  // Trần bộ nhớ hàng đợi. Cao hơn thì mở viewer xong bấm tải ngay vẫn còn đủ
+  // ảnh cũ; cao quá thì tab viewer nặng thêm đúng bằng ngần đó.
+  const MAX_QUEUE_BYTES = 96 * 1024 * 1024;
+
+  const store = {
+    groups: [], study: null, imageSockets: [], seen: {},
+    queue: [], queueBytes: 0, waiters: [],
+    captured: 0, dropped: 0, mismatched: 0, sopsQueued: {},
+  };
   window.__zfp = store;
+
+  function pack(meta, bytes) {
+    let s = ''; const CH = 0x8000;
+    for (let i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    return {sop: String(meta.sopInstanceUid || ''), meta: meta, b64: btoa(s), size: bytes.length,
+            captured: store.captured, dropped: store.dropped, queued: store.queue.length};
+  }
+
+  function push(meta, bytes) {
+    const uid = String(meta.sopInstanceUid || '');
+    if (!uid) return;
+    store.captured++;
+    // Có người đang chờ thì đưa thẳng, khỏi qua hàng đợi — đây là đường đi
+    // thường trực lúc đang tải, nhờ nó bộ nhớ trang gần như không tăng.
+    const w = store.waiters.shift();
+    if (w) { clearTimeout(w.timer); w.resolve(pack(meta, bytes)); return; }
+    if (store.sopsQueued[uid]) return;
+    store.sopsQueued[uid] = 1;
+    store.queue.push({meta: meta, bytes: bytes});
+    store.queueBytes += bytes.length;
+    while (store.queueBytes > MAX_QUEUE_BYTES && store.queue.length > 1) {
+      const old = store.queue.shift();
+      store.queueBytes -= old.bytes.length;
+      delete store.sopsQueued[String(old.meta.sopInstanceUid || '')];
+      store.dropped++;
+    }
+  }
+
+  function take(timeoutMs) {
+    return new Promise(resolve => {
+      if (store.queue.length) {
+        const it = store.queue.shift();
+        store.queueBytes -= it.bytes.length;
+        delete store.sopsQueued[String(it.meta.sopInstanceUid || '')];
+        resolve(pack(it.meta, it.bytes));
+        return;
+      }
+      const w = {};
+      w.timer = setTimeout(() => {
+        const i = store.waiters.indexOf(w);
+        if (i >= 0) store.waiters.splice(i, 1);
+        resolve({empty: true, captured: store.captured, dropped: store.dropped, sockets: liveSockets()});
+      }, timeoutMs || 20000);
+      w.resolve = resolve;
+      store.waiters.push(w);
+    });
+  }
+
+  function liveSockets() { return store.imageSockets.filter(s => s && s.readyState === 1).length; }
+
+  function watchImages(ws) {
+    // Metadata và pixel là HAI khung liền nhau trên cùng socket; ghép sai cặp là
+    // ghi pixel của ảnh khác vào file. Số byte phải đúng rows*cols*bits/8*samples
+    // mới nhận — khung nào không khớp (JPEG xem nhanh, ảnh định vị, khung điều
+    // khiển) thì bỏ, thà thiếu còn hơn sai.
+    let meta = null;
+    ws.addEventListener('message', ev => {
+      if (typeof ev.data === 'string') {
+        let d = null;
+        try { d = JSON.parse(ev.data); } catch (e) { d = null; }
+        meta = (d && d.sopClassUid) ? d : null;
+        return;
+      }
+      const m = meta; meta = null;
+      if (!m) return;
+      const dim = m.dimensions || {};
+      const need = (dim.rows | 0) * (dim.columns | 0)
+                 * (((m.bitsAllocated | 0) || 16) / 8)
+                 * ((m.samplesPerPixel | 0) || 1);
+      const b = new Uint8Array(ev.data);
+      if (need && b.length !== need) { store.mismatched++; return; }
+      push(m, b);
+    });
+  }
 
   const Orig = window.WebSocket;
   const Hooked = function (url, protocols) {
@@ -35,6 +133,7 @@
     } else if (u.indexOf('image-provider') >= 0) {
       try { ws.binaryType = 'arraybuffer'; } catch (e) {}
       store.imageSockets.push(ws);
+      watchImages(ws);
     }
     return ws;
   };
@@ -42,46 +141,12 @@
   for (const k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) Hooked[k] = Orig[k];
   window.WebSocket = Hooked;
 
-  function fetchImage(a) {
-    return new Promise(resolve => {
-      // Phải gửi trên CHÍNH socket của trang: socket tự mở sẽ được cấp session
-      // mới chưa LOAD_STUDY nên server lặng thinh.
-      const ws = store.imageSockets.find(s => s && s.readyState === 1);
-      if (!ws) { resolve({error: 'Không còn kết nối ảnh nào đang mở. Hãy mở lại viewer.'}); return; }
-      const want = String(a.sop).split('#')[0];
-      let meta = null;
-      const off = () => ws.removeEventListener('message', onMsg);
-      const timer = setTimeout(() => { off(); resolve({error: 'Quá hạn chờ ảnh.'}); }, a.timeoutMs || 45000);
-      function onMsg(ev) {
-        if (typeof ev.data === 'string') {
-          try { const d = JSON.parse(ev.data); if (d.sopClassUid) meta = d; } catch (e) {}
-          return;
-        }
-        // Viewer cũng đang xin ảnh trên đúng socket này. Chỉ nhận khối nhị phân
-        // đi NGAY SAU metadata của đúng ảnh mình hỏi VÀ đúng số byte suy ra từ
-        // metadata — thiếu một trong hai là rất dễ ghi nhầm pixel của ảnh khác.
-        if (!meta || meta.sopInstanceUid !== want) { meta = null; return; }
-        const dim = meta.dimensions || {};
-        const need = (dim.rows | 0) * (dim.columns | 0)
-                   * (((meta.bitsAllocated | 0) || 16) / 8)
-                   * ((meta.samplesPerPixel | 0) || 1);
-        const b = new Uint8Array(ev.data);
-        if (need && b.length !== need) { meta = null; return; }
-        clearTimeout(timer); off();
-        let s = ''; const CH = 0x8000;
-        for (let i = 0; i < b.length; i += CH) s += String.fromCharCode.apply(null, b.subarray(i, i + CH));
-        resolve({meta: meta, b64: btoa(s), size: b.length});
-      }
-      ws.addEventListener('message', onMsg);
-      ws.send(JSON.stringify({
-        command: 'GET_DICOM_IMAGE',
-        payLoad: JSON.stringify({
-          Token: {StudyInstanceUid: a.studyUid, GroupId: a.groupId, SopInstanceUid: a.sop},
-          Options: {MaxResolution: 0, QualityLevel: 75, OutputFormat: 'IT_RAW'}
-        }),
-        correlationId: 'dl-' + Math.random().toString(36).slice(2)
-      }));
-    });
+  function stats() {
+    let total = 0;
+    for (const g of store.groups) total += ((g && g.dicomSops) || []).length;
+    return {captured: store.captured, queued: store.queue.length, dropped: store.dropped,
+            mismatched: store.mismatched, sockets: liveSockets(), totalImages: total,
+            groups: store.groups.length};
   }
 
   // Cầu nối sang content script (ISOLATED world) — hai bên không thấy biến của
@@ -93,10 +158,11 @@
     let reply;
     try {
       if (m.kind === 'info') {
-        reply = {groups: store.groups, study: store.study,
-                 sockets: store.imageSockets.filter(s => s && s.readyState === 1).length};
-      } else if (m.kind === 'image') {
-        reply = await fetchImage(m.args || {});
+        reply = {groups: store.groups, study: store.study, sockets: liveSockets(), stats: stats()};
+      } else if (m.kind === 'take') {
+        reply = await take((m.args && m.args.timeoutMs) || 20000);
+      } else if (m.kind === 'stats') {
+        reply = stats();
       } else {
         reply = {error: 'Lệnh không hỗ trợ: ' + m.kind};
       }

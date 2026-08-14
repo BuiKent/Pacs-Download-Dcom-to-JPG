@@ -39,9 +39,10 @@
       window.postMessage({__zfp:'req',id,kind,args},'*');
     });
   }
+  const ZFP_KINDS={ZFP_INFO:'info',ZFP_TAKE:'take',ZFP_STATS:'stats'};
   chrome.runtime.onMessage.addListener((m,_s,sendResponse)=>{
-    if(m?.type!=='ZFP_INFO'&&m?.type!=='ZFP_IMAGE')return false;
-    zfpAsk(m.type==='ZFP_INFO'?'info':'image',m.args,m.timeoutMs).then(sendResponse);
+    const kind=ZFP_KINDS[m?.type];if(!kind)return false;
+    zfpAsk(kind,m.args,m.timeoutMs).then(sendResponse);
     return true;
   });
   function schedule(){clearTimeout(timer);timer=setTimeout(report,300);}
