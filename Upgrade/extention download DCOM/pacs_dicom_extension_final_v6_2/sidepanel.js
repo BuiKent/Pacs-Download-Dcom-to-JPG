@@ -15,7 +15,18 @@ function openFsDb(){return new Promise((resolve,reject)=>{const r=indexedDB.open
 async function fsGet(){const db=await openFsDb();try{return await new Promise((resolve,reject)=>{const tx=db.transaction(FS_STORE,'readonly'),r=tx.objectStore(FS_STORE).get(FS_KEY);r.onsuccess=()=>resolve(r.result||null);r.onerror=()=>reject(r.error);});}finally{db.close();}}
 async function fsSet(h){const db=await openFsDb();try{await new Promise((resolve,reject)=>{const tx=db.transaction(FS_STORE,'readwrite');tx.objectStore(FS_STORE).put(h,FS_KEY);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});}finally{db.close();}}
 async function ensureFolder(interactive=false){let h=await fsGet();if(!h&&interactive){h=await window.showDirectoryPicker({id:'pacs-dicom',startIn:'downloads',mode:'readwrite'});await fsSet(h);await chrome.storage.local.set({[SAVE_MODE_KEY]:'filesystem'});}if(!h)return null;let p=typeof h.queryPermission==='function'?await h.queryPermission({mode:'readwrite'}):'granted';if(p!=='granted'&&interactive&&typeof h.requestPermission==='function')p=await h.requestPermission({mode:'readwrite'});if(p!=='granted')return null;return h;}
-async function renderFolder(){try{const pref=(await chrome.storage.local.get(SAVE_MODE_KEY))[SAVE_MODE_KEY]||'',h=await ensureFolder(false);$('folderText').textContent=h&&pref!=='downloads'?`${h.name} / PACS_DICOM`:'Downloads / PACS_DICOM';}catch{$('folderText').textContent='Downloads / PACS_DICOM';}}
+// Chỗ này phải nói ĐÚNG nơi file sẽ rơi vào. Trước đây chưa chọn gì cũng hiện
+// "Downloads / PACS_DICOM" nên trông như đã cấu hình xong, trong khi bấm Tải lại
+// bật hộp thoại chọn thư mục — nhìn một đằng chạy một nẻo.
+async function renderFolder(){
+  try{
+    const pref=(await chrome.storage.local.get(SAVE_MODE_KEY))[SAVE_MODE_KEY]||'',h=await ensureFolder(false);
+    const useFs=Boolean(h&&pref==='filesystem');
+    $('folderText').textContent=useFs?`${h.name} / PACS_DICOM`
+      :pref==='downloads'?'Downloads / PACS_DICOM':'Downloads / PACS_DICOM (mặc định)';
+    show('folderResetBtn',useFs);   // chọn thư mục riêng rồi vẫn quay về được
+  }catch{$('folderText').textContent='Downloads / PACS_DICOM (mặc định)';show('folderResetBtn',false);}
+}
 
 async function grantAccess(){let pats=[...(summary?.missingOrigins||[])];if(!pats.length){const p=patternFor(activeTabUrl);if(p)pats=[p];}if(!pats.length)return;const ok=await chrome.permissions.request({origins:pats});if(!ok)return toast('Chưa cấp quyền site.',true);await send('SITE_ACCESS_CHANGED',{tabId});toast('Đã cấp quyền.');await refresh();}
 
@@ -40,10 +51,38 @@ async function refresh(){if(tabId==null)return;try{const r=await send('GET_OVERV
 async function bindActive(){const t=(await chrome.tabs.query({active:true,currentWindow:true}))[0];if(!t?.id)return;tabId=t.id;activeTabUrl=t.url||'';$('tabLabel').textContent=t.title||t.url||`Tab ${tabId}`;revealDownloaded=false;await refresh();}
 function scheduleRefresh(ms=180){clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>refresh().catch(()=>{}),ms);}
 
-async function startDownload(){if(!selectedIds().length)return;try{let saveMode=(await chrome.storage.local.get(SAVE_MODE_KEY))[SAVE_MODE_KEY]||'',h=null;if(saveMode!=='downloads'){try{h=await ensureFolder(true);}catch(e){if(e?.name!=='AbortError')throw e;}if(h)saveMode='filesystem';else{saveMode='downloads';await chrome.storage.local.set({[SAVE_MODE_KEY]:'downloads'});toast('Dùng Downloads. Có thể đổi sang thư mục nhanh ở bên dưới.');}}await renderFolder();const r=await send('START_DOWNLOAD',{tabId,selectedSeries:selectedIds(),options:{concurrency:saveMode==='downloads'?3:6,frameConcurrency:6,saveMode}});job=r.job;renderJob();}catch(e){toast(e.message||String(e),true);}}
+/**
+ * Bấm Tải là tải, KHÔNG bao giờ mở hộp thoại chọn thư mục.
+ *
+ * Luồng cũ không nhất quán: lần đầu bấm Tải thì hiện Explorer dù ô "Thư mục lưu"
+ * đã ghi sẵn một đích; hủy hộp thoại thì nó vừa tải luôn vừa âm thầm ghi đè lựa
+ * chọn thành 'downloads', nên từ lần sau lại không hỏi nữa. Giờ mặc định là
+ * Downloads như v2/v2.1; muốn thư mục riêng thì bấm "Đổi" — chọn ở đó, một lần.
+ */
+async function startDownload(){
+  if(!selectedIds().length)return;
+  try{
+    const pref=(await chrome.storage.local.get(SAVE_MODE_KEY))[SAVE_MODE_KEY]||'';
+    let saveMode='downloads';
+    // Chỉ khi người dùng ĐÃ tự chọn thư mục mới đi đường File System Access.
+    // Handle khôi phục từ IndexedDB có thể cần xin lại quyền ghi, và cú bấm Tải
+    // chính là user gesture để hỏi — hỏi quyền chứ không mở lại Explorer.
+    if(pref==='filesystem'&&await fsGet()){
+      const h=await ensureFolder(true).catch(()=>null);
+      if(h)saveMode='filesystem';
+      // Từ chối quyền thì lần này lưu tạm vào Downloads, KHÔNG đổi luôn lựa chọn
+      // của người dùng — để lần sau vẫn hỏi lại đúng thư mục họ đã chọn.
+      else toast('Chưa có quyền ghi thư mục đã chọn — lần này lưu vào Downloads.');
+    }
+    await renderFolder();
+    const r=await send('START_DOWNLOAD',{tabId,selectedSeries:selectedIds(),options:{concurrency:saveMode==='downloads'?3:6,frameConcurrency:6,saveMode}});
+    job=r.job;renderJob();
+  }catch(e){toast(e.message||String(e),true);}
+}
 
 $('grantBtn').addEventListener('click',()=>grantAccess().catch(e=>toast(e.message||String(e),true)));
 $('folderBtn').addEventListener('click',async()=>{try{const h=await window.showDirectoryPicker({id:'pacs-dicom',startIn:'downloads',mode:'readwrite'});await fsSet(h);await chrome.storage.local.set({[SAVE_MODE_KEY]:'filesystem'});await renderFolder();toast('Đã chọn thư mục tải nhanh.');}catch(e){if(e?.name!=='AbortError')toast(e.message||String(e),true);}});
+$('folderResetBtn').addEventListener('click',async()=>{try{await chrome.storage.local.set({[SAVE_MODE_KEY]:'downloads'});await renderFolder();toast('Sẽ lưu vào Downloads / PACS_DICOM.');}catch(e){toast(e.message||String(e),true);}});
 $('trackBtn').addEventListener('click',async()=>{try{if(state?.tracking==='watching')await send('STOP_TRACKING',{tabId});else{if((summary?.missingOrigins||[]).length)await grantAccess();await send('START_TRACKING',{tabId});}await refresh();}catch(e){toast(e.message||String(e),true);}});
 $('scanBtn').addEventListener('click',async()=>{try{await send('ANALYZE_TAB',{tabId});await refresh();}catch(e){toast(e.message||String(e),true);}});
 $('deepScanBtn').addEventListener('click',async()=>{try{const r=await send('DEEP_SCAN',{tabId});toast(r.valid?.length?`Đã nhận diện ${r.valid.length} endpoint DICOM.`:'Chưa xác nhận được endpoint DICOM.',!r.valid?.length);await refresh();}catch(e){toast(e.message||String(e),true);}});
