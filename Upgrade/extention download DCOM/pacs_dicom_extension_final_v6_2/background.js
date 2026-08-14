@@ -21,7 +21,7 @@ function extractUrlsFromJson(value,baseUrl){const out=new Set(),seen=new Set();f
 
 async function getSession(key,fallback=null){const o=await chrome.storage.session.get(key);return o[key]??fallback;}
 async function setSession(key,value){await chrome.storage.session.set({[key]:value});}
-function defaultState(tabId){return{tabId,navUrls:[],pendingNavUrls:[],frameUrls:[],pacsRequests:[],headersByOrigin:{},currentUrl:'',mainDocumentId:'',studyHint:'',tracking:'idle',confidence:0,pageHintScore:0,pageHintReasons:[],genericDirectUrls:[],genericDirectMeta:{},genericProfile:{},binaryCandidates:[],binaryProbed:[],lastDeepProbeAt:0,learning:{active:false,startedAt:0},learnCandidates:[],vietmyRecaptureDone:false,updatedAt:Date.now()};}
+function defaultState(tabId){return{tabId,navUrls:[],pendingNavUrls:[],frameUrls:[],pacsRequests:[],headersByOrigin:{},currentUrl:'',mainDocumentId:'',studyHint:'',tracking:'idle',confidence:0,pageHintScore:0,pageHintReasons:[],genericDirectUrls:[],genericDirectMeta:{},genericProfile:{},binaryCandidates:[],binaryProbed:[],lastDeepProbeAt:0,learning:{active:false,startedAt:0},learnCandidates:[],vietmyRecaptureDone:false,zfpViewer:false,zfpReloadDone:false,updatedAt:Date.now()};}
 async function getTabState(tabId){return getSession(tabKey(tabId),defaultState(tabId));}
 async function saveTabState(tabId,s){s.updatedAt=Date.now();await setSession(tabKey(tabId),s);}
 function pushUnique(list,value,max=MAX_NAV){if(!value)return;const i=list.indexOf(value);if(i>=0)list.splice(i,1);list.push(value);if(list.length>max)list.splice(0,list.length-max);}
@@ -94,7 +94,9 @@ async function deepProbeTab(tabId){
   const fresh=await getTabState(tabId);for(const url of valid){await learnUrl(url);fresh.genericDirectUrls=[...new Set([...(fresh.genericDirectUrls||[]),cleanUrl(url)])].slice(-5000);fresh.genericDirectMeta[cleanUrl(url)]={contentType:'application/octet-stream',learned:true};}fresh.confidence=Math.max(Number(fresh.confidence)||0,96);await saveTabState(tabId,fresh);scheduleAnalyze(tabId,120);return valid;
 }
 
-async function applyPageHints(tabId,hint={}){if(tabId<0)return;const s=await getTabState(tabId),score=Math.min(100,Math.max(0,Number(hint.score)||0));s.pageHintScore=Math.max(Number(s.pageHintScore)||0,score);s.pageHintReasons=[...new Set([...(s.pageHintReasons||[]),...(hint.reasons||[])])].slice(-12);s.confidence=Math.max(Number(s.confidence)||0,score);for(const u of(hint.iframeUrls||[]))pushUnique(s.frameUrls,cleanUrl(u));if(score>=AUTO_SCORE&&s.tracking==='idle')s.tracking='candidate';await saveTabState(tabId,s);await setBadge(tabId);if(score>=AUTO_SCORE&&s.tracking==='watching')scheduleAnalyze(tabId,400);}
+async function applyPageHints(tabId,hint={}){if(tabId<0)return;const s=await getTabState(tabId),score=Math.min(100,Math.max(0,Number(hint.score)||0));s.pageHintScore=Math.max(Number(s.pageHintScore)||0,score);s.pageHintReasons=[...new Set([...(s.pageHintReasons||[]),...(hint.reasons||[])])].slice(-12);s.confidence=Math.max(Number(s.confidence)||0,score);for(const u of(hint.iframeUrls||[]))pushUnique(s.frameUrls,cleanUrl(u));if(score>=AUTO_SCORE&&s.tracking==='idle')s.tracking='candidate';if(hint.zfpViewer)s.zfpViewer=true;await saveTabState(tabId,s);await setBadge(tabId);
+if(hint.zfpViewer&&s.tracking==='watching')maybeReloadForZfp(tabId,s).catch(()=>{});
+if(score>=AUTO_SCORE&&s.tracking==='watching')scheduleAnalyze(tabId,400);}
 
 async function scanPerformance(tabId){const allowed=await hasOrigin((await chrome.tabs.get(tabId)).url||'');if(!allowed)return[];const probe=()=>{const resolve=raw=>{try{return new URL(raw,location.href).href}catch{return''}},dom=new Set(),add=raw=>{const u=resolve(raw);if(/^https?:/i.test(u))dom.add(u)};for(const el of document.querySelectorAll('iframe[src],frame[src],embed[src],object[data],form[action],a[href],script[src],link[href]'))add(el.getAttribute('src')||el.getAttribute('data')||el.getAttribute('action')||el.getAttribute('href')||'');return{href:location.href,title:document.title||'',navigationUrl:performance.getEntriesByType('navigation')[0]?.name||'',resources:performance.getEntriesByType('resource').map(e=>e.name).filter(Boolean).slice(-3000),domUrls:[...dom].slice(-800),readyState:document.readyState,viewerDom:Boolean(document.querySelector('.cornerstone-canvas,[class*="cornerstone" i],[data-cornerstone-enabled],canvas')),vietmyStudyId:(()=>{for(const el of document.querySelectorAll('a[id^="series"]')){const m=String(el.id||'').match(/^series(?:_filter)?_?(\d{3,})/);if(m)return m[1];}return'';})()};};try{return(await chrome.scripting.executeScript({target:{tabId,allFrames:true},func:probe})).map(x=>({frameId:x.frameId,...(x.result||{})}));}catch{return[];}}
 async function scanFrameUrls(tabId){try{return(await chrome.webNavigation.getAllFrames({tabId})).map(f=>({frameId:f.frameId,url:cleanUrl(f.url),documentId:f.documentId||''})).filter(f=>f.url);}catch{return[];}}
@@ -107,7 +109,11 @@ if(!map.has(key))map.set(key,{...h,source:`page:${p.frameId}`,time:Date.now()});
 // có (thẻ series mang id "series<caseStudyId>_<n>"). Nhặt lấy để dựng lại được
 // POST manifest cả khi chưa kịp ghi request gốc.
 vietmyStudyId:perfs.map(p=>p.vietmyStudyId).find(Boolean)||''};}
-async function scanTab(tabId){const state=await getTabState(tabId),[perf,frames]=await Promise.all([scanPerformance(tabId),scanFrameUrls(tabId)]);state.frameUrls=frames.map(f=>f.url);let summary=summarize(state,perf,frames);summary.missingOrigins=await missingPatterns([summary.currentUrl,...summary.frameUrls,...summary.requests.map(r=>r.url)]);summary.siteAccess=summary.missingOrigins.length===0&&Boolean(summary.currentUrl);if(summary.confidence>=AUTO_SCORE&&state.tracking==='idle'){state.tracking='candidate';state.confidence=Math.max(state.confidence,summary.confidence);await saveTabState(tabId,state);}summary.tracking=state.tracking;return summary;}
+async function scanTab(tabId){const state=await getTabState(tabId),[perf,frames]=await Promise.all([scanPerformance(tabId),scanFrameUrls(tabId)]);state.frameUrls=frames.map(f=>f.url);let summary=summarize(state,perf,frames);summary.missingOrigins=await missingPatterns([summary.currentUrl,...summary.frameUrls,...summary.requests.map(r=>r.url)]);summary.siteAccess=summary.missingOrigins.length===0&&Boolean(summary.currentUrl);if(summary.confidence>=AUTO_SCORE&&state.tracking==='idle'){state.tracking='candidate';state.confidence=Math.max(state.confidence,summary.confidence);await saveTabState(tabId,state);}summary.tracking=state.tracking;
+// Cau truc study cua GE ZFP nam trong trang chu khong trong request nao, nen
+// phai hoi rieng - khong co no thi khong adapter nao nhan ra dong PACS nay.
+if(state.zfpViewer){const info=await zfpInfo(tabId);if(info){summary.zfpInfo=info;summary.zfpGroups=info.groups;summary.detector='ZFP';summary.confidence=Math.max(summary.confidence,92);}}
+return summary;}
 
 function headersForUrl(state,url){try{const h={...(state.headersByOrigin?.[new URL(url).origin]||{})};for(const k of Object.keys(h)){const l=k.toLowerCase();if(['content-type','cookie','origin','referer','host','content-length'].includes(l))delete h[k];}return h;}catch{return{};}}
 function restoreBody(stored){if(!stored)return undefined;if(stored.kind==='form'){const p=new URLSearchParams();for(const[k,vals]of Object.entries(stored.data||{}))for(const v of(Array.isArray(vals)?vals:[vals]))p.append(k,v);return p;}if(stored.kind==='raw'){const bins=(stored.chunks||[]).map(atob),len=bins.reduce((n,b)=>n+b.length,0),out=new Uint8Array(len);let off=0;for(const b of bins){for(let i=0;i<b.length;i++)out[off+i]=b.charCodeAt(i);off+=b.length;}return out;}return undefined;}
@@ -118,7 +124,7 @@ if(head!=='{'&&head!=='['){const kind=/^\s*</.test(text)?'trang HTML':'dữ li�
 try{return JSON.parse(text);}catch(e){throw new Error(`Manifest hỏng, không đọc được JSON (${new URL(url).pathname}).`);}}
 function inheritQuery(target,source){const t=new URL(target),s=new URL(source);for(const[k,v]of s.searchParams)if(!t.searchParams.has(k))t.searchParams.append(k,v);return t.href;}
 function normalizeStudy(inv){const p=inv.patient||{};return{adapter:inv.adapter||'',studyUid:String(inv.studyUid||''),patient:{name:String(p.name||''),id:String(p.id||''),birthDate:String(p.birthDate||''),studyDate:String(p.studyDate||''),description:String(p.description||''),accession:String(p.accession||'')},series:Array.isArray(inv.series)?inv.series:[],context:inv.context||{}};}
-function adapterContext(summary,state){return{summary,state,fetchJson:(url,accept,req)=>fetchJsonFor(state,url,accept,req),headersForUrl:url=>headersForUrl(state,url),inheritQuery,normalizeStudy};}
+function adapterContext(summary,state){return{summary,state,fetchJson:(url,accept,req)=>fetchJsonFor(state,url,accept,req),headersForUrl:url=>headersForUrl(state,url),inheritQuery,normalizeStudy,zfpInfo:()=>zfpInfo(state.tabId)};}
 async function analyzeTab(tabId){const summary=await scanTab(tabId),state=await getTabState(tabId);let inv=null,lastError=null;for(const adapter of matchingAdapters(summary,state)){try{inv=await adapter.analyze(adapterContext(summary,state));if(inv)break;}catch(e){lastError=e;}}if(!inv){if(summary.detector==='RENDERED_ONLY')throw new Error('Viewer hiện chỉ phát ảnh render, chưa có DICOM.');throw lastError||new Error(summary.tracking==='stopped'?'Đã dừng theo dõi.':'Chưa bắt được DICOM/manifest.');}inv.tabId=tabId;inv.summary=summary;inv.createdAt=Date.now();const prev=await findHistory(inv);if(prev)inv.previousDownload=prev;await setSession(invKey(tabId),inv);await upsertHistory(inv,{status:prev?.status==='done'?'done':'viewed',analyzedAt:Date.now()});await setBadge(tabId);return inv;}
 function scheduleAnalyze(tabId,delay=500){clearTimeout(analyzeTimers.get(tabId));analyzeTimers.set(tabId,setTimeout(async()=>{analyzeTimers.delete(tabId);try{const inv=await analyzeTab(tabId);chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});}catch{}},delay));}
 
@@ -145,6 +151,43 @@ async function handleEngineProgress(m){const tabId=Number(m.tabId),stored=jobMem
 // chrome.runtime, nên gọi bên đó là undefined và cả chế độ lưu qua trình tải của
 // Chrome hỏng ở mọi file. Offscreen dựng blob (service worker không có
 // URL.createObjectURL) rồi nhờ chỗ này tải xuống.
+// --- GE Centricity Universal Viewer (ZFP) ---------------------------------
+// Dong nay khong phat request anh nao qua HTTP: pixel chay trong WebSocket theo
+// giao thuc rieng cua GE. Phai nap `zfp-hook.js` vao MAIN world tu document_start
+// (dang ky truoc, tai lai trang moi an) roi hoi anh qua content script.
+const ZFP_SCRIPT_ID='zfp-hook';
+async function ensureZfpHook(url){
+  const pattern=originPattern(url);
+  if(!pattern||!(await chrome.permissions.contains({origins:[pattern]}).catch(()=>false)))return false;
+  const existing=(await chrome.scripting.getRegisteredContentScripts({ids:[ZFP_SCRIPT_ID]}).catch(()=>[]))||[];
+  const matches=new Set(existing[0]?.matches||[]);
+  if(matches.has(pattern))return true;
+  matches.add(pattern);
+  const spec={id:ZFP_SCRIPT_ID,js:['zfp-hook.js'],matches:[...matches],runAt:'document_start',
+              world:'MAIN',allFrames:true,persistAcrossSessions:true};
+  try{
+    if(existing.length)await chrome.scripting.updateContentScripts([spec]);
+    else await chrome.scripting.registerContentScripts([spec]);
+    return true;
+  }catch{return false;}
+}
+async function zfpAsk(tabId,type,args,timeoutMs){
+  // Nham dung khung chinh: gui cho moi khung thi khung khong co moc cung tra
+  // loi, va cau tra loi "khong co moc" rat de ve dich truoc.
+  try{const r=await chrome.tabs.sendMessage(tabId,{type,args,timeoutMs},{frameId:0});return r||{error:'Không có trả lời.'};}
+  catch(e){return{error:String(e?.message||e)};}
+}
+async function zfpInfo(tabId){const r=await zfpAsk(tabId,'ZFP_INFO',{},8000);return r?.groups?.length?r:null;}
+// Moc dang ky xong chi an tu lan tai trang sau, nen phai tai lai dung MOT lan.
+async function maybeReloadForZfp(tabId,state){
+  if(state.zfpReloadDone)return;
+  const tab=await chrome.tabs.get(tabId).catch(()=>null);
+  if(!tab?.url||!(await ensureZfpHook(tab.url)))return;
+  if(await zfpInfo(tabId))return;                 // moc da chay roi
+  state.zfpReloadDone=true;await saveTabState(tabId,state);
+  await chrome.tabs.reload(tabId).catch(()=>{});
+}
+
 const activeDownloads=new Map();
 // Mot ca 45 anh la 45 muc trong trinh tai cua Chrome, bong bong download nhay
 // lien tuc. Tat giao dien do trong luc chay job roi bat lai khi xong, de viec tai
@@ -170,6 +213,9 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
   }
   if(m?.type==='ENGINE_LEARNED_URL'){learnUrl(m.url).catch(()=>{});return false;}
   (async()=>{
+    // Offscreen chi noi chuyen duoc bang chrome.runtime, khong voi toi tab nao,
+    // nen viec hoi anh ZFP phai di vong qua day.
+    if(m?.type==='ZFP_IMAGE_REQUEST'){const r=await zfpAsk(Number(m.tabId),'ZFP_IMAGE',m.args,m.timeoutMs||50000);return{ok:!r?.error,...r};}
     if(m?.type==='DOWNLOAD_BLOB'){await downloadBlobUrl(m.jobId,m.url,m.filename);return{ok:true};}
     if(m?.type==='DOWNLOAD_CANCEL'){cancelDownloads(m.jobId);return{ok:true};}
     if(m?.type==='PAGE_HINTS'){const id=Number(sender?.tab?.id??m.tabId);await applyPageHints(id,m.hint||{});return{ok:true};}

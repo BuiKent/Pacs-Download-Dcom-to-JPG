@@ -1,5 +1,6 @@
 'use strict';
 import { buildPart10FromFrames, isPart10, parseMultipart, numberOfFrames, validatePart10 } from './lib/dicom.js';
+import { zfpMetaToDicomJson } from './lib/pacs.js';
 
 const FS_DB='pacs_dicom_fs_v1',FS_STORE='handles',FS_KEY='download-root';
 const jobs=new Map();
@@ -53,9 +54,28 @@ async function prepareDicomweb(task,signal,frameConcurrency){
   const frames=[];let ct='';for(const r of frameResults){ct=ct||r.ct;frames.push(...r.frames);}if(!frames.length)throw new Error(first||'Không lấy được frame ảnh.');return{bytes:buildPart10FromFrames(meta,frames,ct),provenance:'reconstructed'};
 }
 
+/**
+ * GE ZFP: pixel chi lay duoc tu trang viewer (WebSocket), khong co URL nao de
+ * fetch. Doi bytes tho + metadata cua GE thanh DICOM Part-10 - la ban DUNG LAI,
+ * thieu vai tag so voi file goc cua may chup.
+ */
+async function prepareZfp(task){
+  const z=task.zfp||{};
+  const r=await chrome.runtime.sendMessage({type:'ZFP_IMAGE_REQUEST',tabId:task.tabId,
+    args:{studyUid:z.studyUid,groupId:z.groupId,sop:z.sop,timeoutMs:45000},timeoutMs:50000})
+    .catch(e=>({error:String(e?.message||e)}));
+  if(!r||r.error||!r.b64)throw new Error(r?.error||'Viewer không trả ảnh.');
+  const bin=atob(r.b64),pixels=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++)pixels[i]=bin.charCodeAt(i);
+  const meta=zfpMetaToDicomJson(r.meta,z.sopRow,z.group,z.study);
+  const bytes=buildPart10FromFrames(meta,[pixels],'application/octet-stream; transfer-syntax=1.2.840.10008.1.2.1');
+  return{bytes,provenance:'reconstructed'};
+}
+
 async function prepareTask(task,signal,frameConcurrency){
   let result;
-  if(task.strategy==='dicomweb-instance')result=await prepareDicomweb(task,signal,frameConcurrency);
+  if(task.strategy==='zfp-image')result=await prepareZfp(task);
+  else if(task.strategy==='dicomweb-instance')result=await prepareDicomweb(task,signal,frameConcurrency);
   else if(task.strategy==='fetch-dicom'){
     const got=await fetchRaw(task.url,task,'application/dicom, multipart/related; type="application/dicom", application/octet-stream, */*',signal);const bytes=dicomFromResponse(got.bytes,got.contentType);if(!bytes)throw new Error(responseProblem(got.bytes,got.contentType));result={bytes,provenance:'original'};
   }else throw new Error(`Strategy không hỗ trợ: ${task.strategy}`);

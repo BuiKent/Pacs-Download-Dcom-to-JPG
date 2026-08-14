@@ -571,6 +571,195 @@ def _vrpacs_series_choices(body: bytes) -> list[dict]:
     return [_normalise_series_choice(item, "vrpacs", index) for index, item in enumerate(raw_series)]
 
 
+# ---------------------------------------------------------------------------
+# GE Centricity Universal Viewer — Zero Footprint (ZFP)
+#
+# Dòng này KHÔNG chuyển ảnh qua HTTP: pixel chạy trong WebSocket `image-provider`
+# theo một giao thức JSON riêng của GE, nên không có response nào để quan sát như
+# mọi dòng PACS khác — `observe()` vô dụng ở đây. Cách duy nhất là gắn móc vào
+# WebSocket của chính trang viewer, đọc cấu trúc study rồi tự hỏi từng ảnh.
+#
+# Đổi lại, server trả PIXEL THÔ 16 bit (OutputFormat IT_RAW) kèm một khối
+# metadata JSON đủ dựng lại DICOM Part-10. Vẫn là bản app dựng lại, thiếu một số
+# tag so với file gốc của máy chụp — `fidelity="reconstructed"` nói thẳng điều đó.
+# ---------------------------------------------------------------------------
+_ZFP_HOOK = r"""
+(() => {
+  if (window.__zfp) return;
+  const store = {groups: [], study: null, imageSockets: [], seen: {}};
+  window.__zfp = store;
+  const Orig = window.WebSocket;
+  const Hooked = function (url, protocols) {
+    const ws = protocols === undefined ? new Orig(url) : new Orig(url, protocols);
+    const u = String(url);
+    if (u.indexOf('data-provider') >= 0) {
+      ws.addEventListener('message', ev => {
+        if (typeof ev.data !== 'string') return;
+        if (ev.data.indexOf('ON_DICOM_GROUP_ADDED') < 0 && ev.data.indexOf('ON_STUDY_ADDED') < 0) return;
+        try {
+          const msg = JSON.parse(ev.data);
+          const body = JSON.parse(msg.payload);
+          if (msg.eventName === 'ON_STUDY_ADDED') store.study = body;
+          else if (body.groupId && !store.seen[body.groupId]) {
+            store.seen[body.groupId] = 1;
+            store.groups.push(body);
+          }
+        } catch (e) {}
+      });
+    } else if (u.indexOf('image-provider') >= 0) {
+      try { ws.binaryType = 'arraybuffer'; } catch (e) {}
+      store.imageSockets.push(ws);
+    }
+    return ws;
+  };
+  Hooked.prototype = Orig.prototype;
+  for (const k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) Hooked[k] = Orig[k];
+  window.WebSocket = Hooked;
+
+  store.fetchImage = a => new Promise(resolve => {
+    const ws = store.imageSockets.find(s => s && s.readyState === 1);
+    if (!ws) { resolve({error: 'Không còn kết nối ảnh nào đang mở.'}); return; }
+    const want = String(a.sop).split('#')[0];
+    let meta = null;
+    const off = () => ws.removeEventListener('message', onMsg);
+    const timer = setTimeout(() => { off(); resolve({error: 'Quá hạn chờ ảnh.'}); }, a.timeoutMs || 45000);
+    function onMsg(ev) {
+      if (typeof ev.data === 'string') {
+        try { const d = JSON.parse(ev.data); if (d.sopClassUid) meta = d; } catch (e) {}
+        return;
+      }
+      // Viewer cũng đang xin ảnh trên đúng socket này, nên chỉ nhận khối nhị
+      // phân đi NGAY SAU metadata của đúng ảnh mình hỏi VÀ đúng số byte suy ra
+      // từ metadata. Thiếu một trong hai là rất dễ ghi nhầm pixel của ảnh khác.
+      if (!meta || meta.sopInstanceUid !== want) { meta = null; return; }
+      const dim = meta.dimensions || {};
+      const need = (dim.rows | 0) * (dim.columns | 0)
+                 * (((meta.bitsAllocated | 0) || 16) / 8)
+                 * ((meta.samplesPerPixel | 0) || 1);
+      const b = new Uint8Array(ev.data);
+      if (need && b.length !== need) { meta = null; return; }
+      clearTimeout(timer); off();
+      let s = ''; const CH = 0x8000;
+      for (let i = 0; i < b.length; i += CH) s += String.fromCharCode.apply(null, b.subarray(i, i + CH));
+      resolve({meta: meta, b64: btoa(s), size: b.length});
+    }
+    ws.addEventListener('message', onMsg);
+    ws.send(JSON.stringify({
+      command: 'GET_DICOM_IMAGE',
+      payLoad: JSON.stringify({
+        Token: {StudyInstanceUid: a.studyUid, GroupId: a.groupId, SopInstanceUid: a.sop},
+        Options: {MaxResolution: 0, QualityLevel: 75, OutputFormat: 'IT_RAW'}
+      }),
+      correlationId: 'dl-' + Math.random().toString(36).slice(2)
+    }));
+  });
+})();
+"""
+
+
+def _zfp_series_choices(data: Optional[dict]) -> list[dict]:
+    groups = (data or {}).get("groups") or []
+    choices = []
+    for index, group in enumerate(groups):
+        sops = group.get("dicomSops") or []
+        raw = {
+            # Hai series "Screen Save" trùng mô tả nhau, phải lấy SeriesInstanceUID
+            # thật làm khóa thì chọn lọc series mới không bị dính chùm.
+            "SeriesInstanceUID": (sops[0].get("seriesInstanceUid") if sops else "") or group.get("groupId"),
+            "SeriesDescription": group.get("description"),
+            "SeriesNumber": group.get("groupDisplayId"),
+            "Modality": (group.get("modalities") or [""])[0],
+            "ImageCount": len(sops),
+        }
+        choices.append(_normalise_series_choice(raw, "zfp", index))
+    return choices
+
+
+def _zfp_dicom_time(value: Any) -> str:
+    """'17:29:45' -> '172945'. Giờ của ZFP có dấu hai chấm, VR TM thì không nhận."""
+    return re.sub(r"[^0-9.]", "", str(value or ""))[:16]
+
+
+def _zfp_meta_to_dicom_json(meta: dict, sop_row: dict, group: dict, study: dict) -> dict:
+    """Đổi metadata của ZFP sang DICOM+JSON để dùng lại `_dicom_from_meta_frames`."""
+    out: dict = {}
+
+    def put(tag: str, vr: str, value: Any) -> None:
+        if value is None or value == "" or value == []:
+            return
+        out[tag] = {"vr": vr, "Value": value if isinstance(value, list) else [value]}
+
+    meta = meta or {}
+    sop_row = sop_row or {}
+    group = group or {}
+    demo = (study or {}).get("patientDemographics") or {}
+    dims = meta.get("dimensions") or {}
+
+    name = ((demo.get("patientName") or {}).get("personNameString") or "").strip()
+    put("00100010", "PN", {"Alphabetic": name} if name else None)
+    put("00100020", "LO", demo.get("patientId"))
+    put("00100040", "CS", demo.get("patientSex"))
+    put("00100030", "DA", str(demo.get("patientBirthDate") or "").replace("-", "")[:8])
+    put("00080050", "SH", demo.get("accessionNumber"))
+
+    study_dt = str((study or {}).get("studyDateTime") or "")
+    put("00080020", "DA", re.sub(r"\D", "", study_dt.split(" ")[0])[:8])
+    put("00080030", "TM", _zfp_dicom_time(study_dt.split(" ")[1] if " " in study_dt else ""))
+    put("00081030", "LO", ((study or {}).get("mappedStudyDescription") or {}).get(group.get("studyInstanceUid")))
+
+    put("00080016", "UI", meta.get("sopClassUid"))
+    put("00080018", "UI", meta.get("sopInstanceUid"))
+    put("0020000D", "UI", group.get("studyInstanceUid"))
+    put("0020000E", "UI", meta.get("seriesInstanceUid") or sop_row.get("seriesInstanceUid"))
+    put("0008103E", "LO", group.get("description"))
+    put("00080060", "CS", (group.get("modalities") or [""])[0])
+    put("00200013", "IS", str(meta.get("instanceNumber") or sop_row.get("instanceNumber") or ""))
+    put("00080021", "DA", re.sub(r"\D", "", str(meta.get("imageDate") or ""))[:8])
+    put("00080031", "TM", _zfp_dicom_time(meta.get("imageTime")))
+    put("00080070", "LO", meta.get("manufacturer"))
+    put("00081090", "LO", meta.get("manufacturerModelName"))
+    put("00080080", "LO", meta.get("institutionName"))
+    put("00081010", "SH", meta.get("stationName"))
+    put("00080008", "CS", meta.get("imageType"))
+
+    put("00280010", "US", int(dims.get("rows") or 0) or None)
+    put("00280011", "US", int(dims.get("columns") or 0) or None)
+    put("00280100", "US", meta.get("bitsAllocated"))
+    put("00280101", "US", meta.get("bitsStored") or meta.get("bitsAllocated"))
+    high = meta.get("highBit")
+    if high is None and meta.get("bitsStored"):
+        high = int(meta["bitsStored"]) - 1
+    put("00280102", "US", high)
+    put("00280103", "US", meta.get("pixelRepresentation") or 0)
+    put("00280002", "US", meta.get("samplesPerPixel") or 1)
+    put("00280004", "CS", meta.get("photometricInterpretation") or "MONOCHROME2")
+    frames = int(meta.get("numberOfFrames") or 1)
+    if frames > 1:
+        put("00280008", "IS", str(frames))
+
+    window = meta.get("windowLevel") or {}
+    if window.get("windowWidth"):
+        put("00281050", "DS", str(window.get("windowCenter")))
+        put("00281051", "DS", str(window.get("windowWidth")))
+    rescale = meta.get("rescaleInfo") or {}
+    if rescale:
+        put("00281052", "DS", str(rescale.get("intercept", 0)))
+        put("00281053", "DS", str(rescale.get("slope", 1)))
+
+    spacing = sop_row.get("pixelSpacing") or {}
+    if spacing.get("physicalDeltaY") and spacing.get("physicalDeltaX"):
+        put("00280030", "DS", [str(spacing["physicalDeltaY"]), str(spacing["physicalDeltaX"])])
+    if sop_row.get("imagePosition"):
+        put("00200032", "DS", [x for x in str(sop_row["imagePosition"]).split("\\") if x])
+    orient = sop_row.get("imageOrientation") or {}
+    if orient:
+        put("00200037", "DS", [str(orient.get(k, 0)) for k in
+                               ("rowX", "rowY", "rowZ", "columnX", "columnY", "columnZ")])
+    if sop_row.get("sliceLocation") not in (None, ""):
+        put("00201041", "DS", str(sop_row["sliceLocation"]))
+    return out
+
+
 def _vietmy_study(body: bytes) -> dict:
     """Bóc study ra khỏi vỏ ASP.NET `{"d": ...}` của ws.asmx.
 
@@ -780,6 +969,10 @@ class ViewerCapture:
 
     vietmy: Optional[bytes] = None
 
+    # ZFP không phát manifest qua HTTP nên phải giữ luôn `page` để hỏi ảnh.
+    zfp: Optional[dict] = None
+    zfp_page: Any = None
+
     qido_series: Optional[str] = None
     qido_series_body: Optional[bytes] = None
     wado_tmpl: Optional[str] = None
@@ -800,6 +993,8 @@ class ViewerCapture:
             "template_url": self.template_url,
             "vrpacs": self.vrpacs,
             "vietmy": self.vietmy,
+            "zfp": self.zfp,
+            "zfp_page": self.zfp_page,
             "qido_series": self.qido_series,
             "qido_series_body": self.qido_series_body,
             "wado_tmpl": self.wado_tmpl,
@@ -957,6 +1152,33 @@ class DicomWebAdapter(PacsAdapter):
         )
 
 
+class ZfpAdapter(PacsAdapter):
+    """GE Centricity Universal Viewer — Zero Footprint (ảnh chạy trong WebSocket).
+
+    `observe()` luôn trả False vì dòng này không phát response ảnh nào qua HTTP;
+    cấu trúc study do móc WebSocket (`_ZFP_HOOK`) nhặt về, `_inspect_zfp()` đọc
+    sang. Đây là dòng PACS duy nhất phải soi trang thay vì soi mạng.
+    """
+
+    name = "GE-ZFP"
+    source = "zfp"
+    priority = 280
+
+    def is_ready(self, cap: ViewerCapture) -> bool:
+        return bool(cap.zfp and cap.zfp_page)
+
+    def has_series_manifest(self, cap: ViewerCapture) -> bool:
+        return bool(cap.zfp)
+
+    def series_choices(self, cap: ViewerCapture) -> list[dict]:
+        return _zfp_series_choices(cap.zfp)
+
+    def download(self, cap, save_body, stats, log, stop, selected_series) -> None:
+        _download_via_zfp(
+            cap.as_legacy_dict(), save_body, stats, log, stop, selected_series,
+        )
+
+
 class VietmyAdapter(PacsAdapter):
     """MSC PACS (vietmy.pmr.vn — link chia sẻ ShareStudy.aspx).
 
@@ -996,6 +1218,7 @@ class VietmyAdapter(PacsAdapter):
 PACS_ADAPTERS: tuple[PacsAdapter, ...] = (
     VradAdapter(),
     VrpacsAdapter(),
+    ZfpAdapter(),
     VietmyAdapter(),
     DicomWebAdapter(),
 )
@@ -1035,6 +1258,26 @@ def _series_manifest_adapter(cap: ViewerCapture) -> Optional[PacsAdapter]:
 _MANIFEST_WAIT_MIN_S = 8.0
 _MANIFEST_WAIT_MAX_S = 30.0
 _MANIFEST_IDLE_S = 4.0
+
+
+def _inspect_zfp(page, cap: ViewerCapture) -> None:
+    """Đọc cấu trúc study mà móc WebSocket nhặt được trên trang.
+
+    Chỉ dòng GE ZFP mới cần soi trang: nó không phát manifest nào qua HTTP nên
+    `_observe_response()` không bao giờ thấy gì.
+    """
+    if cap.zfp is not None:
+        return
+    try:
+        data = page.evaluate(
+            "() => (window.__zfp && window.__zfp.groups.length)"
+            " ? {groups: window.__zfp.groups, study: window.__zfp.study} : null"
+        )
+    except Exception:
+        return
+    if data and data.get("groups"):
+        cap.zfp = data
+        cap.zfp_page = page
 
 
 def _wait_for_viewer_manifest(page, found: Callable[[], bool],
@@ -1269,6 +1512,9 @@ def download_all(
         # ignore_https_errors: chấp nhận chứng chỉ tự ký của PACS (HTTPS cổng lạ).
         context = browser.new_context(viewport={"width": 1600, "height": 1000},
                                       ignore_https_errors=True)
+        # Phải cài TRƯỚC khi trang chạy: viewer GE ZFP mở WebSocket ngay lúc nạp,
+        # gắn móc sau là mất sạch cấu trúc study.
+        context.add_init_script(_ZFP_HOOK)
         page = context.new_page()
         page.on("response", on_response)
 
@@ -1301,9 +1547,11 @@ def download_all(
 
         # Chờ manifest (hoặc 1 ảnh mẫu) xuất hiện (tối đa ~12s)
         log("Đang dò manifest của viewer...")
-        _wait_for_viewer_manifest(
-            page, lambda: _have_manifest() or bool(cap.session_error), stop,
-        )
+        def _seen_manifest() -> bool:
+            _inspect_zfp(page, cap)
+            return _have_manifest() or bool(cap.session_error)
+
+        _wait_for_viewer_manifest(page, _seen_manifest, stop)
 
         # Session chết (server trả 4xx cho API session, hoặc viewer hiện
         # "Cannot view images") -> báo rõ HẾT HẠN thay vì lặng lẽ ra 0 ảnh.
@@ -1403,6 +1651,7 @@ def discover_viewer_series(
             viewport={"width": 1600, "height": 1000},
             ignore_https_errors=True,
         )
+        context.add_init_script(_ZFP_HOOK)
         page = context.new_page()
         page.on("response", on_response)
         log("      Bước 2/2: Đang đọc danh sách series từ viewer (chưa tải file ảnh)...")
@@ -1411,11 +1660,11 @@ def discover_viewer_series(
         except Exception as exc:
             log(f"  Cảnh báo khi mở viewer: {exc}")
 
-        _wait_for_viewer_manifest(
-            page,
-            lambda: bool(_series_manifest_adapter(cap) or cap.session_error),
-            stop,
-        )
+        def _seen_series() -> bool:
+            _inspect_zfp(page, cap)
+            return bool(_series_manifest_adapter(cap) or cap.session_error)
+
+        _wait_for_viewer_manifest(page, _seen_series, stop)
 
         if stop():
             browser.close()
@@ -1691,6 +1940,74 @@ def _download_via_vrpacs(captured, save_body, stats,
 
     _run_fetch_tasks(tasks, fetch_one, stats, log, stop)
     _report_download_result(stats, len(tasks), log, stop)
+
+
+def _download_via_zfp(captured, save_body, stats,
+                      log: LogFn, stop: Callable[[], bool],
+                      selected_series: Optional[set[str]] = None) -> None:
+    """
+    Hỏi từng ảnh qua WebSocket của viewer GE ZFP rồi dựng lại DICOM Part-10.
+
+    Chạy TUẦN TỰ chứ không song song như các dòng khác: mọi thứ đi qua đúng một
+    trang Playwright, mà `page` thì không dùng được từ nhiều luồng.
+    """
+    import base64
+
+    page = captured.get("zfp_page")
+    data = captured.get("zfp") or {}
+    groups = data.get("groups") or []
+    if page is None or not groups:
+        log("  Chưa gắn được móc vào viewer GE ZFP — bỏ qua.")
+        return
+
+    choices = _zfp_series_choices(data)
+    plan, n_series = [], 0
+    for index, group in enumerate(groups):
+        if selected_series is not None and choices[index]["id"] not in selected_series:
+            continue
+        n_series += 1
+        for sop in (group.get("dicomSops") or []):
+            if sop.get("sopInstanceUid"):
+                plan.append((group, sop))
+
+    if selected_series is not None and n_series == 0:
+        raise ValueError("Không còn tìm thấy series đã chọn trong cấu trúc ZFP mới.")
+
+    study = data.get("study") or {}
+    log(f"Manifest (GE ZFP): {n_series} series, {len(plan)} ảnh. "
+        f"Đang hỏi từng ảnh qua WebSocket của viewer (tuần tự)...")
+
+    frame_ct = "application/octet-stream; transfer-syntax=1.2.840.10008.1.2.1"
+    saved = 0
+    for group, sop in plan:
+        if stop():
+            break
+        try:
+            got = page.evaluate("(a) => window.__zfp.fetchImage(a)", {
+                "studyUid": group.get("studyInstanceUid"),
+                "groupId": group.get("groupId"),
+                "sop": f'{sop["sopInstanceUid"]}#0',
+                "timeoutMs": 45000,
+            })
+        except Exception as exc:
+            stats.failed += 1
+            log(f"  Lỗi khi hỏi ảnh: {exc}")
+            continue
+        if not got or got.get("error") or not got.get("b64"):
+            stats.failed += 1
+            log(f"  Bỏ qua 1 ảnh: {(got or {}).get('error') or 'không nhận được dữ liệu'}")
+            continue
+
+        meta_json = _zfp_meta_to_dicom_json(got.get("meta") or {}, sop, group, study)
+        dicom = _dicom_from_meta_frames(meta_json, [base64.b64decode(got["b64"])], frame_ct)
+        if dicom and save_body(dicom, fidelity="reconstructed"):
+            saved += 1
+            if saved % 25 == 0:
+                log(f"  ...đã tải {saved}/{len(plan)} ảnh")
+        else:
+            stats.failed += 1
+
+    _report_download_result(stats, len(plan), log, stop)
 
 
 def _download_via_vietmy(captured, save_body, stats,

@@ -265,6 +265,105 @@ export function seriesFolderName(series, index=0) {
   return number ? `${ordinal} - ${sanitizeSegment(number)} - ${description}` : `${ordinal} - ${description}`;
 }
 
+/**
+ * GE Centricity Universal Viewer (ZFP) không chuyển ảnh qua HTTP: pixel chạy
+ * trong WebSocket `image-provider` kèm một khối metadata JSON riêng của GE.
+ * Hàm này đổi khối đó sang DICOM+JSON để `buildPart10FromFrames()` dựng lại
+ * file Part-10 — vẫn là bản dựng lại, thiếu vài tag so với file gốc máy chụp.
+ */
+export function zfpMetaToDicomJson(meta, sopRow, group, study) {
+  const out = {};
+  meta = meta || {}; sopRow = sopRow || {}; group = group || {}; study = study || {};
+  const put = (tag, vr, value) => {
+    if (value === undefined || value === null || value === '' ||
+        (Array.isArray(value) && !value.length)) return;
+    out[tag] = {vr, Value: Array.isArray(value) ? value : [value]};
+  };
+  // Giờ của ZFP có dấu hai chấm ("17:29:45"), VR TM thì không nhận.
+  const tm = v => String(v || '').replace(/[^0-9.]/g, '').slice(0, 16);
+  const da = v => String(v || '').replace(/[^0-9]/g, '').slice(0, 8);
+  const num = v => (v === undefined || v === null || v === '') ? null : Number(v);
+
+  const demo = study.patientDemographics || {};
+  const name = ((demo.patientName || {}).personNameString || '').trim();
+  put('00100010', 'PN', name ? {Alphabetic: name} : null);
+  put('00100020', 'LO', demo.patientId);
+  put('00100040', 'CS', demo.patientSex);
+  put('00100030', 'DA', da(demo.patientBirthDate));
+  put('00080050', 'SH', demo.accessionNumber);
+
+  const dt = String(study.studyDateTime || '');
+  put('00080020', 'DA', da(dt.split(' ')[0]));
+  put('00080030', 'TM', tm(dt.split(' ')[1]));
+  put('00081030', 'LO', (study.mappedStudyDescription || {})[group.studyInstanceUid]);
+
+  put('00080016', 'UI', meta.sopClassUid);
+  put('00080018', 'UI', meta.sopInstanceUid);
+  put('0020000D', 'UI', group.studyInstanceUid);
+  put('0020000E', 'UI', meta.seriesInstanceUid || sopRow.seriesInstanceUid);
+  put('0008103E', 'LO', group.description);
+  put('00080060', 'CS', (group.modalities || [])[0]);
+  put('00200013', 'IS', String(meta.instanceNumber ?? sopRow.instanceNumber ?? ''));
+  put('00080021', 'DA', da(meta.imageDate));
+  put('00080031', 'TM', tm(meta.imageTime));
+  put('00080070', 'LO', meta.manufacturer);
+  put('00081090', 'LO', meta.manufacturerModelName);
+  put('00080080', 'LO', meta.institutionName);
+  put('00081010', 'SH', meta.stationName);
+  put('00080008', 'CS', meta.imageType);
+
+  const dim = meta.dimensions || {};
+  put('00280010', 'US', num(dim.rows));
+  put('00280011', 'US', num(dim.columns));
+  put('00280100', 'US', num(meta.bitsAllocated));
+  put('00280101', 'US', num(meta.bitsStored ?? meta.bitsAllocated));
+  let high = meta.highBit;
+  if ((high === undefined || high === null) && meta.bitsStored) high = Number(meta.bitsStored) - 1;
+  put('00280102', 'US', num(high));
+  put('00280103', 'US', num(meta.pixelRepresentation ?? 0));
+  put('00280002', 'US', num(meta.samplesPerPixel ?? 1));
+  put('00280004', 'CS', meta.photometricInterpretation || 'MONOCHROME2');
+  if (Number(meta.numberOfFrames || 1) > 1) put('00280008', 'IS', String(meta.numberOfFrames));
+
+  const wl = meta.windowLevel || {};
+  if (wl.windowWidth) {
+    put('00281050', 'DS', String(wl.windowCenter));
+    put('00281051', 'DS', String(wl.windowWidth));
+  }
+  const rs = meta.rescaleInfo || {};
+  if (rs && (rs.intercept !== undefined || rs.slope !== undefined)) {
+    put('00281052', 'DS', String(rs.intercept ?? 0));
+    put('00281053', 'DS', String(rs.slope ?? 1));
+  }
+
+  const sp = sopRow.pixelSpacing || {};
+  if (sp.physicalDeltaY && sp.physicalDeltaX) {
+    put('00280030', 'DS', [String(sp.physicalDeltaY), String(sp.physicalDeltaX)]);
+  }
+  if (sopRow.imagePosition) put('00200032', 'DS', String(sopRow.imagePosition).split('\\').filter(Boolean));
+  const io = sopRow.imageOrientation;
+  if (io) put('00200037', 'DS', ['rowX','rowY','rowZ','columnX','columnY','columnZ'].map(k => String(io[k] ?? 0)));
+  if (sopRow.sliceLocation !== undefined && sopRow.sliceLocation !== null && sopRow.sliceLocation !== '') {
+    put('00201041', 'DS', String(sopRow.sliceLocation));
+  }
+  return out;
+}
+
+export function zfpSeriesChoices(groups) {
+  return (groups || []).map((group, index) => {
+    const sops = group.dicomSops || [];
+    // Hai series "Screen Save" trùng mô tả nhau nên phải lấy SeriesInstanceUID
+    // thật làm khóa, không thì chọn lọc series bị dính chùm.
+    return normalizeSeries({
+      SeriesInstanceUID: (sops[0] || {}).seriesInstanceUid || group.groupId,
+      SeriesDescription: group.description,
+      SeriesNumber: group.groupDisplayId,
+      Modality: (group.modalities || [])[0],
+      ImageCount: sops.length,
+    }, 'zfp', index);
+  });
+}
+
 export function bodyLooksJson(body) {
   if (!body) return false;
   try {

@@ -53,4 +53,12 @@ assert not missing, f'sidepanel.js dung id khong co trong sidepanel.html: {missi
 for status in ['partial', 'done_with_errors', 'error', 'cancelled']:
     assert status in js_src, f'thieu trang thai {status} trong sidepanel.js'
 assert 'previousDownload:row' in bg, 'finalizeJob phai gan ket qua vao inventory de panel doi trang thai ngay'
+# GE ZFP: moc WebSocket phai chay o MAIN world tu document_start, va offscreen
+# phai co duong dung DICOM tu pixel tho (khong co URL nao de fetch).
+assert (root/'zfp-hook.js').exists()
+hook = (root/'zfp-hook.js').read_text(encoding='utf-8')
+assert 'GET_DICOM_IMAGE' in hook and 'IT_RAW' in hook
+assert "world:'MAIN'" in bg and "runAt:'document_start'" in bg
+assert 'zfp-image' in off and 'zfpMetaToDicomJson' in off
+
 print('Static architecture checks OK')

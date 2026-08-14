@@ -22,6 +22,15 @@
 - Per-tab state/job.
 - Generic binary probe.
 
+# 6.3
+
+- **Hỗ trợ GE Centricity Universal Viewer — Zero Footprint (ZFP)**, dòng PACS đầu tiên không chuyển ảnh qua HTTP: pixel chạy trong WebSocket `image-provider` theo giao thức JSON riêng của GE, nên `chrome.webRequest` không thấy gì để học (đo được: ~124 MB ảnh qua WebSocket, 0 byte qua HTTP).
+- Thêm `zfp-hook.js` chạy ở **MAIN world từ document_start** (đăng ký động theo origin đã cấp quyền, tải lại trang đúng một lần): móc `WebSocket`, đọc cấu trúc study từ `ON_STUDY_ADDED` / `ON_DICOM_GROUP_ADDED`, và giữ tham chiếu socket ảnh.
+- Tải ảnh bằng lệnh `GET_DICOM_IMAGE` với `OutputFormat: IT_RAW` → **pixel thô 16-bit** (không phải JPEG viewer dựng sẵn), rồi ghép thành DICOM Part-10 qua `buildPart10FromFrames`.
+- Chỉ nhận khối nhị phân đi ngay sau metadata của đúng ảnh mình hỏi **và** đúng số byte suy từ metadata — viewer cũng xin ảnh trên cùng socket nên rất dễ ghi nhầm pixel của ảnh khác.
+- Kết quả là **DICOM app dựng lại**, thiếu một số tag so với file gốc của máy chụp; extension khai báo `provenance: reconstructed`.
+- Thêm `tests/test_zfp.mjs` (fixture lấy từ ca MR thật) và các static check cho móc MAIN world.
+
 ## 6.2.4
 
 - Tải xong là panel đổi trạng thái **ngay**. Trước đây `finalizeJob` ghi lịch sử nhưng không gắn kết quả ngược vào inventory đang mở, mà `previousDownload` chỉ được đặt lúc `analyzeTab()` — nên phải tắt/mở lại trình duyệt (để analyze chạy lại) mới thấy "đã tải".
