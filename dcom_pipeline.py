@@ -32,6 +32,7 @@ import json
 import math
 import os
 import re
+import urllib.request
 import socket
 import sys
 import threading
@@ -875,6 +876,263 @@ def _dicom_json_value(item: dict, tag: str) -> Any:
     return values[0] if values else ""
 
 
+class _ScopedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Dựng LẠI giấy thông hành sau mỗi lần 30x.
+
+    `urllib` tự đi theo redirect và bê nguyên header sang URL đích, nên lọc theo
+    origin ở request đầu là chưa đủ: chỉ cần server trả 302 sang host khác là
+    Authorization và Cookie đi theo sang đó. Mỗi chặng phải được cấp lại đúng
+    giấy của chính chặng ấy.
+    """
+
+    def __init__(self, passport: Callable[[str], dict]):
+        self._passport = passport
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        from urllib.parse import urlparse
+
+        if urlparse(newurl).scheme not in ("http", "https"):
+            return None
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+        for name in list(new.headers):
+            if _is_scoped_header(name):
+                del new.headers[name]
+        try:
+            new.headers.update(
+                {k.title(): v for k, v in (self._passport(newurl) or {}).items()})
+        except Exception:
+            pass
+        return new
+
+
+_SESSION_HEADER_KEYS = ("authorization", "token", "session", "session-id")
+
+
+def _is_scoped_header(name: Any) -> bool:
+    """Header chỉ có giá trị với ĐÚNG một origin, nên phải cấp lại mỗi chặng."""
+    lk = str(name).lower()
+    return lk == "cookie" or lk.startswith("x-") or lk in _SESSION_HEADER_KEYS
+
+
+def _pick_session_headers(headers: Any) -> dict:
+    """Chỉ giữ "giấy thông hành" của phiên, bỏ header vận chuyển thường."""
+    picked = {}
+    for key, value in (headers or {}).items():
+        lk = str(key).lower()
+        if lk.startswith("x-") or lk in _SESSION_HEADER_KEYS:
+            picked[str(key)] = value
+    return picked
+
+
+def _session_headers_for(captured: Any, url: str) -> dict:
+    """Header phiên được phép gửi tới ĐÚNG `url` này.
+
+    Dựng theo từng URL chứ không dựng một bộ dùng chung đầu hàm: sau khi có
+    discovery, `rs_base` có thể nằm ở origin khác hẳn nơi bắt được token, và
+    gửi kèm token sang đó là làm lộ nó cho bên thứ ba.
+    """
+    if isinstance(captured, dict):
+        by_origin = captured.get("session_headers") or {}
+    else:
+        by_origin = getattr(captured, "session_headers", None) or {}
+    return dict(by_origin.get(_url_origin(url)) or {})
+
+
+def _cookie_header_for(captured: Any, url: str) -> str:
+    """Cookie khớp domain/path/secure của ĐÚNG `url` này.
+
+    `context.cookies()` trả cookie của MỌI domain trình duyệt đã ghé. Nối tất cả
+    rồi gửi cho mọi host là đưa cookie phiên của nơi này sang nơi khác — cùng
+    một lỗi với header, chỉ là dễ bỏ sót hơn.
+    """
+    from urllib.parse import urlparse
+
+    if isinstance(captured, dict):
+        cookies = captured.get("cookies") or []
+    else:
+        cookies = getattr(captured, "cookies", None) or []
+    try:
+        pu = urlparse(str(url or ""))
+    except Exception:
+        return ""
+    host = (pu.hostname or "").casefold()
+    path = pu.path or "/"
+    is_https = (pu.scheme or "").casefold() == "https"
+    if not host:
+        return ""
+    matched = []
+    for cookie in cookies:
+        try:
+            raw_domain = str(cookie.get("domain") or "").casefold()
+            if not raw_domain:
+                continue
+            # RFC 6265 §5.1.3. Dấu chấm đầu PHÂN BIỆT hai loại cookie, không
+            # phải để trang trí: "pacs.a.vn" là host-only (chỉ đúng host đó),
+            # ".a.vn" mới là domain cookie (được xuống subdomain). Gộp chúng lại
+            # là đẩy cookie host-only sang mọi subdomain.
+            if raw_domain.startswith("."):
+                base = raw_domain[1:]
+                if not base or not (host == base or host.endswith("." + base)):
+                    continue
+            elif host != raw_domain:
+                continue
+            if cookie.get("secure") and not is_https:
+                continue
+            # RFC 6265 §5.1.4: tiền tố chuỗi là chưa đủ — "/rs" không được khớp
+            # "/rs-evil"; ranh giới phải rơi đúng vào dấu "/".
+            cookie_path = str(cookie.get("path") or "/") or "/"
+            if not (path == cookie_path
+                    or (path.startswith(cookie_path)
+                        and (cookie_path.endswith("/")
+                             or path[len(cookie_path):len(cookie_path) + 1] == "/"))):
+                continue
+            matched.append(f'{cookie.get("name")}={cookie.get("value")}')
+        except Exception:
+            continue
+    return "; ".join(matched)
+
+
+def _passport_builder(captured: Any) -> Callable[[str], dict]:
+    """Hàm cấp header phiên + cookie cho ĐÚNG một URL.
+
+    Mọi đường tải đều dùng chung hàm này, kể cả các dòng PACS độc quyền: manifest
+    của VRPACS/VietMy được phép chứa URL TUYỆT ĐỐI (xem `to_url()` trả thẳng `s`
+    khi nó bắt đầu bằng "http", và `filePath/wanFilePath` của VietMy), nên ảnh
+    hoàn toàn có thể nằm ở CDN/object storage khác origin. Gửi kèm cookie phiên
+    sang đó vừa là rò rỉ, vừa hay khiến chính CDN từ chối request.
+    """
+    def _pass_for(url: str) -> dict:
+        headers = _session_headers_for(captured, url)
+        cookie = _cookie_header_for(captured, url)
+        if cookie:
+            headers["Cookie"] = cookie
+        return headers
+
+    return _pass_for
+
+
+def _redact_url(url: Any) -> str:
+    """URL đủ để chẩn đoán, đã bỏ GIÁ TRỊ query — token/session nằm ở đó.
+
+    Giữ nguyên path (UID trong path là thứ cần nhìn để nhận ra dòng PACS, và
+    không phải bí mật), chỉ liệt kê TÊN tham số query.
+    """
+    from urllib.parse import urlparse, parse_qs
+
+    try:
+        pu = urlparse(str(url or ""))
+        keys = ",".join(sorted(parse_qs(pu.query).keys()))
+        return f"{pu.scheme}://{pu.netloc}{pu.path}" + (f"?<{keys}>" if keys else "")
+    except Exception:
+        return "<url không đọc được>"
+
+
+# Tài nguyên tĩnh của giao diện — ghi lại chỉ làm loãng báo cáo chẩn đoán.
+_STATIC_URL_SUFFIXES = (
+    ".js", ".mjs", ".css", ".map", ".ico", ".png", ".jpg", ".jpeg", ".gif",
+    ".svg", ".webp", ".woff", ".woff2", ".ttf", ".eot", ".html", ".htm",
+)
+_SEEN_URL_LIMIT = 40
+
+
+def _note_seen_url(cap: ViewerCapture, url: str) -> None:
+    """Ghi lại endpoint viewer đã gọi, để báo cáo khi không adapter nào nhận ra link."""
+    if len(cap.seen_urls) >= _SEEN_URL_LIMIT:
+        return
+    if url.split("?")[0].casefold().endswith(_STATIC_URL_SUFFIXES):
+        return
+    entry = _redact_url(url)
+    if entry not in cap.seen_urls:
+        cap.seen_urls.append(entry)
+
+
+def _dicomweb_study_from_qido(qido_series_url: Any) -> str:
+    """StudyInstanceUID tách được từ URL QIDO series, "" nếu không tách được.
+
+    `DicomWebAdapter.is_ready()` và `_download_via_dicomweb()` PHẢI hỏi chung
+    hàm này. Trước đây adapter chỉ cần URL kết thúc "/series" là báo sẵn sàng,
+    còn phần tải lại đòi tách cho được ".../studies/<uid>/series" — dạng
+    top-level "/series?StudyInstanceUID=..." (cũng hợp chuẩn PS3.18) lọt qua
+    cửa adapter rồi chết ở phần tải, đốt mất một lượt thử mà không tải được gì.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        path = urlparse(str(qido_series_url or "")).path
+    except Exception:
+        return ""
+    if "/studies/" not in path:
+        return ""
+    return path.split("/studies/")[1].split("/series")[0].strip("/").strip()
+
+
+@dataclass
+class DicomWebProfile:
+    """Đường vào DICOMweb đã giải xong cho một ca cụ thể.
+
+    PS3.18 chuẩn hoá phần path SAU Base URI, còn Base URI là cấu hình của server
+    (Orthanc đổi được `DicomWeb.Root`, dcm4chee gắn `{AET}` vào đường dẫn) — nên
+    `rs_base` là thứ phải GIẢI cho từng nơi rồi nhớ lại, không phải thứ đoán được.
+
+    `query_style` tách riêng vì Search Transaction có hai dạng đều hợp chuẩn:
+      • hierarchical: /studies/<uid>/series
+      • toplevel    : /series?StudyInstanceUID=<uid>
+    Còn Retrieve thì LUÔN phân cấp, nên phần tải ảnh không phụ thuộc biến này.
+    """
+
+    rs_base: str
+    study_uid: str
+    query_style: str = "hierarchical"
+    source: str = "sniff"
+
+    @property
+    def is_toplevel(self) -> bool:
+        return self.query_style == "toplevel"
+
+    def series_search_url(self) -> str:
+        if self.is_toplevel:
+            return f"{self.rs_base}/series?StudyInstanceUID={self.study_uid}"
+        return f"{self.rs_base}/studies/{self.study_uid}/series"
+
+    def instances_search_url(self, series_uid: str) -> str:
+        if self.is_toplevel:
+            return (f"{self.rs_base}/instances?StudyInstanceUID={self.study_uid}"
+                    f"&SeriesInstanceUID={series_uid}")
+        return f"{self.rs_base}/studies/{self.study_uid}/series/{series_uid}/instances"
+
+    def study_instances_search_url(self, limit: int = 0) -> str:
+        if self.is_toplevel:
+            base = f"{self.rs_base}/instances?StudyInstanceUID={self.study_uid}"
+            return f"{base}&limit={limit}" if limit else base
+        base = f"{self.rs_base}/studies/{self.study_uid}/instances"
+        return f"{base}?limit={limit}" if limit else base
+
+    # Retrieve resources — luôn phân cấp, không phụ thuộc `query_style`.
+    def series_metadata_url(self, series_uid: str) -> str:
+        return f"{self.rs_base}/studies/{self.study_uid}/series/{series_uid}/metadata"
+
+    def study_metadata_url(self) -> str:
+        return f"{self.rs_base}/studies/{self.study_uid}/metadata"
+
+    def instance_url(self, series_uid: str, sop_uid: str) -> str:
+        return (f"{self.rs_base}/studies/{self.study_uid}"
+                f"/series/{series_uid}/instances/{sop_uid}")
+
+    @classmethod
+    def from_qido_url(cls, qido_series_url: Any, source: str = "sniff") -> Optional["DicomWebProfile"]:
+        """Dựng profile từ đúng URL QIDO đã bắt được, "" thì trả None."""
+        from urllib.parse import urlparse
+
+        study = _dicomweb_study_from_qido(qido_series_url)
+        if not study:
+            return None
+        pu = urlparse(str(qido_series_url))
+        rs_base = f"{pu.scheme}://{pu.netloc}{pu.path.split('/studies/')[0]}"
+        return cls(rs_base=rs_base, study_uid=study, query_style="hierarchical", source=source)
+
+
 def _dicomweb_series_choices(body: bytes) -> list[dict]:
     payload = json.loads(body.decode("utf-8", "replace"))
     if not isinstance(payload, list):
@@ -1124,15 +1382,27 @@ class ViewerCapture:
     qido_series: Optional[str] = None
     qido_series_body: Optional[bytes] = None
     wado_tmpl: Optional[str] = None
+    # Do `resolve_dicomweb_access()` giải ra khi sniff không đủ (đọc config viewer /
+    # dò có giới hạn). Có nó thì `DicomWebAdapter` tải được kể cả khi URL QIDO
+    # bắt được là dạng top-level.
+    dicomweb_profile: Optional[DicomWebProfile] = None
 
     host: Optional[str] = None
     cookies: Optional[list] = None
-    api_headers: Optional[dict] = None
+    # "Giấy thông hành" viewer đã dùng, XẾP THEO ORIGIN. Bắt buộc phải theo
+    # origin: gửi token của viện A sang một root đoán mò ở origin B là làm lộ
+    # token cho bên thứ ba. Chỉ ghi khi thật sự lọc ra được header phiên — một
+    # request chỉ có `Accept` mà cũng chiếm chỗ thì request sau mang Bearer sẽ
+    # bị bỏ qua và cả ca mất quyền.
+    session_headers: dict[str, dict] = field(default_factory=dict)
     session_error: Optional[str] = None
     budget: Any = None
     strategy_fingerprint: str = ""
     existing_sop_uids: set[str] = field(default_factory=set)
     socket_tracker: Optional[ActiveSocketTracker] = None
+    # Endpoint viewer đã gọi, đã ẩn giá trị query. Chỉ dùng để báo cáo khi
+    # KHÔNG dòng PACS nào nhận ra link — xem `_log_discovery_failure()`.
+    seen_urls: list[str] = field(default_factory=list)
 
     def as_legacy_dict(self) -> dict:
         """Đúng cái dict mà `_download_via_*()` đang nhận.
@@ -1150,9 +1420,10 @@ class ViewerCapture:
             "qido_series": self.qido_series,
             "qido_series_body": self.qido_series_body,
             "wado_tmpl": self.wado_tmpl,
+            "dicomweb_profile": self.dicomweb_profile,
             "host": self.host,
             "cookies": self.cookies,
-            "api_headers": self.api_headers,
+            "session_headers": self.session_headers,
             "session_error": self.session_error,
             "budget": self.budget,
             "strategy_fingerprint": self.strategy_fingerprint,
@@ -1179,6 +1450,20 @@ class PacsAdapter:
     def is_ready(self, cap: ViewerCapture) -> bool:
         """Đã đủ dữ kiện để tải trực tiếp qua API chưa."""
         return False
+
+    def why_not_ready(self, cap: ViewerCapture) -> str:
+        """Còn thiếu gì để `is_ready()` thành True — chỉ dùng cho log chẩn đoán.
+
+        Đặt cạnh `is_ready()` để hai bên không trôi khỏi nhau: sửa điều kiện sẵn
+        sàng thì thấy ngay dòng giải thích nằm ngay dưới.
+        """
+        return "chưa thấy dấu hiệu của dòng PACS này"
+
+    @staticmethod
+    def _missing(fields: dict[str, Any]) -> str:
+        """Gọi tên đúng thứ CHƯA bắt được, theo tên endpoint người dùng dò được."""
+        absent = [name for name, value in fields.items() if not value]
+        return ("chưa bắt được " + "; ".join(absent)) if absent else ""
 
     def has_series_manifest(self, cap: ViewerCapture) -> bool:
         """Đã đủ để LIỆT KÊ series chưa.
@@ -1215,6 +1500,12 @@ class VradAdapter(PacsAdapter):
     def is_ready(self, cap: ViewerCapture) -> bool:
         return bool(cap.getstudies and cap.template_url)
 
+    def why_not_ready(self, cap: ViewerCapture) -> str:
+        return self._missing({
+            "manifest 'StudyData/GetStudies'": cap.getstudies,
+            "một URL ảnh 'GetImage' làm khuôn": cap.template_url,
+        })
+
     def has_series_manifest(self, cap: ViewerCapture) -> bool:
         return cap.getstudies is not None
 
@@ -1241,6 +1532,9 @@ class VrpacsAdapter(PacsAdapter):
     def is_ready(self, cap: ViewerCapture) -> bool:
         return cap.vrpacs is not None
 
+    def why_not_ready(self, cap: ViewerCapture) -> str:
+        return self._missing({"manifest 'get-share-patient-image'": cap.vrpacs})
+
     def has_series_manifest(self, cap: ViewerCapture) -> bool:
         return cap.vrpacs is not None
 
@@ -1260,22 +1554,37 @@ class DicomWebAdapter(PacsAdapter):
     source = "dicomweb"
     priority = 200
 
+    # Đường dẫn của MỌI request kiểu DICOMweb, không riêng "/series". Viewer
+    # thường xin metadata/frames trước khi (hoặc thay vì) gọi QIDO, và "giấy
+    # thông hành" gắn trên request nào cũng như nhau — chỉ soi mỗi "/series" thì
+    # nhiều viện không bao giờ nhặt được token.
+    _DICOMWEB_PATH_HINTS = ("/studies", "/series", "/instances", "/metadata", "/frames")
+
+    def _grab_session_headers(self, response, cap: ViewerCapture) -> None:
+        try:
+            headers = response.request.all_headers()
+        except Exception:
+            try:
+                headers = dict(response.request.headers)
+            except Exception:
+                return
+        picked = _pick_session_headers(headers)
+        # Request đầu tiên thường chỉ có `Accept`; nếu nó cũng chiếm chỗ thì
+        # request sau mang Bearer sẽ bị bỏ qua và cả ca mất quyền. Chỉ ghi khi
+        # lọc ra được header phiên thật, và ghi đè bằng bộ mới nhất vì token hay
+        # được làm mới giữa phiên.
+        if not picked:
+            return
+        cap.session_headers[_url_origin(response.url)] = picked
+
     def observe(self, response, cap: ViewerCapture) -> bool:
         url = response.url
-        if url.split("?")[0].rstrip("/").endswith("/series"):
+        path = url.split("?")[0]
+        if any(hint in path for hint in self._DICOMWEB_PATH_HINTS):
+            self._grab_session_headers(response, cap)
+        if path.rstrip("/").endswith("/series"):
             if cap.qido_series is None:
                 cap.qido_series = url
-                # Giữ lại "giấy thông hành" viewer đang dùng (Authorization,
-                # X-...) để tải ngoài trình duyệt bằng đúng quyền đó. Việc LỌC
-                # header để đến lúc dùng, trong `_download_via_dicomweb()` — một
-                # chỗ lọc là đủ.
-                try:
-                    cap.api_headers = response.request.all_headers()
-                except Exception:
-                    try:
-                        cap.api_headers = dict(response.request.headers)
-                    except Exception:
-                        pass
             # Đọc thân riêng: response đầu có thể đọc hỏng, và phần liệt kê
             # series sống nhờ đúng thân này nên phải cho nó cơ hội thử lại.
             if cap.qido_series_body is None:
@@ -1292,9 +1601,23 @@ class DicomWebAdapter(PacsAdapter):
         return False
 
     def is_ready(self, cap: ViewerCapture) -> bool:
-        # QIDO series một mình là đủ: `_download_via_dicomweb()` tự dò WADO-URI /
-        # WADO-RS / dựng lại từ frames (BV Hà Tĩnh không phát URL chứa "wado").
-        return bool(cap.qido_series)
+        # QIDO series là đủ — miễn tách được StudyInstanceUID từ chính URL đó,
+        # vì đó là tất cả những gì `_download_via_dicomweb()` cần để dựng
+        # rs_base: nó tự dò WADO-URI / WADO-RS / dựng lại từ frames (BV Hà Tĩnh
+        # không phát URL nào chứa "wado").
+        return cap.dicomweb_profile is not None or bool(
+            _dicomweb_study_from_qido(cap.qido_series)
+        )
+
+    def why_not_ready(self, cap: ViewerCapture) -> str:
+        if not cap.qido_series:
+            return ("chưa bắt được request QIDO nào có path kết thúc '/series', "
+                    "và cũng không giải được đường vào DICOMweb từ config/dò")
+        return (
+            f"đã thấy QIDO '{_redact_url(cap.qido_series)}' nhưng không tách được "
+            "'/studies/<uid>/', và cũng không giải được StudyInstanceUID để dựng "
+            "truy vấn top-level"
+        )
 
     def has_series_manifest(self, cap: ViewerCapture) -> bool:
         return cap.qido_series_body is not None
@@ -1322,6 +1645,12 @@ class ZfpAdapter(PacsAdapter):
 
     def is_ready(self, cap: ViewerCapture) -> bool:
         return bool(cap.zfp and cap.zfp_page)
+
+    def why_not_ready(self, cap: ViewerCapture) -> str:
+        return self._missing({
+            "cấu trúc study từ móc WebSocket ZFP": cap.zfp,
+            "trang viewer còn mở để hỏi ảnh": cap.zfp_page,
+        })
 
     def has_series_manifest(self, cap: ViewerCapture) -> bool:
         return bool(cap.zfp)
@@ -1356,6 +1685,9 @@ class VietmyAdapter(PacsAdapter):
 
     def is_ready(self, cap: ViewerCapture) -> bool:
         return cap.vietmy is not None
+
+    def why_not_ready(self, cap: ViewerCapture) -> str:
+        return self._missing({"manifest 'GetListImageFileInfo'": cap.vietmy})
 
     def has_series_manifest(self, cap: ViewerCapture) -> bool:
         return cap.vietmy is not None
@@ -1462,7 +1794,7 @@ class ActiveSocketTracker:
         for res in targets:
             self._close_resource(res)
 
-    def opener(self, context=None):
+    def opener(self, context=None, passport: Optional[Callable[[str], dict]] = None):
         """Opener ghi sổ socket NGAY lúc mở, tức là trước cả bắt tay TLS.
 
         Chỉ bọc ở tầng đọc body là quá muộn: lúc worker còn kẹt trong `urlopen()`
@@ -1497,8 +1829,10 @@ class ActiveSocketTracker:
             def https_open(self, req):
                 return self.do_open(_TrackedSecureConnection, req, context=self._context)
 
-        return urllib.request.build_opener(_TrackedHandler,
-                                           _TrackedSecureHandler(context=context))
+        handlers = [_TrackedHandler, _TrackedSecureHandler(context=context)]
+        if passport is not None:
+            handlers.append(_ScopedRedirectHandler(passport))
+        return urllib.request.build_opener(*handlers)
 
     def release(self, res: Any) -> None:
         """Bỏ ghi sổ một response *và* socket nằm dưới nó khi đã đọc xong.
@@ -1587,7 +1921,8 @@ class PacsStrategyStore:
 
     def save_recipe(self, fingerprint: str, adapter: str, preferred_routes: Optional[list[str]] = None,
                     success: bool = True, partial: bool = False, failure_class: str = "",
-                    latency_ms: float = 0.0) -> None:
+                    latency_ms: float = 0.0,
+                    dicomweb_base: str = "", dicomweb_query_style: str = "") -> None:
         with self._lock:
             try:
                 recipes = {}
@@ -1624,6 +1959,14 @@ class PacsStrategyStore:
                     r["lastSuccessAt"] = now_ts
                     if preferred_routes:
                         r["preferredRoutes"] = preferred_routes
+                    # Đây mới là thứ tiết kiệm được công dò lần sau: Base URI
+                    # DICOMweb là cấu hình của server nên dùng lại được cho MỌI
+                    # ca ở cùng nơi. KHÔNG lưu studyUID — đó là dữ liệu bệnh nhân
+                    # và cũng chỉ đúng cho đúng một ca.
+                    if dicomweb_base:
+                        r["dicomwebBase"] = dicomweb_base
+                    if dicomweb_query_style:
+                        r["dicomwebQueryStyle"] = dicomweb_query_style
                     if latency_ms > 0:
                         old_ewma = r.get("latencyEwmaMs", latency_ms)
                         r["latencyEwmaMs"] = round(0.7 * old_ewma + 0.3 * latency_ms, 2)
@@ -1670,6 +2013,13 @@ class PacsStrategyStore:
             return r["preferredRoutes"]
         return []
 
+    def get_dicomweb_hint(self, fingerprint: str) -> tuple[str, str]:
+        """(rs_base, query_style) đã giải được lần trước cho dạng link này."""
+        r = self.load().get(str(fingerprint or ""))
+        if not r or r.get("success", 0) <= r.get("failure", 0):
+            return "", ""
+        return str(r.get("dicomwebBase") or ""), str(r.get("dicomwebQueryStyle") or "")
+
 
 pacs_strategy_store = PacsStrategyStore()
 
@@ -1699,6 +2049,539 @@ def _ready_adapter(cap: ViewerCapture, url: str = "") -> Optional[PacsAdapter]:
     """Adapter đủ dữ kiện để TẢI, ưu tiên dòng chuyên biệt trước dòng chung."""
     adapters = _ready_adapters(cap, url=url)
     return adapters[0] if adapters else None
+
+
+def _log_discovery_failure(cap: ViewerCapture, log: LogFn) -> None:
+    """Vì sao không dòng PACS nào nhận ra link này.
+
+    Không có báo cáo này, một link lạ chỉ để lại đúng câu "chưa đủ ảnh": không
+    biết viewer đã gọi những gì, cũng không biết dòng nào suýt nhận ra — nên mỗi
+    link mới lại phải mở log thô ra dò. Đây cũng chính là dữ liệu để quyết định
+    có đáng viết adapter mới hay không.
+    """
+    log("!!! Chưa dòng PACS nào nhận ra link này — báo cáo để đối chiếu:")
+    for adapter in sorted(PACS_ADAPTERS, key=lambda a: a.priority, reverse=True):
+        try:
+            reason = adapter.why_not_ready(cap)
+        except Exception as exc:
+            reason = f"lỗi khi kiểm tra ({exc})"
+        log(f"      • {adapter.name}: {reason or 'không rõ'}")
+    if cap.seen_urls:
+        log(f"      Viewer đã gọi {len(cap.seen_urls)} endpoint (đã ẩn giá trị query):")
+        for entry in cap.seen_urls:
+            log(f"        - {entry}")
+    else:
+        log("      Không bắt được endpoint nào — nhiều khả năng trang chưa tải được.")
+    log("      → Chuyển sang mô phỏng thao tác trên giao diện để ép viewer tự tải ảnh.")
+
+# ---------------------------------------------------------------------------
+# Giải đường vào DICOMweb khi sniff bị động không đủ.
+#
+# Nguyên tắc: sniff vẫn là đường CHÍNH (observer gắn từ trước `page.goto()` nên
+# gần như miễn phí và có đúng phiên). Phần dưới đây chỉ là lưới sau, chạy theo
+# BẰNG CHỨNG giảm dần và luôn phải XÁC MINH mới được dùng.
+# ---------------------------------------------------------------------------
+
+# OHIF công bố `window.config.dataSources[].configuration.{qidoRoot,wadoRoot,
+# wadoUriRoot}`. Nguồn tin cậy cao nhưng KHÔNG tuyệt đối: config có thể là
+# function nhận `{ servicesManager, extensionManager, ... }`, có nhiều
+# dataSource, root có thể tương đối qua reverse proxy, và bản fork thì đổi cấu
+# trúc. Vì vậy kết quả chỉ là ỨNG VIÊN.
+_OHIF_CONFIG_JS = """
+() => {
+  const stub = new Proxy(function () {}, {
+    get: () => stub,
+    apply: () => stub,
+    construct: () => stub,
+  });
+  const unwrap = (cfg) => {
+    if (typeof cfg !== 'function') return cfg;
+    // Config dạng function thường cần servicesManager; thử vài hình dạng đối số
+    // thay vì chỉ `{}` rồi bỏ cuộc khi nó ném lỗi.
+    const shapes = [
+      () => cfg({ servicesManager: stub, extensionManager: stub, commandsManager: stub, hotkeysManager: stub }),
+      () => cfg(stub),
+      () => cfg({}),
+      () => cfg(),
+    ];
+    for (const attempt of shapes) {
+      try {
+        const out = attempt();
+        if (out && typeof out === 'object') return out;
+      } catch (e) { /* thử hình dạng kế tiếp */ }
+    }
+    return null;
+  };
+  try {
+    const cfg = unwrap(window.config);
+    if (!cfg || typeof cfg !== 'object') return [];
+    const sources = Array.isArray(cfg.dataSources) ? cfg.dataSources : [];
+    const preferredName = cfg.defaultDataSourceName;
+    const out = [];
+    for (const ds of sources) {
+      const c = (ds && ds.configuration) || {};
+      const preferred = !!(ds && preferredName && ds.sourceName === preferredName);
+      for (const key of ['qidoRoot', 'wadoRoot', 'wadoUriRoot']) {
+        const v = c[key];
+        if (typeof v === 'string' && v) out.push({ root: v, preferred: preferred });
+      }
+    }
+    // Không có defaultDataSourceName thì coi dataSource đầu là đang dùng.
+    if (!preferredName && out.length) out[0].preferred = true;
+    return out;
+  } catch (e) { return []; }
+}
+"""
+
+# Dò NGAY TRONG FRAME cùng origin với ứng viên: thừa hưởng cookie, tránh CORS.
+# Mỗi ứng viên có timeout riêng, cả lượt có deadline chung, thắng đầu tiên thì
+# huỷ phần còn lại. Trả về cả THÂN đã xác minh (để phần liệt kê series không
+# phải trông chờ event `on_response` kịp lưu) và CHẨN ĐOÁN từng URL.
+_DICOMWEB_PROBE_JS = """
+async ([items, perMs, totalMs]) => {
+  const all = new AbortController();
+  const deadline = setTimeout(() => all.abort(), totalMs);
+  const diagnostics = [];
+
+  const verify = (text, studyUid, requireStudyUid) => {
+    let data;
+    try { data = JSON.parse(text); } catch (e) { return 'không phải JSON'; }
+    if (!Array.isArray(data)) return 'JSON không phải mảng';
+    if (data.length === 0) return 'danh sách rỗng';
+    for (const el of data) {
+      if (!el || typeof el !== 'object') return 'phần tử không phải object';
+      if (!el['0020000E']) return 'thiếu SeriesInstanceUID (0020000E)';
+      const st = el['0020000D'];
+      const got = st && st.Value && st.Value[0];
+      if (got) {
+        if (String(got) !== String(studyUid)) return 'trả về series của ca khác: ' + got;
+      } else if (requireStudyUid) {
+        // Truy vấn top-level lọc bằng query: server nào phớt lờ tham số sẽ trả
+        // NGUYÊN kho. Không có 0020000D để đối chiếu thì không có gì chứng minh
+        // nó đã lọc đúng ca — từ chối, vì đoán sai ở đây là tải nhầm bệnh nhân.
+        return 'thiếu StudyInstanceUID (0020000D) nên không chứng minh được server đã lọc đúng ca';
+      }
+    }
+    return '';
+  };
+
+  const attempt = async (item) => {
+    const one = new AbortController();
+    const timer = setTimeout(() => one.abort(), perMs);
+    const relay = () => one.abort();
+    all.signal.addEventListener('abort', relay);
+    const fail = (reason) => {
+      if (!diagnostics.some((d) => d.url === item.url)) {
+        diagnostics.push({ url: item.url, error: reason });
+      }
+      return new Error(reason);
+    };
+    try {
+      const headers = Object.assign(
+        { Accept: 'application/dicom+json, application/json' }, item.headers || {});
+      const r = await fetch(item.url, {
+        credentials: 'include', headers: headers, signal: one.signal });
+      if (!r.ok) throw fail('status ' + r.status);
+      const ct = (r.headers.get('content-type') || '').toLowerCase();
+      if (ct.indexOf('json') < 0) throw fail('content-type ' + (ct || 'rỗng'));
+      const text = await r.text();
+      const bad = verify(text, item.studyUid, item.requireStudyUid);
+      if (bad) throw fail(bad);
+      return { url: item.url, studyUid: item.studyUid,
+               body: text.length > 4000000 ? '' : text };
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw fail('quá hạn');
+      if (e && e.name === 'TypeError') throw fail('không gọi được (CORS hoặc mạng)');
+      throw (diagnostics.some((d) => d.url === item.url) ? e : fail(String((e && e.message) || e)));
+    } finally {
+      clearTimeout(timer);
+      all.signal.removeEventListener('abort', relay);
+    }
+  };
+
+  let winner = null;
+  try {
+    winner = await Promise.any(items.map(attempt));
+  } catch (e) {
+    winner = null;
+  } finally {
+    clearTimeout(deadline);
+    all.abort();
+  }
+  return { winner: winner, diagnostics: diagnostics };
+}
+"""
+
+# ĐOÁN theo thói quen triển khai, KHÔNG phải chuẩn: PS3.18 chuẩn hoá path SAU
+# Base URI, còn Base URI thì mỗi nơi cấu hình một kiểu (Orthanc đổi được
+# `DicomWeb.Root`, dcm4chee gắn `{AET}` vào path). Vì vậy đây là bậc chót.
+_DICOMWEB_ROOT_GUESSES = (
+    "/dicom-web", "/rs", "/dicomweb", "/wado-rs", "/api/dicomweb", "/ws/rest/v1",
+)
+_STUDY_UID_QUERY_KEYS = (
+    "studyinstanceuids", "studyinstanceuid", "studyuid", "study", "studyid",
+)
+_PROBE_CANDIDATE_LIMIT = 24
+_PROBE_PER_REQUEST_MS = 6000
+_PROBE_TIER_S = 8.0
+# Hạn TUYỆT ĐỐI cho cả lượt giải đường. Không có nó thì mỗi bậc × mỗi frame lại
+# được một hạn riêng, và tổng thời gian nhân lên theo số bậc × số frame.
+_PROBE_TOTAL_S = 12.0
+# Số đường DICOMweb khác nhau được phép thử khi đường trước tải hỏng.
+_MAX_DICOMWEB_PROFILES = 3
+
+# Bậc bằng chứng: nhỏ hơn = chắc chắn hơn, và được thử TRƯỚC (xong bậc này mới
+# sang bậc sau). Nhờ vậy root đã học không bị một root đoán mò trả lời nhanh hơn
+# giành mất, và thường thì không bao giờ phải bắn tới bậc đoán.
+_TIER_LEARNED, _TIER_SNIFFED, _TIER_CONFIG_ACTIVE, _TIER_CONFIG_OTHER, _TIER_GUESS = range(5)
+_TIER_NAMES = {
+    _TIER_LEARNED: "đã học",
+    _TIER_SNIFFED: "URL QIDO đã thấy",
+    _TIER_CONFIG_ACTIVE: "config viewer (datasource đang dùng)",
+    _TIER_CONFIG_OTHER: "config viewer (datasource khác)",
+    _TIER_GUESS: "đoán theo thói quen triển khai",
+}
+
+
+@dataclass
+class _RootCandidate:
+    root: str
+    tier: int
+    frame: Any = None
+    style_hint: str = ""
+
+
+def _url_origin(url: Any) -> str:
+    from urllib.parse import urlparse
+
+    try:
+        pu = urlparse(str(url or ""))
+        return f"{pu.scheme}://{pu.netloc}".casefold() if pu.netloc else ""
+    except Exception:
+        return ""
+
+
+def _study_uid_candidates(cap: ViewerCapture, *urls: str) -> list[str]:
+    """StudyInstanceUID có thể suy ra được, bằng chứng chắc nhất trước.
+
+    Phải soi CẢ query của URL QIDO đã bắt được: link viewer thường chỉ là một
+    token mờ (`/view?token=...`), còn ca nằm ở `/series?StudyInstanceUID=...`.
+    Bỏ sót chỗ này thì đúng dạng top-level — dạng cần discovery nhất — lại là
+    dạng không bao giờ discovery được.
+    """
+    from urllib.parse import urlparse, parse_qs
+
+    found: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        # UID DICOM chỉ gồm chữ số và dấu chấm; lọc sớm để không đi dò bằng rác
+        # (và để một query độc hại không lái được đường dò đi nơi khác).
+        if text and re.fullmatch(r"[0-9.]{5,64}", text) and text not in found:
+            found.append(text)
+
+    add(_dicomweb_study_from_qido(cap.qido_series))
+    for url in (cap.qido_series, *urls):
+        try:
+            parsed = urlparse(str(url or ""))
+        except Exception:
+            continue
+        # Viewer dùng hash router đặt tham số SAU dấu "#", nên `parsed.query`
+        # rỗng và ca nằm trong fragment: https://p/#/viewer?StudyInstanceUIDs=…
+        queries = [parsed.query]
+        if parsed.fragment and "?" in parsed.fragment:
+            queries.append(parsed.fragment.split("?", 1)[1])
+        for raw_query in queries:
+            try:
+                query = parse_qs(raw_query)
+            except Exception:
+                continue
+            for key, values in query.items():
+                if key.casefold() in _STUDY_UID_QUERY_KEYS:
+                    for value in values:
+                        # OHIF cho phép nhiều study ngăn bởi dấu phẩy.
+                        for piece in str(value).split(","):
+                            add(piece)
+    return found
+
+
+def _frames_of(page) -> list:
+    try:
+        return list(page.frames) or [page]
+    except Exception:
+        return [page]
+
+
+def _frame_for_origin(page, origin: str, fallback=None):
+    """Frame cùng origin với ứng viên — để `fetch` không vướng CORS.
+
+    Wrapper và OHIF hay khác origin: đọc được root trong iframe nhưng lại bắn dò
+    từ trang cha thì rơi thẳng vào CORS.
+    """
+    if origin:
+        for frame in _frames_of(page):
+            try:
+                if _url_origin(frame.url) == origin:
+                    return frame
+            except Exception:
+                continue
+    return fallback if fallback is not None else page
+
+
+def _dicomweb_root_candidates(page, cap: ViewerCapture, viewer_url: str,
+                              log: LogFn) -> list[_RootCandidate]:
+    """Các rs_base đáng thử, kèm bậc bằng chứng và frame nên dò từ đó."""
+    from urllib.parse import urlparse, urljoin
+
+    out: list[_RootCandidate] = []
+    seen: set[str] = set()
+
+    def add(value: Any, tier: int, origin_url: str = "", frame=None, style_hint: str = "") -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        if not text.startswith(("http://", "https://")):
+            if not origin_url:
+                return
+            text = urljoin(origin_url, text)
+        text = text.rstrip("/")
+        # Root trỏ thẳng vào một ca thì cắt về gốc dùng chung được.
+        if "/studies/" in text:
+            text = text.split("/studies/")[0].rstrip("/")
+        if not text or text in seen:
+            return
+        seen.add(text)
+        out.append(_RootCandidate(
+            root=text, tier=tier,
+            frame=_frame_for_origin(page, _url_origin(text), frame),
+            style_hint=style_hint,
+        ))
+
+    # Bậc 0 — đã học được cho chính dạng link này.
+    learned_root, learned_style = pacs_strategy_store.get_dicomweb_hint(cap.strategy_fingerprint)
+    add(learned_root, _TIER_LEARNED, style_hint=learned_style)
+
+    # Bậc 1 — chính URL QIDO đã bắt được, kể cả khi không tách nổi studyUID.
+    if cap.qido_series:
+        try:
+            pu = urlparse(cap.qido_series)
+            path = pu.path.split("/studies/")[0]
+            for suffix in ("/series", "/instances"):
+                if path.endswith(suffix):
+                    path = path[: -len(suffix)]
+            add(f"{pu.scheme}://{pu.netloc}{path}", _TIER_SNIFFED)
+        except Exception:
+            pass
+
+    # Bậc 2/3 — config viewer, đọc ở MỌI frame (viewer hay nằm trong iframe).
+    for frame in _frames_of(page):
+        try:
+            entries = frame.evaluate(_OHIF_CONFIG_JS)
+        except Exception:
+            continue
+        if not entries:
+            continue
+        frame_url = ""
+        try:
+            frame_url = frame.url
+        except Exception:
+            pass
+        log(f"      Đọc được {len(entries)} root từ config viewer (OHIF).")
+        for entry in entries:
+            if isinstance(entry, dict):
+                root, preferred = entry.get("root"), bool(entry.get("preferred"))
+            else:
+                root, preferred = entry, False
+            add(root, _TIER_CONFIG_ACTIVE if preferred else _TIER_CONFIG_OTHER,
+                origin_url=frame_url or viewer_url, frame=frame)
+
+    # Bậc 4 — lưới cuối, đoán trên origin của trang.
+    origin = ""
+    try:
+        origin = _url_origin(page.url or viewer_url)
+    except Exception:
+        pass
+    if origin:
+        add(origin, _TIER_GUESS)
+        for guess in _DICOMWEB_ROOT_GUESSES:
+            add(origin + guess, _TIER_GUESS)
+    out.sort(key=lambda c: c.tier)
+    return out
+
+
+def _probe_headers_for(cap: ViewerCapture, root: str) -> dict:
+    """Header phiên đã quan sát, CHỈ gửi lại cho đúng origin đã bắt được nó.
+
+    Bắn `Authorization` của viện A sang một root đoán mò ở origin khác là làm lộ
+    token cho bên thứ ba, nên chỗ này khoá theo origin chứ không gửi bừa.
+    """
+    return _session_headers_for(cap, root)
+
+
+def _probe_passes(candidate: _RootCandidate) -> tuple[tuple[str, ...], ...]:
+    """Các lượt dò cho một root, theo thứ tự đáng thử.
+
+    Có `style_hint` đã học thì thử đúng nó TRƯỚC — nhưng vẫn phải còn lượt cho
+    style kia: recipe cũ ghi `toplevel` mà server nay chỉ đáp ứng `hierarchical`
+    thì loại thẳng một root hoàn toàn hợp lệ, và vì root bị khử trùng lặp toàn
+    cục nên nó không xuất hiện lại ở bậc sau nữa.
+    """
+    both = ("hierarchical", "toplevel")
+    if candidate.style_hint in both:
+        other = tuple(s for s in both if s != candidate.style_hint)
+        return ((candidate.style_hint,), other)
+    return (both,)
+
+
+def resolve_dicomweb_access(page, cap: ViewerCapture, viewer_url: str,
+                            log: LogFn, stop: Callable[[], bool],
+                            exclude: Optional[set[tuple[str, str]]] = None,
+                            deadline_s: float = _PROBE_TOTAL_S) -> Optional[DicomWebProfile]:
+    """Giải đường vào DICOMweb rồi ghi thẳng kết quả ĐÃ XÁC MINH vào `cap`.
+
+    Dùng chung cho cả `download_all()` và `discover_viewer_series()`: cả hai đều
+    cần đúng một thứ, và cả hai đều không được phụ thuộc vào việc event
+    `on_response` có kịp lưu thân manifest hay không — nên thân đã xác minh được
+    lấy thẳng từ kết quả dò.
+
+    `exclude` là các cặp (rs_base, query_style) đã thử mà tải hỏng — để lượt sau
+    đi tìm đường KHÁC thay vì trả lại đúng cái vừa thất bại.
+
+    `deadline_s` là hạn TUYỆT ĐỐI cho cả lượt giải. Không có nó thì mỗi bậc ×
+    mỗi frame lại được một deadline riêng và tổng thời gian nhân lên nhiều lần.
+    """
+    excluded = set(exclude or ())
+    if stop():
+        return None
+    if cap.dicomweb_profile is not None:
+        if (cap.dicomweb_profile.rs_base, cap.dicomweb_profile.query_style) not in excluded:
+            return cap.dicomweb_profile
+        cap.dicomweb_profile = None
+    study_uids = _study_uid_candidates(cap, viewer_url, getattr(page, "url", "") or "")
+    if not study_uids:
+        log("      Không suy ra được StudyInstanceUID → không dò DICOMweb.")
+        return None
+
+    candidates = _dicomweb_root_candidates(page, cap, viewer_url, log)
+    if not candidates:
+        return None
+
+    started = time.monotonic()
+    budget = getattr(cap, "budget", None)
+
+    def _time_left() -> float:
+        left = deadline_s - (time.monotonic() - started)
+        if budget is not None:
+            try:
+                if budget.is_expired():
+                    return 0.0
+            except Exception:
+                pass
+        return left
+
+    budget_left = _PROBE_CANDIDATE_LIMIT
+    all_diagnostics: list[dict] = []
+    # (bậc, lượt style) — bậc trước xong mới sang bậc sau, và trong một bậc thì
+    # lượt style đã học chạy trước lượt style còn lại.
+    plan: list[tuple[int, int]] = sorted({
+        (c.tier, index)
+        for c in candidates
+        for index in range(len(_probe_passes(c)))
+    })
+    for tier, pass_index in plan:
+        if stop() or budget_left <= 0 or _time_left() <= 0:
+            break
+        by_frame: dict[int, tuple[Any, list[dict]]] = {}
+        for candidate in (c for c in candidates if c.tier == tier):
+            passes = _probe_passes(candidate)
+            if pass_index >= len(passes):
+                continue
+            headers = _probe_headers_for(cap, candidate.root)
+            for study in study_uids:
+                for style in passes[pass_index]:
+                    if budget_left <= 0:
+                        break
+                    if (candidate.root, style) in excluded:
+                        continue
+                    profile = DicomWebProfile(candidate.root, study, style)
+                    frame = candidate.frame if candidate.frame is not None else page
+                    bucket = by_frame.setdefault(id(frame), (frame, []))[1]
+                    bucket.append({
+                        "url": profile.series_search_url(),
+                        "studyUid": study,
+                        # Dạng phân cấp đã bị chính path khoá vào đúng ca; dạng
+                        # top-level lọc bằng query nên PHẢI có 0020000D để chứng
+                        # minh server thật sự đã lọc.
+                        "requireStudyUid": style == "toplevel",
+                        "headers": headers,
+                        "_root": candidate.root,
+                        "_style": style,
+                        "_study": study,
+                    })
+                    budget_left -= 1
+
+        for frame, items in by_frame.values():
+            left = _time_left()
+            if stop() or not items or left <= 0:
+                continue
+            # Mỗi frame chỉ được phần thời gian CÒN LẠI của cả lượt.
+            frame_ms = int(max(0.0, min(left, _PROBE_TIER_S)) * 1000)
+            per_ms = min(_PROBE_PER_REQUEST_MS, frame_ms)
+            if frame_ms <= 0:
+                continue
+            log(f"      Dò {len(items)} đường ở bậc «{_TIER_NAMES.get(tier, tier)}» "
+                f"({frame_ms / 1000:.0f}s)…")
+            payload = [[{k: v for k, v in item.items() if not k.startswith("_")}
+                        for item in items], per_ms, frame_ms]
+            try:
+                result = frame.evaluate(_DICOMWEB_PROBE_JS, payload)
+            except Exception as exc:
+                log(f"      Dò lỗi ở bậc này ({exc}).")
+                continue
+            result = result or {}
+            all_diagnostics.extend(result.get("diagnostics") or [])
+            winner = result.get("winner")
+            if not winner:
+                continue
+            for item in items:
+                if item["url"] != winner.get("url"):
+                    continue
+                profile = DicomWebProfile(
+                    rs_base=item["_root"], study_uid=item["_study"],
+                    query_style=item["_style"], source="probe",
+                )
+                cap.dicomweb_profile = profile
+                # Ghi thẳng vào cap để phần liệt kê series dùng được ngay.
+                cap.qido_series = winner.get("url") or cap.qido_series
+                body = winner.get("body") or ""
+                if body:
+                    cap.qido_series_body = body.encode("utf-8")
+                log(f"      ✓ Giải được: {_redact_url(profile.rs_base)} "
+                    f"(truy vấn {profile.query_style}, bậc «{_TIER_NAMES.get(tier, tier)}»).")
+                return profile
+
+    _log_probe_diagnostics(all_diagnostics, log)
+    return None
+
+
+def _log_probe_diagnostics(diagnostics: list[dict], log: LogFn) -> None:
+    """Nói rõ vì sao dò trượt — nhất là khi lý do là 'phải đăng nhập'.
+
+    Chỉ gặp 401/403 mà lặng lẽ rơi xuống DOM sẽ tạo cảm giác app đang cố tải,
+    trong khi thứ còn thiếu là quyền chứ không phải đường đi.
+    """
+    if not diagnostics:
+        log("      Không đường nào trả về danh sách series hợp lệ.")
+        return
+    codes = [str(d.get("error") or "") for d in diagnostics]
+    if codes and all(("status 401" in c) or ("status 403" in c) for c in codes):
+        log("      !!! Mọi đường DICOMweb đều bị từ chối (401/403): thiếu QUYỀN, "
+            "không phải thiếu đường. Viewer nhiều khả năng gắn token bằng mã "
+            "riêng mà phần dò không đọc được.")
+        return
+    log(f"      Không đường nào hợp lệ. {len(diagnostics)} lý do gần nhất:")
+    for entry in diagnostics[:8]:
+        log(f"        - {_redact_url(entry.get('url'))} → {entry.get('error')}")
 
 
 def _series_manifest_adapter(cap: ViewerCapture) -> Optional[PacsAdapter]:
@@ -1984,6 +2867,7 @@ def download_all(
             if (cap.session_error is None and response.status >= 400
                     and re.search(r"/(session|share)s?/[0-9a-fA-F\-]{8,}", response.url)):
                 cap.session_error = str(response.status)
+            _note_seen_url(cap, response.url)
             # Manifest thì để adapter giữ, và KHÔNG đem đi lưu như ảnh.
             if _observe_response(response, cap):
                 return
@@ -2059,14 +2943,46 @@ def download_all(
             except Exception:
                 pass
 
+            # Các đường DICOMweb đã thử mà không xong — để lượt sau đi tìm đường
+            # KHÁC (root từ config / root đã học) chứ không trả lại đúng cái vừa
+            # hỏng. Theo dõi mỗi tên adapter là quá thô cho việc này.
+            spent_dicomweb: set[tuple[str, str]] = set()
+
+            def _try_resolve_dicomweb(reason: str) -> list[PacsAdapter]:
+                """Giải đường DICOMweb rồi tính lại danh sách adapter sẵn sàng."""
+                log(reason)
+                try:
+                    resolved = resolve_dicomweb_access(
+                        page, cap, url, log, stop, exclude=spent_dicomweb)
+                except Exception as exc:
+                    log(f"      Bỏ qua bước giải DICOMweb ({exc}).")
+                    return []
+                if resolved is None:
+                    return []
+                return _ready_adapters(cap, url=url)
+
             ready_list = _ready_adapters(cap, url=url)
-            if ready_list:
+            if not ready_list:
+                ready_list = _try_resolve_dicomweb(
+                    "Chưa adapter nào sẵn sàng → thử giải đường vào DICOMweb.")
+            if not ready_list:
+                _log_discovery_failure(cap, log)
+            tried_adapters: set[str] = set()
+
+            def _run_adapters(adapters: list[PacsAdapter]) -> None:
+                nonlocal used_manifest
                 used_manifest = True
-                log(f"✓ Có {len(ready_list)} adapter sẵn sàng → thử lần lượt trong cùng phiên viewer.")
-                for adapter in ready_list:
+                log(f"✓ Có {len(adapters)} adapter sẵn sàng → thử lần lượt trong cùng phiên viewer.")
+                for adapter in adapters:
                     if stop() or budget.is_hard_expired():
                         break
                     budget.touch()
+                    tried_adapters.add(adapter.name.lower())
+                    if adapter.name.lower() == "dicomweb":
+                        spent = cap.dicomweb_profile or DicomWebProfile.from_qido_url(
+                            cap.qido_series)
+                        if spent is not None:
+                            spent_dicomweb.add((spent.rs_base, spent.query_style))
                     log(f"✓ Khởi chạy adapter: {adapter.name} → tải trực tiếp bằng API/WebSocket.")
                     t0 = time.monotonic()
                     try:
@@ -2083,14 +2999,23 @@ def download_all(
                             elapsed_ms=latency_ms,
                             retryable=not stats.is_complete() and not budget.is_hard_expired(),
                         ))
+                        is_dicomweb = adapter.name.lower() == "dicomweb"
+                        # Cả khi sniff tự lo được: rs_base đó vẫn đáng nhớ để
+                        # ca sau ở cùng nơi khỏi phải dò lại từ đầu.
+                        resolved = (
+                            cap.dicomweb_profile
+                            or DicomWebProfile.from_qido_url(cap.qido_series)
+                        ) if is_dicomweb else None
                         pacs_strategy_store.save_recipe(
                             fingerprint=cap.strategy_fingerprint,
                             adapter=adapter.name,
-                            preferred_routes=(stats.preferred_routes if adapter.name.lower() == "dicomweb" else None),
+                            preferred_routes=(stats.preferred_routes if is_dicomweb else None),
                             success=stats.is_complete(),
                             partial=stats.status in {"partial", "partial_unknown"},
                             failure_class=("timeout" if budget.is_expired() else "error") if stats.status == "failed" else "",
                             latency_ms=latency_ms,
+                            dicomweb_base=(resolved.rs_base if resolved else ""),
+                            dicomweb_query_style=(resolved.query_style if resolved else ""),
                         )
                         if stats.is_complete():
                             break
@@ -2109,6 +3034,34 @@ def download_all(
                             success=False, failure_class=type(e).__name__, latency_ms=latency_ms,
                         )
 
+            if ready_list:
+                _run_adapters(ready_list)
+
+            # Adapter hãng nhận ra link nhưng tải hỏng/thiếu thì DICOMweb vẫn có
+            # thể là đường đi được — trước đây rơi thẳng xuống DOM heuristic nên
+            # discovery mới chỉ vá được lúc KHÔNG nhận ra adapter nào, chứ chưa
+            # phải lưới đỡ khi adapter đã nhận ra mà tải không xong.
+            # Đường DICOMweb hỏng không có nghĩa là mọi đường DICOMweb đều hỏng:
+            # style còn lại trên cùng root, rồi root khác từ config, đều đáng thử.
+            # `spent_dicomweb` bảo đảm mỗi profile chỉ đi một lần nên không lặp
+            # vô hạn; trần cứng ở đây để một PACS lạ không ngốn hết budget.
+            for _ in range(_MAX_DICOMWEB_PROFILES):
+                if stats.is_complete() or stop() or budget.is_hard_expired():
+                    break
+                before = len(spent_dicomweb)
+                retry_list = [
+                    adapter for adapter in _try_resolve_dicomweb(
+                        "Chưa đủ ảnh → thử giải thêm một đường DICOMweb khác.")
+                    if adapter.name.lower() == "dicomweb"
+                    or adapter.name.lower() not in tried_adapters
+                ]
+                if not retry_list:
+                    break
+                _run_adapters(retry_list)
+                # Không tiêu thêm profile nào nghĩa là đã hết đường để thử.
+                if len(spent_dicomweb) == before:
+                    break
+
             if not stats.is_complete() and not stop() and not budget.is_hard_expired():
                 if used_manifest and selected_series is not None:
                     log("Chưa đủ ảnh nhưng đang tải series chọn lọc; không mô phỏng mù để tránh lấy nhầm series ngoài phạm vi.")
@@ -2117,7 +3070,7 @@ def download_all(
                     budget.touch()
                     capture_bodies = True
                     page.wait_for_timeout(1500)
-                    _drive_viewer(
+                    _drive_viewer_dom_heuristic(
                         page, log, stats, max_slices_per_series, stop,
                         selected_series_ids=selected_series,
                     )
@@ -2156,7 +3109,9 @@ def discover_viewer_series(
     # Dùng CHUNG bộ adapter với `download_all()`. Trước đây chỗ này chép lại
     # logic nhận diện lần thứ hai, nên thêm một PACS mới là phải sửa cả hai nơi
     # và hai bản đã bắt đầu lệch nhau.
-    cap = ViewerCapture()
+    # Fingerprint phải có ngay từ đây, nếu không `get_dicomweb_hint()` luôn tra
+    # khoá rỗng và đường chọn series không hưởng được gì từ cái đã học.
+    cap = ViewerCapture(strategy_fingerprint=compute_url_fingerprint(url))
 
     def stop() -> bool:
         return bool(should_stop and should_stop())
@@ -2199,6 +3154,16 @@ def discover_viewer_series(
             code = cap.session_error
             browser.close()
             raise ValueError(f"Link viewer hết hạn hoặc session bị từ chối (HTTP {code}).")
+
+        # Cùng một lưới đỡ như `download_all()`: nếu chỉ sniff thì "tải tất cả"
+        # chạy được nhưng bảng chọn series lại trống — cùng một link, hai kết quả
+        # khác nhau. `resolve_dicomweb_access()` ghi thẳng thân đã xác minh vào
+        # `cap` nên phần liệt kê không phải trông chờ event `on_response`.
+        if _series_manifest_adapter(cap) is None:
+            try:
+                resolve_dicomweb_access(page, cap, url, log, stop)
+            except Exception as exc:
+                log(f"      Bỏ qua bước giải DICOMweb ({exc}).")
 
         source = ""
         choices: list[dict] = []
@@ -2517,12 +3482,13 @@ def _download_via_manifest(captured, save_body, stats,
             f"Đang tải trực tiếp {len(tasks)} ảnh (6 luồng song song)...")
 
     tracker = captured.get("socket_tracker") or ActiveSocketTracker()
-    opener = tracker.opener(sslctx)
+    _pass_for = _passport_builder(captured)
+    opener = tracker.opener(sslctx, passport=_pass_for)
 
     def fetch_one(u) -> bool:
         if stop():
             return True
-        with opener.open(u, timeout=45) as r:
+        with opener.open(urllib.request.Request(u, headers=_pass_for(u)), timeout=45) as r:
             return save_body(_read_response_chunks(r, captured.get("budget"), stop, tracker=tracker))
 
     _run_fetch_tasks(tasks, fetch_one, stats, log, stop, captured.get("budget"), tracker=tracker)
@@ -2576,7 +3542,7 @@ def _download_via_vrpacs(captured, save_body, stats,
 
     if selected_series is not None and n_series == 0:
         raise ValueError("Không còn tìm thấy series đã chọn trong manifest vrpacs mới.")
-    cj = "; ".join(f'{c.get("name")}={c.get("value")}' for c in (captured.get("cookies") or []))
+    _pass_for = _passport_builder(captured)
     sslctx = ssl.create_default_context()
     sslctx.check_hostname = False
     sslctx.verify_mode = ssl.CERT_NONE
@@ -2585,12 +3551,12 @@ def _download_via_vrpacs(captured, save_body, stats,
         f"Đang tải trực tiếp (6 luồng song song)...")
 
     tracker = captured.get("socket_tracker") or ActiveSocketTracker()
-    opener = tracker.opener(sslctx)
+    opener = tracker.opener(sslctx, passport=_pass_for)
 
     def fetch_one(u) -> bool:
         if stop():
             return True
-        req = urllib.request.Request(u, headers={"Cookie": cj} if cj else {})
+        req = urllib.request.Request(u, headers=_pass_for(u))
         with opener.open(req, timeout=45) as r:
             return save_body(_read_response_chunks(r, captured.get("budget"), stop, tracker=tracker))
 
@@ -2729,7 +3695,7 @@ def _download_via_vietmy(captured, save_body, stats,
     if selected_series is not None and n_series == 0:
         raise ValueError("Không còn tìm thấy series đã chọn trong manifest VietMy mới.")
 
-    cj = "; ".join(f'{c.get("name")}={c.get("value")}' for c in (captured.get("cookies") or []))
+    _pass_for = _passport_builder(captured)
     sslctx = ssl.create_default_context()
     sslctx.check_hostname = False
     sslctx.verify_mode = ssl.CERT_NONE
@@ -2738,12 +3704,12 @@ def _download_via_vietmy(captured, save_body, stats,
         f"Đang tải DICOM gốc trực tiếp (6 luồng song song)...")
 
     tracker = captured.get("socket_tracker") or ActiveSocketTracker()
-    opener = tracker.opener(sslctx)
+    opener = tracker.opener(sslctx, passport=_pass_for)
 
     def fetch_one(u) -> bool:
         if stop():
             return True
-        req = urllib.request.Request(u, headers={"Cookie": cj} if cj else {})
+        req = urllib.request.Request(u, headers=_pass_for(u))
         with opener.open(req, timeout=45) as r:
             return save_body(_read_response_chunks(r, captured.get("budget"), stop, tracker=tracker))
 
@@ -2768,12 +3734,15 @@ def _download_via_dicomweb(captured, save_body, stats,
     import urllib.request
     from urllib.parse import urlparse, parse_qs, urlencode
 
-    qp = urlparse(captured["qido_series"])
-    rs_base = f"{qp.scheme}://{qp.netloc}{qp.path.split('/studies/')[0]}"
-    try:
-        study = qp.path.split("/studies/")[1].split("/series")[0]
-    except Exception:
-        log("  Không tách được studyUID từ QIDO — bỏ qua."); return
+    profile = captured.get("dicomweb_profile") or DicomWebProfile.from_qido_url(
+        captured.get("qido_series")
+    )
+    if profile is None:
+        log("  Không giải được đường vào DICOMweb (rs_base + studyUID) — bỏ qua."); return
+    rs_base, study = profile.rs_base, profile.study_uid
+    if profile.source != "sniff" or profile.is_toplevel:
+        log(f"  Đường vào DICOMweb: {_redact_url(rs_base)} "
+            f"(truy vấn {profile.query_style}, nguồn: {profile.source}).")
 
     if captured.get("wado_tmpl"):
         wp = urlparse(captured["wado_tmpl"])
@@ -2794,23 +3763,17 @@ def _download_via_dicomweb(captured, save_body, stats,
     route_lock = threading.Lock()
     budget = captured.get("budget")
 
-    # Gửi lại đúng "giấy thông hành" viewer đã dùng: cookie + header phiên
-    # (Authorization, X-...) bắt từ request QIDO thật.
-    hdr = {}
-    for k, v in (captured.get("api_headers") or {}).items():
-        lk = k.lower()
-        if lk.startswith("x-") or lk in ("authorization", "token", "session", "session-id"):
-            hdr[k] = v
-    cj = "; ".join(f'{c.get("name")}={c.get("value")}' for c in (captured.get("cookies") or []))
-    if cj:
-        hdr["Cookie"] = cj
+    # "Giấy thông hành" dựng THEO TỪNG URL, không dựng một bộ dùng chung: sau
+    # discovery thì `rs_base` có thể ở origin khác hẳn nơi bắt được token, và
+    # `context.cookies()` thì chứa cookie của mọi domain đã ghé qua.
+    _pass_for = _passport_builder(captured)
 
     sslctx = ssl.create_default_context()
     sslctx.check_hostname = False
     sslctx.verify_mode = ssl.CERT_NONE
 
     tracker = captured.get("socket_tracker") or ActiveSocketTracker()
-    opener = tracker.opener(sslctx)
+    opener = tracker.opener(sslctx, passport=_pass_for)
 
     def get_raw(u, accept=None):
         if budget is not None and budget.is_expired():
@@ -2819,7 +3782,7 @@ def _download_via_dicomweb(captured, save_body, stats,
         if stop():
             tracker.interrupt_all()
             raise InterruptedError("Download cancelled")
-        h = dict(hdr)
+        h = _pass_for(u)
         if accept:
             h["Accept"] = accept
         req = urllib.request.Request(u, headers=h)
@@ -2835,7 +3798,7 @@ def _download_via_dicomweb(captured, save_body, stats,
         return _dicom_json_value(el, tag)
 
     try:
-        series = get_json(f"{rs_base}/studies/{study}/series")
+        series = get_json(profile.series_search_url())
     except Exception as e:
         log(f"  Lỗi QIDO series ({e}) — bỏ qua."); return
 
@@ -2852,12 +3815,12 @@ def _download_via_dicomweb(captured, save_body, stats,
         if _is_non_image_modality(V(s, "00080060")):
             continue
         try:
-            insts = get_json(f"{rs_base}/studies/{study}/series/{suid}/instances")
+            insts = get_json(profile.instances_search_url(suid))
         except Exception:
             insts = []
         if not insts:
             try:
-                insts = get_json(f"{rs_base}/studies/{study}/series/{suid}/metadata")
+                insts = get_json(profile.series_metadata_url(suid))
             except Exception:
                 insts = []
         instances_by_series[suid] = insts if isinstance(insts, list) else []
@@ -2874,9 +3837,9 @@ def _download_via_dicomweb(captured, save_body, stats,
     # and regroup by SeriesInstanceUID before declaring anything complete.
     if missing and not stop():
         for endpoint in (
-            f"{rs_base}/studies/{study}/instances?limit=100000",
-            f"{rs_base}/studies/{study}/instances",
-            f"{rs_base}/studies/{study}/metadata",
+            profile.study_instances_search_url(limit=100000),
+            profile.study_instances_search_url(),
+            profile.study_metadata_url(),
         ):
             if stop():
                 return
@@ -2941,7 +3904,7 @@ def _download_via_dicomweb(captured, save_body, stats,
         return save_body(body)
 
     def try_wadors(suid, iuid, nf, meta_in):
-        u = f"{rs_base}/studies/{study}/series/{suid}/instances/{iuid}"
+        u = profile.instance_url(suid, iuid)
         body, ct = get_raw(u, accept='multipart/related; type="application/dicom", application/dicom')
         parts = _multipart_parts(body, ct)
         if parts:
@@ -2952,7 +3915,7 @@ def _download_via_dicomweb(captured, save_body, stats,
         return False
 
     def try_frames(suid, iuid, nf, meta_in):
-        base = f"{rs_base}/studies/{study}/series/{suid}/instances/{iuid}"
+        base = profile.instance_url(suid, iuid)
         meta = meta_in if meta_in else {}
         if isinstance(meta, list):
             meta = meta[0] if meta else {}
@@ -3007,10 +3970,18 @@ def _download_via_dicomweb(captured, save_body, stats,
     _report_download_result(stats, inventory_total, log, stop)
 
 
-def _drive_viewer(page, log: LogFn, stats: DownloadStats,
-                  max_slices: int, stop: Callable[[], bool],
-                  selected_series_ids: Optional[set[str]] = None) -> None:
-    """Bấm qua từng series và cuộn hết lát cắt để ép viewer tải ảnh."""
+def _drive_viewer_dom_heuristic(page, log: LogFn, stats: DownloadStats,
+                                max_slices: int, stop: Callable[[], bool],
+                                selected_series_ids: Optional[set[str]] = None) -> None:
+    """Bấm qua từng series và cuộn hết lát cắt để ép viewer tải ảnh.
+
+    Đây là HEURISTIC theo DOM, không phải đường tải chung: nó nhận ra danh sách
+    series qua đúng mấy tên class dưới đây (`.seriesThumb`, `.serieslist_panel_list`,
+    `.verlist`). Viewer nào không dùng bộ class đó thì chỉ cuộn được khung ảnh
+    ĐANG hiển thị — vẫn vớt được một series nhờ `.cornerstone-canvas`, nhưng
+    KHÔNG duyệt hết được các series còn lại. Vì vậy đây là lưới cuối cùng, và
+    một ca chỉ đi tới đây thì đừng coi số ảnh thu được là đủ.
+    """
     # Chờ danh sách series
     try:
         page.wait_for_selector(".seriesThumb, .serieslist_panel_list, .seriesBox",

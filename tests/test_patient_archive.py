@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+import urllib.request
 import tempfile
 import unittest
 import json
@@ -954,8 +956,9 @@ class FakeOpener:
 
 
 def patch_pacs_network(handler):
-    return patch.object(dcom_pipeline.ActiveSocketTracker, "opener",
-                        lambda _self, _context=None: FakeOpener(handler))
+    return patch.object(
+        dcom_pipeline.ActiveSocketTracker, "opener",
+        lambda _self, _context=None, passport=None: FakeOpener(handler))
 
 
 class SeriesSelectionTests(unittest.TestCase):
@@ -1246,8 +1249,10 @@ class SeriesSelectionTests(unittest.TestCase):
             def read(self):
                 return b"dicom"
 
-        def fake_urlopen(url, **_kwargs):
-            requested.append(url)
+        def fake_urlopen(request, **_kwargs):
+            # Đường manifest giờ gửi `Request` để mang theo giấy thông hành đúng
+            # origin, thay vì đưa thẳng chuỗi URL.
+            requested.append(request.full_url)
             return Response()
 
         stats = dcom_pipeline.DownloadStats()
@@ -1508,6 +1513,1215 @@ class ViewerLinkFreshnessTests(unittest.TestCase):
         direct_study = direct_manifest["studies"]["1.2.3.4.5"]
         self.assertEqual(direct_study["downloadUrl"], "https://direct-viewer.org/view?id=456")
         self.assertEqual(direct_study["accessionNumber"], "ACC-7766")
+
+
+class DicomWebReadyContractTests(unittest.TestCase):
+    """`is_ready()` chỉ được hứa đúng cái `_download_via_dicomweb()` làm được.
+
+    Trước đây adapter nhận mọi URL kết thúc "/series", còn phần tải lại đòi tách
+    cho được ".../studies/<uid>/series". Dạng QIDO top-level lọt qua cửa adapter
+    rồi chết ở phần tải — đốt mất một lượt thử mà không lấy được ảnh nào.
+    """
+
+    def test_hierarchical_qido_yields_study_uid(self):
+        url = "https://pacs.example.org/rs/studies/1.2.840.113619.2.55/series"
+        self.assertEqual(
+            dcom_pipeline._dicomweb_study_from_qido(url),
+            "1.2.840.113619.2.55",
+        )
+        self.assertTrue(
+            dcom_pipeline.DicomWebAdapter().is_ready(
+                dcom_pipeline.ViewerCapture(qido_series=url)
+            )
+        )
+
+    def test_query_string_does_not_disturb_the_split(self):
+        url = "https://pacs.example.org/rs/studies/1.2.3.4/series?includefield=all&token=secret"
+        self.assertEqual(dcom_pipeline._dicomweb_study_from_qido(url), "1.2.3.4")
+
+    def test_top_level_qido_is_not_claimed_as_ready(self):
+        # Hợp chuẩn PS3.18 nhưng phần tải chưa dựng được rs_base từ dạng này.
+        url = "https://pacs.example.org/rs/series?StudyInstanceUID=1.2.3.4"
+        cap = dcom_pipeline.ViewerCapture(qido_series=url)
+        self.assertEqual(dcom_pipeline._dicomweb_study_from_qido(url), "")
+        self.assertFalse(dcom_pipeline.DicomWebAdapter().is_ready(cap))
+        # Và phải nói rõ lý do thay vì im lặng.
+        self.assertIn("/studies/<uid>/", dcom_pipeline.DicomWebAdapter().why_not_ready(cap))
+
+    def test_empty_study_segment_is_rejected(self):
+        self.assertEqual(
+            dcom_pipeline._dicomweb_study_from_qido("https://p.example.org/rs/studies//series"),
+            "",
+        )
+        self.assertEqual(dcom_pipeline._dicomweb_study_from_qido(None), "")
+
+
+class DiscoveryFailureReportTests(unittest.TestCase):
+    """Link lạ phải để lại đủ dấu vết để biết viết adapter nào tiếp theo."""
+
+    def test_report_names_every_adapter_and_the_endpoints_seen(self):
+        cap = dcom_pipeline.ViewerCapture()
+        dcom_pipeline._note_seen_url(cap, "https://pacs.example.org/api/v3/GetStudyTree?token=SECRET&id=9")
+        dcom_pipeline._note_seen_url(cap, "https://pacs.example.org/static/app.js")
+
+        lines: list[str] = []
+        dcom_pipeline._log_discovery_failure(cap, lines.append)
+        report = "\n".join(lines)
+
+        for adapter in dcom_pipeline.PACS_ADAPTERS:
+            self.assertIn(adapter.name, report)
+        # Endpoint API giữ lại, tài nguyên tĩnh của giao diện thì không.
+        self.assertIn("/api/v3/GetStudyTree", report)
+        self.assertNotIn("app.js", report)
+        # Tên tham số giữ lại để chẩn đoán, GIÁ TRỊ token thì tuyệt đối không.
+        self.assertIn("<id,token>", report)
+        self.assertNotIn("SECRET", report)
+
+    def test_report_states_what_each_adapter_is_waiting_for(self):
+        lines: list[str] = []
+        dcom_pipeline._log_discovery_failure(dcom_pipeline.ViewerCapture(), lines.append)
+        report = "\n".join(lines)
+
+        self.assertIn("StudyData/GetStudies", report)
+        self.assertIn("get-share-patient-image", report)
+        self.assertIn("GetListImageFileInfo", report)
+        self.assertIn("/series", report)
+
+    def test_seen_urls_are_deduped_and_bounded(self):
+        cap = dcom_pipeline.ViewerCapture()
+        for _ in range(5):
+            dcom_pipeline._note_seen_url(cap, "https://p.example.org/api/x?token=a")
+        self.assertEqual(len(cap.seen_urls), 1)
+
+        for index in range(200):
+            dcom_pipeline._note_seen_url(cap, f"https://p.example.org/api/{index}")
+        self.assertLessEqual(len(cap.seen_urls), dcom_pipeline._SEEN_URL_LIMIT)
+
+
+class DicomWebProfileTests(unittest.TestCase):
+    """Search có hai dạng hợp chuẩn, Retrieve thì chỉ có một."""
+
+    def test_hierarchical_search_urls(self):
+        p = dcom_pipeline.DicomWebProfile(rs_base="https://h/rs", study_uid="1.2.3")
+        self.assertEqual(p.series_search_url(), "https://h/rs/studies/1.2.3/series")
+        self.assertEqual(
+            p.instances_search_url("9.9"),
+            "https://h/rs/studies/1.2.3/series/9.9/instances",
+        )
+        self.assertEqual(
+            p.study_instances_search_url(limit=100000),
+            "https://h/rs/studies/1.2.3/instances?limit=100000",
+        )
+
+    def test_toplevel_search_urls(self):
+        p = dcom_pipeline.DicomWebProfile(
+            rs_base="https://h/rs", study_uid="1.2.3", query_style="toplevel",
+        )
+        self.assertEqual(
+            p.series_search_url(), "https://h/rs/series?StudyInstanceUID=1.2.3")
+        self.assertEqual(
+            p.instances_search_url("9.9"),
+            "https://h/rs/instances?StudyInstanceUID=1.2.3&SeriesInstanceUID=9.9",
+        )
+        self.assertEqual(
+            p.study_instances_search_url(limit=50),
+            "https://h/rs/instances?StudyInstanceUID=1.2.3&limit=50",
+        )
+
+    def test_retrieve_stays_hierarchical_in_both_styles(self):
+        # PS3.18: Retrieve Transaction chỉ có dạng phân cấp. Nếu chỗ này đi theo
+        # `query_style` thì mọi PACS top-level sẽ tải hỏng.
+        for style in ("hierarchical", "toplevel"):
+            p = dcom_pipeline.DicomWebProfile(
+                rs_base="https://h/rs", study_uid="1.2.3", query_style=style,
+            )
+            self.assertEqual(
+                p.instance_url("9.9", "7.7"),
+                "https://h/rs/studies/1.2.3/series/9.9/instances/7.7",
+                style,
+            )
+            self.assertEqual(
+                p.series_metadata_url("9.9"),
+                "https://h/rs/studies/1.2.3/series/9.9/metadata",
+                style,
+            )
+
+    def test_from_qido_url_round_trip(self):
+        p = dcom_pipeline.DicomWebProfile.from_qido_url(
+            "https://pacs.test/dicom-web/studies/1.2.840.5/series?includefield=all")
+        self.assertIsNotNone(p)
+        self.assertEqual(p.rs_base, "https://pacs.test/dicom-web")
+        self.assertEqual(p.study_uid, "1.2.840.5")
+        self.assertEqual(p.query_style, "hierarchical")
+        self.assertIsNone(
+            dcom_pipeline.DicomWebProfile.from_qido_url("https://pacs.test/rs/series?x=1"))
+
+
+class FakeFrame:
+    def __init__(self, url, config_entries=None, probe_result=None):
+        self.url = url
+        self._config = config_entries if config_entries is not None else []
+        self._probe_result = probe_result
+        self.probed = []
+
+    def evaluate(self, js, args=None):
+        if "window.config" in js:
+            return self._config
+        self.probed.extend(item["url"] for item in (args or [[]])[0])
+        return self._probe_result
+
+
+class FakePage:
+    """Trang giả: chỉ cần `.frames`, `.url`, `.evaluate` như discovery dùng."""
+
+    def __init__(self, url, frames=None, config_entries=None, probe_result=None):
+        self.url = url
+        self._self_frame = FakeFrame(url, config_entries, probe_result)
+        self.frames = frames if frames is not None else [self._self_frame]
+
+    def evaluate(self, js, args=None):
+        return self._self_frame.evaluate(js, args)
+
+    def on(self, *_args):
+        pass
+
+    def goto(self, *_args, **_kwargs):
+        pass
+
+    def wait_for_timeout(self, *_args):
+        pass
+
+    def wait_for_load_state(self, *_args, **_kwargs):
+        pass
+
+    @property
+    def probed(self):
+        return [u for frame in self.frames for u in getattr(frame, "probed", [])]
+
+
+def probe_win(url, body="[]"):
+    return {"winner": {"url": url, "body": body}, "diagnostics": []}
+
+
+def probe_lose(diagnostics=()):
+    return {"winner": None, "diagnostics": list(diagnostics)}
+
+
+class DicomWebDiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.store = dcom_pipeline.PacsStrategyStore(
+            Path(tempfile.mkdtemp()) / "strategies.json")
+        patcher = patch.object(dcom_pipeline, "pacs_strategy_store", self.store)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _roots(candidates):
+        return [c.root for c in candidates]
+
+    # --- suy ra StudyInstanceUID -------------------------------------------
+
+    def test_study_uid_read_from_query_of_the_qido_url_itself(self):
+        """Link viewer mờ + QIDO top-level: chính là ca cần discovery nhất.
+
+        Trước đây chỉ soi query của link viewer và `page.url`, còn UID thì chỉ
+        moi từ path `/studies/<uid>/` — nên dạng này luôn ra rỗng và không bao
+        giờ discovery được.
+        """
+        cap = dcom_pipeline.ViewerCapture(
+            qido_series="https://pacs/rs/series?StudyInstanceUID=1.2.3")
+        self.assertEqual(
+            dcom_pipeline._study_uid_candidates(cap, "https://pacs/view?token=opaque"),
+            ["1.2.3"],
+        )
+
+    def test_study_uid_prefers_the_hierarchical_path_evidence(self):
+        cap = dcom_pipeline.ViewerCapture(
+            qido_series="https://p/rs/studies/1.1.1/series")
+        uids = dcom_pipeline._study_uid_candidates(
+            cap, "https://p/viewer?StudyInstanceUIDs=2.2.2,3.3.3")
+        self.assertEqual(uids[0], "1.1.1")
+        self.assertIn("2.2.2", uids)
+        self.assertIn("3.3.3", uids)
+
+    def test_study_uid_rejects_values_that_are_not_uids(self):
+        cap = dcom_pipeline.ViewerCapture()
+        for bad in ("../../etc/passwd", "abc-def", "'; DROP TABLE--"):
+            self.assertEqual(
+                dcom_pipeline._study_uid_candidates(cap, f"https://p/v?studyUID={bad}"),
+                [], bad)
+
+    # --- xếp bậc ứng viên ---------------------------------------------------
+
+    def test_learned_root_sits_in_the_first_tier_alone(self):
+        self.store.save_recipe(
+            fingerprint="FP", adapter="DICOMweb", success=True,
+            dicomweb_base="https://p/learned", dicomweb_query_style="toplevel")
+        cap = dcom_pipeline.ViewerCapture(strategy_fingerprint="FP")
+        candidates = dcom_pipeline._dicomweb_root_candidates(
+            FakePage("https://p/viewer"), cap, "https://p/viewer", lambda _m: None)
+        self.assertEqual(candidates[0].root, "https://p/learned")
+        self.assertEqual(candidates[0].tier, dcom_pipeline._TIER_LEARNED)
+        # Style đã học phải được dùng, không phải đọc ra rồi bỏ đi.
+        self.assertEqual(candidates[0].style_hint, "toplevel")
+        self.assertEqual(
+            [c for c in candidates if c.tier == dcom_pipeline._TIER_LEARNED],
+            candidates[:1])
+
+    def test_active_datasource_outranks_the_other_config_roots(self):
+        page = FakePage("https://p/viewer", config_entries=[
+            {"root": "https://p/backup-rs", "preferred": False},
+            {"root": "https://p/dicom-web", "preferred": True},
+        ])
+        candidates = dcom_pipeline._dicomweb_root_candidates(
+            page, dcom_pipeline.ViewerCapture(), "https://p/viewer", lambda _m: None)
+        by_root = {c.root: c.tier for c in candidates}
+        self.assertEqual(by_root["https://p/dicom-web"], dcom_pipeline._TIER_CONFIG_ACTIVE)
+        self.assertEqual(by_root["https://p/backup-rs"], dcom_pipeline._TIER_CONFIG_OTHER)
+        self.assertLess(
+            self._roots(candidates).index("https://p/dicom-web"),
+            self._roots(candidates).index("https://p/backup-rs"))
+
+    def test_config_roots_resolve_relative_and_outrank_guesses(self):
+        page = FakePage("https://p/viewer", frames=[
+            FakeFrame("https://p/viewer", []),
+            FakeFrame("https://p/app/index.html",
+                      [{"root": "/dicom-web", "preferred": True},
+                       {"root": "https://other/rs/", "preferred": False}]),
+        ])
+        roots = self._roots(dcom_pipeline._dicomweb_root_candidates(
+            page, dcom_pipeline.ViewerCapture(), "https://p/viewer", lambda _m: None))
+        self.assertIn("https://p/dicom-web", roots)   # tương đối -> tuyệt đối
+        self.assertIn("https://other/rs", roots)      # bỏ "/" cuối
+        self.assertLess(roots.index("https://p/dicom-web"), roots.index("https://p/rs"))
+
+    def test_root_candidates_trim_study_path_and_dedupe(self):
+        page = FakePage("https://p/v", config_entries=[
+            {"root": "https://p/rs/studies/1.2.3", "preferred": True},
+            {"root": "https://p/rs", "preferred": False},
+        ])
+        roots = self._roots(dcom_pipeline._dicomweb_root_candidates(
+            page, dcom_pipeline.ViewerCapture(), "https://p/v", lambda _m: None))
+        self.assertEqual(roots.count("https://p/rs"), 1)
+
+    def test_candidate_is_probed_from_the_frame_sharing_its_origin(self):
+        """Đọc root trong iframe nhưng bắn dò từ trang cha là rơi vào CORS."""
+        inner = FakeFrame("https://pacs.other/app/",
+                          [{"root": "https://pacs.other/dicom-web", "preferred": True}])
+        page = FakePage("https://wrapper.vn/viewer",
+                        frames=[FakeFrame("https://wrapper.vn/viewer", []), inner])
+        candidates = dcom_pipeline._dicomweb_root_candidates(
+            page, dcom_pipeline.ViewerCapture(), "https://wrapper.vn/viewer", lambda _m: None)
+        picked = [c for c in candidates if c.root == "https://pacs.other/dicom-web"]
+        self.assertEqual(len(picked), 1)
+        self.assertIs(picked[0].frame, inner)
+
+    # --- chạy dò theo bậc ---------------------------------------------------
+
+    def test_tiers_run_in_order_so_a_guess_cannot_beat_the_learned_root(self):
+        """Bậc trước phải xong mới sang bậc sau.
+
+        Gộp hết vào một `Promise.any` thì root đoán mò trả lời nhanh hơn có thể
+        giành mất root đã học — learning coi như không giảm được gì.
+        """
+        self.store.save_recipe(
+            fingerprint="FP", adapter="DICOMweb", success=True,
+            dicomweb_base="https://p/learned", dicomweb_query_style="hierarchical")
+        page = FakePage("https://p/v?studyUID=1.2.3",
+                        probe_result=probe_win("https://p/learned/studies/1.2.3/series"))
+        cap = dcom_pipeline.ViewerCapture(strategy_fingerprint="FP")
+        profile = dcom_pipeline.resolve_dicomweb_access(
+            page, cap, "https://p/v?studyUID=1.2.3", lambda _m: None, lambda: False)
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile.rs_base, "https://p/learned")
+        # Thắng ngay bậc đầu thì không được bắn thêm ứng viên nào của bậc sau.
+        self.assertEqual(page.probed, ["https://p/learned/studies/1.2.3/series"])
+
+    def test_resolved_profile_and_verified_body_are_written_back_to_cap(self):
+        body = json.dumps([{"0020000E": {"Value": ["9.9"]}}])
+        page = FakePage(
+            "https://p/viewer?StudyInstanceUIDs=1.2.3",
+            config_entries=[{"root": "https://p/dicom-web", "preferred": True}],
+            probe_result=probe_win("https://p/dicom-web/series?StudyInstanceUID=1.2.3", body))
+        cap = dcom_pipeline.ViewerCapture()
+        profile = dcom_pipeline.resolve_dicomweb_access(
+            page, cap, "https://p/viewer?StudyInstanceUIDs=1.2.3",
+            lambda _m: None, lambda: False)
+        self.assertEqual(profile.query_style, "toplevel")
+        self.assertEqual(profile.source, "probe")
+        self.assertIs(cap.dicomweb_profile, profile)
+        # Thân đã xác minh phải ghi thẳng vào cap: phần liệt kê series không được
+        # phụ thuộc vào việc event `on_response` có kịp lưu hay không.
+        self.assertEqual(cap.qido_series_body, body.encode("utf-8"))
+        self.assertEqual(cap.qido_series, "https://p/dicom-web/series?StudyInstanceUID=1.2.3")
+
+    def test_toplevel_candidates_demand_proof_the_server_filtered(self):
+        page = FakePage("https://p/v?studyUID=1.2.3", probe_result=probe_lose())
+        dcom_pipeline.resolve_dicomweb_access(
+            page, dcom_pipeline.ViewerCapture(), "https://p/v?studyUID=1.2.3",
+            lambda _m: None, lambda: False)
+        sent = []
+        for frame in page.frames:
+            sent.extend(getattr(frame, "probed", []))
+        self.assertTrue(any("?StudyInstanceUID=1.2.3" in u for u in sent))
+
+    def test_discovery_gives_up_without_a_study_uid(self):
+        page = FakePage("https://p/viewer", probe_result=probe_win("khong-duoc-dung"))
+        self.assertIsNone(dcom_pipeline.resolve_dicomweb_access(
+            page, dcom_pipeline.ViewerCapture(), "https://p/viewer",
+            lambda _m: None, lambda: False))
+        self.assertEqual(page.probed, [])
+
+    def test_discovery_returns_none_when_nothing_validates(self):
+        page = FakePage("https://p/v?studyUID=1.2.3", probe_result=probe_lose())
+        self.assertIsNone(dcom_pipeline.resolve_dicomweb_access(
+            page, dcom_pipeline.ViewerCapture(), "https://p/v?studyUID=1.2.3",
+            lambda _m: None, lambda: False))
+
+    def test_all_401_is_reported_as_missing_permission_not_missing_route(self):
+        messages: list[str] = []
+        dcom_pipeline._log_probe_diagnostics(
+            [{"url": "https://p/rs/series", "error": "status 401"},
+             {"url": "https://p/dicom-web/series", "error": "status 403"}],
+            messages.append)
+        self.assertTrue(any("thiếu QUYỀN" in m for m in messages), messages)
+
+    def test_discovered_profile_makes_the_adapter_ready(self):
+        cap = dcom_pipeline.ViewerCapture()
+        self.assertFalse(dcom_pipeline.DicomWebAdapter().is_ready(cap))
+        cap.dicomweb_profile = dcom_pipeline.DicomWebProfile(
+            rs_base="https://p/rs", study_uid="1.2.3", query_style="toplevel")
+        self.assertTrue(dcom_pipeline.DicomWebAdapter().is_ready(cap))
+
+    # --- không rò token sang origin lạ --------------------------------------
+
+    @staticmethod
+    def _observe(cap, url, headers):
+        class Req:
+            def all_headers(self):
+                return headers
+
+        class Resp:
+            request = Req()
+
+        resp = Resp()
+        resp.url = url
+        resp.headers = {"content-type": "application/dicom+json"}
+        dcom_pipeline.DicomWebAdapter().observe(resp, cap)
+
+    def test_session_headers_only_go_back_to_the_origin_they_came_from(self):
+        cap = dcom_pipeline.ViewerCapture(session_headers={
+            "https://pacs.a.vn": {"Authorization": "Bearer SECRET", "X-Tenant": "bv-a"}})
+        self.assertEqual(
+            dcom_pipeline._probe_headers_for(cap, "https://pacs.a.vn/dicom-web"),
+            {"Authorization": "Bearer SECRET", "X-Tenant": "bv-a"})
+        # Bắn token của viện A sang origin đoán mò khác là làm lộ token.
+        self.assertEqual(
+            dcom_pipeline._probe_headers_for(cap, "https://pacs.b.vn/dicom-web"), {})
+
+    def test_session_headers_are_grabbed_from_any_dicomweb_request(self):
+        cap = dcom_pipeline.ViewerCapture()
+        # Viewer hay xin metadata/frames trước (hoặc thay vì) gọi QIDO; chỉ soi
+        # mỗi "/series" thì nhiều viện không bao giờ nhặt được token.
+        self._observe(cap, "https://pacs.a.vn/dicom-web/studies/1.2/series/9/metadata",
+                      {"Authorization": "Bearer T", "User-Agent": "khong-phai-giay-thong-hanh"})
+        self.assertEqual(cap.session_headers,
+                         {"https://pacs.a.vn": {"Authorization": "Bearer T"}})
+
+    def test_a_header_set_without_credentials_does_not_block_a_later_bearer(self):
+        """Request chỉ có `Accept` mà chiếm chỗ thì cả ca mất quyền."""
+        cap = dcom_pipeline.ViewerCapture()
+        self._observe(cap, "https://p.vn/rs/studies/1.2/metadata",
+                      {"Accept": "application/dicom+json"})
+        self.assertEqual(cap.session_headers, {})
+        self._observe(cap, "https://p.vn/rs/studies/1.2/series",
+                      {"Authorization": "Bearer LATE"})
+        self.assertEqual(
+            dcom_pipeline._session_headers_for(cap, "https://p.vn/rs/studies/1.2/series"),
+            {"Authorization": "Bearer LATE"})
+
+    def test_a_refreshed_token_replaces_the_stale_one(self):
+        cap = dcom_pipeline.ViewerCapture()
+        self._observe(cap, "https://p.vn/rs/studies/1.2/series", {"Authorization": "Bearer OLD"})
+        self._observe(cap, "https://p.vn/rs/studies/1.2/instances", {"Authorization": "Bearer NEW"})
+        self.assertEqual(cap.session_headers["https://p.vn"], {"Authorization": "Bearer NEW"})
+
+    def test_headers_are_kept_apart_per_origin(self):
+        cap = dcom_pipeline.ViewerCapture()
+        self._observe(cap, "https://a.vn/rs/studies/1/series", {"Authorization": "Bearer A"})
+        self._observe(cap, "https://b.vn/rs/studies/1/series", {"Authorization": "Bearer B"})
+        self.assertEqual(dcom_pipeline._session_headers_for(cap, "https://a.vn/rs/x"),
+                         {"Authorization": "Bearer A"})
+        self.assertEqual(dcom_pipeline._session_headers_for(cap, "https://b.vn/rs/x"),
+                         {"Authorization": "Bearer B"})
+
+
+class SessionPassportScopingTests(unittest.TestCase):
+    """Đường TẢI THẬT không được mang giấy thông hành sang origin khác.
+
+    Probe khoá theo origin là chưa đủ: sau discovery, `rs_base` có thể ở origin
+    khác hẳn nơi bắt được token, và trước đây downloader dựng một bộ header dùng
+    chung ở đầu hàm nên vẫn gửi token đi.
+    """
+
+    def test_downloader_sends_the_passport_only_to_its_own_origin(self):
+        requested: list[tuple[str, dict]] = []
+
+        class Response:
+            headers = {"Content-Type": "application/dicom+json"}
+
+            def __init__(self, payload=b"[]"):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return self.payload
+
+        def fake_urlopen(request, **_kwargs):
+            requested.append((request.full_url, dict(request.headers)))
+            return Response()
+
+        captured = {
+            # Token bắt ở viện A, nhưng discovery lại chốt root ở viện B.
+            "session_headers": {"https://pacs.a.vn": {"Authorization": "Bearer SECRET"}},
+            "cookies": [{"name": "sid", "value": "A-SESSION",
+                         "domain": "pacs.a.vn", "path": "/"}],
+            "dicomweb_profile": dcom_pipeline.DicomWebProfile(
+                rs_base="https://pacs.b.vn/rs", study_uid="1.2.3", source="probe"),
+            "qido_series": "https://pacs.b.vn/rs/studies/1.2.3/series",
+            "wado_tmpl": None,
+        }
+        with patch_pacs_network(fake_urlopen):
+            dcom_pipeline._download_via_dicomweb(
+                captured, lambda _b: True, dcom_pipeline.DownloadStats(),
+                lambda _m: None, lambda: False)
+
+        self.assertTrue(requested)
+        for url, headers in requested:
+            flat = json.dumps(headers)
+            self.assertNotIn("SECRET", flat, url)
+            self.assertNotIn("A-SESSION", flat, url)
+
+    def test_downloader_does_send_the_passport_to_the_matching_origin(self):
+        seen: list[dict] = []
+
+        class Response:
+            headers = {"Content-Type": "application/dicom+json"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b"[]"
+
+        def fake_urlopen(request, **_kwargs):
+            seen.append({k.lower(): v for k, v in request.headers.items()})
+            return Response()
+
+        captured = {
+            "session_headers": {"https://pacs.a.vn": {"Authorization": "Bearer SECRET"}},
+            "cookies": [{"name": "sid", "value": "A-SESSION",
+                         "domain": "pacs.a.vn", "path": "/"}],
+            "qido_series": "https://pacs.a.vn/rs/studies/1.2.3/series",
+            "wado_tmpl": None,
+        }
+        with patch_pacs_network(fake_urlopen):
+            dcom_pipeline._download_via_dicomweb(
+                captured, lambda _b: True, dcom_pipeline.DownloadStats(),
+                lambda _m: None, lambda: False)
+
+        self.assertTrue(seen)
+        self.assertEqual(seen[0].get("authorization"), "Bearer SECRET")
+        self.assertIn("sid=A-SESSION", seen[0].get("cookie", ""))
+
+    def test_cookies_are_matched_by_domain_path_and_secure_flag(self):
+        captured = {"cookies": [
+            {"name": "host", "value": "1", "domain": "pacs.a.vn", "path": "/"},
+            {"name": "wild", "value": "2", "domain": ".a.vn", "path": "/"},
+            {"name": "other", "value": "3", "domain": "pacs.b.vn", "path": "/"},
+            {"name": "deep", "value": "4", "domain": "pacs.a.vn", "path": "/rs"},
+            {"name": "tls", "value": "5", "domain": "pacs.a.vn", "path": "/", "secure": True},
+        ]}
+        got = dcom_pipeline._cookie_header_for(captured, "https://pacs.a.vn/rs/studies")
+        self.assertIn("host=1", got)
+        self.assertIn("wild=2", got)      # cookie domain khớp hậu tố
+        self.assertIn("deep=4", got)      # path khớp tiền tố
+        self.assertIn("tls=5", got)       # đang là https
+        self.assertNotIn("other=3", got)  # domain khác hẳn
+
+        shallow = dcom_pipeline._cookie_header_for(captured, "https://pacs.a.vn/khac")
+        self.assertNotIn("deep=4", shallow)
+        plain = dcom_pipeline._cookie_header_for(captured, "http://pacs.a.vn/rs")
+        self.assertNotIn("tls=5", plain)   # cookie secure không đi qua http
+
+
+class VendorDownloaderPassportTests(unittest.TestCase):
+    """Dòng PACS độc quyền cũng phải khoá theo origin.
+
+    Manifest của chúng được phép chứa URL TUYỆT ĐỐI — `to_url()` trả thẳng chuỗi
+    khi nó bắt đầu bằng "http", còn VietMy dùng nguyên `filePath/wanFilePath` —
+    nên ảnh hoàn toàn có thể nằm ở CDN khác origin.
+    """
+
+    class _Resp:
+        headers = {"Content-Type": "application/dicom"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"\x00" * 128 + b"DICM"
+
+    def _run(self, fn, captured):
+        sent: list[tuple[str, dict]] = []
+
+        def fake_urlopen(request, **_kwargs):
+            sent.append((request.full_url, {k.lower(): v for k, v in request.headers.items()}))
+            return self._Resp()
+
+        with patch_pacs_network(fake_urlopen):
+            fn(captured, lambda _b: True, dcom_pipeline.DownloadStats(),
+               lambda _m: None, lambda: False, None)
+        return sent
+
+    @staticmethod
+    def _passport():
+        return {
+            "session_headers": {"https://pacs.a.vn": {"Authorization": "Bearer SECRET"}},
+            "cookies": [{"name": "sid", "value": "COOKIESECRET",
+                         "domain": "pacs.a.vn", "path": "/"}],
+        }
+
+    def test_vrpacs_absolute_cdn_url_gets_no_passport(self):
+        captured = dict(self._passport())
+        captured["vrpacs"] = json.dumps({"data": {"studyList": [{"seriesList": [{
+            "seriesInstanceUid": "s1",
+            # `to_url()` trả thẳng chuỗi này vì nó bắt đầu bằng "http".
+            "imageIds": ["wadouri:https://cdn.other.vn/a.dcm",
+                         "wadouri:/vrpacs-scu/study-get-public?file=b.dcm"],
+        }]}]}}).encode()
+        captured["host"] = "https://pacs.a.vn"
+
+        sent = self._run(dcom_pipeline._download_via_vrpacs, captured)
+        foreign = [h for u, h in sent if "cdn.other.vn" in u]
+        self.assertTrue(foreign, sent)
+        for headers in foreign:
+            self.assertNotIn("authorization", headers)
+            self.assertNotIn("cookie", headers)
+
+    def test_vietmy_file_path_on_another_origin_gets_no_passport(self):
+        captured = dict(self._passport())
+        captured["vietmy"] = json.dumps({"d": json.dumps({
+            "seriesList": [{
+                "seriesInstanceUid": "s1", "seriesNumber": 1, "modality": "CT",
+                "fileList": [{"filePath": "https://storage.other.vn/x.dcm"}],
+            }],
+        })}).encode()
+
+        sent = self._run(dcom_pipeline._download_via_vietmy, captured)
+        foreign = [h for u, h in sent if "storage.other.vn" in u]
+        self.assertTrue(foreign, sent)
+        for headers in foreign:
+            self.assertNotIn("authorization", headers)
+            self.assertNotIn("cookie", headers)
+
+
+class MultiProfileFallbackTests(unittest.TestCase):
+    def test_download_all_walks_several_dicomweb_profiles_before_giving_up(self):
+        """Profile A hỏng → style còn lại → root khác, chứ không dừng sau một lượt."""
+        frame = FakeFrame("https://p/v?studyUID=1.2.3", [
+            {"root": "https://p/first", "preferred": True},
+            {"root": "https://p/second", "preferred": False},
+        ])
+
+        def evaluate(js, args=None):
+            if "window.config" in js:
+                return frame._config
+            return probe_win(args[0][0]["url"])
+
+        frame.evaluate = evaluate
+        page = FakePage("https://p/v?studyUID=1.2.3", frames=[frame])
+
+        class FakeContext:
+            def add_init_script(self, *_args): pass
+            def new_page(self): return page
+            def cookies(self): return []
+
+        class FakeBrowser:
+            def __init__(self): self.closed = False
+            def new_context(self, **_kwargs): return FakeContext()
+            def close(self): self.closed = True
+
+        browser = FakeBrowser()
+        class FakePlaywrightContext:
+            def __enter__(self): return object()
+            def __exit__(self, *_args): return False
+
+        attempted_profiles: list[tuple[str, str]] = []
+
+        def mock_download(_self, cap, _save_body, stats, _log, _stop, _selected):
+            profile = cap.dicomweb_profile
+            root = profile.rs_base if profile else ""
+            style = profile.query_style if profile else ""
+            attempted_profiles.append((root, style))
+            if root == "https://p/first":
+                stats.failed += 1
+                raise RuntimeError(f"first profile failed: {style}")
+            elif root == "https://p/second":
+                stats.dicom = 2
+                stats.expected = 2
+                stats.completed_tasks = 2
+                stats.failed = 0
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch("playwright.sync_api.sync_playwright", return_value=FakePlaywrightContext()), \
+             patch.object(dcom_pipeline, "_launch_chromium", return_value=browser), \
+             patch.object(dcom_pipeline, "_wait_for_viewer_manifest", return_value=None), \
+             patch.object(dcom_pipeline.DicomWebAdapter, "download", mock_download), \
+             patch.object(dcom_pipeline.pacs_strategy_store, "save_recipe"):
+            stats = dcom_pipeline.download_all(
+                "https://p/v?studyUID=1.2.3",
+                Path(tmp_dir) / "DICOM",
+                log=lambda _m: None,
+            )
+
+        self.assertEqual(
+            ["https://p/first", "https://p/first", "https://p/second"],
+            [r for r, _ in attempted_profiles],
+        )
+        self.assertTrue(stats.is_complete())
+        self.assertEqual(3, len(stats.outcomes))
+        self.assertTrue(browser.closed)
+
+    def test_resolver_keeps_offering_new_profiles_until_they_run_out(self):
+        frame = FakeFrame("https://p/v?studyUID=1.2.3", [
+            {"root": "https://p/first", "preferred": True},
+            {"root": "https://p/second", "preferred": False},
+        ])
+
+        def evaluate(js, args=None):
+            if "window.config" in js:
+                return frame._config
+            return probe_win(args[0][0]["url"])
+
+        frame.evaluate = evaluate
+        page = FakePage("https://p/v?studyUID=1.2.3", frames=[frame])
+        cap = dcom_pipeline.ViewerCapture()
+
+        spent: set[tuple[str, str]] = set()
+        seen: list[tuple[str, str]] = []
+        for _ in range(dcom_pipeline._MAX_DICOMWEB_PROFILES):
+            profile = dcom_pipeline.resolve_dicomweb_access(
+                page, cap, "https://p/v?studyUID=1.2.3", lambda _m: None,
+                lambda: False, exclude=spent)
+            if profile is None:
+                break
+            key = (profile.rs_base, profile.query_style)
+            self.assertNotIn(key, spent)   # không bao giờ trả lại cái đã hỏng
+            seen.append(key)
+            spent.add(key)
+        self.assertGreaterEqual(len(seen), 2, seen)
+
+
+class CookieMatchingTests(unittest.TestCase):
+    """RFC 6265 §5.1.3 / §5.1.4 — khớp gần đúng là gửi cookie sai chỗ."""
+
+    @staticmethod
+    def _cookies():
+        return {"cookies": [
+            {"name": "host_only", "value": "H", "domain": "pacs.a.vn", "path": "/"},
+            {"name": "domain_wide", "value": "D", "domain": ".a.vn", "path": "/"},
+            {"name": "path_bound", "value": "P", "domain": "pacs.a.vn", "path": "/rs"},
+        ]}
+
+    def test_host_only_cookie_never_reaches_a_subdomain(self):
+        # "pacs.a.vn" (không dấu chấm đầu) là host-only; chỉ ".a.vn" mới được
+        # xuống subdomain. Gộp hai loại là đẩy cookie sang host không được phép.
+        got = dcom_pipeline._cookie_header_for(self._cookies(), "https://evil.pacs.a.vn/x")
+        self.assertNotIn("host_only", got)
+        self.assertIn("domain_wide=D", got)
+
+    def test_host_only_cookie_reaches_its_exact_host(self):
+        got = dcom_pipeline._cookie_header_for(self._cookies(), "https://pacs.a.vn/x")
+        self.assertIn("host_only=H", got)
+        self.assertIn("domain_wide=D", got)
+
+    def test_path_match_stops_at_a_slash_boundary(self):
+        # "/rs" không được khớp "/rs-evil": ranh giới phải rơi đúng vào dấu "/".
+        self.assertNotIn(
+            "path_bound",
+            dcom_pipeline._cookie_header_for(self._cookies(), "https://pacs.a.vn/rs-evil"))
+        for allowed in ("https://pacs.a.vn/rs", "https://pacs.a.vn/rs/studies"):
+            self.assertIn(
+                "path_bound=P",
+                dcom_pipeline._cookie_header_for(self._cookies(), allowed), allowed)
+
+
+class RedirectPassportTests(unittest.TestCase):
+    """30x không được mang giấy thông hành sang chặng khác.
+
+    `urllib` tự đi theo redirect và bê nguyên header sang URL đích, nên lọc theo
+    origin ở request ĐẦU là chưa đủ — chỉ cần một 302 là token đi theo.
+    """
+
+    def setUp(self):
+        import http.server
+        import threading
+
+        self.seen: list[dict] = []
+        outer = self
+
+        class Target(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                outer.seen.append({k.lower(): v for k, v in self.headers.items()})
+                self.send_response(200)
+                self.send_header("Content-Type", "application/dicom+json")
+                self.end_headers()
+                self.wfile.write(b"[]")
+
+            def log_message(self, *_a):
+                pass
+
+        self.target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+        target_port = self.target.server_port
+
+        class Hop(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", f"http://localhost:{target_port}/moved")
+                self.end_headers()
+
+            def log_message(self, *_a):
+                pass
+
+        self.hop = http.server.HTTPServer(("127.0.0.1", 0), Hop)
+        for server in (self.target, self.hop):
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            # `shutdown()` mới chỉ dừng vòng phục vụ; không `server_close()` thì
+            # socket còn treo và cả suite chạy kèm ResourceWarning.
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+
+    def _fetch(self, captured):
+        tracker = dcom_pipeline.ActiveSocketTracker()
+        passport = dcom_pipeline._passport_builder(captured)
+        opener = tracker.opener(passport=passport)
+        url = f"http://127.0.0.1:{self.hop.server_port}/start"
+        request = urllib.request.Request(url, headers=passport(url))
+        with opener.open(request, timeout=10) as response:
+            response.read()
+        return self.seen[-1]
+
+    def test_passport_is_dropped_when_the_redirect_leaves_the_origin(self):
+        hop_origin = f"http://127.0.0.1:{self.hop.server_port}"
+        landed = self._fetch({
+            "session_headers": {hop_origin: {"Authorization": "Bearer SECRET",
+                                             "X-Tenant": "bv-a"}},
+            "cookies": [{"name": "sid", "value": "COOKIESECRET",
+                         "domain": "127.0.0.1", "path": "/"}],
+        })
+        self.assertNotIn("authorization", landed)
+        self.assertNotIn("x-tenant", landed)
+        self.assertNotIn("cookie", landed)
+
+    def test_passport_is_reissued_when_the_target_origin_has_its_own(self):
+        hop_origin = f"http://127.0.0.1:{self.hop.server_port}"
+        target_origin = f"http://localhost:{self.target.server_port}"
+        landed = self._fetch({
+            "session_headers": {
+                hop_origin: {"Authorization": "Bearer FROM-HOP"},
+                target_origin: {"Authorization": "Bearer FOR-TARGET"},
+            },
+            "cookies": [],
+        })
+        self.assertEqual(landed.get("authorization"), "Bearer FOR-TARGET")
+
+
+class DiscoveryDeadlineAndRetryTests(unittest.TestCase):
+    def setUp(self):
+        self.store = dcom_pipeline.PacsStrategyStore(
+            Path(tempfile.mkdtemp()) / "strategies.json")
+        patcher = patch.object(dcom_pipeline, "pacs_strategy_store", self.store)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_total_deadline_is_absolute_across_every_tier_and_frame(self):
+        """Hạn phải là của CẢ lượt, không phải mỗi bậc × mỗi frame một hạn."""
+        elapsed = {"t": 0.0}
+        budgets: list[int] = []
+
+        class SlowFrame(FakeFrame):
+            def evaluate(self, js, args=None):
+                if "window.config" in js:
+                    return self._config
+                budgets.append(args[2])
+                elapsed["t"] += args[2] / 1000.0   # coi như dùng hết hạn được cấp
+                return probe_lose()
+
+        frames = [SlowFrame("https://p/v", [{"root": f"https://p/r{i}", "preferred": False}])
+                  for i in range(4)]
+        page = FakePage("https://p/v?studyUID=1.2.3", frames=frames)
+        with patch.object(dcom_pipeline.time, "monotonic", lambda: elapsed["t"]):
+            dcom_pipeline.resolve_dicomweb_access(
+                page, dcom_pipeline.ViewerCapture(), "https://p/v?studyUID=1.2.3",
+                lambda _m: None, lambda: False, deadline_s=10.0)
+
+        self.assertTrue(budgets)
+        self.assertLessEqual(sum(budgets) / 1000.0, 10.0 + 0.001)
+        # Và hạn cấp cho lượt sau phải teo dần theo thời gian đã tiêu.
+        self.assertLess(budgets[-1], budgets[0])
+
+    def test_a_wrong_learned_style_still_lets_the_other_style_run(self):
+        """Recipe cũ ghi sai style thì không được loại luôn root hợp lệ."""
+        self.store.save_recipe(
+            fingerprint="FP", adapter="DICOMweb", success=True,
+            dicomweb_base="https://p/rs", dicomweb_query_style="toplevel")
+
+        tried: list[str] = []
+
+        class Frame(FakeFrame):
+            def evaluate(self, js, args=None):
+                if "window.config" in js:
+                    return self._config
+                urls = [item["url"] for item in args[0]]
+                tried.extend(urls)
+                for url in urls:
+                    if url == "https://p/rs/studies/1.2.3/series":
+                        return probe_win(url)
+                return probe_lose()
+
+        frame = Frame("https://p/v?studyUID=1.2.3", [])
+        page = FakePage("https://p/v?studyUID=1.2.3", frames=[frame])
+        cap = dcom_pipeline.ViewerCapture(strategy_fingerprint="FP")
+        profile = dcom_pipeline.resolve_dicomweb_access(
+            page, cap, "https://p/v?studyUID=1.2.3", lambda _m: None, lambda: False)
+
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile.query_style, "hierarchical")
+        # Style đã học vẫn phải được thử TRƯỚC.
+        self.assertEqual(tried[0], "https://p/rs/series?StudyInstanceUID=1.2.3")
+
+    def test_a_failed_profile_is_excluded_so_another_root_gets_a_turn(self):
+        class Frame(FakeFrame):
+            def evaluate(self, js, args=None):
+                if "window.config" in js:
+                    return self._config
+                for item in args[0]:
+                    if item["url"].startswith("https://p/second"):
+                        return probe_win(item["url"])
+                return probe_lose()
+
+        frame = Frame("https://p/v?studyUID=1.2.3", [
+            {"root": "https://p/first", "preferred": True},
+            {"root": "https://p/second", "preferred": False},
+        ])
+        page = FakePage("https://p/v?studyUID=1.2.3", frames=[frame])
+        cap = dcom_pipeline.ViewerCapture()
+        cap.dicomweb_profile = dcom_pipeline.DicomWebProfile(
+            rs_base="https://p/first", study_uid="1.2.3", query_style="hierarchical")
+
+        again = dcom_pipeline.resolve_dicomweb_access(
+            page, cap, "https://p/v?studyUID=1.2.3", lambda _m: None, lambda: False,
+            exclude={("https://p/first", "hierarchical")})
+        self.assertIsNotNone(again)
+        self.assertEqual(again.rs_base, "https://p/second")
+
+    def test_hash_route_study_uid_is_found(self):
+        cap = dcom_pipeline.ViewerCapture()
+        self.assertEqual(
+            dcom_pipeline._study_uid_candidates(
+                cap, "https://p/#/viewer?StudyInstanceUIDs=1.2.3"),
+            ["1.2.3"])
+
+    def test_series_listing_carries_a_fingerprint_so_learning_applies(self):
+        # Không có fingerprint thì `get_dicomweb_hint()` luôn tra khoá rỗng và
+        # đường chọn series không hưởng được gì từ cái đã học.
+        source = inspect.getsource(dcom_pipeline.discover_viewer_series)
+        self.assertIn("strategy_fingerprint=compute_url_fingerprint(url)", source)
+
+
+class RealBrowserDiscoveryJsTests(unittest.TestCase):
+    """Chạy THẬT `_OHIF_CONFIG_JS` và `_DICOMWEB_PROBE_JS` trong Chromium.
+
+    Các test trên đều giả lập `evaluate()`, nên chúng không hề thực thi hai đoạn
+    JavaScript — mà đó lại là chỗ ở lỗi xác minh StudyUID và lỗi config dạng
+    function. Lớp này bịt đúng khoảng trống đó.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from playwright.sync_api import sync_playwright
+        except Exception as exc:  # pragma: no cover
+            raise unittest.SkipTest(f"Không có Playwright: {exc}")
+        cls._pw = sync_playwright().start()
+        try:
+            cls._browser = cls._pw.chromium.launch(headless=True)
+        except Exception as exc:  # pragma: no cover
+            cls._pw.stop()
+            raise unittest.SkipTest(f"Không mở được Chromium: {exc}")
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls._browser.close()
+        finally:
+            cls._pw.stop()
+
+    def _page(self, body=None, content_type="application/dicom+json", status=200):
+        page = self._browser.new_page()
+        self.addCleanup(page.close)
+        if body is not None:
+            page.route("**/*", lambda route: route.fulfill(
+                status=status, content_type=content_type,
+                body=body if isinstance(body, str) else json.dumps(body)))
+        page.goto("https://pacs.test/viewer", wait_until="domcontentloaded")
+        return page
+
+    def _probe(self, page, url, study="1.2.3", require=True):
+        return page.evaluate(dcom_pipeline._DICOMWEB_PROBE_JS, [
+            [{"url": url, "studyUid": study, "requireStudyUid": require, "headers": {}}],
+            3000, 5000,
+        ])
+
+    # --- xác minh StudyUID ---------------------------------------------------
+
+    def test_toplevel_rejects_a_response_that_omits_the_study_uid(self):
+        """Server phớt lờ filter và trả cả kho thì KHÔNG được nhận.
+
+        Đây là lỗi an toàn bệnh nhân: nhận nhầm ở đây là tải ảnh của người khác.
+        """
+        page = self._page([{"0020000E": {"Value": ["series-cua-ca-khac"]}}])
+        result = self._probe(page, "https://pacs.test/rs/series?StudyInstanceUID=1.2.3")
+        self.assertIsNone(result["winner"])
+        self.assertIn("0020000D", result["diagnostics"][0]["error"])
+
+    def test_toplevel_accepts_when_every_series_proves_the_right_study(self):
+        page = self._page([
+            {"0020000E": {"Value": ["9.9"]}, "0020000D": {"Value": ["1.2.3"]}},
+            {"0020000E": {"Value": ["8.8"]}, "0020000D": {"Value": ["1.2.3"]}},
+        ])
+        result = self._probe(page, "https://pacs.test/rs/series?StudyInstanceUID=1.2.3")
+        self.assertIsNotNone(result["winner"])
+
+    def test_a_single_foreign_series_rejects_the_whole_response(self):
+        # Chỉ soi phần tử đầu là lọt ca lạ nằm ở cuối danh sách.
+        page = self._page([
+            {"0020000E": {"Value": ["9.9"]}, "0020000D": {"Value": ["1.2.3"]}},
+            {"0020000E": {"Value": ["8.8"]}, "0020000D": {"Value": ["9.9.9"]}},
+        ])
+        result = self._probe(page, "https://pacs.test/rs/series?StudyInstanceUID=1.2.3")
+        self.assertIsNone(result["winner"])
+        self.assertIn("ca khác", result["diagnostics"][0]["error"])
+
+    def test_hierarchical_may_omit_study_uid_because_the_path_pins_it(self):
+        page = self._page([{"0020000E": {"Value": ["9.9"]}}])
+        result = self._probe(
+            page, "https://pacs.test/rs/studies/1.2.3/series", require=False)
+        self.assertIsNotNone(result["winner"])
+
+    def test_non_json_and_error_status_are_reported_not_accepted(self):
+        page = self._page("<html>login</html>", content_type="text/html")
+        result = self._probe(page, "https://pacs.test/rs/series?StudyInstanceUID=1.2.3")
+        self.assertIsNone(result["winner"])
+        self.assertIn("content-type", result["diagnostics"][0]["error"])
+
+        page401 = self._page([], status=401)
+        result401 = self._probe(page401, "https://pacs.test/rs/series?StudyInstanceUID=1.2.3")
+        self.assertIsNone(result401["winner"])
+        self.assertIn("401", result401["diagnostics"][0]["error"])
+
+    def test_winner_carries_the_verified_body_back(self):
+        payload = [{"0020000E": {"Value": ["9.9"]}, "0020000D": {"Value": ["1.2.3"]}}]
+        page = self._page(payload)
+        result = self._probe(page, "https://pacs.test/rs/series?StudyInstanceUID=1.2.3")
+        self.assertEqual(json.loads(result["winner"]["body"]), payload)
+
+    # --- đọc config OHIF -----------------------------------------------------
+
+    def _config_roots(self, script):
+        page = self._browser.new_page()
+        self.addCleanup(page.close)
+        page.route("**/*", lambda route: route.fulfill(
+            status=200, content_type="text/html", body="<html><body></body></html>"))
+        page.add_init_script(script)
+        page.goto("https://pacs.test/viewer", wait_until="domcontentloaded")
+        return page.evaluate(dcom_pipeline._OHIF_CONFIG_JS)
+
+    def test_plain_object_config(self):
+        roots = self._config_roots("""
+            window.config = {
+              defaultDataSourceName: 'dicomweb',
+              dataSources: [
+                { sourceName: 'other', configuration: { qidoRoot: 'https://p/other' } },
+                { sourceName: 'dicomweb', configuration: {
+                    qidoRoot: 'https://p/qido', wadoRoot: 'https://p/wado' } },
+              ],
+            };
+        """)
+        self.assertIn({"root": "https://p/qido", "preferred": True}, roots)
+        self.assertIn({"root": "https://p/other", "preferred": False}, roots)
+
+    def test_function_config_that_needs_services_manager(self):
+        """Config dạng function của OHIF nhận `{ servicesManager }`.
+
+        Gọi bằng `{}` thì nó ném lỗi và ta trả rỗng — đúng những triển khai
+        dùng dạng này sẽ không bao giờ đọc được root.
+        """
+        roots = self._config_roots("""
+            window.config = ({ servicesManager }) => {
+              const s = servicesManager.services.UINotificationService;
+              return {
+                defaultDataSourceName: 'dw',
+                dataSources: [{ sourceName: 'dw', configuration: {
+                  qidoRoot: 'https://p/needs-services' } }],
+              };
+            };
+        """)
+        self.assertEqual(roots, [{"root": "https://p/needs-services", "preferred": True}])
+
+    def test_config_without_default_name_treats_the_first_source_as_active(self):
+        roots = self._config_roots("""
+            window.config = { dataSources: [
+              { sourceName: 'a', configuration: { qidoRoot: 'https://p/a' } },
+              { sourceName: 'b', configuration: { qidoRoot: 'https://p/b' } },
+            ] };
+        """)
+        self.assertEqual(roots[0], {"root": "https://p/a", "preferred": True})
+        self.assertEqual(roots[1], {"root": "https://p/b", "preferred": False})
+
+    def test_missing_or_broken_config_is_quiet(self):
+        self.assertEqual(self._config_roots("window.config = undefined;"), [])
+        self.assertEqual(self._config_roots("window.config = 'khong-phai-object';"), [])
+        self.assertEqual(
+            self._config_roots("window.config = () => { throw new Error('no'); };"), [])
+
+
+class DicomWebStoreHintTests(unittest.TestCase):
+    def setUp(self):
+        self.path = Path(tempfile.mkdtemp()) / "strategies.json"
+        self.store = dcom_pipeline.PacsStrategyStore(self.path)
+
+    def test_resolved_base_round_trips(self):
+        self.store.save_recipe(
+            fingerprint="FP", adapter="DICOMweb", success=True,
+            dicomweb_base="https://p/dicom-web", dicomweb_query_style="toplevel")
+        self.assertEqual(
+            self.store.get_dicomweb_hint("FP"), ("https://p/dicom-web", "toplevel"))
+
+    def test_study_uid_is_never_persisted(self):
+        # rs_base dùng lại được cho mọi ca cùng nơi; studyUID là dữ liệu bệnh
+        # nhân và chỉ đúng một ca — không được nằm trong file nhớ chiến lược.
+        self.store.save_recipe(
+            fingerprint="FP", adapter="DICOMweb", success=True,
+            dicomweb_base="https://p/dicom-web", dicomweb_query_style="hierarchical")
+        self.assertNotIn("1.2.840.99999", self.path.read_text(encoding="utf-8"))
+
+    def test_hint_withheld_when_failures_outweigh_successes(self):
+        for _ in range(3):
+            self.store.save_recipe(fingerprint="FP", adapter="DICOMweb", success=False)
+        self.store.save_recipe(
+            fingerprint="FP", adapter="DICOMweb", success=True,
+            dicomweb_base="https://p/dicom-web")
+        for _ in range(5):
+            self.store.save_recipe(fingerprint="FP", adapter="DICOMweb", success=False)
+        self.assertEqual(self.store.get_dicomweb_hint("FP"), ("", ""))
+
+    def test_unknown_fingerprint_is_quiet(self):
+        self.assertEqual(self.store.get_dicomweb_hint("chua-tung-thay"), ("", ""))
+
+
+class TopLevelQidoDownloadTests(unittest.TestCase):
+    """Bước tải phải nói đúng phương ngữ QIDO của server.
+
+    Server chỉ hiểu truy vấn top-level mà bị hỏi theo dạng phân cấp thì trả rỗng
+    — ca sẽ im lặng ra 0 ảnh chứ không báo lỗi, nên cần chốt bằng test.
+    """
+
+    @staticmethod
+    def _tag(value):
+        return {"Value": [value]}
+
+    def test_search_is_toplevel_while_retrieve_stays_hierarchical(self):
+        tag = self._tag
+        requested: list[str] = []
+
+        series = [{
+            "0020000E": tag("9.9"), "00200011": tag(1),
+            "0008103E": tag("AX"), "00080060": tag("CT"), "00201209": tag(1),
+        }]
+        instances = [{
+            "0020000E": tag("9.9"), "00080018": tag("7.7"), "00280008": tag(1),
+        }]
+
+        class Response:
+            def __init__(self, payload, content_type="application/dicom+json"):
+                self.payload = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+                self.headers = {"Content-Type": content_type}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return self.payload
+
+        def fake_urlopen(request, **_kwargs):
+            url = request.full_url
+            requested.append(url)
+            if url.startswith("https://p/rs/series?StudyInstanceUID=1.2.3"):
+                return Response(series)
+            if url.startswith("https://p/rs/instances?StudyInstanceUID=1.2.3"):
+                return Response(instances)
+            # Retrieve: trả một file DICOM tối thiểu để bước tải coi là xong.
+            return Response(b"\x00" * 128 + b"DICM", "application/dicom")
+
+        captured = {
+            "qido_series": "https://p/rs/series?StudyInstanceUID=1.2.3",
+            "dicomweb_profile": dcom_pipeline.DicomWebProfile(
+                rs_base="https://p/rs", study_uid="1.2.3",
+                query_style="toplevel", source="probe"),
+            "api_headers": {}, "cookies": [], "wado_tmpl": None,
+        }
+        with patch_pacs_network(fake_urlopen):
+            dcom_pipeline._download_via_dicomweb(
+                captured, lambda _body: True, dcom_pipeline.DownloadStats(),
+                lambda _message: None, lambda: False,
+            )
+
+        self.assertIn("https://p/rs/series?StudyInstanceUID=1.2.3", requested)
+        self.assertTrue(any(
+            u.startswith("https://p/rs/instances?StudyInstanceUID=1.2.3&SeriesInstanceUID=9.9")
+            for u in requested), requested)
+        # Không được hỏi theo dạng phân cấp khi server là top-level.
+        self.assertFalse(any("/studies/1.2.3/series?" in u for u in requested), requested)
+        self.assertFalse(any(u.endswith("/studies/1.2.3/series") for u in requested), requested)
+        # Nhưng Retrieve thì vẫn phải phân cấp.
+        self.assertTrue(any(
+            "/studies/1.2.3/series/9.9/instances/7.7" in u for u in requested), requested)
+
+    def test_missing_profile_and_unparseable_qido_bails_out_loudly(self):
+        messages: list[str] = []
+        dcom_pipeline._download_via_dicomweb(
+            {"qido_series": "https://p/rs/series", "api_headers": {}, "cookies": []},
+            lambda _body: True, dcom_pipeline.DownloadStats(),
+            messages.append, lambda: False,
+        )
+        self.assertTrue(any("Không giải được đường vào DICOMweb" in m for m in messages))
 
 
 if __name__ == "__main__":

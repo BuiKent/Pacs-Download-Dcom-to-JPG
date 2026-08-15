@@ -18,6 +18,7 @@ env/
 *.jpg
 *.png
 *.jpeg
+*.rar
 
 # Data and logs (to protect patient data)
 *.json
@@ -48,3 +49,4 @@ Auto_Download_DICOM/
 webui/node_modules/
 webui/dist/
 scratch/
+Upgrade/reference_projects/

@@ -198,7 +198,10 @@ class AdapterDetectionTests(unittest.TestCase):
         )
         adapter = dcom_pipeline._ready_adapter(cap)
         self.assertEqual("DICOMweb", adapter.name)
-        self.assertEqual("Bearer abc", cap.api_headers["Authorization"])
+        self.assertEqual(
+            {"Authorization": "Bearer abc", "X-Session": "s1"},
+            cap.session_headers["https://viewer.test"],
+        )
 
     def test_qido_body_is_retried_when_the_first_read_fails(self):
         cap = dcom_pipeline.ViewerCapture()
