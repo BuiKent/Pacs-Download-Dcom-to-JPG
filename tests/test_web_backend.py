@@ -16,6 +16,7 @@ from PIL import Image
 
 from web_backend import (
     ArchiveCatalog,
+    JobState,
     LocalApiServer,
     WebController,
     validate_mpr_manifest,
@@ -25,6 +26,32 @@ from web_backend import (
     _redirect_plan,
     _study_from_folder_path,
 )
+
+
+class JobStateContractTests(unittest.TestCase):
+    def test_dict_result_preserves_partial_status_and_nested_counts(self):
+        job = JobState()
+        job.start(
+            "contract-test",
+            lambda: {
+                "status": "partial",
+                "download": {"dicom": 7, "expected": 10},
+            },
+        )
+        deadline = time.time() + 2
+        while job.snapshot()["status"] == "running" and time.time() < deadline:
+            time.sleep(0.01)
+        snapshot = job.snapshot()
+        self.assertEqual("partial", snapshot["status"])
+        self.assertIn("7/10", snapshot["message"])
+
+    def test_dict_cancelled_status_is_stopped(self):
+        job = JobState()
+        job.start("contract-test", lambda: {"status": "cancelled", "cancelled": True})
+        deadline = time.time() + 2
+        while job.snapshot()["status"] == "running" and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertEqual("stopped", job.snapshot()["status"])
 
 
 def write_local_dicom(

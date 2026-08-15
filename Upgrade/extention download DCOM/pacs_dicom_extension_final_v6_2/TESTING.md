@@ -54,7 +54,7 @@ thật của GE Centricity Universal Viewer:
 - 12 ảnh lấy mẫu đều dựng ra DICOM Part-10 hợp lệ, 0 hỏng, 0 ảnh ngoài danh sách;
 - pixel thô đúng kích thước suy từ metadata: 131.072 B (256×256×2) và
   524.288 B (512×512×2);
-- đọc lại bằng `pydicom`: `NGUYEN THI PHUONG 1961 F` / `25050532`, MR 2026-05-13,
+- đọc lại bằng `pydicom`: `ANONYMIZED PATIENT 1961 F` / `ANON-MR-001`, MR 2026-05-13,
   series `LOC 3 PLAN` instance 11, `int16` 256×256, 723 mức xám, PixelSpacing
   0.9375, WC/WW 468/936, ImagePositionPatient đầy đủ.
 

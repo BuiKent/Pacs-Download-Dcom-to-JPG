@@ -967,6 +967,40 @@ def _dicom_storage_info(data: bytes, digest: str, ds: Optional[Any] = None) -> t
 
 
 @dataclass
+class StrategyOutcome:
+    status: str
+    expected: int = 0
+    completed: int = 0
+    failed: int = 0
+    errors: list[str] = field(default_factory=list)
+    strategy: str = ""
+    adapter: str = ""
+    study_uid: str = ""
+    elapsed_ms: float = 0.0
+    retryable: bool = False
+
+
+class StudyIdentityGuard:
+    """Bảo vệ ranh giới study: không gộp lẫn DICOM của nhiều ca chụp khác nhau."""
+
+    def __init__(self, locked_study_uid: str = ""):
+        self.locked_study_uid = (locked_study_uid or "").strip()
+        self._lock = threading.Lock()
+
+    def accept(self, incoming_study_uid: str) -> bool:
+        uid = (incoming_study_uid or "").strip()
+        with self._lock:
+            if not self.locked_study_uid:
+                if uid:
+                    self.locked_study_uid = uid
+                    return True
+                return True
+            if not uid:
+                return False
+            return self.locked_study_uid == uid
+
+
+@dataclass
 class DownloadStats:
     dicom: int = 0
     jpg: int = 0
@@ -978,6 +1012,9 @@ class DownloadStats:
     expected: int = 0
     failed: int = 0
     completed_tasks: int = 0
+    cancelled: bool = False
+    outcomes: list[StrategyOutcome] = field(default_factory=list)
+    preferred_routes: list[str] = field(default_factory=list)
 
     # Nguồn gốc của ảnh DICOM. Một file .dcm KHÔNG mặc nhiên là bản gốc của máy
     # chụp: khi PACS chỉ phát theo frame (BV Hà Tĩnh), app phải DỰNG LẠI file từ
@@ -1013,10 +1050,41 @@ class DownloadStats:
         Không biết manifest thì chỉ dám kết luận 'có ảnh', KHÔNG kết luận 'đủ':
         đó là lý do chỗ gọi phải đọc `expected` trước khi báo hoàn tất.
         """
-        if self.expected <= 0:
-            return self.total() > 0
-        counted = self.completed_tasks or (self.dicom if self.dicom else self.total())
+        if self.cancelled or self.failed > 0 or self.expected <= 0:
+            return False
+        if self.dicom <= 0 and self.completed_tasks <= 0 and (self.jpg > 0 or self.png > 0):
+            return False
+        counted = self.completed_tasks or self.dicom
+        if counted <= 0:
+            return False
         return counted >= self.expected
+
+    @property
+    def status(self) -> str:
+        """
+        Trạng thái y khoa chính xác của phiên tải:
+        - "complete": Đã tải đủ 100% số ảnh DICOM theo manifest đã biết (failed == 0).
+        - "partial": Đã tải được một phần DICOM (có manifest nhưng thiếu/lỗi).
+        - "partial_unknown": Có ảnh DICOM nhưng không có manifest để đối chiếu tổng.
+        - "rendered_only": Không có DICOM, chỉ có ảnh JPG/PNG render màn hình.
+        - "cancelled": Người dùng bấm dừng.
+        - "failed": Không tải được ảnh nào và có lỗi.
+        - "unknown": Rỗng / chưa bắt đầu.
+        """
+        if self.cancelled:
+            return "cancelled"
+        if self.dicom > 0:
+            if self.expected > 0:
+                counted = self.completed_tasks or self.dicom
+                if counted >= self.expected and self.failed == 0:
+                    return "complete"
+                return "partial"
+            return "partial_unknown"
+        if self.jpg > 0 or self.png > 0:
+            return "rendered_only"
+        if self.failed > 0:
+            return "failed"
+        return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -1059,6 +1127,9 @@ class ViewerCapture:
     cookies: Optional[list] = None
     api_headers: Optional[dict] = None
     session_error: Optional[str] = None
+    budget: Any = None
+    strategy_fingerprint: str = ""
+    existing_sop_uids: set[str] = field(default_factory=set)
 
     def as_legacy_dict(self) -> dict:
         """Đúng cái dict mà `_download_via_*()` đang nhận.
@@ -1080,6 +1151,9 @@ class ViewerCapture:
             "cookies": self.cookies,
             "api_headers": self.api_headers,
             "session_error": self.session_error,
+            "budget": self.budget,
+            "strategy_fingerprint": self.strategy_fingerprint,
+            "existing_sop_uids": self.existing_sop_uids,
         }
 
 
@@ -1316,10 +1390,194 @@ def _observe_response(response, cap: ViewerCapture) -> bool:
     return False
 
 
-def _ready_adapter(cap: ViewerCapture) -> Optional[PacsAdapter]:
-    """Adapter đủ dữ kiện để TẢI, ưu tiên dòng chuyên biệt trước dòng chung."""
+def compute_url_fingerprint(url: str, adapter_name: str = "") -> str:
+    """
+    Tính fingerprint trung lập bảo mật từ URL viewer:
+    origin + normalized path family + query parameter names (KHÔNG lưu query values, token hay secret).
+    """
+    from urllib.parse import urlparse, parse_qs
+    try:
+        pu = urlparse(url)
+        origin = f"{pu.scheme}://{pu.netloc}".lower() if pu.netloc else "generic"
+        # Chuẩn hóa path: thay DICOM UIDs chấm, UUIDs, hex dài và số ID thành placeholder '*'
+        path = re.sub(r"\b\d+(\.\d+)+\b", "*", pu.path)
+        path = re.sub(r"[0-9a-fA-F\-]{8,}", "*", path)
+        path = re.sub(r"/\d+(?=/|$)", "/*", path)
+        query_keys = ",".join(sorted(parse_qs(pu.query).keys()))
+        adapter_token = adapter_name.upper() if adapter_name else "*"
+        return f"{origin}|{path}?{query_keys}|{adapter_token}"
+    except Exception:
+        return f"generic|*|{adapter_name.upper() if adapter_name else '*'}"
+
+
+@dataclass
+class DownloadBudget:
+    """Quản lý hạn mức thời gian và kiểm soát stall cho phiên tải."""
+    started_at: float = field(default_factory=time.monotonic)
+    last_progress_at: float = field(default_factory=time.monotonic)
+    hard_deadline_s: float = 45 * 60.0  # 45 phút tối đa cho một study
+    stall_deadline_s: float = 3 * 60.0  # 3 phút không có tiến độ mới -> chuyển fallback
+    idle_chunk_s: float = 60.0          # 60s giữa các chunk dữ liệu
+
+    def touch(self) -> None:
+        self.last_progress_at = time.monotonic()
+
+    def is_expired(self) -> bool:
+        return self.is_hard_expired() or self.is_stalled()
+
+    def is_stalled(self) -> bool:
+        return time.monotonic() - self.last_progress_at >= self.stall_deadline_s
+
+    def is_hard_expired(self) -> bool:
+        return time.monotonic() - self.started_at >= self.hard_deadline_s
+
+
+class PacsStrategyStore:
+    """Lưu trữ và tối ưu hóa các chiến lược tải đã thành công (Không lưu bí mật, token hay PII)."""
+
+    TTL_SECONDS: float = 90 * 86400.0  # 90 ngày
+
+    def __init__(self, path: Optional[Path] = None):
+        if path is None:
+            app_data = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+            self.path = app_data / "DCom JPG PACS" / "pacs-strategies-v1.json"
+        else:
+            self.path = Path(path)
+        self._lock = threading.Lock()
+
+    def load(self) -> dict[str, dict]:
+        with self._lock:
+            if not self.path.is_file():
+                return {}
+            try:
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data.get("schemaVersion") == 1:
+                    recipes = data.get("recipes", {})
+                    now_ts = time.time()
+                    valid = {}
+                    for k, v in recipes.items():
+                        last_act = v.get("lastSuccessAt") or v.get("updatedAt") or 0
+                        if now_ts - last_act < self.TTL_SECONDS:
+                            valid[k] = v
+                    return valid
+            except Exception:
+                pass
+            return {}
+
+    def save_recipe(self, fingerprint: str, adapter: str, preferred_routes: Optional[list[str]] = None,
+                    success: bool = True, partial: bool = False, failure_class: str = "",
+                    latency_ms: float = 0.0) -> None:
+        with self._lock:
+            try:
+                recipes = {}
+                if self.path.is_file():
+                    try:
+                        data = json.loads(self.path.read_text(encoding="utf-8"))
+                        if isinstance(data, dict) and data.get("schemaVersion") == 1:
+                            recipes = data.get("recipes", {})
+                    except Exception:
+                        recipes = {}
+
+                now_ts = time.time()
+                recipes = {
+                    k: v for k, v in recipes.items()
+                    if now_ts - (v.get("lastSuccessAt") or v.get("updatedAt") or 0) < self.TTL_SECONDS
+                }
+
+                r = recipes.get(fingerprint, {
+                    "schemaVersion": 1,
+                    "fingerprint": fingerprint,
+                    "adapter": adapter,
+                    "preferredRoutes": preferred_routes or [],
+                    "success": 0,
+                    "partial": 0,
+                    "failure": 0,
+                    "latencyEwmaMs": latency_ms,
+                    "lastSuccessAt": 0,
+                    "lastFailureClass": "",
+                })
+
+                if success:
+                    r["adapter"] = adapter
+                    r["success"] = r.get("success", 0) + 1
+                    r["lastSuccessAt"] = now_ts
+                    if preferred_routes:
+                        r["preferredRoutes"] = preferred_routes
+                    if latency_ms > 0:
+                        old_ewma = r.get("latencyEwmaMs", latency_ms)
+                        r["latencyEwmaMs"] = round(0.7 * old_ewma + 0.3 * latency_ms, 2)
+                elif partial:
+                    r["partial"] = r.get("partial", 0) + 1
+                else:
+                    r["failure"] = r.get("failure", 0) + 1
+                    if failure_class:
+                        r["lastFailureClass"] = failure_class
+
+                r["updatedAt"] = now_ts
+                recipes[fingerprint] = r
+                if len(recipes) > 200:
+                    sorted_items = sorted(
+                        recipes.items(),
+                        key=lambda item: item[1].get("lastSuccessAt", 0),
+                        reverse=True,
+                    )
+                    recipes = dict(sorted_items[:200])
+
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                payload = {
+                    "schemaVersion": 1,
+                    "updatedAt": now_ts,
+                    "recipes": recipes,
+                }
+                temp_file = self.path.with_suffix(".tmp")
+                temp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                temp_file.replace(self.path)
+            except Exception:
+                pass
+
+    def get_preferred_adapter(self, fingerprint: str) -> Optional[str]:
+        recipes = self.load()
+        r = recipes.get(fingerprint)
+        if r and r.get("success", 0) > r.get("failure", 0):
+            return r.get("adapter")
+        return None
+
+    def get_preferred_routes(self, fingerprint: str) -> list[str]:
+        recipes = self.load()
+        r = recipes.get(fingerprint)
+        if r and isinstance(r.get("preferredRoutes"), list):
+            return r["preferredRoutes"]
+        return []
+
+
+pacs_strategy_store = PacsStrategyStore()
+
+
+def _ready_adapters(cap: ViewerCapture, url: str = "") -> list[PacsAdapter]:
+    """Danh sách mọi adapter đủ dữ kiện để TẢI, ưu tiên theo Strategy Store đã học rồi đến priority tĩnh."""
     ready = [a for a in PACS_ADAPTERS if a.is_ready(cap)]
-    return max(ready, key=lambda a: a.priority) if ready else None
+    if not ready:
+        return []
+    sorted_adapters = sorted(ready, key=lambda a: a.priority, reverse=True)
+    if url:
+        try:
+            fp = compute_url_fingerprint(url)
+            pref = pacs_strategy_store.get_preferred_adapter(fp)
+            if pref:
+                for idx, a in enumerate(sorted_adapters):
+                    if a.name.lower() == pref.lower():
+                        preferred_adapter = sorted_adapters.pop(idx)
+                        sorted_adapters.insert(0, preferred_adapter)
+                        break
+        except Exception:
+            pass
+    return sorted_adapters
+
+
+def _ready_adapter(cap: ViewerCapture, url: str = "") -> Optional[PacsAdapter]:
+    """Adapter đủ dữ kiện để TẢI, ưu tiên dòng chuyên biệt trước dòng chung."""
+    adapters = _ready_adapters(cap, url=url)
+    return adapters[0] if adapters else None
 
 
 def _series_manifest_adapter(cap: ViewerCapture) -> Optional[PacsAdapter]:
@@ -1424,6 +1682,8 @@ def download_all(
         raw_jpg_dir.mkdir(parents=True, exist_ok=True)
 
     stats = DownloadStats()
+    budget = DownloadBudget()
+    identity_guard = StudyIdentityGuard()
     selected_series = (
         {str(value) for value in selected_series_ids if str(value).strip()}
         if selected_series_ids is not None else None
@@ -1431,6 +1691,7 @@ def download_all(
     if selected_series_ids is not None and not selected_series:
         raise ValueError("Chế độ tải chọn lọc cần ít nhất một series.")
     seen_hashes: set[str] = set()
+    seen_sop_uids: set[str] = set()
     save_lock = threading.Lock()
 
     # Chế độ "thử lại/gộp": nạp sẵn ảnh đã có trong folder để KHÔNG ghi đè và KHÔNG
@@ -1444,7 +1705,7 @@ def download_all(
         for f in sorted(dicom_dir.rglob("*.dcm")):
             try:
                 raw_bytes = f.read_bytes()
-                valid, reason = _validate_dicom_bytes(raw_bytes)
+                valid, reason, existing_ds = _validate_dicom_bytes_and_dataset(raw_bytes)
                 if not valid:
                     log(f"  [Dọn dẹp file hỏng cũ] {f.name}: {reason}")
                     try:
@@ -1452,8 +1713,18 @@ def download_all(
                     except Exception:
                         pass
                     continue
+                existing_study_uid = getattr(existing_ds, "StudyInstanceUID", "") if existing_ds is not None else ""
+                if not identity_guard.accept(existing_study_uid):
+                    raise ValueError(
+                        "Folder DICOM đang chứa nhiều StudyInstanceUID; dừng để tránh gộp nhầm ca."
+                    )
+                existing_sop_uid = str(getattr(existing_ds, "SOPInstanceUID", "") or "").strip() if existing_ds is not None else ""
+                if existing_sop_uid:
+                    seen_sop_uids.add(existing_sop_uid)
                 seen_hashes.add(hashlib.sha1(raw_bytes).hexdigest())
                 stats.dicom += 1
+            except ValueError:
+                raise
             except Exception:
                 pass
         for f in sorted(raw_jpg_dir.glob("*.jpg")):
@@ -1508,54 +1779,68 @@ def download_all(
             if not valid:
                 # File DICOM cụt / hỏng: từ chối lưu để bộ retry tự động tải lại
                 return False
+            incoming_study_uid = getattr(parsed_ds, "StudyInstanceUID", "") if parsed_ds is not None else ""
+            if not identity_guard.accept(incoming_study_uid):
+                log(
+                    "  [Từ chối DICOM khác study] StudyInstanceUID không khớp với file đầu tiên của phiên tải."
+                )
+                return False
+        incoming_sop_uid = str(getattr(parsed_ds, "SOPInstanceUID", "") or "").strip() if parsed_ds is not None else ""
         h = hashlib.sha1(data).hexdigest()
         with save_lock:
             if ext == "dcm" and not output_resolved and dicom_output_resolver is not None:
                 dicom_dir = Path(dicom_output_resolver(data))
                 raw_jpg_dir = dicom_dir.parent / "RAW_JPG"
                 output_resolved = True
-            if h in seen_hashes:
+            if h in seen_hashes or (incoming_sop_uid and incoming_sop_uid in seen_sop_uids):
                 stats.duplicates += 1
+                budget.touch()
                 return True
-            seen_hashes.add(h)
             if ext == "dcm":
-                stats.dicom += 1; idx = stats.dicom
+                series_folder, filename = _dicom_storage_info(data, h, ds=parsed_ds)
+                destination = dicom_dir / series_folder / filename
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temp_dest = destination.with_suffix(".dcm.part")
+                try:
+                    temp_dest.write_bytes(data)
+                    temp_dest.replace(destination)
+                except Exception:
+                    if temp_dest.exists():
+                        try:
+                            temp_dest.unlink()
+                        except Exception:
+                            pass
+                    raise
+                stats.dicom += 1
                 if fidelity == "reconstructed":
                     stats.reconstructed_dicom += 1
                 else:
                     stats.original_dicom += 1
             elif ext == "jpg":
-                stats.jpg += 1; idx = stats.jpg
-            else:  # png
-                stats.png += 1; idx = stats.png
+                idx = stats.jpg + 1
+                raw_jpg_dir.mkdir(parents=True, exist_ok=True)
+                (raw_jpg_dir / f"img_{idx:05d}.jpg").write_bytes(data)
+                stats.jpg = idx
+            else:
+                idx = stats.png + 1
+                raw_jpg_dir.mkdir(parents=True, exist_ok=True)
+                (raw_jpg_dir / f"img_{idx:05d}.png").write_bytes(data)
+                stats.png = idx
+            seen_hashes.add(h)
+            if incoming_sop_uid:
+                seen_sop_uids.add(incoming_sop_uid)
             n = stats.total()
-        if ext == "dcm":
-            series_folder, filename = _dicom_storage_info(data, h, ds=parsed_ds)
-            destination = dicom_dir / series_folder / filename
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            temp_dest = destination.with_suffix(".dcm.part")
-            try:
-                temp_dest.write_bytes(data)
-                temp_dest.replace(destination)
-            except Exception:
-                if temp_dest.exists():
-                    try:
-                        temp_dest.unlink()
-                    except Exception:
-                        pass
-                raise
-            if n % 25 == 0:
-                log(f"  ...đã tải {n} ảnh (DICOM: {stats.dicom})")
-        elif ext == "jpg":
-            raw_jpg_dir.mkdir(parents=True, exist_ok=True)
-            (raw_jpg_dir / f"img_{idx:05d}.jpg").write_bytes(data)
-        else:
-            raw_jpg_dir.mkdir(parents=True, exist_ok=True)
-            (raw_jpg_dir / f"img_{idx:05d}.png").write_bytes(data)
+            budget.touch()
+        if ext == "dcm" and n % 25 == 0:
+            log(f"  ...đã tải {n} ảnh (DICOM: {stats.dicom})")
         return True
 
     # Việc nhận diện dòng PACS nằm hết trong PACS_ADAPTERS ở trên.
-    cap = ViewerCapture()
+    cap = ViewerCapture(
+        budget=budget,
+        strategy_fingerprint=compute_url_fingerprint(url),
+        existing_sop_uids=seen_sop_uids,
+    )
     capture_bodies = selected_series is None
 
     def _want_capture(resp) -> bool:
@@ -1587,70 +1872,59 @@ def download_all(
     used_manifest = False
     with sync_playwright() as p:
         browser = _launch_chromium(p, headless, log)
-        # ignore_https_errors: chấp nhận chứng chỉ tự ký của PACS (HTTPS cổng lạ).
-        context = browser.new_context(viewport={"width": 1600, "height": 1000},
-                                      ignore_https_errors=True)
-        # Phải cài TRƯỚC khi trang chạy: viewer GE ZFP mở WebSocket ngay lúc nạp,
-        # gắn móc sau là mất sạch cấu trúc study.
-        context.add_init_script(_ZFP_HOOK)
-        page = context.new_page()
-        page.on("response", on_response)
-
-        log("Đang tải trang viewer (không chỉnh sửa link)...")
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        except Exception as e:
-            log(f"  Cảnh báo khi tải trang: {e}")
+            # ignore_https_errors: chấp nhận chứng chỉ tự ký của PACS (HTTPS cổng lạ).
+            context = browser.new_context(viewport={"width": 1600, "height": 1000},
+                                          ignore_https_errors=True)
+            context.add_init_script(_ZFP_HOOK)
+            page = context.new_page()
+            page.on("response", on_response)
 
-        try:
-            if "urlExpired" in page.url or "Message/Error" in page.url:
-                log("!!! Link đã HẾT HẠN (urlExpired). Hãy lấy link mới từ trang xem rồi thử lại.")
-                browser.close()
-                return stats
-        except Exception:
-            pass
+            log("Đang tải trang viewer (không chỉnh sửa link)...")
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            except Exception as e:
+                log(f"  Cảnh báo khi tải trang: {e}")
 
-        # Link wrapper của RIS đòi cookie đăng nhập mà trình tải không có. Nói
-        # thẳng ra thay vì chạy tiếp rồi thu về vài ảnh của trang đăng nhập.
-        try:
-            if _is_ris_wrapper_url(url) and _page_is_ris_login(page):
-                log("!!! Link này là TRANG WRAPPER của RIS và đang hiện màn hình ĐĂNG NHẬP. "
-                    "Trình tải không có cookie phiên nên không thấy ảnh. Hãy dùng chức năng "
-                    "'Tìm theo mã BN' (app tự xin link viewer), hoặc mở link trên trình duyệt "
-                    "rồi copy đúng link viewer bên trong.")
-                browser.close()
-                return stats
-        except Exception:
-            pass
+            try:
+                if "urlExpired" in page.url or "Message/Error" in page.url:
+                    log("!!! Link đã HẾT HẠN (urlExpired). Hãy lấy link mới từ trang xem rồi thử lại.")
+                    return stats
+            except Exception:
+                pass
 
-        # Chờ manifest (hoặc 1 ảnh mẫu) xuất hiện (tối đa ~12s)
-        log("Đang dò manifest của viewer...")
-        def _seen_manifest() -> bool:
-            _inspect_zfp(page, cap)
-            return _have_manifest() or bool(cap.session_error)
+            try:
+                if _is_ris_wrapper_url(url) and _page_is_ris_login(page):
+                    log("!!! Link này là TRANG WRAPPER của RIS và đang hiện màn hình ĐĂNG NHẬP. "
+                        "Trình tải không có cookie phiên nên không thấy ảnh. Hãy dùng chức năng "
+                        "'Tìm theo mã BN' (app tự xin link viewer), hoặc mở link trên trình duyệt "
+                        "rồi copy đúng link viewer bên trong.")
+                    return stats
+            except Exception:
+                pass
 
-        _wait_for_viewer_manifest(page, _seen_manifest, stop)
+            log("Đang dò manifest của viewer...")
+            def _seen_manifest() -> bool:
+                _inspect_zfp(page, cap)
+                return _have_manifest() or bool(cap.session_error)
 
-        # Session chết (server trả 4xx cho API session, hoặc viewer hiện
-        # "Cannot view images") -> báo rõ HẾT HẠN thay vì lặng lẽ ra 0 ảnh.
-        if not _have_manifest():
-            expired = bool(cap.session_error)
-            if not expired:
-                try:
-                    txt = (page.evaluate(
-                        "() => document.body ? document.body.innerText : ''") or "").lower()
-                    expired = ("cannot view images" in txt) or ("urlexpired" in txt)
-                except Exception:
-                    pass
-            if expired:
-                code = cap.session_error or "?"
-                log(f"!!! Link đã HẾT HẠN / SESSION không còn hiệu lực (server trả {code}). "
-                    f"Hãy lấy LINK MỚI từ trang xem rồi tải lại NGAY (loại link này sống rất ngắn).")
-                browser.close()
-                return stats
+            _wait_for_viewer_manifest(page, _seen_manifest, stop)
 
-        if _have_manifest():
-            used_manifest = True
+            if not _have_manifest():
+                expired = bool(cap.session_error)
+                if not expired:
+                    try:
+                        txt = (page.evaluate(
+                            "() => document.body ? document.body.innerText : ''") or "").lower()
+                        expired = ("cannot view images" in txt) or ("urlexpired" in txt)
+                    except Exception:
+                        pass
+                if expired:
+                    code = cap.session_error or "?"
+                    log(f"!!! Link đã HẾT HẠN / SESSION không còn hiệu lực (server trả {code}). "
+                        f"Hãy lấy LINK MỚI từ trang xem rồi tải lại NGAY (loại link này sống rất ngắn).")
+                    return stats
+
             try:
                 from urllib.parse import urlparse as _up
                 pu = _up(page.url)
@@ -1658,35 +1932,79 @@ def download_all(
                 cap.cookies = context.cookies()
             except Exception:
                 pass
-            log("✓ Có manifest → tải TRỰC TIẾP theo API (không cần click/cuộn).")
-            browser.close()
-        else:
-            log("Không thấy manifest → chế độ MÔ PHỎNG (cuộn/click), chỉ xử lý xung ĐANG HIỂN THỊ.")
-            capture_bodies = True
-            page.wait_for_timeout(1500)
-            _drive_viewer(
-                page, log, stats, max_slices_per_series, stop,
-                selected_series_ids=selected_series,
-            )
-            log(f"Chờ {settle_ms/1000:.0f}s để bắt nốt ảnh còn lại...")
-            try:
-                page.wait_for_load_state("networkidle", timeout=settle_ms)
-            except Exception:
-                page.wait_for_timeout(settle_ms)
-            browser.close()
 
-    # Tải trực tiếp (ngoài trình duyệt, bằng HTTP) nếu có manifest.
-    #
-    # `used_manifest` được chốt lúc đóng trình duyệt, KHÔNG tính lại ở đây: chế
-    # độ mô phỏng có thể làm viewer phát muộn một response manifest, và nếu chỉ
-    # nhìn `_ready_adapter(cap)` thì ca đó sẽ bị tải hai lượt.
-    if used_manifest and not stop():
-        adapter = _ready_adapter(cap)
-        if adapter is not None:
-            log(f"✓ Nhận diện dòng PACS: {adapter.name} → tải trực tiếp bằng API.")
-            adapter.download(
-                cap, save_body, stats, log, stop, selected_series,
-            )
+            ready_list = _ready_adapters(cap, url=url)
+            if ready_list:
+                used_manifest = True
+                log(f"✓ Có {len(ready_list)} adapter sẵn sàng → thử lần lượt trong cùng phiên viewer.")
+                for adapter in ready_list:
+                    if stop() or budget.is_hard_expired():
+                        break
+                    budget.touch()
+                    log(f"✓ Khởi chạy adapter: {adapter.name} → tải trực tiếp bằng API/WebSocket.")
+                    t0 = time.monotonic()
+                    try:
+                        adapter.download(cap, save_body, stats, log, stop, selected_series)
+                        latency_ms = (time.monotonic() - t0) * 1000.0
+                        stats.outcomes.append(StrategyOutcome(
+                            status=stats.status,
+                            expected=stats.expected,
+                            completed=stats.completed_tasks or stats.dicom,
+                            failed=stats.failed,
+                            strategy=adapter.name,
+                            adapter=adapter.name,
+                            study_uid=identity_guard.locked_study_uid,
+                            elapsed_ms=latency_ms,
+                            retryable=not stats.is_complete() and not budget.is_hard_expired(),
+                        ))
+                        pacs_strategy_store.save_recipe(
+                            fingerprint=cap.strategy_fingerprint,
+                            adapter=adapter.name,
+                            preferred_routes=(stats.preferred_routes if adapter.name.lower() == "dicomweb" else None),
+                            success=stats.is_complete(),
+                            partial=stats.status in {"partial", "partial_unknown"},
+                            failure_class=("timeout" if budget.is_expired() else "error") if stats.status == "failed" else "",
+                            latency_ms=latency_ms,
+                        )
+                        if stats.is_complete():
+                            break
+                    except Exception as e:
+                        latency_ms = (time.monotonic() - t0) * 1000.0
+                        stats.outcomes.append(StrategyOutcome(
+                            status="failed", expected=stats.expected,
+                            completed=stats.completed_tasks or stats.dicom,
+                            failed=stats.failed, errors=[str(e)], strategy=adapter.name,
+                            adapter=adapter.name, study_uid=identity_guard.locked_study_uid,
+                            elapsed_ms=latency_ms, retryable=not budget.is_hard_expired(),
+                        ))
+                        log(f"  Lỗi adapter {adapter.name}: {e}")
+                        pacs_strategy_store.save_recipe(
+                            fingerprint=cap.strategy_fingerprint, adapter=adapter.name,
+                            success=False, failure_class=type(e).__name__, latency_ms=latency_ms,
+                        )
+
+            if not stats.is_complete() and not stop() and not budget.is_hard_expired():
+                if used_manifest and selected_series is not None:
+                    log("Chưa đủ ảnh nhưng đang tải series chọn lọc; không mô phỏng mù để tránh lấy nhầm series ngoài phạm vi.")
+                else:
+                    log("Chưa đủ ảnh → mô phỏng viewer để kích hoạt thêm request DICOM còn ẩn.")
+                    budget.touch()
+                    capture_bodies = True
+                    page.wait_for_timeout(1500)
+                    _drive_viewer(
+                        page, log, stats, max_slices_per_series, stop,
+                        selected_series_ids=selected_series,
+                    )
+                    log(f"Chờ {settle_ms/1000:.0f}s để bắt nốt ảnh còn lại...")
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=settle_ms)
+                    except Exception:
+                        page.wait_for_timeout(settle_ms)
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
     log(f"Tải xong. Tổng ảnh: {stats.total()} "
         f"(DICOM {stats.dicom}, JPG {stats.jpg}, PNG {stats.png}, trùng bỏ {stats.duplicates}).")
@@ -1814,7 +2132,8 @@ def discover_viewer_series(
 
 
 def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
-                     stop: Callable[[], bool], passes: int = 3) -> None:
+                     stop: Callable[[], bool], budget: Optional[DownloadBudget] = None,
+                     passes: int = 3) -> None:
     """Tải song song và LÀM LẠI phần hỏng, rồi ghi lại số còn hỏng.
 
     Mạng bệnh viện chập chờn nên vài ảnh lỗi lẻ là chuyện thường; im lặng bỏ qua
@@ -1826,15 +2145,20 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
     def attempt(task) -> bool:
         if stop():
             return True  # dừng theo lệnh người dùng, không tính là ảnh hỏng
+        if budget is not None and budget.is_expired():
+            return False
         try:
-            return bool(fetch(task))
+            ok = bool(fetch(task))
+            if ok and budget is not None:
+                budget.touch()
+            return ok
         except Exception:
             return False
 
     original_count = len(tasks)
     pending = list(tasks)
     for round_no in range(1, max(1, passes) + 1):
-        if not pending or stop():
+        if not pending or stop() or (budget is not None and budget.is_expired()):
             break
         if round_no > 1:
             log(f"  ↻ Tải lại {len(pending)} ảnh bị hỏng (lượt {round_no}/{passes})...")
@@ -1843,8 +2167,44 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
             results = list(ex.map(attempt, pending))
         pending = [task for task, ok in zip(pending, results) if not ok]
 
+    if stop():
+        stats.cancelled = True
     stats.failed = 0 if stop() else len(pending)
     stats.completed_tasks = max(stats.completed_tasks, original_count - len(pending))
+
+
+def _read_response_chunks(response, budget: Optional[DownloadBudget] = None,
+                          stop: Optional[Callable[[], bool]] = None,
+                          chunk_size: int = 1024 * 1024) -> bytes:
+    """Read a bounded socket response while observing cancel/deadline between chunks.
+
+    The socket timeout on ``urlopen`` remains the upper bound while one ``read``
+    is blocked; this helper prevents a large response from hiding progress or
+    ignoring cancel for the entire body.
+    """
+    chunks: list[bytes] = []
+    while True:
+        if stop is not None and stop():
+            raise InterruptedError("Download cancelled")
+        if budget is not None and budget.is_expired():
+            raise TimeoutError("Download budget expired")
+        try:
+            chunk = response.read(chunk_size)
+        except TypeError:
+            # Small deterministic test doubles and a few file-like wrappers
+            # expose only ``read()``; real HTTPResponse supports sized reads.
+            chunk = response.read()
+            if chunk:
+                chunks.append(chunk)
+                if budget is not None:
+                    budget.touch()
+            break
+        if not chunk:
+            break
+        chunks.append(chunk)
+        if budget is not None:
+            budget.touch()
+    return b"".join(chunks)
 
 
 def _report_download_result(stats: DownloadStats, expected: int, log: LogFn,
@@ -1853,6 +2213,7 @@ def _report_download_result(stats: DownloadStats, expected: int, log: LogFn,
     expected = int(expected or 0)
     stats.expected = max(stats.expected, expected)
     if stop():
+        stats.cancelled = True
         log(f"  ⏹ Đã dừng theo yêu cầu: {stats.dicom}/{expected or '?'} ảnh.")
         return
     completed = stats.completed_tasks or stats.dicom
@@ -1950,9 +2311,9 @@ def _download_via_manifest(captured, save_body, stats,
 
     def fetch_one(u) -> bool:
         with urllib.request.urlopen(u, timeout=45, context=sslctx) as r:
-            return save_body(r.read())
+            return save_body(_read_response_chunks(r, captured.get("budget"), stop))
 
-    _run_fetch_tasks(tasks, fetch_one, stats, log, stop)
+    _run_fetch_tasks(tasks, fetch_one, stats, log, stop, captured.get("budget"))
     _report_download_result(stats, total_expected or len(tasks), log, stop)
 
 
@@ -2014,9 +2375,9 @@ def _download_via_vrpacs(captured, save_body, stats,
     def fetch_one(u) -> bool:
         req = urllib.request.Request(u, headers={"Cookie": cj} if cj else {})
         with urllib.request.urlopen(req, timeout=45, context=sslctx) as r:
-            return save_body(r.read())
+            return save_body(_read_response_chunks(r, captured.get("budget"), stop))
 
-    _run_fetch_tasks(tasks, fetch_one, stats, log, stop)
+    _run_fetch_tasks(tasks, fetch_one, stats, log, stop, captured.get("budget"))
     _report_download_result(stats, len(tasks), log, stop)
 
 
@@ -2064,7 +2425,9 @@ def _download_via_zfp(captured, save_body, stats,
 
     frame_ct = "application/octet-stream; transfer-syntax=1.2.840.10008.1.2.1"
     saved, done, reloads, dry = 0, set(), 0, 0
-    while not stop() and len(done) < total:
+    budget = captured.get("budget")
+    while (not stop() and len(done) < total
+           and not (budget is not None and budget.is_expired())):
         try:
             got = page.evaluate("(ms) => window.__zfp.take(ms)", _ZFP_TAKE_MS)
         except Exception as exc:
@@ -2082,6 +2445,9 @@ def _download_via_zfp(captured, save_body, stats,
             dicom = _dicom_from_meta_frames(meta_json, [base64.b64decode(got["b64"])], frame_ct)
             if dicom and save_body(dicom, fidelity="reconstructed"):
                 saved += 1
+                stats.completed_tasks = max(stats.completed_tasks, len(done))
+                if budget is not None:
+                    budget.touch()
                 if saved % 25 == 0:
                     log(f"  ...đã lưu {saved}/{total} ảnh")
             else:
@@ -2157,9 +2523,9 @@ def _download_via_vietmy(captured, save_body, stats,
     def fetch_one(u) -> bool:
         req = urllib.request.Request(u, headers={"Cookie": cj} if cj else {})
         with urllib.request.urlopen(req, timeout=45, context=sslctx) as r:
-            return save_body(r.read())
+            return save_body(_read_response_chunks(r, captured.get("budget"), stop))
 
-    _run_fetch_tasks(tasks, fetch_one, stats, log, stop)
+    _run_fetch_tasks(tasks, fetch_one, stats, log, stop, captured.get("budget"))
     _report_download_result(stats, len(tasks), log, stop)
 
 
@@ -2197,6 +2563,15 @@ def _download_via_dicomweb(captured, save_body, stats,
         wtmpl = {"requestType": "WADO", "contentType": "application/dicom", "transferSyntax": "*"}
         order = ["wadors", "frames", "wadouri"]
 
+    learned_routes = pacs_strategy_store.get_preferred_routes(
+        str(captured.get("strategy_fingerprint") or "")
+    )
+    learned_routes = [name for name in learned_routes if name in order]
+    if learned_routes:
+        order = learned_routes + [name for name in order if name not in learned_routes]
+    route_lock = threading.Lock()
+    budget = captured.get("budget")
+
     # Gửi lại đúng "giấy thông hành" viewer đã dùng: cookie + header phiên
     # (Authorization, X-...) bắt từ request QIDO thật.
     hdr = {}
@@ -2213,12 +2588,15 @@ def _download_via_dicomweb(captured, save_body, stats,
     sslctx.verify_mode = ssl.CERT_NONE
 
     def get_raw(u, accept=None):
+        if budget is not None and budget.is_expired():
+            raise TimeoutError("Download budget expired")
         h = dict(hdr)
         if accept:
             h["Accept"] = accept
         req = urllib.request.Request(u, headers=h)
         with urllib.request.urlopen(req, timeout=60, context=sslctx) as r:
-            return r.read(), (r.headers.get("Content-Type") or "")
+            data = _read_response_chunks(r, budget, stop)
+            return data, (r.headers.get("Content-Type") or "")
 
     def get_json(u):
         body, _ = get_raw(u, accept="application/dicom+json, application/json")
@@ -2303,10 +2681,21 @@ def _download_via_dicomweb(captured, save_body, stats,
 
     if selected_series is not None and image_series_count == 0:
         raise ValueError("Không còn tìm thấy series đã chọn trong manifest DICOMweb mới.")
-    total = len(tasks)
+
+    inventory_total = len(tasks)
+    skipped_count = 0
+    existing_sops = captured.get("existing_sop_uids") or set()
+    if existing_sops:
+        pending_tasks = [t for t in tasks if str(t[1]).strip() not in existing_sops]
+        skipped_count = len(tasks) - len(pending_tasks)
+        if skipped_count > 0:
+            log(f"  Thử lại: bỏ qua {skipped_count} ảnh đã có sẵn trong folder theo SOPInstanceUID.")
+        tasks = pending_tasks
+
+    pending_total = len(tasks)
     selected_label = " series ảnh đã chọn" if selected_series is not None else " series ảnh"
-    log(f"DICOMweb: {image_series_count}{selected_label}, {total} ảnh. "
-        f"Đang tải trực tiếp (6 luồng song song)...")
+    log(f"DICOMweb: {image_series_count}{selected_label}, {inventory_total} ảnh "
+        f"({pending_total} cần tải). Đang tải trực tiếp (6 luồng song song)...")
 
     def try_wadouri(suid, iuid, nf, meta_in):
         params = {k: v for k, v in wtmpl.items()
@@ -2344,6 +2733,8 @@ def _download_via_dicomweb(captured, save_body, stats,
             pass
         frames, fct = [], ""
         for fi in range(1, nf + 1):
+            if budget is not None and budget.is_expired():
+                return False
             body, ct = get_raw(f"{base}/frames/{fi}",
                                accept='multipart/related; type="application/octet-stream", */*')
             parts = _multipart_parts(body, ct)
@@ -2366,19 +2757,25 @@ def _download_via_dicomweb(captured, save_body, stats,
 
     def fetch_one(task) -> bool:
         suid, iuid, nf, meta_in = task
-        for name in list(order):
+        with route_lock:
+            route_candidates = list(order)
+        for name in route_candidates:
             try:
                 if fetchers[name](suid, iuid, nf, meta_in):
-                    if order[0] != name:  # nhớ cách vừa thành công cho các ảnh sau
-                        order.remove(name)
-                        order.insert(0, name)
+                    with route_lock:
+                        if order[0] != name:  # nhớ cách vừa thành công cho các ảnh sau
+                            order.remove(name)
+                            order.insert(0, name)
                     return True
             except Exception:
                 continue
         return False
 
-    _run_fetch_tasks(tasks, fetch_one, stats, log, stop)
-    _report_download_result(stats, total, log, stop)
+    _run_fetch_tasks(tasks, fetch_one, stats, log, stop, captured.get("budget"))
+    completed_pending = max(0, pending_total - stats.failed)
+    stats.completed_tasks = max(stats.completed_tasks, skipped_count + completed_pending)
+    stats.preferred_routes = list(order)
+    _report_download_result(stats, inventory_total, log, stop)
 
 
 def _drive_viewer(page, log: LogFn, stats: DownloadStats,

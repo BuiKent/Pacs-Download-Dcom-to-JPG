@@ -1363,8 +1363,54 @@ class JobState:
                 result = target()
                 with self.lock:
                     self.result = result
-                    self.status = "stopped" if self.stop_event.is_set() else "complete"
-                    self.message = "Đã dừng." if self.stop_event.is_set() else "Hoàn tất."
+                    result_status = (
+                        result.get("status", "") if isinstance(result, dict)
+                        else getattr(result, "status", "")
+                    )
+                    result_cancelled = (
+                        bool(result.get("cancelled")) if isinstance(result, dict)
+                        else bool(getattr(result, "cancelled", False))
+                    )
+
+                    def result_count(name: str, default: Any = 0) -> Any:
+                        if isinstance(result, dict):
+                            if name in result:
+                                return result.get(name, default)
+                            nested = result.get("download")
+                            if isinstance(nested, dict):
+                                return nested.get(name, default)
+                            return default
+                        return getattr(result, name, default)
+
+                    if self.stop_event.is_set() or result_cancelled or result_status in {"cancelled", "stopped"}:
+                        self.status = "stopped"
+                        self.message = "Đã dừng theo yêu cầu."
+                    elif result_status:
+                        st = result_status
+                        if st == "complete":
+                            self.status = "complete"
+                            self.message = "Hoàn tất đủ ảnh theo manifest."
+                        elif st == "partial":
+                            self.status = "partial"
+                            dicom_cnt = result_count("dicom", 0)
+                            exp_cnt = result_count("expected", "?")
+                            self.message = f"Tải một phần (thiếu ảnh: {dicom_cnt}/{exp_cnt})."
+                        elif st == "partial_unknown":
+                            self.status = "partial_unknown"
+                            dicom_cnt = result_count("dicom", 0)
+                            self.message = f"Đã tải {dicom_cnt} ảnh (viewer không khai báo tổng số)."
+                        elif st == "rendered_only":
+                            self.status = "rendered_only"
+                            self.message = "Chỉ bắt được ảnh render màn hình (không phải DICOM gốc)."
+                        elif st == "failed":
+                            self.status = "failed"
+                            self.message = "Không tải được ảnh nào hợp lệ."
+                        else:
+                            self.status = "complete"
+                            self.message = "Hoàn tất."
+                    else:
+                        self.status = "complete"
+                        self.message = "Hoàn tất."
             except Exception as exc:
                 self.log(f"Lỗi: {exc}")
                 with self.lock:
@@ -1911,7 +1957,23 @@ class WebController:
                 hospital_name=hospital_name,
                 studies=all_studies,
             )
+            requested_uids = {str(study.get("study_uid") or "") for study in studies}
+            requested_rows = [
+                study for study in all_studies
+                if str(study.get("study_uid") or "") in requested_uids
+            ]
+            local_statuses = {str(study.get("local_status") or "") for study in requested_rows}
+            if self.job.stop_event.is_set():
+                result_status = "cancelled"
+            elif requested_rows and local_statuses.issubset({"downloaded", "selected"}):
+                result_status = "complete"
+            elif local_statuses & {"downloaded", "selected", "incomplete"}:
+                result_status = "partial"
+            else:
+                result_status = "failed"
             return {
+                "status": result_status,
+                "cancelled": result_status == "cancelled",
                 "downloaded": total,
                 "archive": archive,
                 "patient": patient,
@@ -2039,15 +2101,31 @@ class WebController:
             if jpg_dir.parent.is_dir():
                 direct_root = jpg_dir.parent
 
-            if dl and dl.total() <= 0:
+            dl_status = getattr(dl, "status", "failed") if dl is not None else "failed"
+            if dl and dl.total() <= 0 and dl_status != "cancelled":
                 raise ValueError("Không tải được ảnh nào từ link viewer này. Vui lòng kiểm tra lại xem link có bị hết hạn hay không.")
 
-            archive = self.catalog.open(jpg_dir if Path(jpg_dir).exists() else direct_root)
+            archive = None
+            if dl_status not in {"rendered_only", "cancelled"}:
+                archive = self.catalog.open(jpg_dir if Path(jpg_dir).exists() else direct_root)
             # The link is stored with the folder so a later retry from history
             # can reuse it. We use the updated direct_root.
             self._write_direct_download_marker(direct_root, url)
             self.history.add(direct_root, url)
-            return {"archive": archive, "output": str(direct_root), "resumed": resumed}
+            return {
+                "status": dl_status,
+                "cancelled": dl_status == "cancelled",
+                "download": {
+                    "dicom": getattr(dl, "dicom", 0),
+                    "jpg": getattr(dl, "jpg", 0),
+                    "png": getattr(dl, "png", 0),
+                    "expected": getattr(dl, "expected", 0),
+                    "failed": getattr(dl, "failed", 0),
+                },
+                "archive": archive,
+                "output": str(direct_root),
+                "resumed": resumed,
+            }
 
         self.job.start("direct-download", target)
         return self.job.snapshot()

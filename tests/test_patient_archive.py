@@ -1400,11 +1400,31 @@ class ViewerLinkFreshnessTests(unittest.TestCase):
             self.assertFalse(dcom_pipeline._is_non_image_modality(modality), modality)
 
     def test_stats_completeness_rules(self):
+        # 1. Có manifest biết tổng (expected > 0):
         self.assertFalse(dcom_pipeline.DownloadStats(dicom=4, expected=348).is_complete())
+        self.assertEqual("partial", dcom_pipeline.DownloadStats(dicom=4, expected=348).status)
+
         self.assertTrue(dcom_pipeline.DownloadStats(dicom=348, expected=348).is_complete())
-        # Không biết manifest thì chỉ kết luận "có ảnh".
-        self.assertTrue(dcom_pipeline.DownloadStats(dicom=1).is_complete())
+        self.assertEqual("complete", dcom_pipeline.DownloadStats(dicom=348, expected=348).status)
+
+        # Có lỗi (failed > 0) -> không được báo complete
+        self.assertFalse(dcom_pipeline.DownloadStats(dicom=348, expected=348, failed=1).is_complete())
+        self.assertEqual("partial", dcom_pipeline.DownloadStats(dicom=348, expected=348, failed=1).status)
+
+        # Chỉ có ảnh render JPG/PNG -> không được coi là hoàn tất DICOM
+        self.assertFalse(dcom_pipeline.DownloadStats(dicom=0, jpg=348, expected=348).is_complete())
+        self.assertEqual("rendered_only", dcom_pipeline.DownloadStats(dicom=0, jpg=348, expected=348).status)
+
+        # 2. Không biết manifest (expected <= 0):
+        # Không bao giờ được báo complete (vì không có bằng chứng đã đủ), chỉ được báo partial_unknown
+        self.assertFalse(dcom_pipeline.DownloadStats(dicom=1, expected=0).is_complete())
+        self.assertEqual("partial_unknown", dcom_pipeline.DownloadStats(dicom=1, expected=0).status)
+
+        # 3. Trạng thái hủy & rỗng:
+        self.assertFalse(dcom_pipeline.DownloadStats(cancelled=True).is_complete())
+        self.assertEqual("cancelled", dcom_pipeline.DownloadStats(cancelled=True).status)
         self.assertFalse(dcom_pipeline.DownloadStats().is_complete())
+        self.assertEqual("unknown", dcom_pipeline.DownloadStats().status)
 
 
 if __name__ == "__main__":

@@ -28,6 +28,8 @@ assert off_apis == ['runtime'], f'offscreen document chi dung duoc chrome.runtim
 assert 'writeViaDownloads' in off and 'new Blob' in off
 assert 'DOWNLOAD_BLOB' in off and 'DOWNLOAD_BLOB' in bg
 assert 'prepareTask' in off and 'validatePart10' in off
+assert "from './lib/semaphore.js'" in off
+assert 'releaseGlobal(' not in off, 'offscreen con goi semaphore helper cu da bi xoa'
 assert 'chrome.debugger' not in off
 assert 'RECIPES_KEY' in bg and 'ENGINE_LEARNED_URL' in bg
 assert 'START_LEARNING' in bg and 'LEARN_CANDIDATE' in bg and 'materializeLearnedManifest' in bg
@@ -37,6 +39,11 @@ assert "s.tracking!=='watching'" in bg
 assert bg.count("s.tracking==='stopped')return") >= 2, 'webRequest phai ton trong trang thai stopped'
 assert 'PROBE_DICOM_URLS' in bg and 'PROBE_DICOM_URLS' in off
 assert 'binaryCandidates' in bg
+assert "from './lib/orchestrator.js'" in bg
+assert 'adapterInventories' in bg and 'tasksBelongToStudy' in bg
+assert 'attemptId' in bg and 'attemptId' in off
+assert 'dicomTaskIdentityError' in off, 'bytes DICOM thuc nhan phai duoc doi chieu UID voi task'
+assert 'cumulativeAttemptCounters' in bg, 'progress attempt sau phai cong tren baseline logical job'
 ui=(root/'sidepanel.html').read_text(encoding='utf-8')+ (root/'sidepanel.js').read_text(encoding='utf-8')
 assert "startIn:'downloads'" in ui and "id:'pacs-dicom'" in ui
 assert 'learnToggleBtn' in ui and 'learnList' in ui

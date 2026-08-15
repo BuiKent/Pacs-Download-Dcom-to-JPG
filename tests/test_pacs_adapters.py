@@ -399,17 +399,311 @@ class ZfpDownloadTests(unittest.TestCase):
         self.assertEqual(dcom_pipeline._ZFP_MAX_RELOADS, page.reloads)
 
 
-class LegacyDictTests(unittest.TestCase):
-    """`_download_via_*()` vẫn nhận đúng dict cũ nên phần tải không phải sửa."""
+class FallbackStateMachineTests(unittest.TestCase):
+    """Kiểm tra máy trạng thái fallback và thứ tự ưu tiên của các adapter."""
 
-    def test_every_key_the_downloaders_read_is_present(self):
-        keys = set(dcom_pipeline.ViewerCapture().as_legacy_dict())
-        for needed in (
-            "getstudies", "template_url", "vrpacs", "vietmy", "qido_series",
-            "qido_series_body", "wado_tmpl", "host", "cookies",
-            "api_headers", "session_error",
-        ):
-            self.assertIn(needed, keys)
+    def test_ready_adapters_sorts_by_priority_descending(self):
+        cap = dcom_pipeline.ViewerCapture()
+        # Gán dữ kiện cho cả VietMy (priority 270) và DICOMweb (priority 200)
+        cap.vietmy = b'{"d": {}}'
+        cap.qido_series = "https://pacs.test/studies/1/series"
+        cap.qido_series_body = b"[]"
+
+        ready = dcom_pipeline._ready_adapters(cap)
+        self.assertEqual(2, len(ready))
+        self.assertEqual("VietMy", ready[0].name)
+        self.assertEqual("DICOMweb", ready[1].name)
+        self.assertEqual("VietMy", dcom_pipeline._ready_adapter(cap).name)
+
+    def test_fallback_sequence_runs_secondary_when_primary_fails(self):
+        cap = dcom_pipeline.ViewerCapture()
+        cap.vietmy = b'{"d": {}}'
+        cap.qido_series = "https://pacs.test/studies/1/series"
+
+        calls = []
+
+        class FailingVietmy(dcom_pipeline.VietmyAdapter):
+            def download(self, *args, **kwargs):
+                calls.append("vietmy")
+                raise RuntimeError("VietMy network timeout")
+
+        class SucceedingDicomweb(dcom_pipeline.DicomWebAdapter):
+            def download(self, cap, save_body, stats, log, stop, selected_series):
+                calls.append("dicomweb")
+                stats.dicom = 10
+                stats.expected = 10
+                stats.failed = 0
+
+        adapters = [FailingVietmy(), SucceedingDicomweb()]
+        stats = dcom_pipeline.DownloadStats()
+
+        # Mô phỏng fallback runner
+        for adapter in sorted(adapters, key=lambda a: a.priority, reverse=True):
+            try:
+                adapter.download(cap, lambda _: True, stats, lambda _: None, lambda: False, None)
+                if stats.is_complete():
+                    break
+            except Exception:
+                continue
+
+        self.assertEqual(["vietmy", "dicomweb"], calls)
+        self.assertTrue(stats.is_complete())
+        self.assertEqual("complete", stats.status)
+
+    def test_download_all_keeps_browser_alive_for_secondary_adapter_and_closes_in_finally(self):
+        import tempfile
+        from pathlib import Path
+
+        calls = []
+
+        class FakePage:
+            url = "https://pacs.test/viewer"
+            def on(self, *_args): pass
+            def goto(self, *_args, **_kwargs): pass
+
+        class FakeContext:
+            def __init__(self): self.page = FakePage()
+            def add_init_script(self, *_args): pass
+            def new_page(self): return self.page
+            def cookies(self): return []
+
+        class FakeBrowser:
+            def __init__(self): self.closed = False
+            def new_context(self, **_kwargs): return FakeContext()
+            def close(self): self.closed = True
+
+        class FakePlaywrightContext:
+            def __enter__(self): return object()
+            def __exit__(self, *_args): return False
+
+        browser = FakeBrowser()
+
+        class Primary:
+            name = "Primary"
+            def download(self, *_args):
+                calls.append(("primary", browser.closed))
+                raise RuntimeError("primary failed")
+
+        class Secondary:
+            name = "Secondary"
+            def download(self, _cap, _save, stats, _log, _stop, _selected):
+                calls.append(("secondary", browser.closed))
+                stats.dicom = 2
+                stats.expected = 2
+                stats.completed_tasks = 2
+                stats.failed = 0
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             mock.patch("playwright.sync_api.sync_playwright", return_value=FakePlaywrightContext()), \
+             mock.patch.object(dcom_pipeline, "_launch_chromium", return_value=browser), \
+             mock.patch.object(dcom_pipeline, "_wait_for_viewer_manifest", return_value=None), \
+             mock.patch.object(dcom_pipeline, "_ready_adapter", return_value=Primary()), \
+             mock.patch.object(dcom_pipeline, "_ready_adapters", return_value=[Primary(), Secondary()]), \
+             mock.patch.object(dcom_pipeline.pacs_strategy_store, "save_recipe"):
+            stats = dcom_pipeline.download_all(
+                "https://pacs.test/viewer",
+                Path(tmp_dir) / "DICOM",
+                log=lambda _message: None,
+            )
+
+        self.assertEqual([("primary", False), ("secondary", False)], calls)
+        self.assertTrue(stats.is_complete())
+        self.assertEqual(2, len(stats.outcomes))
+        self.assertTrue(browser.closed)
+
+
+class StrategyStoreTests(unittest.TestCase):
+    """Kiểm tra tính an toàn (không rò rỉ token/PII) và khả năng ghi nhớ của PacsStrategyStore."""
+
+    def test_compute_url_fingerprint_redacts_tokens_and_uids(self):
+        url = "https://pacs.bv-test.vn/viewer/study/1.2.840.113619.2.348?token=secret123&patientId=BN001&series=2"
+        fp = dcom_pipeline.compute_url_fingerprint(url, "DICOMweb")
+
+        # Khóa fingerprint CHỈ chứa origin, normalized path và tên query param keys
+        self.assertIn("https://pacs.bv-test.vn", fp)
+        self.assertIn("patientId,series,token", fp)
+        self.assertIn("DICOMWEB", fp)
+
+        # Tuyệt đối KHÔNG chứa token giá trị thật hay UID/mã bệnh nhân thật
+        self.assertNotIn("secret123", fp)
+        self.assertNotIn("BN001", fp)
+        self.assertNotIn("1.2.840.113619.2.348", fp)
+
+    def test_strategy_store_saves_and_promotes_successful_recipe(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store_path = Path(tmp_dir) / "pacs-strategies-v1.json"
+            store = dcom_pipeline.PacsStrategyStore(store_path)
+
+            fp = "https://pacs.test|/viewer/*?token|DICOMWEB"
+            # Lưu 3 lượt thành công cho DICOMweb
+            store.save_recipe(fp, "DICOMweb", preferred_routes=["wadors", "wadouri"], success=True, latency_ms=120.0)
+            store.save_recipe(fp, "DICOMweb", preferred_routes=["wadors", "wadouri"], success=True, latency_ms=100.0)
+
+            pref_adapter = store.get_preferred_adapter(fp)
+            self.assertEqual("DICOMweb", pref_adapter)
+            self.assertEqual(["wadors", "wadouri"], store.get_preferred_routes(fp))
+
+            # Kiểm tra file json đã tạo có schemaVersion=1
+            self.assertTrue(store_path.is_file())
+            content = json.loads(store_path.read_text(encoding="utf-8"))
+            self.assertEqual(1, content["schemaVersion"])
+    def test_strategy_store_updates_adapter_on_subsequent_success(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store_path = Path(tmp_dir) / "pacs-strategies-v1.json"
+            store = dcom_pipeline.PacsStrategyStore(store_path)
+
+            fp = "https://pacs.bv-test.vn|/viewer/*?token|*"
+            # Lượt 1: VietMy partial
+            store.save_recipe(fp, "VietMy", success=False, partial=True, failure_class="partial")
+            r1 = store.load().get(fp)
+            self.assertEqual("VietMy", r1["adapter"])
+            self.assertEqual(1, r1["partial"])
+            self.assertEqual(0, r1["success"])
+
+            # Lượt 2: DICOMweb fallback success -> adapter phải đổi sang DICOMweb
+            store.save_recipe(fp, "DICOMweb", preferred_routes=["wadors", "wadouri"], success=True, latency_ms=80.0)
+            r2 = store.load().get(fp)
+            self.assertEqual("DICOMweb", r2["adapter"])
+            self.assertEqual(1, r2["success"])
+            self.assertEqual("DICOMweb", store.get_preferred_adapter(fp))
+            self.assertEqual(["wadors", "wadouri"], store.get_preferred_routes(fp))
+
+    def test_strategy_store_purges_expired_ttl_recipes(self):
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store_path = Path(tmp_dir) / "pacs-strategies-v1.json"
+            store = dcom_pipeline.PacsStrategyStore(store_path)
+
+            # Ghi trực tiếp recipe đã hết hạn 95 ngày trước
+            old_time = time.time() - (95 * 86400)
+            payload = {
+                "schemaVersion": 1,
+                "updatedAt": old_time,
+                "recipes": {
+                    "fp_expired": {
+                        "schemaVersion": 1,
+                        "fingerprint": "fp_expired",
+                        "adapter": "VietMy",
+                        "success": 5,
+                        "lastSuccessAt": old_time,
+                        "updatedAt": old_time
+                    },
+                    "fp_fresh": {
+                        "schemaVersion": 1,
+                        "fingerprint": "fp_fresh",
+                        "adapter": "DICOMweb",
+                        "success": 2,
+                        "lastSuccessAt": time.time(),
+                        "updatedAt": time.time()
+                    }
+                }
+            }
+            store_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            recipes = store.load()
+            self.assertNotIn("fp_expired", recipes)
+            self.assertIn("fp_fresh", recipes)
+
+    def test_download_budget_expiration(self):
+        import time
+        with unittest.mock.patch("time.monotonic", return_value=100.0):
+            budget = dcom_pipeline.DownloadBudget(
+                started_at=100.0,
+                last_progress_at=100.0,
+                hard_deadline_s=600.0,
+                stall_deadline_s=60.0
+            )
+            self.assertFalse(budget.is_expired())
+
+        # Giả lập stall quá 60s
+        with unittest.mock.patch("time.monotonic", return_value=170.0):
+            self.assertTrue(budget.is_expired())
+
+        # Touch khi có tiến độ mới
+        with unittest.mock.patch("time.monotonic", return_value=170.0):
+            budget.touch()
+            self.assertFalse(budget.is_expired())
+
+    def test_fetch_runner_uses_budget_and_touches_real_progress_path(self):
+        class FakeBudget:
+            def __init__(self):
+                self.expired = False
+                self.touches = 0
+
+            def is_expired(self):
+                return self.expired
+
+            def touch(self):
+                self.touches += 1
+
+        budget = FakeBudget()
+        stats = dcom_pipeline.DownloadStats()
+        fetched = []
+        dcom_pipeline._run_fetch_tasks(
+            ["a", "b"],
+            lambda item: fetched.append(item) or True,
+            stats,
+            lambda _message: None,
+            lambda: False,
+            budget=budget,
+        )
+        self.assertEqual(["a", "b"], fetched)
+        self.assertEqual(2, budget.touches)
+        self.assertEqual(2, stats.completed_tasks)
+
+        budget.expired = True
+        fetched.clear()
+        expired_stats = dcom_pipeline.DownloadStats()
+        dcom_pipeline._run_fetch_tasks(
+            ["c"],
+            lambda item: fetched.append(item) or True,
+            expired_stats,
+            lambda _message: None,
+            lambda: False,
+            budget=budget,
+        )
+        self.assertEqual([], fetched)
+        self.assertEqual(1, expired_stats.failed)
+
+    def test_study_identity_guard_rejects_cross_study_and_missing_uid_after_lock(self):
+        guard = dcom_pipeline.StudyIdentityGuard()
+        self.assertTrue(guard.accept("1.2.3"))
+        self.assertTrue(guard.accept("1.2.3"))
+        self.assertFalse(guard.accept("9.9.9"))
+        self.assertFalse(guard.accept(""))
+
+    def test_chunk_reader_touches_budget_and_observes_cancel_between_reads(self):
+        class Response:
+            def __init__(self): self.parts = [b"abc", b"def", b""]
+            def read(self, _size): return self.parts.pop(0)
+
+        class Budget:
+            def __init__(self): self.touches = 0
+            def is_expired(self): return False
+            def touch(self): self.touches += 1
+
+        budget = Budget()
+        self.assertEqual(b"abcdef", dcom_pipeline._read_response_chunks(Response(), budget, lambda: False))
+        self.assertEqual(2, budget.touches)
+
+        reads = 0
+        response = Response()
+        original_read = response.read
+        def counted_read(size):
+            nonlocal reads
+            reads += 1
+            return original_read(size)
+        response.read = counted_read
+        with self.assertRaises(InterruptedError):
+            dcom_pipeline._read_response_chunks(response, Budget(), lambda: reads >= 1)
+        self.assertEqual(1, reads)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 'use strict';
 import {cleanUrl,classifyPacsUrl,viewerUrlScore,originPattern,bestDetectedRequest,safeHeaders,replayContentType,viewerStudyHint,classifyViewerShell,sanitizeSegment} from './lib/pacs.js';
 import {matchingAdapters,adapterById} from './lib/adapters/registry.js';
+import {compatibleAdapterIds,mapSeriesSelection,tasksBelongToStudy,cumulativeAttemptCounters,inventoryIsCovered,dedupeTasksBySop} from './lib/orchestrator.js';
 
 const TAB_PREFIX='pacs6_tab_',INV_PREFIX='pacs6_inv_',JOB_PREFIX='pacs6_job_',HISTORY_KEY='pacs6_history',RECIPES_KEY='pacs6_site_recipes';
 const MAX_HISTORY=100,MAX_NAV=60,MAX_REQUESTS=500,AUTO_SCORE=55;
@@ -9,15 +10,46 @@ let learnedRecipes={};
 const tabKey=id=>`${TAB_PREFIX}${id}`,invKey=id=>`${INV_PREFIX}${id}`,jobKey=id=>`${JOB_PREFIX}${id}`;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function pathSignature(raw){try{const u=new URL(raw),parts=u.pathname.split('/').map(seg=>{if(!seg)return'';if(/^[0-9a-f]{8}-[0-9a-f-]{20,}$/i.test(seg)||/^[0-9a-f]{20,}$/i.test(seg)||/^\d+(?:\.\d+){3,}$/.test(seg)||seg.length>40)return'*';return seg;});const keys=[...u.searchParams.keys()].filter(k=>!/(token|sig|signature|session|auth|key|password|pass|stoken)/i.test(k)).sort();return`${u.origin}${parts.join('/')}?${keys.join('&')}`;}catch{return'';}}
-function recipeForOrigin(origin){const raw=learnedRecipes[origin];if(Array.isArray(raw))return{dicom:[...raw],manifest:[]};if(raw&&typeof raw==='object')return{dicom:Array.isArray(raw.dicom)?raw.dicom:[],manifest:Array.isArray(raw.manifest)?raw.manifest:[]};return{dicom:[],manifest:[]};}
+function recipeForOrigin(origin){
+  const raw=learnedRecipes[origin];
+  if(!raw||typeof raw!=='object')return{schemaVersion:2,dicom:[],manifest:[],adapters:{}};
+  if(Array.isArray(raw))return{schemaVersion:2,dicom:[...raw],manifest:[],adapters:{}};
+  return{
+    schemaVersion:2,
+    dicom:Array.isArray(raw.dicom)?raw.dicom:[],
+    manifest:Array.isArray(raw.manifest)?raw.manifest:[],
+    adapters:(raw.adapters&&typeof raw.adapters==='object')?raw.adapters:{},
+  };
+}
 async function loadRecipes(){const o=await chrome.storage.local.get(RECIPES_KEY);learnedRecipes=o[RECIPES_KEY]&&typeof o[RECIPES_KEY]==='object'?o[RECIPES_KEY]:{};for(const origin of Object.keys(learnedRecipes))learnedRecipes[origin]=recipeForOrigin(origin);}
 function learnedRole(raw,role){const sig=pathSignature(raw);if(!sig)return false;try{return recipeForOrigin(new URL(raw).origin)[role]?.includes(sig)||false;}catch{return false;}}
 function isLearnedUrl(raw){return learnedRole(raw,'dicom');}
 function isLearnedManifestUrl(raw){return learnedRole(raw,'manifest');}
 async function learnUrl(raw,role='dicom'){const sig=pathSignature(raw);if(!sig||!['dicom','manifest'].includes(role))return;let origin='';try{origin=new URL(raw).origin;}catch{return;}const recipe=recipeForOrigin(origin),list=[...(recipe[role]||[])];if(!list.includes(sig))list.push(sig);recipe[role]=list.slice(-40);learnedRecipes[origin]=recipe;await chrome.storage.local.set({[RECIPES_KEY]:learnedRecipes});}
+async function recordAdapterOutcome(origin,adapterId,outcome={}){
+  if(!origin||!adapterId)return;
+  const recipe=recipeForOrigin(origin);
+  const adapters=recipe.adapters||{};
+  const ad=adapters[adapterId]||{preferredRoutes:[],success:0,partial:0,failureByClass:{timeout:0,auth:0,server:0,invalidDicom:0,other:0},latencyEwmaMs:0,lastSuccessAt:0};
+  if(outcome.status==='done'||outcome.status==='complete'){
+    ad.success=(ad.success||0)+1;
+    ad.lastSuccessAt=Date.now();
+    if(Array.isArray(outcome.preferredRoutes)&&outcome.preferredRoutes.length)ad.preferredRoutes=outcome.preferredRoutes;
+    if(outcome.latencyMs>0)ad.latencyEwmaMs=Math.round(0.7*(ad.latencyEwmaMs||outcome.latencyMs)+0.3*outcome.latencyMs);
+  }else if(outcome.status==='partial'){
+    ad.partial=(ad.partial||0)+1;
+  }else if(outcome.status==='error'||outcome.status==='failed'||outcome.status==='done_with_errors'){
+    const errClass=outcome.errorClass||'other';
+    if(!ad.failureByClass)ad.failureByClass={timeout:0,auth:0,server:0,invalidDicom:0,other:0};
+    ad.failureByClass[errClass]=(ad.failureByClass[errClass]||0)+1;
+  }
+  adapters[adapterId]=ad;
+  recipe.adapters=adapters;
+  learnedRecipes[origin]=recipe;
+  await chrome.storage.local.set({[RECIPES_KEY]:learnedRecipes});
+}
 function candidateDisplay(raw){try{const u=new URL(raw),keys=[...u.searchParams.keys()].filter(Boolean);return`${u.host}${u.pathname}${keys.length?`?${keys.join('&')}`:''}`;}catch{return String(raw||'');}}
 function extractUrlsFromJson(value,baseUrl){const out=new Set(),seen=new Set();function add(raw){let x=String(raw||'').trim();if(!x||x.length>8000)return;for(const p of ['wadouri:','wadors:','dicomweb:','dicomfile:'])if(x.toLowerCase().startsWith(p)){x=x.slice(p.length);break;}if(!(x.startsWith('/')||x.startsWith('?')||/^https?:\/\//i.test(x)))return;try{const u=new URL(x,baseUrl);if(['http:','https:'].includes(u.protocol))out.add(u.href);}catch{}}function walk(v,depth=0){if(depth>9||v==null)return;if(typeof v==='string'){add(v);return;}if(typeof v!=='object')return;if(seen.has(v))return;seen.add(v);if(Array.isArray(v)){for(const x of v.slice(0,20000))walk(x,depth+1);return;}for(const x of Object.values(v))walk(x,depth+1);}walk(value);return[...out].slice(0,3000);}
-
 
 async function getSession(key,fallback=null){const o=await chrome.storage.session.get(key);return o[key]??fallback;}
 async function setSession(key,value){await chrome.storage.session.set({[key]:value});}
@@ -64,10 +96,6 @@ async function stopLearning(tabId){const s=await getTabState(tabId);s.learning={
 async function markLearnCandidate(tabId,url,role){const s=await getTabState(tabId),row=[...(s.learnCandidates||[])].reverse().find(x=>x.url===cleanUrl(url));if(!row)throw new Error('Request không còn trong phiên học.');if(role==='dicom'){await ensureOffscreen();const r=await chrome.runtime.sendMessage({target:'offscreen',type:'PROBE_DICOM_URLS',probes:[{url:row.url,headers:headersForUrl(s,row.url),method:row.method||'GET'}]});if(!r?.valid?.includes(row.url))throw new Error('Request này không trả DICOM Part-10.');await learnUrl(row.url,'dicom');pushUnique(s.genericDirectUrls,row.url,5000);s.genericDirectMeta[row.url]={contentType:row.contentType||'application/octet-stream',learned:true};await saveTabState(tabId,s);scheduleAnalyze(tabId,80);return{role,valid:1};}if(role==='manifest'){await learnUrl(row.url,'manifest');const r=await materializeLearnedManifest(tabId,row.url,row);return{role,...r};}throw new Error('Loại học site không hợp lệ.');}
 async function rememberRequest(tabId,raw,extra={}){if(tabId<0)return;const hit=classifyPacsUrl(raw);const learnedManifest=isLearnedManifestUrl(raw);const s=await getTabState(tabId);if(!hit&&s.tracking!=='watching'&&!learnedManifest)return;const generic=hit||(/\/(?:api|rest|services?)\//i.test(raw)&&/(study|series|instance|image|dicom|exam|patient)/i.test(raw)?{type:'PACS_GENERIC_API',url:cleanUrl(raw),score:35}:null)||(learnedManifest?{type:'LEARNED_MANIFEST',url:cleanUrl(raw),score:72}:null);if(!generic)return;const id=`${generic.type}|${generic.url}`;const i=s.pacsRequests.findIndex(x=>`${x.type}|${x.url}`===id);if(i>=0)s.pacsRequests.splice(i,1);s.pacsRequests.push({...generic,...extra,time:Date.now()});if(s.pacsRequests.length>MAX_REQUESTS)s.pacsRequests.splice(0,s.pacsRequests.length-MAX_REQUESTS);s.confidence=Math.max(Number(s.confidence)||0,Math.min(100,Number(generic.score)||0));if(s.tracking!=='stopped')s.tracking='watching';await saveTabState(tabId,s);await setBadge(tabId);if(Number(generic.score||0)>=80||['PACS_GENERIC_API','DICOM_IMAGE_API'].includes(generic.type))scheduleAnalyze(tabId,450);if(learnedManifest)scheduleLearnedManifest(tabId,generic.url,extra,450);chrome.runtime.sendMessage({type:'PACS_SIGNAL',tabId,signal:generic.type}).catch(()=>{});}
 async function rememberHeaders(tabId,url,rawHeaders){if(/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(url))return;const s=await getTabState(tabId);if(!['watching','candidate'].includes(s.tracking))return;const h={};for(const x of(rawHeaders||[]))if(x.name&&x.value!=null)h[x.name]=x.value;const safe=safeHeaders(h);if(!Object.keys(safe).length)return;let ct='';for(const[k,v]of Object.entries(safe))if(k.toLowerCase()==='content-type'&&v){ct=String(v);break;}
-// Content-Type phải bám theo TỪNG request, không dùng chung một ô cho cả origin:
-// một origin phát nhiều loại POST (ASMX JSON, SignalR urlencoded...), ô chung
-// ghi đè lẫn nhau nên lúc replay manifest rất dễ gửi sai kiểu. ASMX gặp sai kiểu
-// thì trả HTTP 200 kèm trang HTML, không phải lỗi — hỏng rất lặng lẽ.
 if(ct){const u=cleanUrl(url);for(const r of(s.pacsRequests||[]))if(r.url===u&&!r.contentType)r.contentType=ct;}
 try{const origin=new URL(url).origin;s.headersByOrigin[origin]={...(s.headersByOrigin[origin]||{}),...safe};await saveTabState(tabId,s);}catch{}}
 async function rememberDicomResponse(tabId,url,contentType,status,method='GET',contentLength=0){
@@ -86,8 +114,6 @@ chrome.webRequest.onBeforeRequest.addListener(d=>{
   const hit=classifyPacsUrl(d.url),learnedManifest=isLearnedManifestUrl(d.url);
   getTabState(d.tabId).then(s=>{
     if(s.learning?.active)rememberLearningRequest(d.tabId,d,s).catch(()=>{});
-    // "Dừng theo dõi" là lệnh dứt khoát của người dùng: tab đã dừng thì không
-    // ghi gì nữa, kể cả URL trông đúng là PACS.
     if(s.tracking==='stopped')return;
     if(!hit&&!learnedManifest&&!['watching','candidate'].includes(s.tracking))return;
     const sensitive=/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(d.url);
@@ -126,51 +152,169 @@ if(score>=AUTO_SCORE&&s.tracking==='watching')scheduleAnalyze(tabId,400);}
 async function scanPerformance(tabId){const allowed=await hasOrigin((await chrome.tabs.get(tabId)).url||'');if(!allowed)return[];const probe=()=>{const resolve=raw=>{try{return new URL(raw,location.href).href}catch{return''}},dom=new Set(),add=raw=>{const u=resolve(raw);if(/^https?:/i.test(u))dom.add(u)};for(const el of document.querySelectorAll('iframe[src],frame[src],embed[src],object[data],form[action],a[href],script[src],link[href]'))add(el.getAttribute('src')||el.getAttribute('data')||el.getAttribute('action')||el.getAttribute('href')||'');return{href:location.href,title:document.title||'',navigationUrl:performance.getEntriesByType('navigation')[0]?.name||'',resources:performance.getEntriesByType('resource').map(e=>e.name).filter(Boolean).slice(-3000),domUrls:[...dom].slice(-800),readyState:document.readyState,viewerDom:Boolean(document.querySelector('.cornerstone-canvas,[class*="cornerstone" i],[data-cornerstone-enabled],canvas')),vietmyStudyId:(()=>{for(const el of document.querySelectorAll('a[id^="series"]')){const m=String(el.id||'').match(/^series(?:_filter)?_?(\d{3,})/);if(m)return m[1];}return'';})()};};try{return(await chrome.scripting.executeScript({target:{tabId,allFrames:true},func:probe})).map(x=>({frameId:x.frameId,...(x.result||{})}));}catch{return[];}}
 async function scanFrameUrls(tabId){try{return(await chrome.webNavigation.getAllFrames({tabId})).map(f=>({frameId:f.frameId,url:cleanUrl(f.url),documentId:f.documentId||''})).filter(f=>f.url);}catch{return[];}}
 function summarize(state,perfs,frames){const top=perfs.find(x=>x.frameId===0)||perfs[0]||{},nav=[...(state.navUrls||[])],discovered=[];for(const f of frames){pushUnique(nav,f.url);pushUnique(discovered,f.url,300);}for(const p of perfs){for(const u of[p.navigationUrl,p.href]){pushUnique(nav,cleanUrl(u));pushUnique(discovered,cleanUrl(u),300);}for(const u of(p.domUrls||[]))pushUnique(discovered,cleanUrl(u),300);}const map=new Map();for(const r of(state.pacsRequests||[]))map.set(`${r.type}|${r.url}`,r);for(const p of perfs)for(const raw of[...(p.resources||[]),...(p.domUrls||[])]){const h=classifyPacsUrl(raw);if(!h)continue;const key=`${h.type}|${h.url}`;
-// Bản ghi từ webRequest mang theo method/requestBody/Content-Type — thứ duy
-// nhất để phát lại được POST manifest. Bản suy ra từ Performance API chỉ có URL,
-// nên gặp trùng thì GIỮ bản cũ, đè lên là mất khả năng replay.
-if(!map.has(key))map.set(key,{...h,source:`page:${p.frameId}`,time:Date.now()});}const requests=[...map.values()].sort((a,b)=>(b.score||0)-(a.score||0)).slice(0,MAX_REQUESTS),candidates=[...new Set([...nav,...discovered])],ranked=candidates.map(url=>({url,score:viewerUrlScore(url)})).sort((a,b)=>b.score-a.score),currentUrl=cleanUrl(top.href)||state.currentUrl||'',bestViewerUrl=ranked[0]?.url||currentUrl,shell=candidates.map(classifyViewerShell).filter(Boolean).sort((a,b)=>(b.score||0)-(a.score||0))[0]||null;let detector='UNKNOWN';if(requests.some(x=>x.type.startsWith('VIETMY_')))detector='VIETMY';else if(requests.some(x=>['QIDO_SERIES','QIDO_INSTANCES','DICOM_METADATA','DICOM_INSTANCE','DICOM_FRAME','WADO'].includes(x.type)))detector='DICOMWEB';else if(requests.some(x=>x.type.startsWith('VRPACS_')))detector='VRPACS';else if(requests.some(x=>x.type.startsWith('VRAD_')||x.type==='DICOM_IMAGE_API'))detector='VRAD';else if(requests.some(x=>x.type==='RENDERED_JPEG'))detector='RENDERED_ONLY';else if(shell)detector='VIEWER_SHELL';let confidence=Math.max(Number(state.confidence)||0,Number(shell?.score)||0,...requests.map(r=>Number(r.score)||0),Number(ranked[0]?.score)||0,Number(state.pageHintScore)||0);confidence=Math.max(0,Math.min(100,Math.round(confidence)));return{tabId:state.tabId,title:top.title||'',currentUrl,bestViewerUrl,navUrls:nav,frameUrls:frames.map(f=>f.url),requests,detector,viewerShell:shell?.type||'',origins:[...new Set([...candidates,...requests.map(r=>r.url)].map(originPattern).filter(Boolean))],studyHint:state.studyHint||viewerStudyHint(bestViewerUrl)||'',confidence,tracking:state.tracking||'idle',performanceError:'',
-// MSC PACS không phát request nào chứa caseStudyId, nhưng DOM của iframe viewer
-// có (thẻ series mang id "series<caseStudyId>_<n>"). Nhặt lấy để dựng lại được
-// POST manifest cả khi chưa kịp ghi request gốc.
-vietmyStudyId:perfs.map(p=>p.vietmyStudyId).find(Boolean)||''};}
+if(!map.has(key))map.set(key,{...h,source:`page:${p.frameId}`,time:Date.now()});}const requests=[...map.values()].sort((a,b)=>(b.score||0)-(a.score||0)).slice(0,MAX_REQUESTS),candidates=[...new Set([...nav,...discovered])],ranked=candidates.map(url=>({url,score:viewerUrlScore(url)})).sort((a,b)=>b.score-a.score),currentUrl=cleanUrl(top.href)||state.currentUrl||'',bestViewerUrl=ranked[0]?.url||currentUrl,shell=candidates.map(classifyViewerShell).filter(Boolean).sort((a,b)=>(b.score||0)-(a.score||0))[0]||null;let detector='UNKNOWN';if(requests.some(x=>x.type.startsWith('VIETMY_')))detector='VIETMY';else if(requests.some(x=>['QIDO_SERIES','QIDO_INSTANCES','DICOM_METADATA','DICOM_INSTANCE','DICOM_FRAME','WADO'].includes(x.type)))detector='DICOMWEB';else if(requests.some(x=>x.type.startsWith('VRPACS_')))detector='VRPACS';else if(requests.some(x=>x.type.startsWith('VRAD_')||x.type==='DICOM_IMAGE_API'))detector='VRAD';else if(requests.some(x=>x.type==='RENDERED_JPEG'))detector='RENDERED_ONLY';else if(shell)detector='VIEWER_SHELL';let confidence=Math.max(Number(state.confidence)||0,Number(shell?.score)||0,...requests.map(r=>Number(r.score)||0),Number(ranked[0]?.score)||0,Number(state.pageHintScore)||0);confidence=Math.max(0,Math.min(100,Math.round(confidence)));return{tabId:state.tabId,title:top.title||'',currentUrl,bestViewerUrl,navUrls:nav,frameUrls:frames.map(f=>f.url),requests,detector,viewerShell:shell?.type||'',origins:[...new Set([...candidates,...requests.map(r=>r.url)].map(originPattern).filter(Boolean))],studyHint:state.studyHint||viewerStudyHint(bestViewerUrl)||'',confidence,tracking:state.tracking||'idle',performanceError:'',vietmyStudyId:perfs.map(p=>p.vietmyStudyId).find(Boolean)||''};}
 async function scanTab(tabId){const state=await getTabState(tabId),[perf,frames]=await Promise.all([scanPerformance(tabId),scanFrameUrls(tabId)]);state.frameUrls=frames.map(f=>f.url);let summary=summarize(state,perf,frames);summary.missingOrigins=await missingPatterns([summary.currentUrl,...summary.frameUrls,...summary.requests.map(r=>r.url)]);summary.siteAccess=summary.missingOrigins.length===0&&Boolean(summary.currentUrl);if(summary.confidence>=AUTO_SCORE&&state.tracking==='idle'){state.tracking='candidate';state.confidence=Math.max(state.confidence,summary.confidence);await saveTabState(tabId,state);}summary.tracking=state.tracking;
-// Cau truc study cua GE ZFP nam trong trang chu khong trong request nao, nen
-// phai hoi rieng - khong co no thi khong adapter nao nhan ra dong PACS nay.
 if(state.zfpViewer){const info=await zfpInfo(tabId);if(info){summary.zfpInfo=info;summary.zfpGroups=info.groups;summary.detector='ZFP';summary.confidence=Math.max(summary.confidence,92);}}
 return summary;}
 
 function headersForUrl(state,url){try{const h={...(state.headersByOrigin?.[new URL(url).origin]||{})};for(const k of Object.keys(h)){const l=k.toLowerCase();if(['content-type','cookie','origin','referer','host','content-length'].includes(l))delete h[k];}return h;}catch{return{};}}
 function restoreBody(stored){if(!stored)return undefined;if(stored.kind==='form'){const p=new URLSearchParams();for(const[k,vals]of Object.entries(stored.data||{}))for(const v of(Array.isArray(vals)?vals:[vals]))p.append(k,v);return p;}if(stored.kind==='raw'){const bins=(stored.chunks||[]).map(atob),len=bins.reduce((n,b)=>n+b.length,0),out=new Uint8Array(len);let off=0;for(const b of bins){for(let i=0;i<b.length;i++)out[off+i]=b.charCodeAt(i);off+=b.length;}return out;}return undefined;}
 async function fetchJsonFor(state,url,accept='application/json, application/dicom+json',requestMeta=null){const method=String(requestMeta?.method||'GET').toUpperCase(),body=['GET','HEAD'].includes(method)?undefined:restoreBody(requestMeta?.requestBody),headers={...headersForUrl(state,url),Accept:accept};if(!['GET','HEAD'].includes(method)){const ct=replayContentType(state,url,requestMeta,body);if(ct)headers['Content-Type']=ct;}const r=await fetch(url,{method,body,credentials:'include',cache:'no-store',redirect:'follow',headers});if(!r.ok)throw new Error(`HTTP ${r.status}: ${new URL(url).pathname}`);const text=await r.text(),head=text.trim().slice(0,1);
-// Trả HTML mà vẫn HTTP 200 là dấu hiệu server từ chối kiểu request (hoặc đá về
-// trang đăng nhập). Nói thẳng ra, đừng để vỡ thành "Unexpected token '<'".
 if(head!=='{'&&head!=='['){const kind=/^\s*</.test(text)?'trang HTML':'dữ liệu không phải JSON';throw new Error(`Server trả ${kind} thay vì manifest JSON (${new URL(url).pathname}). Link có thể đã hết hạn, hoặc phải mở lại viewer khi đã bật "Theo dõi tab" để ghi đúng request.`);}
 try{return JSON.parse(text);}catch(e){throw new Error(`Manifest hỏng, không đọc được JSON (${new URL(url).pathname}).`);}}
 function inheritQuery(target,source){const t=new URL(target),s=new URL(source);for(const[k,v]of s.searchParams)if(!t.searchParams.has(k))t.searchParams.append(k,v);return t.href;}
 function normalizeStudy(inv){const p=inv.patient||{};return{adapter:inv.adapter||'',studyUid:String(inv.studyUid||''),patient:{name:String(p.name||''),id:String(p.id||''),birthDate:String(p.birthDate||''),studyDate:String(p.studyDate||''),description:String(p.description||''),accession:String(p.accession||'')},series:Array.isArray(inv.series)?inv.series:[],context:inv.context||{}};}
 function adapterContext(summary,state){return{summary,state,fetchJson:(url,accept,req)=>fetchJsonFor(state,url,accept,req),headersForUrl:url=>headersForUrl(state,url),inheritQuery,normalizeStudy,zfpInfo:()=>zfpInfo(state.tabId)};}
-async function analyzeTab(tabId){const summary=await scanTab(tabId),state=await getTabState(tabId);let inv=null,lastError=null;for(const adapter of matchingAdapters(summary,state)){try{inv=await adapter.analyze(adapterContext(summary,state));if(inv)break;}catch(e){lastError=e;}}if(!inv){if(summary.detector==='RENDERED_ONLY')throw new Error('Viewer hiện chỉ phát ảnh render, chưa có DICOM.');throw lastError||new Error(summary.tracking==='stopped'?'Đã dừng theo dõi.':'Chưa bắt được DICOM/manifest.');}inv.tabId=tabId;inv.summary=summary;inv.createdAt=Date.now();const prev=await findHistory(inv);if(prev)inv.previousDownload=prev;await setSession(invKey(tabId),inv);await upsertHistory(inv,{status:prev?.status==='done'?'done':'viewed',analyzedAt:Date.now()});await setBadge(tabId);return inv;}
+async function analyzeTab(tabId){
+  const summary=await scanTab(tabId),state=await getTabState(tabId);
+  let inv=null,lastError=null;
+  const inventories={};
+  const allMatching=matchingAdapters(summary,state);
+  let origin='';try{origin=new URL(summary.currentUrl||state.currentUrl).origin;}catch{}
+  const recipe=recipeForOrigin(origin);
+  const ranked=[...allMatching].sort((a,b)=>{
+    const sa=recipe.adapters?.[a.id]?.success||0;
+    const sb=recipe.adapters?.[b.id]?.success||0;
+    return sb-sa;
+  });
+  for(const adapter of ranked){
+    try{
+      const candidate=await adapter.analyze(adapterContext(summary,state));
+      if(candidate)inventories[adapter.id]={...candidate,adapter:adapter.id,tabId,createdAt:Date.now()};
+    }catch(e){lastError=e;}
+  }
+  const primaryId=ranked.map(a=>a.id).find(id=>inventories[id]);
+  if(primaryId){
+    inv={...inventories[primaryId]};
+    inv.adapterCandidates=compatibleAdapterIds(inv,inventories,ranked.map(a=>a.id));
+    inv.adapterInventories=Object.fromEntries(inv.adapterCandidates.map(id=>[id,inventories[id]]));
+  }
+  if(!inv){
+    if(summary.detector==='RENDERED_ONLY')throw new Error('Viewer hiện chỉ phát ảnh render, chưa có DICOM.');
+    throw lastError||new Error(summary.tracking==='stopped'?'Đã dừng theo dõi.':'Chưa bắt được DICOM/manifest.');
+  }
+  inv.tabId=tabId;inv.summary=summary;inv.createdAt=Date.now();
+  const prev=await findHistory(inv);
+  if(prev)inv.previousDownload=prev;
+  await setSession(invKey(tabId),inv);
+  await upsertHistory(inv,{status:prev?.status==='done'?'done':'viewed',analyzedAt:Date.now()});
+  await setBadge(tabId);
+  return inv;
+}
 function scheduleAnalyze(tabId,delay=500){clearTimeout(analyzeTimers.get(tabId));analyzeTimers.set(tabId,setTimeout(async()=>{analyzeTimers.delete(tabId);try{const inv=await analyzeTab(tabId);chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});}catch{}},delay));}
 
 async function ensureOffscreen(){const url=chrome.runtime.getURL('offscreen.html');const c=await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT'],documentUrls:[url]});if(c.length)return;await chrome.offscreen.createDocument({url:'offscreen.html',reasons:['BLOBS'],justification:'Tải và ghi DICOM trực tiếp vào thư mục người dùng đã chọn.'});}
 function safeFolderName(inv){const p=inv.patient||{},name=sanitizeSegment(String(p.name||'').replace(/\^+/g,' ').replace(/\s+/g,' ').trim(),'Unknown'),id=sanitizeSegment(p.id||'NoID','NoID');let d=String(p.studyDate||'').replace(/[^0-9]/g,'');const date=d.length>=8?`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`:sanitizeSegment(p.studyDate||'NoDate','NoDate');return`${name} - ${id} - ${date}`;}
-async function buildTasks(inv,selected){const state=await getTabState(inv.tabId),adapter=adapterById(inv.adapter);if(!adapter)throw new Error(`Không có adapter ${inv.adapter}.`);const ctx=adapterContext(inv.summary||await scanTab(inv.tabId),state);const tasks=await adapter.enumerate(inv,selected,ctx);return tasks.map(t=>({...t,tabId:inv.tabId}));}
+async function buildTasksForAdapter(inv,selected,adapterId){const id=adapterId||inv.adapter,state=await getTabState(inv.tabId),adapter=adapterById(id);if(!adapter)throw new Error(`Không có adapter ${id}.`);const sourceInv=id===inv.adapter?inv:inv.adapterInventories?.[id];if(!sourceInv)throw new Error(`Adapter ${id} chưa phân tích thành công study này.`);const mappedSelected=id===inv.adapter?selected:mapSeriesSelection(inv,sourceInv,selected);if(!mappedSelected.length)throw new Error(`Không ánh xạ được series đã chọn sang adapter ${id}.`);const ctx=adapterContext(sourceInv.summary||inv.summary||await scanTab(inv.tabId),state);const tasks=dedupeTasksBySop(await adapter.enumerate(sourceInv,mappedSelected,ctx));if(!tasksBelongToStudy(tasks,inv.studyUid))throw new Error(`Adapter ${id} trả task khác StudyInstanceUID.`);return tasks.map(t=>({...t,tabId:inv.tabId}));}
+async function buildTasks(inv,selected){return buildTasksForAdapter(inv,selected,inv.adapter);}
 
 function scheduleJobFlush(tabId,force=false){if(force){clearTimeout(jobFlushTimers.get(tabId));jobFlushTimers.delete(tabId);const j=jobMemory.get(tabId);if(j)setSession(jobKey(tabId),j).catch(()=>{});return;}if(jobFlushTimers.has(tabId))return;jobFlushTimers.set(tabId,setTimeout(()=>{jobFlushTimers.delete(tabId);const j=jobMemory.get(tabId);if(j)setSession(jobKey(tabId),j).catch(()=>{});},600));}
 async function getJob(tabId){return jobMemory.get(tabId)||await getSession(jobKey(tabId));}
-async function finalizeJob(tabId,engineResult){let job=jobMemory.get(tabId)||await getSession(jobKey(tabId),{tabId});let inv=await getSession(invKey(tabId));job={...job,...engineResult,updatedAt:Date.now()};if(inv&&engineResult?.resolvedMeta){const m=engineResult.resolvedMeta||{},p={...(inv.patient||{})};if(!p.name&&m.patientName)p.name=m.patientName;if(!p.id&&m.patientId)p.id=m.patientId;if(!p.studyDate&&m.studyDate)p.studyDate=m.studyDate;if(!inv.studyUid&&m.studyUid)inv.studyUid=m.studyUid;inv={...inv,patient:p};await setSession(invKey(tabId),inv);}const known=Boolean(inv?.context?.completeKnown),fullSelection=Boolean(job.allSeriesSelected);if(job.status==='done'&&(!known||!fullSelection))job.status='partial';if(job.status==='done_with_errors'&&(!known||!fullSelection)&&job.completed)job.status='partial';jobMemory.set(tabId,job);scheduleJobFlush(tabId,true);// Ghi lich su xong phai gan nguoc ket qua vao inventory dang mo. Truoc day
-// khong gan, ma `previousDownload` chi duoc dat luc analyzeTab(), nen tai xong
-// panel van hien nguyen danh sach series - phai tat mo lai trinh duyet (de
-// analyze chay lai) moi thay trang thai "da tai".
-if(inv){const row=await upsertHistory(inv,{status:job.status,lastDownloadAt:Date.now(),completed:job.completed||0,total:job.total||0,failed:job.failed||0});if(row){inv={...inv,previousDownload:row};await setSession(invKey(tabId),inv);}}chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});if(inv)chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});await setDownloadUi(true);await setBadge(tabId);}
-async function startJob(tabId,selected,options={}){const existing=await getJob(tabId);if(existing&&['preparing','downloading','cancelling'].includes(existing.status))throw new Error('Tab này đang tải DICOM.');const inv=await getSession(invKey(tabId));if(!inv)throw new Error('Chưa nhận diện được study.');const tasks=await buildTasks(inv,selected);if(!tasks.length)throw new Error('Không có DICOM trong các series đã chọn.');await ensureOffscreen();const job={id:crypto.randomUUID(),tabId,status:'preparing',adapter:inv.adapter,studyUid:inv.studyUid||'',selectedSeries:selected,allSeriesSelected:selected.length===Number(inv.series?.length||0),total:tasks.length,completed:0,failed:0,skipped:0,bytesWritten:0,currentFile:'',errors:[],startedAt:Date.now(),updatedAt:Date.now()};jobMemory.set(tabId,job);scheduleJobFlush(tabId,true);await setBadge(tabId);chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});job.status='downloading';const spec={jobId:job.id,tabId,tasks,studyFolder:safeFolderName(inv),folderInfo:{patientName:inv.patient?.name||'',patientId:inv.patient?.id||'',studyDate:inv.patient?.studyDate||''},saveMode:options.saveMode==='downloads'?'downloads':'filesystem',concurrency:options.concurrency||6,frameConcurrency:options.frameConcurrency||6};job.saveMode=spec.saveMode;if(spec.saveMode==='downloads')await setDownloadUi(false);const r=await chrome.runtime.sendMessage({target:'offscreen',type:'START_ENGINE',spec}).catch(e=>({ok:false,error:String(e?.message||e)}));if(!r?.ok){await finalizeJob(tabId,{status:'error',failed:tasks.length,completed:0,errors:[r?.error||'Engine error']});throw new Error(r?.error||'Không khởi động được download engine.');}return job;}
+async function finalizeJob(tabId,engineResult){let job=jobMemory.get(tabId)||await getSession(jobKey(tabId),{tabId});let inv=await getSession(invKey(tabId));job={...job,...engineResult,updatedAt:Date.now()};if(inv&&engineResult?.resolvedMeta){const m=engineResult.resolvedMeta||{},p={...(inv.patient||{})};if(!p.name&&m.patientName)p.name=m.patientName;if(!p.id&&m.patientId)p.id=m.patientId;if(!p.studyDate&&m.studyDate)p.studyDate=m.studyDate;if(!inv.studyUid&&m.studyUid)inv.studyUid=m.studyUid;inv={...inv,patient:p};await setSession(invKey(tabId),inv);}const known=Boolean(inv?.context?.completeKnown),fullSelection=Boolean(job.allSeriesSelected);if(job.status==='done'&&(!known||!fullSelection))job.status='partial';if(job.status==='done_with_errors'&&(!known||!fullSelection)&&job.completed)job.status='partial';jobMemory.set(tabId,job);scheduleJobFlush(tabId,true);
+if(inv){
+  const row=await upsertHistory(inv,{status:job.status,lastDownloadAt:Date.now(),completed:job.completed||0,total:job.total||0,failed:job.failed||0});
+  if(row){inv={...inv,previousDownload:row};await setSession(invKey(tabId),inv);}
+  try{
+    const origin=new URL(inv.summary?.currentUrl||inv.context?.url||'').origin;
+    if(origin&&job.adapter){
+      await recordAdapterOutcome(origin,job.adapter,{
+        status:job.status,
+        latencyMs:Date.now()-(job.startedAt||Date.now()),
+        errorClass:job.errors?.length?'timeout':'other'
+      });
+    }
+  }catch{}
+}chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});if(inv)chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});await setDownloadUi(true);await setBadge(tabId);}
+async function startJob(tabId,selected,options={}){
+  const existing=await getJob(tabId);
+  if(existing&&['preparing','downloading','cancelling'].includes(existing.status))throw new Error('Tab này đang tải DICOM.');
+  const inv=await getSession(invKey(tabId));
+  if(!inv)throw new Error('Chưa nhận diện được study.');
+  const tasks=await buildTasks(inv,selected);
+  if(!tasks.length)throw new Error('Không có DICOM trong các series đã chọn.');
+  await ensureOffscreen();
+  const attemptId=crypto.randomUUID();
+  const expectedSopUids=[...new Set(tasks.map(t=>String(t.sopInstanceUid||'').trim()).filter(Boolean))];
+  const job={
+    id:crypto.randomUUID(),
+    attemptId,
+    tabId,
+    status:'preparing',
+    adapter:inv.adapter,
+    adapterCandidates:inv.adapterCandidates||[inv.adapter],
+    attemptIndex:0,
+    options,
+    studyUid:inv.studyUid||'',
+    selectedSeries:selected,
+    allSeriesSelected:selected.length===Number(inv.series?.length||0),
+    total:tasks.length,
+    completed:0,
+    failed:0,
+    skipped:0,
+    bytesWritten:0,
+    currentFile:'',
+    errors:[],
+    completedSopUids:[],
+    expectedSopUids,
+    logicalTotal:tasks.length,
+    attemptBaseOriginal:0,
+    attemptBaseReconstructed:0,
+    attemptBaseBytes:0,
+    startedAt:Date.now(),
+    updatedAt:Date.now()
+  };
+  jobMemory.set(tabId,job);
+  scheduleJobFlush(tabId,true);
+  await setBadge(tabId);
+  chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});
+  job.status='downloading';
+  const spec={
+    jobId:job.id,
+    attemptId,
+    tabId,
+    tasks,
+    studyFolder:safeFolderName(inv),
+    folderInfo:{patientName:inv.patient?.name||'',patientId:inv.patient?.id||'',studyDate:inv.patient?.studyDate||''},
+    saveMode:options.saveMode==='downloads'?'downloads':'filesystem',
+    concurrency:options.concurrency||6,
+    frameConcurrency:options.frameConcurrency||6,
+    alreadyCompletedSopUids:[],
+    baselineCompleted:0,
+    logicalTotal:tasks.length
+  };
+  job.saveMode=spec.saveMode;
+  if(spec.saveMode==='downloads')await setDownloadUi(false);
+  const r=await chrome.runtime.sendMessage({target:'offscreen',type:'START_ENGINE',spec}).catch(e=>({ok:false,error:String(e?.message||e)}));
+  if(!r?.ok){
+    await finalizeJob(tabId,{status:'error',failed:tasks.length,completed:0,errors:[r?.error||'Engine error']});
+    throw new Error(r?.error||'Không khởi động được download engine.');
+  }
+  return job;
+}
 async function cancelJob(tabId){const j=await getJob(tabId);if(!j)return;jobMemory.set(tabId,{...j,status:'cancelling',updatedAt:Date.now()});scheduleJobFlush(tabId,true);await ensureOffscreen();await chrome.runtime.sendMessage({target:'offscreen',type:'CANCEL_ENGINE',tabId}).catch(()=>{});}
 
 async function siteAccessChanged(tabId){await injectContent(tabId);await startTracking(tabId,true);return scanTab(tabId);}
 async function currentOverview(tabId){const [summary,state,inventory,job]=await Promise.all([scanTab(tabId),getTabState(tabId),getSession(invKey(tabId)),getJob(tabId)]);return{summary,state,inventory,job};}
 
-async function handleEngineProgress(m){const tabId=Number(m.tabId),stored=jobMemory.get(tabId)||await getSession(jobKey(tabId),{tabId,id:m.jobId});if(stored.id&&m.jobId&&stored.id!==m.jobId)return;const job={...stored,status:m.status||stored.status,total:m.total??stored.total,completed:m.completed??stored.completed,failed:m.failed??stored.failed,skipped:m.skipped??stored.skipped,original:m.original??stored.original??0,reconstructed:m.reconstructed??stored.reconstructed??0,bytesWritten:m.bytesWritten??stored.bytesWritten,currentFile:m.currentFile??stored.currentFile,errors:m.errors||stored.errors||[],updatedAt:m.updatedAt||Date.now()};jobMemory.set(tabId,job);scheduleJobFlush(tabId);chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});setBadge(tabId).catch(()=>{});}
+async function handleEngineProgress(m){
+  const tabId=Number(m.tabId),stored=jobMemory.get(tabId)||await getSession(jobKey(tabId),{tabId,id:m.jobId});
+  if(stored.id&&m.jobId&&stored.id!==m.jobId)return;
+  if(stored.attemptId&&m.attemptId&&stored.attemptId!==m.attemptId)return;
+  const cumulative=cumulativeAttemptCounters(stored,m);
+  const job={
+    ...stored,
+    status:m.status||stored.status,
+    total:m.total??stored.total,
+    completed:m.completed??stored.completed,
+    failed:m.failed??stored.failed,
+    skipped:m.skipped??stored.skipped,
+    ...cumulative,
+    currentFile:m.currentFile??stored.currentFile,
+    errors:m.errors||stored.errors||[],
+    updatedAt:m.updatedAt||Date.now()
+  };
+  jobMemory.set(tabId,job);scheduleJobFlush(tabId);chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});setBadge(tabId).catch(()=>{});
+}
 
 // chrome.downloads CHỈ sống ở service worker: offscreen document chỉ được dùng
 // chrome.runtime, nên gọi bên đó là undefined và cả chế độ lưu qua trình tải của
@@ -245,13 +389,104 @@ function cancelDownloads(jobId){const set=activeDownloads.get(jobId);if(!set)ret
 chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
   if(m?.target==='offscreen')return false;
   if(m?.type==='ENGINE_PROGRESS'){handleEngineProgress(m).catch(()=>{});return false;}
-  if(m?.type==='ENGINE_FINISHED'){
-    const tabId=Number(m.tabId),old=jobMemory.get(tabId)||null;if(old?.id&&m.jobId&&old.id!==m.jobId)return false;finalizeJob(tabId,m.result||{status:'error',errors:['Engine kết thúc không có kết quả.']}).finally(()=>{const exists=chrome.tabs.get(tabId).then(()=>true).catch(()=>false);exists.then(ok=>{if(!ok){jobMemory.delete(tabId);chrome.storage.session.remove([tabKey(tabId),invKey(tabId),jobKey(tabId)]).catch(()=>{});}});}).catch(()=>{});return false;
-  }
   if(m?.type==='ENGINE_LEARNED_URL'){learnUrl(m.url).catch(()=>{});return false;}
+  if(m?.type==='ENGINE_FINISHED'){
+    (async()=>{
+      const tabId=Number(m.tabId),old=jobMemory.get(tabId)||await getSession(jobKey(tabId));
+      if(old?.id&&m.jobId&&old.id!==m.jobId)return;
+      if(old?.attemptId&&m.attemptId&&old.attemptId!==m.attemptId)return;
+      const res=m.result||{status:'error',errors:['Engine kết thúc không có kết quả.']};
+      const completedSopList=[...new Set([...(old?.completedSopUids||[]),...(res.completedSopUids||[])])];
+      if(old)old.completedSopUids=completedSopList;
+      if(old)res.completed=Math.max(Number(res.completed)||0,completedSopList.length);
+      if(old){res.original=(Number(old.attemptBaseOriginal)||0)+(Number(res.original)||0);res.reconstructed=(Number(old.attemptBaseReconstructed)||0)+(Number(res.reconstructed)||0);res.bytesWritten=(Number(old.attemptBaseBytes)||0)+(Number(res.bytesWritten)||0);}
+      const isPartialOrError=['partial','done_with_errors','error'].includes(res.status);
+      const candidates=old?.adapterCandidates||[];
+      const nextIdx=(old?.attemptIndex||0)+1;
+
+      if(isPartialOrError&&nextIdx<candidates.length&&old?.status!=='cancelling'){
+        const inv=await getSession(invKey(tabId));
+        if(inv){
+          for(let candidateIndex=nextIdx;candidateIndex<candidates.length;candidateIndex++){
+            const nextAdapterId=candidates[candidateIndex];
+            try{
+              const priorState={...old,expectedSopUids:[...(old.expectedSopUids||[])],attemptHistory:[...(old.attemptHistory||[])]};
+              const allNewTasks=await buildTasksForAdapter(inv,old.selectedSeries||[],nextAdapterId);
+              if(!allNewTasks.length)continue;
+              const newExpectedSops=allNewTasks.map(t=>String(t.sopInstanceUid||'').trim()).filter(Boolean);
+              old.expectedSopUids=[...new Set([...(old.expectedSopUids||[]),...newExpectedSops])];
+              old.logicalTotal=Math.max(Number(old.logicalTotal)||0,Number(old.total)||0,allNewTasks.length,old.expectedSopUids.length);
+              const newTasks=allNewTasks.filter(t=>{
+                const sop=String(t.sopInstanceUid||'').trim();
+                return !sop||!completedSopList.includes(sop);
+              });
+              if(!newTasks.length){
+                if(inventoryIsCovered(old,completedSopList)){res.status='done';res.completed=completedSopList.length;res.failed=0;break;}
+                continue;
+              }
+              let origin='';try{origin=new URL(inv.summary?.currentUrl||inv.context?.url||'').origin;}catch{}
+              if(origin&&old.adapter){
+                await recordAdapterOutcome(origin,old.adapter,{status:res.status,errorClass:'fallback'});
+              }
+              old.attemptHistory=[...(old.attemptHistory||[]),{
+                adapter:old.adapter,attemptId:old.attemptId||'',status:res.status,total:res.total??old.total,
+                completed:res.completed??old.completed,failed:res.failed??old.failed,
+                finishedAt:Date.now()
+              }];
+              const nextAttemptId=crypto.randomUUID();
+              old.attemptId=nextAttemptId;
+              old.attemptIndex=candidateIndex;
+              old.adapter=nextAdapterId;
+              old.status='downloading';
+              old.total=old.logicalTotal;
+              old.completed=completedSopList.length;
+              old.failed=0;
+              old.skipped=0;
+              old.attemptBaseOriginal=Number(res.original)||0;
+              old.attemptBaseReconstructed=Number(res.reconstructed)||0;
+              old.attemptBaseBytes=Number(res.bytesWritten)||0;
+              old.original=old.attemptBaseOriginal;
+              old.reconstructed=old.attemptBaseReconstructed;
+              old.bytesWritten=old.attemptBaseBytes;
+              old.errors=[];
+              jobMemory.set(tabId,old);
+              scheduleJobFlush(tabId,true);
+              chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job:old}).catch(()=>{});
+              const spec={
+                jobId:old.id,
+                attemptId:nextAttemptId,
+                tabId,
+                tasks:newTasks,
+                studyFolder:safeFolderName(inv),
+                folderInfo:{patientName:inv.patient?.name||'',patientId:inv.patient?.id||'',studyDate:inv.patient?.studyDate||''},
+                saveMode:old.saveMode||'filesystem',
+                concurrency:old.options?.concurrency||6,
+                frameConcurrency:old.options?.frameConcurrency||6,
+                alreadyCompletedSopUids:completedSopList,
+                baselineCompleted:completedSopList.length,
+                logicalTotal:old.logicalTotal
+              };
+              const nextResp=await chrome.runtime.sendMessage({target:'offscreen',type:'START_ENGINE',spec}).catch(()=>null);
+              if(nextResp?.ok)return;
+              Object.assign(old,priorState);
+              jobMemory.set(tabId,old);
+              scheduleJobFlush(tabId,true);
+              chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job:old}).catch(()=>{});
+            }catch{}
+          }
+        }
+      }
+      if(old&&res.status==='done'&&(Number(res.completed)||0)<(Number(old.logicalTotal)||Number(old.total)||0))res.status='partial';
+      await finalizeJob(tabId,res);
+      const exists=await chrome.tabs.get(tabId).then(()=>true).catch(()=>false);
+      if(!exists){
+        jobMemory.delete(tabId);
+        chrome.storage.session.remove([tabKey(tabId),invKey(tabId),jobKey(tabId)]).catch(()=>{});
+      }
+    })().catch(()=>{});
+    return false;
+  }
   (async()=>{
-    // Offscreen chi noi chuyen duoc bang chrome.runtime, khong voi toi tab nao,
-    // nen viec hoi anh ZFP phai di vong qua day.
     if(m?.type==='ZFP_TAKE_REQUEST'){const r=await zfpAsk(Number(m.tabId),'ZFP_TAKE',m.args,m.timeoutMs||50000);return{ok:!r?.error,...r};}
     if(m?.type==='ZFP_RELOAD_REQUEST')return await zfpReloadViewer(Number(m.tabId));
     if(m?.type==='DOWNLOAD_BLOB'){await downloadBlobUrl(m.jobId,m.url,m.filename);return{ok:true};}
@@ -280,7 +515,5 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
 chrome.tabs.onCreated.addListener(tab=>{if(tab.id)ensurePanel(tab.id).catch(()=>{});});
 chrome.tabs.onUpdated.addListener((tabId,change,tab)=>{ensurePanel(tabId).catch(()=>{});const u=change.url||tab.url||'';if(u)markCandidate(tabId,u).catch(()=>{});if(change.status==='complete'&&u)hasOrigin(u).then(ok=>{if(ok)setTimeout(()=>injectContent(tabId),150);}).catch(()=>{});});
 chrome.tabs.onRemoved.addListener(tabId=>{(async()=>{const j=jobMemory.get(tabId)||await getSession(jobKey(tabId));if(j&&['preparing','downloading','cancelling'].includes(j.status)){chrome.storage.session.remove(tabKey(tabId)).catch(()=>{});return;}jobMemory.delete(tabId);chrome.storage.session.remove([tabKey(tabId),invKey(tabId),jobKey(tabId)]).catch(()=>{});})().catch(()=>{});});
-// Service worker chet giua chung thi giao dien tai van dang bi tat — bat lai
-// ngay khi khoi dong, dung de nguoi dung mat trinh tai cua Chrome.
 async function boot(){await setDownloadUi(true);await loadRecipes();await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});for(const tab of await chrome.tabs.query({})){if(!tab.id)continue;await ensurePanel(tab.id);if(tab.url){await markCandidate(tab.id,tab.url);if(await hasOrigin(tab.url))await injectContent(tab.id);}}}
 chrome.runtime.onInstalled.addListener(details=>{boot().catch(()=>{});if(details?.reason==='install')chrome.tabs.create({url:chrome.runtime.getURL('onboarding.html')}).catch(()=>{});});chrome.runtime.onStartup.addListener(()=>boot().catch(()=>{}));chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});
