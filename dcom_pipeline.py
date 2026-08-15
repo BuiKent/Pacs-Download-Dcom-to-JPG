@@ -4464,6 +4464,9 @@ def _read_patient_manifest(folder: Path) -> Optional[dict]:
         return None
     if not isinstance(data.get("studies"), dict):
         data["studies"] = {}
+    for entry in data["studies"].values():
+        if isinstance(entry, dict) and not entry.get("mediaType"):
+            entry["mediaType"] = "dicom"
     return data
 
 
@@ -4815,6 +4818,10 @@ def record_patient_study(
         or previous.get("accessionNumber")
         or ""
     ).strip()
+    media_type = str(study.get("media_type") or study.get("mediaType") or previous.get("mediaType") or "dicom").strip().lower()
+    duration_sec = study.get("duration_seconds") if study.get("duration_seconds") is not None else study.get("durationSeconds")
+    if duration_sec is None:
+        duration_sec = previous.get("durationSeconds")
     manifest["studies"][uid] = {
         "studyUid": uid,
         "date": study.get("date") or "",
@@ -4823,6 +4830,8 @@ def record_patient_study(
         "folder": str(Path(study_folder).relative_to(patient_folder)),
         "status": status,
         "imageCount": max(int(image_count or 0), int(previous.get("imageCount") or 0)),
+        "mediaType": media_type,
+        "durationSeconds": int(duration_sec) if duration_sec is not None else None,
         "downloadedAt": _now_local() if (complete or selection_complete) else previous.get("downloadedAt", ""),
         "selectedSeries": selected,
         "downloadUrl": viewer_url,

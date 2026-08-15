@@ -727,6 +727,61 @@ class ServerSecurityTests(unittest.TestCase):
             timeout=3,
         )
 
+    def post_json(self, path, payload, token=None):
+        headers = {"Content-Type": "application/json"}
+        if token is not None:
+            headers["X-DCom-Token"] = token
+        data = json.dumps(payload).encode("utf-8")
+        return urllib.request.urlopen(
+            urllib.request.Request(
+                f"http://127.0.0.1:{self.server.port}{path}",
+                data=data,
+                headers=headers,
+                method="POST",
+            ),
+            timeout=3,
+        )
+
+    def test_media_photo_api_endpoints(self):
+        from PIL import Image, ImageDraw
+        catalog_dir = Path(self.tmp.name) / "archive"
+        img_path = catalog_dir / "test_photo.jpg"
+        img = Image.new("RGB", (600, 800), "white")
+        draw = ImageDraw.Draw(img)
+        draw.text((50, 50), "PATIENT PHOTO TEST", fill="black")
+        img.save(img_path, quality=90)
+
+        # Test info
+        with self.post_json("/api/media/photo/info", {"path": str(img_path)}, token=self.server.token) as res:
+            self.assertEqual(res.status, 200)
+            body = json.loads(res.read().decode("utf-8"))
+            self.assertEqual(body["info"]["width"], 600)
+            self.assertEqual(body["info"]["height"], 800)
+
+        # Test rotate
+        out_rot = catalog_dir / "rotated.jpg"
+        with self.post_json("/api/media/photo/rotate", {"path": str(img_path), "outputPath": str(out_rot), "degrees": 90}, token=self.server.token) as res:
+            self.assertEqual(res.status, 200)
+            self.assertTrue(out_rot.exists())
+
+        # Test crop
+        out_crop = catalog_dir / "cropped.jpg"
+        with self.post_json("/api/media/photo/crop", {"path": str(img_path), "outputPath": str(out_crop), "rect": {"x": 10, "y": 10, "width": 100, "height": 100}}, token=self.server.token) as res:
+            self.assertEqual(res.status, 200)
+            self.assertTrue(out_crop.exists())
+
+        # Test redact
+        out_redact = catalog_dir / "redacted.jpg"
+        with self.post_json("/api/media/photo/redact", {"path": str(img_path), "outputPath": str(out_redact), "regions": [{"x": 40, "y": 40, "width": 200, "height": 40}]}, token=self.server.token) as res:
+            self.assertEqual(res.status, 200)
+            self.assertTrue(out_redact.exists())
+
+        # Test export PDF
+        out_pdf = catalog_dir / "export.pdf"
+        with self.post_json("/api/media/photo/export-pdf", {"sources": [str(img_path)], "outputPath": str(out_pdf)}, token=self.server.token) as res:
+            self.assertEqual(res.status, 200)
+            self.assertTrue(out_pdf.exists())
+
     def test_api_rejects_missing_token(self):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.request("/api/bootstrap")
@@ -1234,6 +1289,57 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertIn("dicomTags", info)
         self.assertEqual(info["file"]["fileName"], "slice_test.png")
         self.assertGreater(info["file"]["fileSize"], 0)
+
+    def test_viewer_session_registry_lifecycle(self) -> None:
+        controller = WebController()
+        reg = controller.sessions
+        self.assertIsNotNone(reg.get_catalog(None))
+        self.assertEqual(len(reg.list_sessions()), 0)
+
+        # Create session
+        session = reg.create_session("", session_id="test_sess_1")
+        self.assertEqual(session.session_id, "test_sess_1")
+        self.assertEqual(len(reg.list_sessions()), 1)
+        self.assertIs(reg.get_catalog("test_sess_1"), session.catalog)
+
+        # Close session
+        reg.close_session("test_sess_1")
+        self.assertEqual(len(reg.list_sessions()), 0)
+        # Fallback to default catalog
+        self.assertIs(reg.get_catalog("test_sess_1"), controller.catalog)
+
+    def test_record_patient_study_includes_media_type_and_duration(self) -> None:
+        from dcom_pipeline import record_patient_study, ensure_patient_archive, _read_patient_manifest
+        patient_folder, manifest, _ = ensure_patient_archive(
+            self.temp_dir,
+            patient_id="BN_MEDIA_TEST",
+            patient_name="TEST MEDIA",
+            hospital_key="dhy",
+            hospital_name="BV Dai hoc Y",
+        )
+        study_folder = patient_folder / "STUDY_1"
+        study_folder.mkdir(parents=True, exist_ok=True)
+        study_data = {
+            "study_uid": "1.2.3.4.5.6.789",
+            "date": "2026-08-16",
+            "modality": "MR",
+            "desc": "Brain MRI",
+            "media_type": "photo",
+            "duration_seconds": 120,
+        }
+        record_patient_study(
+            patient_folder,
+            study_data,
+            study_folder,
+            complete=True,
+            image_count=5,
+        )
+        updated = _read_patient_manifest(patient_folder)
+        self.assertIsNotNone(updated)
+        study_entry = updated["studies"]["1.2.3.4.5.6.789"]
+        self.assertEqual(study_entry["mediaType"], "photo")
+        self.assertEqual(study_entry["durationSeconds"], 120)
+        self.assertEqual(study_entry["status"], "complete")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import {
   availableWindowPresets,
   captureActiveViewport,
   clearActiveMeasurements,
+  clearViewer,
   compareScrollSyncState,
   cycleMaximizedSeries,
   defaultWindowPreset,
@@ -99,6 +100,10 @@ const state = {
   fileInfoLoading: false,
   fileInfoError: "",
   fileInfoTagFilter: "",
+  theme: localStorage.getItem("dcom.theme") || "dark",
+  tabs: [],
+  activeTabId: "worklist",
+  worklistSearch: "",
 };
 let viewerQueue = Promise.resolve();
 let viewerRequestId = 0;
@@ -506,6 +511,186 @@ function windowPresetHint(series) {
   return "Preset thị giác 8-bit";
 }
 
+function renderWinbar() {
+  const worklistActive = state.activeTabId === "worklist";
+  const tabItems = state.tabs.map((tab) => {
+    const isActive = tab.id === state.activeTabId;
+    const title = `${tab.patientId ? tab.patientId + " - " : ""}${tab.patientName || "Bệnh nhân"}`;
+    const modality = tab.archive?.series?.[0]?.modality || "DICOM";
+    return `<div class="winbar-tab${isActive ? " active" : ""}" data-tab-id="${tab.id}">
+      <span class="winbar-tab-icon">👤</span>
+      <span class="winbar-tab-title" title="${escapeHtml(title)}">${escapeHtml(title)} [${escapeHtml(modality)}]</span>
+      <button class="winbar-tab-close" data-action="close-tab" data-tab-id="${tab.id}" title="${escapeHtml(t("Đóng tab"))}">×</button>
+    </div>`;
+  }).join("");
+
+  return `<nav class="winbar">
+    <div class="winbar-tab${worklistActive ? " active" : ""}" data-tab-id="worklist">
+      <span class="winbar-tab-icon">📋</span>
+      <span class="winbar-tab-title">Worklist</span>
+    </div>
+    ${tabItems}
+    <button class="winbar-add-btn" data-action="choose-archive" title="${escapeHtml(t("Mở folder DICOM hoặc JPG/PNG trong viewer"))}">+</button>
+  </nav>`;
+}
+
+export function getSeriesMediaType(series) {
+  if (!series) return "dicom";
+  if (series.mediaType) return series.mediaType;
+  const desc = (series.description || "").toLowerCase();
+  const name = (series.name || "").toLowerCase();
+  const group = (series.studyGroup || "").toLowerCase();
+  if (desc.includes("video") || desc.includes("mổ") || desc.includes("phẫu thuật") || group.includes("video") || group.includes("mổ") || name.endsWith(".mp4") || name.endsWith(".webm") || name.endsWith(".avi") || name.endsWith(".mov")) {
+    return "video";
+  }
+  if (desc.includes("ảnh") || desc.includes("photo") || desc.includes("gpb") || desc.includes("bệnh án") || desc.includes("doc") || group.includes("ảnh") || group.includes("photo") || group.includes("bệnh án") || name.endsWith(".jpg") || name.endsWith(".png") || name.endsWith(".jpeg") || name.endsWith(".webp")) {
+    if (desc.includes("bệnh án") || desc.includes("doc") || desc.includes("scan") || group.includes("bệnh án") || group.includes("doc")) return "doc";
+    return "photo";
+  }
+  return "dicom";
+}
+
+function formatVideoTime(seconds) {
+  const s = Math.floor(Number(seconds) || 0);
+  const m = Math.floor(s / 60);
+  const remSec = s % 60;
+  const mm = String(m).padStart(2, "0");
+  const ss = String(remSec).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+function renderSurgeryVideoStudio(series) {
+  if (!series) return `<div class="empty-state"><b>${escapeHtml(t("Chưa có video nào"))}</b></div>`;
+  const videoUrl = `/api/series/${series.id}/image/0`;
+  const bookmarks = state.videoBookmarks || [];
+  return `
+    <div class="surgery-video-studio">
+      <div class="surgery-video-body">
+        <div class="surgery-video-stage">
+          <video id="surgery-video-player" class="surgery-video-element" src="${videoUrl}" playsinline preload="metadata"></video>
+        </div>
+        <aside class="surgery-video-sidebar">
+          <div class="surgery-video-sidebar-header">
+            <span>📌 ${escapeHtml(t("Mốc phẫu thuật / Ghi chú"))}</span>
+            <button class="control-btn primary" data-action="add-video-bookmark">+ ${escapeHtml(t("Đánh dấu mốc"))}</button>
+          </div>
+          <div class="surgery-video-bookmarks">
+            ${bookmarks.length === 0 ? `<div class="empty-state" style="padding:20px; font-size:12px;">${escapeHtml(t("Chưa có mốc ghi chú nào"))}</div>` : bookmarks.map((bm, i) => `
+              <div class="surgery-bookmark-card" data-action="seek-video" data-time="${bm.time}">
+                <div class="surgery-bookmark-time">⏱ ${formatVideoTime(bm.time)}</div>
+                <div class="surgery-bookmark-text">${escapeHtml(bm.text || t("Mốc phẫu thuật"))}</div>
+              </div>
+            `).join("")}
+          </div>
+        </aside>
+      </div>
+      <div class="surgery-video-controls">
+        <button class="control-btn" data-action="video-play-pause" title="${escapeHtml(t("Phát / Tạm dừng"))}">⏯</button>
+        <button class="control-btn" data-action="video-rewind-5" title="${escapeHtml(t("Tua lùi 5s"))}">-5s</button>
+        <button class="control-btn" data-action="video-forward-5" title="${escapeHtml(t("Tua tới 5s"))}">+5s</button>
+        <span id="video-time-display" class="video-time">00:00 / 00:00</span>
+        <input type="range" id="surgery-video-scrubber" class="video-scrubber" min="0" max="100" step="0.1" value="0">
+        <select id="video-speed-select" class="control-btn" title="${escapeHtml(t("Tốc độ"))}">
+          <option value="0.5">0.5x</option>
+          <option value="1.0" selected>1.0x</option>
+          <option value="1.25">1.25x</option>
+          <option value="1.5">1.5x</option>
+          <option value="2.0">2.0x</option>
+        </select>
+        <button class="control-btn" data-action="video-snapshot" title="${escapeHtml(t("Chụp khung hình"))}">📸 ${escapeHtml(t("Chụp"))}</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderPhotoEditorStudio(series) {
+  if (!series) return `<div class="empty-state"><b>${escapeHtml(t("Chưa có ảnh nào"))}</b></div>`;
+  const imageUrl = `/api/series/${series.id}/image/0`;
+  return `
+    <div class="photo-editor-studio">
+      <div class="photo-editor-toolbar">
+        <button class="tool-btn" data-action="photo-rotate-cw">↻ ${escapeHtml(t("Xoay 90°"))}</button>
+        <button class="tool-btn" data-action="photo-tool-crop">✂ ${escapeHtml(t("Cắt vùng chọn"))}</button>
+        <button class="tool-btn" data-action="photo-tool-redact">⬛ ${escapeHtml(t("Che tên/danh tính"))}</button>
+        <button class="tool-btn" data-action="photo-tool-arrow">↗ ${escapeHtml(t("Vẽ mũi tên"))}</button>
+        <button class="tool-btn" data-action="photo-tool-box">▢ ${escapeHtml(t("Khoanh vùng"))}</button>
+        <button class="tool-btn" data-action="photo-tool-text">T ${escapeHtml(t("Ghi chú chữ"))}</button>
+        <span style="flex:1;"></span>
+        <button class="tool-btn primary" data-action="photo-export-pdf">📄 ${escapeHtml(t("Xuất file PDF"))}</button>
+      </div>
+      <div class="photo-editor-stage">
+        <div class="photo-editor-canvas-wrap">
+          <img id="photo-editor-img" class="photo-editor-image" src="${imageUrl}" style="transform: rotate(${state.photoRotation || 0}deg);" alt="${escapeHtml(series.description || "")}">
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderWorklistView() {
+  const historyEntries = state.history || [];
+  const search = (state.worklistSearch || "").toLowerCase().trim();
+
+  const filteredHistory = historyEntries.filter((entry) => {
+    const text = `${entry.folder} ${entry.patientName || ""} ${entry.patientId || ""}`.toLowerCase();
+    if (search && !text.includes(search)) return false;
+    return true;
+  });
+
+  return `
+    <main class="worklist-view">
+      <div class="worklist-header">
+        <div class="worklist-title-group">
+          <h2>${escapeHtml(t("Worklist & Danh Sách Ca Chụp"))}</h2>
+        </div>
+        <div class="worklist-stats">
+          <div class="worklist-stat-card">
+            <span class="stat-num">${historyEntries.length}</span>
+            <span class="stat-label">${escapeHtml(t("Tổng hồ sơ"))}</span>
+          </div>
+          <div class="worklist-stat-card">
+            <span class="stat-num">${state.tabs.length}</span>
+            <span class="stat-label">${escapeHtml(t("Tab đang mở"))}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="worklist-filter-bar">
+        <input type="text" data-field="worklist-search" placeholder="${escapeHtml(t("Tìm kiếm mã BN, tên bệnh nhân, thư mục..."))}" value="${escapeHtml(state.worklistSearch || "")}">
+      </div>
+
+      <div class="worklist-tree">
+        ${filteredHistory.length === 0 ? `
+          <div class="empty-state">
+            <b>${escapeHtml(t("Chưa có hồ sơ nào trong danh sách"))}</b>
+            <div class="empty-actions" style="margin-top: 10px;">
+              <button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder bệnh nhân"))}</button>
+            </div>
+          </div>
+        ` : filteredHistory.map((entry) => {
+          const folderName = entry.folder ? entry.folder.split(/[\\/]/).pop() : "Folder";
+          return `
+            <div class="worklist-patient-card">
+              <div class="worklist-patient-header">
+                <div class="worklist-patient-info">
+                  <span style="font-size: 16px;">📁</span>
+                  <div>
+                    <span class="worklist-patient-name">${escapeHtml(folderName)}</span>
+                    <div class="worklist-patient-meta">${escapeHtml(entry.folder || "")}</div>
+                  </div>
+                </div>
+                <button class="soft-button worklist-open-btn primary" data-action="open-worklist-item" data-folder="${escapeHtml(entry.folder)}">
+                  ${escapeHtml(t("Xem phim"))}
+                </button>
+              </div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    </main>
+  `;
+}
+
 function render() {
   const series = selectedSeries();
   // Switching from a CT to an MR series strands any Hounsfield preset, which
@@ -540,12 +725,18 @@ function render() {
           ${iconButton("choose-archive", icons.folder, t("Mở folder DICOM hoặc JPG/PNG trong viewer"))}
           ${iconButton("choose-file", icons.file, t("Mở file DICOM hoặc JPG/PNG đơn lẻ trong viewer"))}
           ${iconButton("refresh-archive", "⟳", t("Quét lại thư mục hiện tại"), false, !state.archive.root)}
+          <select class="soft-button theme-select" data-field="theme"
+            title="${escapeHtml(t("Giao diện"))}">${Object.entries(THEME_LABELS)
+              .map(([value, label]) => `<option value="${value}"${state.theme === value ? " selected" : ""}>${escapeHtml(label)}</option>`)
+              .join("")}</select>
           <button class="soft-button" data-action="toggle-language"
             title="${escapeHtml(t("Chuyển sang tiếng Anh"))}">${getLanguage() === "en" ? "VI" : "EN"}</button>
           <button class="soft-button" data-action="classic"
             title="${escapeHtml(t("Khởi động lại bằng --classic"))}">Classic</button>
         </div>
       </header>
+
+      ${renderWinbar()}
 
       <aside class="download-panel">
         <div class="panel-title"><b>${escapeHtml(t("TẢI MRI / CT"))}</b>
@@ -623,6 +814,7 @@ function render() {
         <div class="panel-credit">Superkent.bui@gmail.com</div>
       </aside>
 
+      ${state.activeTabId === "worklist" ? renderWorklistView() : `
       <main class="viewer-main">
         <nav class="toolbar mode-${state.mode}">
           <div class="tool-cluster layout-tools">
@@ -650,14 +842,18 @@ function render() {
         <div class="safety-notice ${safety?.level || ""}" ${safety ? "" : "hidden"}>
           <b>${escapeHtml(t("An toàn hiển thị"))}</b><span>${escapeHtml(safety ? t(safety.text) : "")}</span>
         </div>
-        <section id="workspace" class="workspace-grid">
-          ${state.archive.series.length
-      ? `<div class="viewer-loading">${state.busyViewer ? escapeHtml(t("Đang dựng khung xem…")) : ""}</div>`
-      : `<div class="empty-state"><b>${escapeHtml(t("Mở folder DICOM hoặc JPG/PNG"))}</b>
-              <div class="empty-actions">
-                <button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder trong viewer"))}</button>
-                <button class="secondary" data-action="choose-file">${escapeHtml(t("Mở file..."))}</button>
-              </div></div>`}
+        <section id="workspace" class="workspace-grid ${getSeriesMediaType(series) !== "dicom" ? "media-mode" : ""}">
+          ${getSeriesMediaType(series) === "video"
+            ? renderSurgeryVideoStudio(series)
+            : getSeriesMediaType(series) === "photo" || getSeriesMediaType(series) === "doc"
+              ? renderPhotoEditorStudio(series)
+              : state.archive.series.length
+                ? `<div class="viewer-loading">${state.busyViewer ? escapeHtml(t("Đang dựng khung xem…")) : ""}</div>`
+                : `<div class="empty-state"><b>${escapeHtml(t("Mở folder DICOM hoặc JPG/PNG"))}</b>
+                    <div class="empty-actions">
+                      <button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder trong viewer"))}</button>
+                      <button class="secondary" data-action="choose-file">${escapeHtml(t("Mở file..."))}</button>
+                    </div></div>`}
         </section>
         <footer class="status-bar ${state.isError ? "error" : ""}">
           <span class="status-dot ${state.busyViewer ? "busy" : ""}"></span>
@@ -665,12 +861,14 @@ function render() {
           <span class="status-root" title="${escapeHtml(state.archive.root || "")}">${escapeHtml(state.archive.root || "")}</span>
         </footer>
       </main>
+      `}
       ${renderLoginCard()}
       ${renderFileInfoModal()}
     </div>
   `;
   bindEvents();
   hydrateSeriesThumbs();
+  initMediaEvents();
 }
 
 function renderLoginCard() {
@@ -1205,6 +1403,10 @@ function bindEvents() {
   });
   app.querySelector(".app-header [data-action='toggle-download']")
     ?.setAttribute("aria-expanded", state.downloadOpen ? "true" : "false");
+  app.querySelector("[data-field='theme']")?.addEventListener("change", (event) => {
+    state.theme = event.target.value;
+    applyTheme();
+  });
   app.querySelector("[data-field='series']")?.addEventListener("change", (event) => {
     state.selectedId = event.target.value;
     const selected = selectedSeries();
@@ -1226,6 +1428,68 @@ function bindEvents() {
     window.__viewerDiagnostics = viewerDiagnostics();
   });
   installClipboardFields();
+  app.querySelectorAll(".winbar-tab").forEach((tabEl) => {
+    tabEl.addEventListener("click", (event) => {
+      if (event.target.closest(".winbar-tab-close")) return;
+      const tabId = tabEl.dataset.tabId;
+      if (tabId) switchTab(tabId);
+    });
+  });
+  app.querySelectorAll(".winbar-tab-close").forEach((closeBtn) => {
+    closeBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const tabId = closeBtn.dataset.tabId;
+      if (tabId) closeTab(tabId);
+    });
+  });
+  app.querySelectorAll("[data-action='open-worklist-item']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const folder = btn.dataset.folder;
+      if (folder) openHistoryEntry({ folder });
+    });
+  });
+  app.querySelector("[data-field='worklist-search']")?.addEventListener("input", (event) => {
+    state.worklistSearch = event.target.value;
+    const tree = app.querySelector(".worklist-tree");
+    if (tree) {
+      const filtered = (state.history || []).filter((entry) => {
+        const text = `${entry.folder} ${entry.patientName || ""} ${entry.patientId || ""}`.toLowerCase();
+        return !state.worklistSearch || text.includes(state.worklistSearch.toLowerCase().trim());
+      });
+      tree.innerHTML = filtered.length === 0 ? `
+        <div class="empty-state">
+          <b>${escapeHtml(t("Chưa có hồ sơ nào trong danh sách"))}</b>
+          <div class="empty-actions" style="margin-top: 10px;">
+            <button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder bệnh nhân"))}</button>
+          </div>
+        </div>
+      ` : filtered.map((entry) => {
+        const folderName = entry.folder ? entry.folder.split(/[\\/]/).pop() : "Folder";
+        return `
+          <div class="worklist-patient-card">
+            <div class="worklist-patient-header">
+              <div class="worklist-patient-info">
+                <span style="font-size: 16px;">📁</span>
+                <div>
+                  <span class="worklist-patient-name">${escapeHtml(folderName)}</span>
+                  <div class="worklist-patient-meta">${escapeHtml(entry.folder || "")}</div>
+                </div>
+              </div>
+              <button class="soft-button worklist-open-btn primary" data-action="open-worklist-item" data-folder="${escapeHtml(entry.folder)}">
+                ${escapeHtml(t("Xem phim"))}
+              </button>
+            </div>
+          </div>
+        `;
+      }).join("");
+      app.querySelectorAll("[data-action='open-worklist-item']").forEach((b) => {
+        b.addEventListener("click", () => {
+          const folder = b.dataset.folder;
+          if (folder) openHistoryEntry({ folder });
+        });
+      });
+    }
+  });
   app.querySelectorAll("[data-series-id]").forEach((element) => {
     element.addEventListener("click", async () => {
       const seriesId = element.dataset.seriesId;
@@ -1387,6 +1651,38 @@ async function refreshHistory() {
     }
   } catch (_) {
     // History is a convenience; a failed refresh must not disturb the session.
+  }
+}
+
+function initMediaEvents() {
+  const video = app.querySelector("#surgery-video-player");
+  if (video) {
+    const timeDisplay = app.querySelector("#video-time-display");
+    const scrubber = app.querySelector("#surgery-video-scrubber");
+    const speedSelect = app.querySelector("#video-speed-select");
+
+    video.ontimeupdate = () => {
+      if (timeDisplay) {
+        timeDisplay.textContent = `${formatVideoTime(video.currentTime)} / ${formatVideoTime(video.duration || 0)}`;
+      }
+      if (scrubber && video.duration) {
+        scrubber.value = String((video.currentTime / video.duration) * 100);
+      }
+    };
+
+    if (scrubber) {
+      scrubber.oninput = () => {
+        if (video.duration) {
+          video.currentTime = (Number(scrubber.value) / 100) * video.duration;
+        }
+      };
+    }
+
+    if (speedSelect) {
+      speedSelect.onchange = () => {
+        video.playbackRate = Number(speedSelect.value) || 1.0;
+      };
+    }
   }
 }
 
@@ -1795,6 +2091,77 @@ async function action(name, element = null) {
         volume.toFixed(2),
       ));
     }
+    if (name === "video-play-pause") {
+      const video = app.querySelector("#surgery-video-player");
+      if (video) {
+        if (video.paused) video.play();
+        else video.pause();
+      }
+      return;
+    }
+    if (name === "video-rewind-5") {
+      const video = app.querySelector("#surgery-video-player");
+      if (video) video.currentTime = Math.max(0, video.currentTime - 5);
+      return;
+    }
+    if (name === "video-forward-5") {
+      const video = app.querySelector("#surgery-video-player");
+      if (video) video.currentTime = Math.min(video.duration || 0, video.currentTime + 5);
+      return;
+    }
+    if (name === "add-video-bookmark") {
+      const video = app.querySelector("#surgery-video-player");
+      const currentTime = video ? video.currentTime : 0;
+      const note = prompt(t("Nhập ghi chú / mốc phẫu thuật:")) || t("Mốc phẫu thuật");
+      if (!state.videoBookmarks) state.videoBookmarks = [];
+      state.videoBookmarks.push({ time: currentTime, text: note });
+      render();
+      initMediaEvents();
+      return;
+    }
+    if (name === "seek-video") {
+      const time = Number(element?.dataset?.time || 0);
+      const video = app.querySelector("#surgery-video-player");
+      if (video) video.currentTime = time;
+      return;
+    }
+    if (name === "video-snapshot") {
+      const video = app.querySelector("#surgery-video-player");
+      if (video) {
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth || 1280;
+        canvas.height = video.videoHeight || 720;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const link = document.createElement("a");
+        link.download = `snapshot_${Math.floor(video.currentTime)}s.png`;
+        link.href = canvas.toDataURL("image/png");
+        link.click();
+        setStatus(t("Đã lưu khung hình snapshot PNG."));
+      }
+      return;
+    }
+    if (name === "photo-rotate-cw") {
+      state.photoRotation = ((state.photoRotation || 0) + 90) % 360;
+      const img = app.querySelector("#photo-editor-img");
+      if (img) img.style.transform = `rotate(${state.photoRotation}deg)`;
+      return;
+    }
+    if (name === "photo-export-pdf") {
+      setStatus(t("Đang xuất file PDF..."));
+      const series = selectedSeries();
+      const sources = (series?.images || []).map(img => img.path || img);
+      if (!sources.length && series) sources.push(series.id);
+      api("/api/media/photo/export-pdf", {
+        method: "POST",
+        body: JSON.stringify({ sources, outputPath: `${state.archive.root || "."}/export_document.pdf` })
+      }).then((res) => {
+        setStatus(tf("Đã xuất PDF thành công: {}", res.outputPath));
+      }).catch((err) => {
+        setStatus(tf("Lỗi xuất PDF: {}", err.message), true);
+      });
+      return;
+    }
     if (name === "classic") {
       if (!window.pywebview?.api) throw new Error(t("Chế độ classic chỉ có trong ứng dụng desktop."));
       await window.pywebview.api.restart_classic();
@@ -1860,7 +2227,62 @@ function downloadOptions() {
   return options;
 }
 
-function applyArchive(archive) {
+async function switchTab(tabId) {
+  if (state.activeTabId === tabId) return;
+  const currentTab = state.tabs.find((t) => t.id === state.activeTabId);
+  if (currentTab) {
+    currentTab.archive = state.archive;
+    currentTab.selectedId = state.selectedId;
+    currentTab.compareIds = [...state.compareIds];
+    currentTab.mode = state.mode;
+    currentTab.tool = state.tool;
+    currentTab.windowPreset = state.windowPreset;
+    currentTab.mprPrimary = state.mprPrimary;
+    currentTab.status = state.status;
+  }
+  clearViewer();
+  state.activeTabId = tabId;
+  if (tabId === "worklist") {
+    render();
+    return;
+  }
+  const targetTab = state.tabs.find((t) => t.id === tabId);
+  if (targetTab) {
+    state.archive = targetTab.archive;
+    state.selectedId = targetTab.selectedId;
+    state.compareIds = [...targetTab.compareIds];
+    state.mode = targetTab.mode;
+    state.tool = targetTab.tool;
+    state.windowPreset = targetTab.windowPreset;
+    state.mprPrimary = targetTab.mprPrimary;
+    state.status = targetTab.status;
+    for (const series of state.archive.series) registerSeries(series);
+  }
+  render();
+  await renderViewer();
+}
+
+async function closeTab(tabId) {
+  const tabIndex = state.tabs.findIndex((t) => t.id === tabId);
+  if (tabIndex === -1) return;
+  const tab = state.tabs[tabIndex];
+  if (tab.sessionId) {
+    api("/api/sessions/close", {
+      method: "POST",
+      body: JSON.stringify({ sessionId: tab.sessionId }),
+    }).catch(() => {});
+  }
+  state.tabs.splice(tabIndex, 1);
+  if (state.activeTabId === tabId) {
+    const nextTab = state.tabs[tabIndex] || state.tabs[tabIndex - 1];
+    const nextTabId = nextTab ? nextTab.id : "worklist";
+    await switchTab(nextTabId);
+  } else {
+    render();
+  }
+}
+
+function applyArchive(archive, sessionId = "") {
   state.archive = archive;
   for (const series of archive.series) registerSeries(series);
   if (!archive.series.some((item) => item.id === state.selectedId)) {
@@ -1870,15 +2292,59 @@ function applyArchive(archive) {
   state.mode = "single";
   state.tool = "window";
   state.windowPreset = defaultWindowPreset(selectedSeries());
+
+  const tabName = archive.root ? archive.root.split(/[\\/]/).pop() : (archive.patient?.patientName || "Bệnh nhân");
+  let currentTab = state.tabs.find((t) => t.id === state.activeTabId);
+  if (!currentTab || state.activeTabId === "worklist") {
+    const newTab = {
+      id: `tab-${Date.now()}`,
+      sessionId: sessionId || "",
+      patientId: archive.patient?.patientId || "",
+      patientName: archive.patient?.patientName || tabName,
+      archive,
+      selectedId: state.selectedId,
+      compareIds: [...state.compareIds],
+      mode: state.mode,
+      tool: state.tool,
+      windowPreset: state.windowPreset,
+      mprPrimary: "axial",
+      scrollLinked: false,
+      status: "Sẵn sàng.",
+    };
+    state.tabs.push(newTab);
+    state.activeTabId = newTab.id;
+  } else {
+    currentTab.archive = archive;
+    currentTab.selectedId = state.selectedId;
+    currentTab.patientName = archive.patient?.patientName || currentTab.patientName;
+    currentTab.patientId = archive.patient?.patientId || currentTab.patientId;
+    if (sessionId) currentTab.sessionId = sessionId;
+  }
+
   render();
   renderViewer();
 }
 
 function renderViewer() {
+  if (state.activeTabId === "worklist") return Promise.resolve();
   const series = selectedSeries();
+  if (!series) return viewerQueue;
+  const mediaType = getSeriesMediaType(series);
+  if (mediaType === "video" || mediaType === "photo" || mediaType === "doc") {
+    clearViewer();
+    state.busyViewer = false;
+    const requestedWorkspace = document.querySelector("#workspace");
+    if (requestedWorkspace) {
+      requestedWorkspace.classList.remove("busy");
+      delete requestedWorkspace.dataset.loadingText;
+    }
+    app.querySelector(".status-dot")?.classList.remove("busy");
+    setStatus(t("Sẵn sàng."));
+    initMediaEvents();
+    return Promise.resolve();
+  }
   const mode = state.mode;
   const comparison = compareSeriesList();
-  if (!series) return viewerQueue;
   const requestId = ++viewerRequestId;
   const requestedWorkspace = document.querySelector("#workspace");
   if (!requestedWorkspace) return viewerQueue;
@@ -2288,6 +2754,19 @@ async function autoPasteFromClipboard() {
   }
 }
 
+const THEME_LABELS = {
+  dark: "DCom",
+  notion: "Notion",
+  google: "Google",
+  win11: "Windows 11",
+};
+
+/** Apply state.theme to the document and remember the choice locally. */
+function applyTheme() {
+  document.documentElement.dataset.theme = state.theme;
+  localStorage.setItem("dcom.theme", state.theme);
+}
+
 /** Keep the viewer's own text-note dialog in the selected language. */
 function applyTextPromptLanguage() {
   configureTextPrompt({
@@ -2303,6 +2782,7 @@ async function boot() {
   state.bootstrap = await api("/api/bootstrap");
   setLanguage(state.bootstrap.language || "en");
   applyTextPromptLanguage();
+  applyTheme();
   state.history = Array.isArray(state.bootstrap.history) ? state.bootstrap.history : [];
   state.lastDirectUrl = state.bootstrap.lastDirectUrl || "";
   state.showManualInfo = Boolean(state.lastDirectUrl.trim());
@@ -2313,6 +2793,28 @@ async function boot() {
     state.archive.series[1]?.id || state.selectedId,
     state.archive.series[2]?.id || state.archive.series[1]?.id || state.selectedId,
   ];
+  if (state.archive.series && state.archive.series.length > 0) {
+    const tabName = state.archive.root ? state.archive.root.split(/[\\/]/).pop() : (state.archive.patient?.patientName || "Bệnh nhân 1");
+    const initialTab = {
+      id: "tab-init",
+      sessionId: "",
+      patientId: state.archive.patient?.patientId || "",
+      patientName: state.archive.patient?.patientName || tabName,
+      archive: state.archive,
+      selectedId: state.selectedId,
+      compareIds: [...state.compareIds],
+      mode: state.mode,
+      tool: state.tool,
+      windowPreset: state.windowPreset,
+      mprPrimary: "axial",
+      scrollLinked: false,
+      status: "Sẵn sàng.",
+    };
+    state.tabs.push(initialTab);
+    state.activeTabId = initialTab.id;
+  } else {
+    state.activeTabId = "worklist";
+  }
   for (const series of state.archive.series) registerSeries(series);
   await initViewer({
     onStatus: (message, progress) => {

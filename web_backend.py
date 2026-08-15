@@ -49,6 +49,11 @@ MIME_TYPES = {
     ".bmp": "image/bmp",
     ".svg": "image/svg+xml",
     ".wasm": "application/wasm",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".ogg": "video/ogg",
+    ".mov": "video/quicktime",
+    ".pdf": "application/pdf",
 }
 
 DICOM_MANIFEST_FORMAT = "dcom-direct-dicom"
@@ -1460,6 +1465,70 @@ class ArchiveCatalog:
 
 
 @dataclass
+class ViewerSession:
+    session_id: str
+    catalog: ArchiveCatalog
+    folder: str = ""
+    created_at: float = field(default_factory=time.time)
+    last_accessed: float = field(default_factory=time.time)
+
+
+class ViewerSessionRegistry:
+    """Manages active viewer sessions for multi-tab / multi-patient viewing."""
+
+    def __init__(self, default_catalog: ArchiveCatalog) -> None:
+        self._default_catalog = default_catalog
+        self._sessions: dict[str, ViewerSession] = {}
+        self._lock = threading.RLock()
+
+    def create_session(self, path: str, session_id: Optional[str] = None) -> ViewerSession:
+        if not session_id:
+            session_id = secrets.token_hex(8)
+        catalog = ArchiveCatalog()
+        if path:
+            catalog.open(path)
+        session = ViewerSession(
+            session_id=session_id,
+            catalog=catalog,
+            folder=path,
+        )
+        with self._lock:
+            self._sessions[session_id] = session
+        return session
+
+    def get_session(self, session_id: Optional[str]) -> Optional[ViewerSession]:
+        if not session_id:
+            return None
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session:
+                session.last_accessed = time.time()
+            return session
+
+    def get_catalog(self, session_id: Optional[str] = None) -> ArchiveCatalog:
+        session = self.get_session(session_id)
+        return session.catalog if session else self._default_catalog
+
+    def close_session(self, session_id: str) -> None:
+        with self._lock:
+            self._sessions.pop(session_id, None)
+
+    def list_sessions(self) -> list[dict]:
+        with self._lock:
+            return [
+                {
+                    "sessionId": s.session_id,
+                    "folder": s.folder,
+                    "createdAt": s.created_at,
+                    "lastAccessed": s.last_accessed,
+                    "seriesCount": len(s.catalog._series),
+                    "root": str(s.catalog.root) if s.catalog.root else "",
+                }
+                for s in self._sessions.values()
+            ]
+
+
+@dataclass
 class JobState:
     lock: threading.RLock = field(default_factory=threading.RLock)
     stop_event: threading.Event = field(default_factory=threading.Event)
@@ -1743,6 +1812,7 @@ def _local_import_plan(source: Path) -> tuple[list[tuple[Path, Path]], Path]:
 class WebController:
     def __init__(self) -> None:
         self.catalog = ArchiveCatalog()
+        self.sessions = ViewerSessionRegistry(self.catalog)
         self.job = JobState()
         app_data = Path(os.environ.get("LOCALAPPDATA") or Path.home())
         self.annotation_root = app_data / "DCom JPG PACS" / "viewer-annotations"
@@ -1814,10 +1884,11 @@ class WebController:
             raise ValueError(f"Thư mục không còn tồn tại:\n{target}")
         return self.start_archive_scan(str(target))
 
-    def bootstrap(self) -> dict:
+    def bootstrap(self, session_id: Optional[str] = None) -> dict:
         # One snapshot: it serialises every series, so building it twice would
         # double the work on a large archive for no gain.
-        archive = self.catalog.snapshot()
+        catalog = self.sessions.get_catalog(session_id)
+        archive = catalog.snapshot()
         return {
             "version": APP_VERSION,
             "archive": archive,
@@ -2288,8 +2359,9 @@ class WebController:
             return self.annotation_root / f"{record.series_id}.json"
         return record.folder / ANNOTATIONS_NAME
 
-    def get_annotations(self, series_id: str) -> dict:
-        record = self.catalog.get(series_id)
+    def get_annotations(self, series_id: str, catalog: Optional[ArchiveCatalog] = None) -> dict:
+        target_catalog = catalog or self.catalog
+        record = target_catalog.get(series_id)
         path = self._annotations_path(record)
         if not path.is_file():
             return {"version": 1, "annotations": []}
@@ -2299,8 +2371,9 @@ class WebController:
             return {"version": 1, "annotations": []}
         return data if isinstance(data, dict) else {"version": 1, "annotations": []}
 
-    def save_annotations(self, series_id: str, value: dict) -> dict:
-        record = self.catalog.get(series_id)
+    def save_annotations(self, series_id: str, value: dict, catalog: Optional[ArchiveCatalog] = None) -> dict:
+        target_catalog = catalog or self.catalog
+        record = target_catalog.get(series_id)
         annotations = value.get("annotations")
         if not isinstance(annotations, list):
             raise ValueError("Dữ liệu đo/ROI không hợp lệ.")
@@ -2312,11 +2385,12 @@ class WebController:
         temporary.replace(path)
         return {"saved": True, "count": len(annotations)}
 
-    def get_file_info(self, series_id: str, slice_index: int = 0) -> dict:
+    def get_file_info(self, series_id: str, slice_index: int = 0, catalog: Optional[ArchiveCatalog] = None) -> dict:
         import pydicom
         from PIL import Image
 
-        record = self.catalog.get(series_id)
+        target_catalog = catalog or self.catalog
+        record = target_catalog.get(series_id)
         images = record.images
         if not images:
             raise ValueError("Series không có file ảnh nào.")
@@ -2502,7 +2576,7 @@ class LocalApiServer:
                 self.send_header(
                     "Content-Security-Policy",
                     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-                    "img-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self'; "
+                    "img-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self'; "
                     "object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
                 )
                 for name, value in (extra or {}).items():
@@ -2541,6 +2615,15 @@ class LocalApiServer:
                     return False
                 return secrets.compare_digest(self.headers.get("X-DCom-Token", ""), owner.token)
 
+            def _get_session_id(self) -> Optional[str]:
+                parsed = urlparse(self.path)
+                if parsed.query:
+                    from urllib.parse import parse_qs
+                    qs = parse_qs(parsed.query)
+                    if "session" in qs and qs["session"]:
+                        return qs["session"][0]
+                return self.headers.get("X-Viewer-Session") or None
+
             def _read_json(self) -> dict:
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
@@ -2557,21 +2640,31 @@ class LocalApiServer:
                 return value
 
             def _api_get(self, path: str, query: str = "") -> Any:
+                session_id = self._get_session_id()
+                catalog = owner.controller.sessions.get_catalog(session_id)
                 if path == "/api/bootstrap":
-                    return owner.controller.bootstrap()
+                    return owner.controller.bootstrap(session_id=session_id)
                 if path == "/api/archive":
-                    return owner.controller.catalog.snapshot()
+                    return catalog.snapshot()
                 if path == "/api/job":
                     return owner.controller.job.snapshot()
                 if path == "/api/history":
                     return {"history": owner.controller.history_snapshot()}
+                if path == "/api/sessions":
+                    return {"sessions": owner.controller.sessions.list_sessions()}
+                if path == "/api/media/video/status":
+                    import video_engine as ve
+                    return {"stats": ve.concurrency_stats()}
+                if path == "/api/media/video/encoders":
+                    import video_engine as ve
+                    return {"encoders": ve.detect_hw_encoders()}
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/manifest", path)
                 if match:
-                    record = owner.controller.catalog.get(match.group(1))
+                    record = catalog.get(match.group(1))
                     # The manifest holds ordered_slices with 3D positions
-                    # that crosslinking needs.  Crosslinking only requires
+                    # that crosslinking needs. Crosslinking only requires
                     # valid geometry — not the stricter MPR/3D threshold
-                    # (101+ uniform slices).  Serve whenever present.
+                    # (101+ uniform slices). Serve whenever present.
                     if not record.manifest:
                         raise ValueError(
                             record.mpr_reason
@@ -2580,7 +2673,7 @@ class LocalApiServer:
                     return record.manifest
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/annotations", path)
                 if match:
-                    return owner.controller.get_annotations(match.group(1))
+                    return owner.controller.get_annotations(match.group(1), catalog=catalog)
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/file-info", path)
                 if match:
                     index = 0
@@ -2589,12 +2682,24 @@ class LocalApiServer:
                         qs = parse_qs(query)
                         if "index" in qs and qs["index"] and qs["index"][0].isdigit():
                             index = int(qs["index"][0])
-                    return owner.controller.get_file_info(match.group(1), index)
+                    return owner.controller.get_file_info(match.group(1), index, catalog=catalog)
                 raise KeyError("API không tồn tại.")
 
             def _api_post(self, path: str, payload: dict) -> Any:
+                session_id = self._get_session_id()
+                catalog = owner.controller.sessions.get_catalog(session_id)
+                if path == "/api/sessions/create":
+                    p = str(payload.get("path") or "")
+                    sid = str(payload.get("sessionId") or "") or None
+                    sess = owner.controller.sessions.create_session(p, session_id=sid)
+                    return {"sessionId": sess.session_id, "archive": sess.catalog.snapshot()}
+                if path == "/api/sessions/close":
+                    sid = str(payload.get("sessionId") or "")
+                    owner.controller.sessions.close_session(sid)
+                    return {"closed": True, "sessionId": sid}
                 if path == "/api/archive/open":
-                    return owner.controller.open_archive(str(payload.get("path") or ""))
+                    target_catalog = catalog if session_id else owner.controller.catalog
+                    return target_catalog.open(str(payload.get("path") or ""))
                 if path == "/api/archive/scan":
                     return owner.controller.start_archive_scan(str(payload.get("path") or ""))
                 if path == "/api/output":
@@ -2613,16 +2718,76 @@ class LocalApiServer:
                     return owner.controller.start_history_open(str(payload.get("folder") or ""))
                 if path == "/api/settings/language":
                     return owner.controller.set_language(str(payload.get("language") or ""))
+                if path == "/api/media/photo/info":
+                    import photo_engine as pe
+                    info = pe.probe(payload.get("path"))
+                    return {"info": {"width": info.width, "height": info.height, "format": info.format, "mode": info.mode, "sizeBytes": info.size_bytes}}
+                if path == "/api/media/photo/rotate":
+                    import photo_engine as pe
+                    out = pe.rotate(payload.get("path"), payload.get("outputPath"), int(payload.get("degrees", 90)))
+                    return {"outputPath": str(out)}
+                if path == "/api/media/photo/crop":
+                    import photo_engine as pe
+                    r = payload.get("rect", {})
+                    out = pe.crop(payload.get("path"), payload.get("outputPath"), pe.Rect(x=r.get("x", 0), y=r.get("y", 0), width=r.get("width", 0), height=r.get("height", 0)))
+                    return {"outputPath": str(out)}
+                if path == "/api/media/photo/redact":
+                    import photo_engine as pe
+                    regions = [pe.Rect(x=r.get("x", 0), y=r.get("y", 0), width=r.get("width", 0), height=r.get("height", 0)) for r in payload.get("regions", [])]
+                    fill = tuple(payload.get("fill", (0, 0, 0)))
+                    out = pe.redact(payload.get("path"), payload.get("outputPath"), regions, fill=fill)
+                    return {"outputPath": str(out)}
+                if path == "/api/media/photo/annotate":
+                    import photo_engine as pe
+                    texts = [pe.TextAnnotation(**t) for t in payload.get("texts", [])]
+                    arrows = [pe.ArrowAnnotation(**a) for a in payload.get("arrows", [])]
+                    boxes = [pe.BoxAnnotation(rect=pe.Rect(**b["rect"]), color=tuple(b.get("color", (255, 70, 70))), width=b.get("width", 3)) for b in payload.get("boxes", [])]
+                    out = pe.annotate(payload.get("path"), payload.get("outputPath"), texts=texts, arrows=arrows, boxes=boxes)
+                    return {"outputPath": str(out)}
+                if path == "/api/media/photo/export-pdf":
+                    import photo_engine as pe
+                    out = pe.export_pdf(payload.get("sources", []), payload.get("outputPath"))
+                    return {"outputPath": str(out)}
+                if path == "/api/media/video/info":
+                    import video_engine as ve
+                    info = ve.probe(payload.get("path"))
+                    return {"info": {"durationSeconds": info.duration_s, "width": info.width, "height": info.height, "fps": info.fps, "codec": info.codec, "formatName": info.format_name, "hasAudio": info.has_audio, "sizeBytes": info.size_bytes}}
+                if path == "/api/media/video/thumbnail":
+                    import video_engine as ve
+                    out = ve.extract_thumbnail(payload.get("path"), payload.get("outputPath"), float(payload.get("atSeconds", 0.0)), int(payload.get("maxWidth", 320)))
+                    return {"outputPath": str(out)}
+                if path == "/api/media/video/filmstrip":
+                    import video_engine as ve
+                    frames = ve.extract_filmstrip(payload.get("path"), payload.get("outputDir"), int(payload.get("count", 12)), int(payload.get("maxWidth", 160)))
+                    return {"frames": [str(f) for f in frames]}
+                if path == "/api/media/video/trim":
+                    import video_engine as ve
+                    out = ve.trim(payload.get("path"), payload.get("outputPath"), float(payload.get("startSeconds", 0.0)), float(payload.get("endSeconds", 0.0)), bool(payload.get("reencode", False)))
+                    return {"outputPath": str(out)}
+                if path == "/api/media/video/concat":
+                    import video_engine as ve
+                    out = ve.concat(payload.get("sources", []), payload.get("outputPath"), int(payload.get("targetHeight", 1080)), int(payload.get("targetFps", 30)))
+                    return {"outputPath": str(out)}
+                if path == "/api/media/video/burn-text":
+                    import video_engine as ve
+                    overlays = [ve.TextOverlay(**o) for o in payload.get("overlays", [])]
+                    out = ve.burn_text(payload.get("path"), payload.get("outputPath"), overlays)
+                    return {"outputPath": str(out)}
+                if path == "/api/media/video/transcode":
+                    import video_engine as ve
+                    out = ve.transcode(payload.get("path"), payload.get("outputPath"), bool(payload.get("useHw", False)), int(payload.get("crf", 20)))
+                    return {"outputPath": str(out)}
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/annotations", path)
                 if match:
-                    return owner.controller.save_annotations(match.group(1), payload)
+                    return owner.controller.save_annotations(match.group(1), payload, catalog=catalog)
                 raise KeyError("API không tồn tại.")
 
             def _serve_thumbnail(self, path: str) -> bool:
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/thumbnail", path)
                 if not match:
                     return False
-                record = owner.controller.catalog.get(match.group(1))
+                catalog = owner.controller.sessions.get_catalog(self._get_session_id())
+                record = catalog.get(match.group(1))
                 if not record.images:
                     raise IndexError("Series không có ảnh.")
                 if record.thumbnail_bytes is None:
@@ -2641,7 +2806,8 @@ class LocalApiServer:
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/image/(\d+)", path)
                 if not match:
                     return False
-                record = owner.controller.catalog.get(match.group(1))
+                catalog = owner.controller.sessions.get_catalog(self._get_session_id())
+                record = catalog.get(match.group(1))
                 index = int(match.group(2))
                 if not 0 <= index < len(record.images):
                     raise IndexError("Lát ảnh ngoài phạm vi.")

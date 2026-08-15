@@ -849,6 +849,11 @@ function createRenderingEngine() {
   return renderingEngine;
 }
 
+/** Explicitly clear active viewports when leaving a tab. */
+export function clearViewer() {
+  destroyCurrent();
+}
+
 /** Release every GPU resource. Only for window teardown, never per layout. */
 export function disposeViewer() {
   destroyCurrent();

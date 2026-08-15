@@ -1,7 +1,7 @@
 :root {
-  font-family: Inter, "Segoe UI", system-ui, sans-serif;
-  color: #dce7f2;
-  background: #060a10;
+  font-family: var(--app-font, Inter, "Segoe UI", system-ui, sans-serif);
+  color: var(--body-fg, #dce7f2);
+  background: var(--shell-bg, #060a10);
   font-synthesis: none;
 
   /* Form & General Control Tokens */
@@ -35,6 +35,248 @@
   --danger-fg: #ff9f9f;
   --danger-border: #61343a;
   --danger-bg: #29191d;
+
+  /* Chrome extra tokens for default dark mode */
+  --shell-bg: #060a10;
+  --header-bg: #0d141d;
+  --chrome-border: #223040;
+  --header-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+  --brand-fg: #eff8ff;
+  --brand-mark-border: #1d5f8c;
+  --brand-mark-bg: #123a55;
+  --brand-sub-fg: #78a9c8;
+  --panel-title-fg: #8fd3ff;
+  --list-border: #1c2a36;
+  --list-bg: #080e14;
+  --list-item-border: #17232e;
+  --pill-new-fg: #9ee6bd;
+  --pill-new-bg: #123523;
+  --pill-downloaded-fg: #a8bad0;
+  --pill-downloaded-bg: #24313e;
+  --pill-incomplete-fg: #ffd594;
+  --pill-incomplete-bg: #3c2b13;
+  --alert-fg: #91a9ba;
+  --alert-border: #28506a;
+  --alert-bg: #0c1d28;
+  --alert-existing-border: #326445;
+  --alert-existing-bg: #10251a;
+  --alert-warning-border: #8a6b2d;
+  --alert-warning-bg: #30250f;
+  --alert-danger-border: #7b3c43;
+  --alert-danger-bg: #30171b;
+  --alert-danger-fg: #ffc2c2;
+  --muted-fg: #607587;
+  --credit-fg: #5d7385;
+  --log-fg: #9bc3db;
+  --log-border: #1d2a35;
+  --log-bg: #05090d;
+  --statusbar-border: #192530;
+  --statusbar-bg: #0c131a;
+  --status-dot-bg: #27bd72;
+}
+
+/* ============================================================
+   Theme skin: notion  —  Notion — nền trắng ấm, phẳng, bo góc nhỏ, font Inter
+   Only the app CHROME (header, download panel, badges, alerts,
+   job log, status bar) is themed here. The viewer toolbar,
+   series thumbnails and image canvas intentionally stay on the
+   fixed dark palette above, the way clinical viewers keep the
+   reading area dark regardless of the app's own theme.
+   ============================================================ */
+:root[data-theme="notion"] {
+  --app-font: "Inter","Segoe UI",system-ui,sans-serif;
+  --body-fg: #37352f;
+  --shell-bg: #ffffff;
+  --header-bg: #ffffff;
+  --chrome-border: #e9e9e7;
+  --header-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+
+  --brand-fg: #37352f;
+  --brand-mark-border: #d8d8d5;
+  --brand-mark-bg: #f1f1ef;
+  --brand-sub-fg: #9b9a97;
+
+  --control-radius: 8px;
+  --control-fg: #37352f;
+  --control-border: #e9e9e7;
+  --control-bg: #ffffff;
+  --control-bg-hover: #f1f1ef;
+
+  --field-fg: #37352f;
+  --field-border: #e9e9e7;
+  --field-border-focus: #2383e2;
+  --field-bg: #ffffff;
+
+  --label-fg: #6b6a66;
+  --label-muted: #9b9a97;
+  --panel-bg: #fbfbfa;
+
+  --accent-border: #8fc4ea;
+  --accent-bg: #cfe6fa;
+  --danger-fg: #e03e3e;
+  --danger-border: #f2b0a4;
+  --danger-bg: #ffe2dd;
+
+  --panel-title-fg: #37352f;
+  --list-border: #e9e9e7;
+  --list-bg: #ffffff;
+  --list-item-border: #f1f1ef;
+
+  --pill-new-fg: #448361;       --pill-new-bg: #dbeddb;
+  --pill-downloaded-fg: #6b6a66; --pill-downloaded-bg: #e9e9e7;
+  --pill-incomplete-fg: #d9730d; --pill-incomplete-bg: #fadec9;
+
+  --alert-fg: #6b6a66;
+  --alert-border: #cfe6fa;
+  --alert-bg: #f2f8fd;
+  --alert-existing-border: #bfe3cd; --alert-existing-bg: #eaf6ee;
+  --alert-warning-border: #f7dcb0;   --alert-warning-bg: #fdf3e3;
+  --alert-danger-border: #f2b0a4;     --alert-danger-bg: #ffe2dd; --alert-danger-fg: #e03e3e;
+
+  --muted-fg: #9b9a97;
+  --credit-fg: #9b9a97;
+  --log-fg: #37352f;
+  --log-border: #e9e9e7;
+  --log-bg: #fbfbfa;
+  --statusbar-border: #e9e9e7;
+  --statusbar-bg: #ffffff;
+  --status-dot-bg: #188038;
+}
+
+/* ============================================================
+   Theme skin: google  —  Google Material — nền trắng/xám nhạt, nút bo tròn (tonal), font Roboto
+   Only the app CHROME (header, download panel, badges, alerts,
+   job log, status bar) is themed here. The viewer toolbar,
+   series thumbnails and image canvas intentionally stay on the
+   fixed dark palette above, the way clinical viewers keep the
+   reading area dark regardless of the app's own theme.
+   ============================================================ */
+:root[data-theme="google"] {
+  --app-font: "Google Sans","Roboto",Arial,sans-serif;
+  --body-fg: #202124;
+  --shell-bg: #f8f9fa;
+  --header-bg: #ffffff;
+  --chrome-border: #dadce0;
+  --header-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
+
+  --brand-fg: #202124;
+  --brand-mark-border: #d2e3fc;
+  --brand-mark-bg: #e8f0fe;
+  --brand-sub-fg: #5f6368;
+
+  --control-radius: 14px;
+  --control-fg: #3c4043;
+  --control-border: #dadce0;
+  --control-bg: #ffffff;
+  --control-bg-hover: #f1f3f4;
+
+  --field-fg: #202124;
+  --field-border: #dadce0;
+  --field-border-focus: #1a73e8;
+  --field-bg: #ffffff;
+
+  --label-fg: #5f6368;
+  --label-muted: #80868b;
+  --panel-bg: #ffffff;
+
+  --accent-border: #1a73e8;
+  --accent-bg: #d2e3fc;
+  --danger-fg: #d93025;
+  --danger-border: #f6aea9;
+  --danger-bg: #fce8e6;
+
+  --panel-title-fg: #1a73e8;
+  --list-border: #dadce0;
+  --list-bg: #ffffff;
+  --list-item-border: #e8eaed;
+
+  --pill-new-fg: #188038;       --pill-new-bg: #e6f4ea;
+  --pill-downloaded-fg: #5f6368; --pill-downloaded-bg: #f1f3f4;
+  --pill-incomplete-fg: #b06000; --pill-incomplete-bg: #fef7e0;
+
+  --alert-fg: #5f6368;
+  --alert-border: #d2e3fc;
+  --alert-bg: #eef4fe;
+  --alert-existing-border: #ceead6; --alert-existing-bg: #e6f4ea;
+  --alert-warning-border: #fce8b2;   --alert-warning-bg: #fef7e0;
+  --alert-danger-border: #f6aea9;     --alert-danger-bg: #fce8e6; --alert-danger-fg: #d93025;
+
+  --muted-fg: #80868b;
+  --credit-fg: #9aa0a6;
+  --log-fg: #202124;
+  --log-border: #dadce0;
+  --log-bg: #f8f9fa;
+  --statusbar-border: #dadce0;
+  --statusbar-bg: #ffffff;
+  --status-dot-bg: #188038;
+}
+
+/* ============================================================
+   Theme skin: win11  —  Windows 11 Fluent — nền Mica xám nhạt, bo góc nhỏ chuẩn Fluent, font Segoe UI Variable
+   Only the app CHROME (header, download panel, badges, alerts,
+   job log, status bar) is themed here. The viewer toolbar,
+   series thumbnails and image canvas intentionally stay on the
+   fixed dark palette above, the way clinical viewers keep the
+   reading area dark regardless of the app's own theme.
+   ============================================================ */
+:root[data-theme="win11"] {
+  --app-font: "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --body-fg: #1b1b1b;
+  --shell-bg: #f3f3f3;
+  --header-bg: #f3f3f3;
+  --chrome-border: #e5e5e5;
+  --header-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+
+  --brand-fg: #1b1b1b;
+  --brand-mark-border: #cfe4fa;
+  --brand-mark-bg: #e5f1fb;
+  --brand-sub-fg: #5c5c5c;
+
+  --control-radius: 4px;
+  --control-fg: #1b1b1b;
+  --control-border: #d6d6d6;
+  --control-bg: #ffffff;
+  --control-bg-hover: #f3f3f3;
+
+  --field-fg: #1b1b1b;
+  --field-border: #d6d6d6;
+  --field-border-focus: #0078d4;
+  --field-bg: #ffffff;
+
+  --label-fg: #5c5c5c;
+  --label-muted: #767676;
+  --panel-bg: #f9f9f9;
+
+  --accent-border: #0078d4;
+  --accent-bg: #cfe4fa;
+  --danger-fg: #c42b1c;
+  --danger-border: #f1a9a0;
+  --danger-bg: #fde7e9;
+
+  --panel-title-fg: #0078d4;
+  --list-border: #e5e5e5;
+  --list-bg: #ffffff;
+  --list-item-border: #ececec;
+
+  --pill-new-fg: #0f7b0f;       --pill-new-bg: #dff6dd;
+  --pill-downloaded-fg: #5c5c5c; --pill-downloaded-bg: #eeeeee;
+  --pill-incomplete-fg: #9d5d00; --pill-incomplete-bg: #fff4ce;
+
+  --alert-fg: #5c5c5c;
+  --alert-border: #cfe4fa;
+  --alert-bg: #f3f9fe;
+  --alert-existing-border: #c3ecc2; --alert-existing-bg: #e9f7e8;
+  --alert-warning-border: #f6e4ad;   --alert-warning-bg: #fff9e8;
+  --alert-danger-border: #f1a9a0;     --alert-danger-bg: #fde7e9; --alert-danger-fg: #c42b1c;
+
+  --muted-fg: #8a8a8a;
+  --credit-fg: #8a8a8a;
+  --log-fg: #1b1b1b;
+  --log-border: #e5e5e5;
+  --log-bg: #f9f9f9;
+  --statusbar-border: #e5e5e5;
+  --statusbar-bg: #f3f3f3;
+  --status-dot-bg: #0f7b0f;
 }
 
 * { box-sizing: border-box; }
@@ -44,26 +286,243 @@ button { cursor: pointer; }
 
 .app-shell {
   display: grid;
-  grid-template: 54px 1fr / 318px 1fr;
+  grid-template: 54px 34px 1fr / 318px 1fr;
   width: 100%;
   height: 100%;
-  background: #060a10;
+  background: var(--shell-bg, #060a10);
 }
 
 .app-shell.download-collapsed { grid-template-columns: 0 1fr; }
 .app-shell.download-collapsed .download-panel { transform: translateX(-100%); }
 
 .app-header {
+  grid-row: 1;
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
   gap: 18px;
   min-width: 0;
   padding: 0 12px;
-  background: #0d141d;
-  border-bottom: 1px solid #223040;
-  box-shadow: 0 2px 12px #0008;
+  background: var(--header-bg, #0d141d);
+  border-bottom: 1px solid var(--chrome-border, #223040);
+  box-shadow: var(--header-shadow, 0 2px 12px #0008);
   z-index: 5;
+}
+
+.winbar {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 34px;
+  padding: 0 8px;
+  background: var(--panel-bg, #0b1119);
+  border-bottom: 1px solid var(--chrome-border, #223040);
+  user-select: none;
+  scrollbar-width: thin;
+  z-index: 4;
+}
+
+.winbar-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  height: 26px;
+  padding: 0 10px;
+  color: var(--label-fg, #94a9ba);
+  border: 1px solid transparent;
+  border-radius: var(--control-radius, 6px);
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 120ms ease;
+}
+.winbar-tab:hover {
+  color: var(--field-fg, #e7f1f8);
+  background: var(--control-bg-hover, #1b2f40);
+}
+.winbar-tab.active {
+  color: var(--field-fg, #ffffff);
+  background: var(--control-bg, #152533);
+  border-color: var(--control-border, #304a60);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.winbar-tab-icon {
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+  opacity: 0.85;
+}
+.winbar-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.winbar-tab-close {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 2px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--label-muted, #7890a2);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.winbar-tab-close:hover {
+  color: var(--danger-fg, #ff9f9f);
+  background: var(--danger-bg, #29191d);
+}
+.winbar-add-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px dashed var(--control-border, #304a60);
+  border-radius: var(--control-radius, 6px);
+  background: transparent;
+  color: var(--label-muted, #7890a2);
+  font-size: 15px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.winbar-add-btn:hover {
+  color: var(--field-fg, #ffffff);
+  border-color: var(--accent-border, #007fc5);
+  background: var(--control-bg-hover, #1b2f40);
+}
+
+.worklist-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px 20px;
+  gap: 16px;
+  overflow-y: auto;
+  background: var(--shell-bg, #060a10);
+  color: var(--body-fg, #dce7f2);
+}
+.worklist-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.worklist-title-group h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--panel-title-fg, #8fd3ff);
+}
+.worklist-stats {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.worklist-stat-card {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 14px;
+  border-radius: var(--control-radius, 6px);
+  border: 1px solid var(--list-border, #1c2a36);
+  background: var(--panel-bg, #0b1119);
+  min-width: 100px;
+}
+.worklist-stat-card .stat-num {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--field-fg, #e7f1f8);
+}
+.worklist-stat-card .stat-label {
+  font-size: 10px;
+  color: var(--label-muted, #7890a2);
+  text-transform: uppercase;
+}
+.worklist-filter-bar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.worklist-filter-bar input {
+  flex: 1;
+  height: var(--control-height);
+  padding: 0 10px;
+  border: 1px solid var(--field-border);
+  border-radius: var(--control-radius);
+  background: var(--field-bg);
+  color: var(--field-fg);
+}
+.worklist-filter-bar select {
+  height: var(--control-height);
+  padding: 0 10px;
+  border: 1px solid var(--field-border);
+  border-radius: var(--control-radius);
+  background: var(--field-bg);
+  color: var(--field-fg);
+}
+.worklist-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.worklist-patient-card {
+  border: 1px solid var(--list-border, #1c2a36);
+  border-radius: 8px;
+  background: var(--panel-bg, #0b1119);
+  overflow: hidden;
+}
+.worklist-patient-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--panel-bg) 70%, var(--control-bg) 30%);
+  cursor: pointer;
+  user-select: none;
+}
+.worklist-patient-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.worklist-patient-name {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--field-fg, #e7f1f8);
+}
+.worklist-patient-meta {
+  font-size: 11px;
+  color: var(--label-muted, #7890a2);
+}
+.worklist-study-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-top: 1px solid var(--list-item-border, #17232e);
+  font-size: 11px;
+}
+.worklist-study-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.worklist-open-btn {
+  height: var(--control-height-sm);
+  padding: 0 12px;
+  font-size: 11px;
 }
 
 .brand {
@@ -72,7 +531,7 @@ button { cursor: pointer; }
   gap: 9px;
   min-width: 210px;
   border: 0;
-  color: #eff8ff;
+  color: var(--brand-fg, #eff8ff);
   background: transparent;
   text-align: left;
 }
@@ -83,13 +542,13 @@ button { cursor: pointer; }
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  border: 1px solid #1d5f8c;
-  background: #123a55;
+  border: 1px solid var(--brand-mark-border, #1d5f8c);
+  background: var(--brand-mark-bg, #123a55);
   font-weight: 700;
 }
 
 .brand b, .brand small { display: block; }
-.brand small { color: #78a9c8; font-size: 9px; letter-spacing: 1.4px; }
+.brand small { color: var(--brand-sub-fg, #78a9c8); font-size: 9px; letter-spacing: 1.4px; }
 
 .series-selects {
   display: flex;
@@ -98,17 +557,17 @@ button { cursor: pointer; }
   flex: 1;
 }
 
-.series-selects label { flex: 1; min-width: 180px; color: #7591a8; font-size: 10px; }
+.series-selects label { flex: 1; min-width: 180px; color: var(--label-muted, #7591a8); font-size: 10px; }
 .series-selects select {
   display: block;
   width: 100%;
   height: 31px;
   margin-top: 2px;
   padding: 0 9px;
-  color: #eaf4fb;
-  border: 1px solid #2a3b4c;
+  color: var(--field-fg, #eaf4fb);
+  border: 1px solid var(--field-border, #2a3b4c);
   border-radius: 6px;
-  background: #111b26;
+  background: var(--field-bg, #111b26);
 }
 .series-selects select optgroup {
   font-weight: 700;
@@ -117,34 +576,36 @@ button { cursor: pointer; }
 }
 .series-selects select option {
   font-weight: normal;
-  color: #eaf4fb;
-  background: #111b26;
+  color: var(--field-fg, #eaf4fb);
+  background: var(--field-bg, #111b26);
 }
 
 .header-actions { display: flex; gap: 7px; align-items: center; }
 .soft-button, .header-actions button {
   height: var(--control-height);
-  border: 1px solid #2b3d4e;
+  border: 1px solid var(--control-border, #2b3d4e);
   border-radius: var(--control-radius);
-  color: #bcd0df;
-  background: #14202b;
+  color: var(--control-fg, #bcd0df);
+  background: var(--control-bg, #14202b);
 }
 /* A fixed width keeps the header from shifting when VI/EN swap places. */
 .soft-button { min-width: 62px; padding: 0 10px; }
-.soft-button:hover { color: #eaf4fb; background: #1b2b39; }
+.soft-button:hover { color: var(--field-fg, #eaf4fb); background: var(--control-bg-hover, #1b2b39); }
+/* Wide enough for "Windows 11" without shifting the buttons beside it. */
+.theme-select { min-width: 96px; }
 
 .download-panel {
   position: relative;
   min-width: 0;
   padding: 12px;
   overflow: auto;
-  background: #0b1119;
-  border-right: 1px solid #223040;
+  background: var(--panel-bg, #0b1119);
+  border-right: 1px solid var(--chrome-border, #223040);
   transition: transform 160ms ease;
 }
 
-.panel-title { display: flex; justify-content: space-between; align-items: center; color: #8fd3ff; }
-.panel-title button { color: #7890a2; border: 0; background: transparent; font-size: 22px; }
+.panel-title { display: flex; justify-content: space-between; align-items: center; color: var(--panel-title-fg, #8fd3ff); }
+.panel-title button { color: var(--label-muted, #7890a2); border: 0; background: transparent; font-size: 22px; }
 /* A secondary export tool, so it reads as a quiet panel rather than competing
    with the primary download action below it. */
 .dicom-source-card { display: grid; margin: 10px 0; }
@@ -166,7 +627,7 @@ button { cursor: pointer; }
 }
 .field input, .field select { height: var(--control-height); }
 .field textarea { padding: 7px 8px; resize: vertical; }
-.field select:disabled { color: #5d7385; }
+.field select:disabled { color: var(--label-muted, #5d7385); }
 .history-field { margin-top: 8px; }
 
 /* The title sits in the box's own border, so the label and its field read as
@@ -189,7 +650,7 @@ button { cursor: pointer; }
   margin-left: 2px;
   margin-bottom: -2px;
   padding: 0 4px;
-  color: #8fa6b8;
+  color: var(--label-muted, #8fa6b8);
   font-size: 9px;
   line-height: 1;
 }
@@ -218,12 +679,12 @@ button { cursor: pointer; }
   padding: 0;
   border: 0;
   border-radius: 4px;
-  color: #7890a2;
+  color: var(--label-muted);
   background: transparent;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1;
 }
-.clear-field:hover { color: #ffd0d0; background: #2a1c20; }
+.clear-field:hover { color: var(--field-fg); background: var(--control-bg-hover); }
 .clear-field[hidden] { display: none; }
 .inline-field { display: flex; gap: 6px; }
 /* A bordered field with its action button beside it, not inside the card. */
@@ -244,9 +705,19 @@ button { cursor: pointer; }
 }
 .download-panel button:not(.icon-button):not(.clear-field):not(.panel-title button):hover:not(:disabled),
 .empty-state button:hover:not(:disabled) { background: var(--control-bg-hover); }
-.primary { border-color: var(--accent-border) !important; background: var(--accent-bg) !important; }
-.danger {
-  color: var(--danger-fg) !important;
+button.primary {
+  color: #fff;
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+  font-weight: 700;
+}
+button.danger {
+  color: var(--danger-fg);
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+}
+button.danger.active {
+  color: #fff !important;
   border-color: var(--danger-border) !important;
   background: var(--danger-bg) !important;
 }
@@ -254,25 +725,25 @@ button:disabled { opacity: .35; cursor: default; }
 .study-list {
   max-height: 190px;
   overflow: auto;
-  border: 1px solid #1c2a36;
+  border: 1px solid var(--list-border, #1c2a36);
   border-radius: 6px;
-  background: #080e14;
+  background: var(--list-bg, #080e14);
 }
-.study-item { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid #17232e; font-size: 11px; }
+.study-item { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid var(--list-item-border, #17232e); font-size: 11px; }
 .study-item span, .study-item small { display: block; min-width: 0; }
-.study-item small { color: #7890a2; margin-top: 2px; }
+.study-item small { color: var(--label-muted, #7890a2); margin-top: 2px; }
 .study-state { display: inline-block; margin-top: 5px; padding: 2px 6px; border-radius: 999px; font-style: normal; font-size: 10px; }
-.study-state.new { color: #9ee6bd; background: #123523; }
-.study-state.downloaded { color: #a8bad0; background: #24313e; }
-.study-state.incomplete { color: #ffd594; background: #3c2b13; }
+.study-state.new { color: var(--pill-new-fg, #9ee6bd); background: var(--pill-new-bg, #123523); }
+.study-state.downloaded { color: var(--pill-downloaded-fg, #a8bad0); background: var(--pill-downloaded-bg, #24313e); }
+.study-state.incomplete { color: var(--pill-incomplete-fg, #ffd594); background: var(--pill-incomplete-bg, #3c2b13); }
 .patient-status:empty { display: none; }
-.patient-alert { display: grid; gap: 3px; margin: 7px 0; padding: 8px; border: 1px solid #28506a; border-radius: 6px; background: #0c1d28; font-size: 11px; }
-.patient-alert span, .patient-alert small { color: #91a9ba; overflow-wrap: anywhere; }
-.patient-alert.existing { border-color: #326445; background: #10251a; }
-.patient-alert.warning { border-color: #8a6b2d; background: #30250f; }
-.patient-alert.danger { border-color: #7b3c43; background: #30171b; }
-.patient-alert.danger span { color: #ffc2c2; }
-.muted { display: block; padding: 12px; color: #607587; font-size: 11px; }
+.patient-alert { display: grid; gap: 3px; margin: 7px 0; padding: 8px; border: 1px solid var(--alert-border, #28506a); border-radius: 6px; background: var(--alert-bg, #0c1d28); font-size: 11px; }
+.patient-alert span, .patient-alert small { color: var(--alert-fg, #91a9ba); overflow-wrap: anywhere; }
+.patient-alert.existing { border-color: var(--alert-existing-border, #326445); background: var(--alert-existing-bg, #10251a); }
+.patient-alert.warning { border-color: var(--alert-warning-border, #8a6b2d); background: var(--alert-warning-bg, #30250f); }
+.patient-alert.danger { border-color: var(--alert-danger-border, #7b3c43); background: var(--alert-danger-bg, #30171b); }
+.patient-alert.danger span { color: var(--alert-danger-fg, #ffc2c2); }
+.muted { display: block; padding: 12px; color: var(--muted-fg, #607587); font-size: 11px; }
 .download-options { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; color: var(--label-fg); font-size: 11px; }
 .download-options input[type="number"] {
   width: 62px;
@@ -366,7 +837,7 @@ button:disabled { opacity: .35; cursor: default; }
 
 .panel-credit {
   margin-top: 10px;
-  color: #5d7385;
+  color: var(--credit-fg, #5d7385);
   font-size: 10px;
   font-style: italic;
   text-align: right;
@@ -376,10 +847,10 @@ button:disabled { opacity: .35; cursor: default; }
   max-height: 260px;
   overflow: auto;
   padding: 8px;
-  color: #9bc3db;
-  border: 1px solid #1d2a35;
+  color: var(--log-fg, #9bc3db);
+  border: 1px solid var(--log-border, #1d2a35);
   border-radius: 6px;
-  background: #05090d;
+  background: var(--log-bg, #05090d);
   font: 10px/1.45 Consolas, monospace;
   white-space: pre-wrap;
   user-select: text;
@@ -905,12 +1376,12 @@ button:disabled { opacity: .35; cursor: default; }
   gap: 7px;
   min-width: 0;
   padding: 0 9px;
-  color: #7890a2;
-  border-top: 1px solid #192530;
-  background: #0c131a;
+  color: var(--label-muted, #7890a2);
+  border-top: 1px solid var(--statusbar-border, #192530);
+  background: var(--statusbar-bg, #0c131a);
   font-size: 10px;
 }
-.status-dot { width: 7px; height: 7px; border-radius: 50%; background: #27bd72; flex-shrink: 0; }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--status-dot-bg, #27bd72); flex-shrink: 0; }
 .status-dot.busy { background: #f2b447; box-shadow: 0 0 8px #f2b447; }
 .status-bar.error .status-text { color: #ff9e9e; }
 .status-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1375,5 +1846,215 @@ button:disabled { opacity: .35; cursor: default; }
     opacity: 1;
     transform: translate(-50%, 0);
   }
+}
+
+/* ==========================================================================
+   Surgery Video Studio & Photo/Doc Editor Layouts
+   ========================================================================== */
+
+.surgery-video-studio,
+.photo-editor-studio {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #000000;
+  position: relative;
+  overflow: hidden;
+}
+
+.surgery-video-body,
+.photo-editor-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.surgery-video-stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #05080c;
+  position: relative;
+  min-width: 0;
+}
+
+.surgery-video-element {
+  max-width: 100%;
+  max-height: 100%;
+  outline: none;
+  background: #000;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8);
+}
+
+.surgery-video-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--panel-bg, #0b131b);
+  border-top: 1px solid var(--border-color, #182736);
+  color: var(--text-color, #e1e9f0);
+  font-size: 12px;
+  z-index: 10;
+}
+
+.surgery-video-controls .control-btn {
+  background: var(--button-bg, #142330);
+  border: 1px solid var(--button-border, #203548);
+  color: var(--text-color, #e1e9f0);
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+}
+
+.surgery-video-controls .control-btn:hover {
+  background: var(--button-hover-bg, #1f364a);
+  border-color: var(--accent, #3b82f6);
+}
+
+.surgery-video-controls .control-btn.primary {
+  background: var(--accent, #1a73e8);
+  color: #fff;
+  border-color: transparent;
+}
+
+.surgery-video-controls .video-scrubber {
+  flex: 1;
+  accent-color: var(--accent, #3b82f6);
+  cursor: pointer;
+}
+
+.surgery-video-controls .video-time {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  color: var(--label-muted, #89a3b8);
+  min-width: 90px;
+  text-align: center;
+}
+
+.surgery-video-sidebar {
+  width: 280px;
+  border-left: 1px solid var(--border-color, #182736);
+  background: var(--panel-bg, #090f16);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.surgery-video-sidebar-header {
+  padding: 10px 14px;
+  font-weight: 600;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-color, #182736);
+  color: var(--text-color, #d1e2f2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.surgery-video-bookmarks {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.surgery-bookmark-card {
+  padding: 8px 10px;
+  background: var(--card-bg, #101c27);
+  border: 1px solid var(--border-color, #1a2e40);
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: background 0.15s ease;
+}
+
+.surgery-bookmark-card:hover {
+  background: var(--card-hover-bg, #182c3f);
+  border-color: var(--accent, #3b82f6);
+}
+
+.surgery-bookmark-time {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: #60c5ff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.surgery-bookmark-text {
+  font-size: 12px;
+  color: #cbdceb;
+}
+
+/* Photo & Doc Studio */
+.photo-editor-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #05080c;
+  overflow: auto;
+  position: relative;
+}
+
+.photo-editor-canvas-wrap {
+  position: relative;
+  display: inline-block;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8);
+}
+
+.photo-editor-image {
+  display: block;
+  max-width: 100%;
+  max-height: 80vh;
+  object-fit: contain;
+}
+
+.photo-editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--panel-bg, #0b131b);
+  border-bottom: 1px solid var(--border-color, #182736);
+  z-index: 10;
+}
+
+.photo-editor-toolbar .tool-btn {
+  background: var(--button-bg, #142330);
+  border: 1px solid var(--button-border, #203548);
+  color: var(--text-color, #e1e9f0);
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.photo-editor-toolbar .tool-btn:hover {
+  background: var(--button-hover-bg, #1f364a);
+  border-color: var(--accent, #3b82f6);
+}
+
+.photo-editor-toolbar .tool-btn.active {
+  background: var(--accent, #1a73e8);
+  color: #fff;
+  border-color: transparent;
 }
 
