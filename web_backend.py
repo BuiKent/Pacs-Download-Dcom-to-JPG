@@ -835,19 +835,20 @@ class SeriesRecord:
     thumbnail_bytes: Optional[bytes] = None
 
     def public_dict(self) -> dict:
+        m = self.manifest or {}
         data = {
             "id": self.series_id,
             "name": self.name,
             "sliceCount": len(self.images),
             "mprReady": self.mpr_ready,
             "mprReason": self.mpr_reason,
-            "seriesType": (self.manifest or {}).get("series_type", ""),
-            "description": (self.manifest or {}).get("series_description", self.name),
+            "seriesType": m.get("series_type", ""),
+            "description": m.get("series_description", self.name),
             "modality": self.modality,
             "sourceType": self.source_type,
             "studyGroup": self.study_group,
-            "studyDate": self.study_date or (self.manifest or {}).get("study_date") or (self.manifest or {}).get("studyDate", ""),
-            "studyDescription": (self.manifest or {}).get("study_description") or (self.manifest or {}).get("studyDescription", ""),
+            "studyDate": self.study_date or m.get("study_date") or m.get("studyDate", ""),
+            "studyDescription": m.get("study_description") or m.get("studyDescription", ""),
         }
         if self.pixel_data:
             data["pixelData"] = self.pixel_data
@@ -1149,6 +1150,173 @@ class ArchiveCatalog:
             )
         return records, unsupported, len(paths)
 
+    @staticmethod
+    def _provenance_sources(start: Path) -> tuple[Optional[dict], Optional[dict]]:
+        """The nearest patient-index.json and .direct-download.json at or above `start`.
+
+        Both are looked up by walking upwards: the viewer is often pointed at a
+        single study's JPG folder, while the manifest and the direct-download
+        marker live on the patient folder several levels above it.
+        """
+        patient_manifest = None
+        for folder in (start, *start.parents):
+            found = dcom_pipeline._read_patient_manifest(folder)
+            if found:
+                patient_manifest = found
+                break
+        direct_meta = None
+        for folder in (start, *start.parents):
+            marker = folder / DIRECT_DOWNLOAD_META_NAME
+            if marker.is_file():
+                try:
+                    direct_meta = json.loads(marker.read_text(encoding="utf-8"))
+                    break
+                except Exception:
+                    pass
+        return patient_manifest, direct_meta
+
+    @staticmethod
+    def _enrich_record(
+        rec: SeriesRecord,
+        patient_manifest: Optional[dict],
+        direct_meta: Optional[dict],
+    ) -> None:
+        """Fill the series manifest with what only the archive on disk knows.
+
+        The DICOM headers a PACS hands out are frequently redacted, and JPG
+        folders carry no demographics at all, so the patient folder's manifest
+        is the authority for name/ID and for where the study was downloaded
+        from. Nothing already present in the record is overwritten.
+        """
+        if not isinstance(rec.manifest, dict):
+            rec.manifest = {}
+        manifest = rec.manifest
+        if patient_manifest:
+            m_name = patient_manifest.get("patientName") or ""
+            m_id = patient_manifest.get("patientId") or ""
+            m_dob = patient_manifest.get("patientBirthDate") or ""
+            m_sex = patient_manifest.get("patientSex") or ""
+            h_key = patient_manifest.get("hospitalKey") or ""
+            h_name = patient_manifest.get("hospitalName") or ""
+            if dcom_pipeline._is_redacted_patient_value(manifest.get("patient_name")) and not dcom_pipeline._is_redacted_patient_value(m_name):
+                manifest["patient_name"] = m_name
+                manifest["patientName"] = m_name
+            if dcom_pipeline._is_redacted_patient_value(manifest.get("patient_id")) and not dcom_pipeline._is_redacted_patient_value(m_id):
+                manifest["patient_id"] = m_id
+                manifest["patientId"] = m_id
+            if not manifest.get("patient_birth_date") and m_dob:
+                manifest["patient_birth_date"] = m_dob
+                manifest["patientBirthDate"] = m_dob
+            if not manifest.get("patient_sex") and m_sex:
+                manifest["patient_sex"] = m_sex
+                manifest["patientSex"] = m_sex
+            if h_key and not manifest.get("hospitalKey"):
+                manifest["hospitalKey"] = h_key
+            if h_name and not manifest.get("hospitalName"):
+                manifest["hospitalName"] = h_name
+            if patient_manifest.get("directUrl"):
+                manifest.setdefault("downloadUrl", patient_manifest["directUrl"])
+                manifest.setdefault("viewerUrl", patient_manifest["directUrl"])
+            studies = patient_manifest.get("studies")
+            if isinstance(studies, dict):
+                study_uid = manifest.get("study_instance_uid") or manifest.get("studyUid")
+                study_data = studies.get(study_uid) if study_uid else None
+                # A single-study patient folder is unambiguous even when the
+                # series carries no StudyInstanceUID (converted JPGs never do).
+                if not study_data and len(studies) == 1:
+                    study_data = next(iter(studies.values()))
+                if isinstance(study_data, dict):
+                    s_url = study_data.get("downloadUrl") or study_data.get("viewerUrl")
+                    if s_url:
+                        manifest.setdefault("downloadUrl", s_url)
+                        manifest.setdefault("viewerUrl", s_url)
+                    for key in ("patientCode", "accessionNumber", "hospitalName"):
+                        if study_data.get(key):
+                            manifest.setdefault(key, study_data[key])
+        if isinstance(direct_meta, dict):
+            d_url = direct_meta.get("url") or direct_meta.get("downloadUrl")
+            if d_url:
+                manifest.setdefault("downloadUrl", d_url)
+                manifest.setdefault("viewerUrl", d_url)
+
+    def _open_file(
+        self,
+        file_path: Path,
+        *,
+        log: Optional[Callable[[str], None]] = None,
+    ) -> dict:
+        parent = file_path.parent
+        patient_manifest, direct_meta = self._provenance_sources(parent)
+
+        def _enrich_single(rec: SeriesRecord) -> None:
+            self._enrich_record(rec, patient_manifest, direct_meta)
+
+        headers = _read_dicom_header(file_path)
+        if headers:
+            headers_ordered = _ordered_dicom_headers(headers)
+            manifest, ready, reason = _direct_dicom_manifest(headers_ordered)
+            first = headers_ordered[0]
+            digest = hashlib.sha256(str(file_path).casefold().encode("utf-8")).hexdigest()[:20]
+            record = SeriesRecord(
+                series_id=digest,
+                name=first.description or file_path.name,
+                folder=parent,
+                images=[file_path] * len(headers_ordered),
+                manifest=manifest,
+                mpr_ready=ready,
+                mpr_reason=reason,
+                modality="MR" if first.modality == "MRI" else first.modality,
+                source_type="dicom",
+                study_group=first.study_desc or parent.name,
+                study_date=first.study_date,
+                frame_indices=[h.frame_index for h in headers_ordered],
+            )
+            _enrich_single(record)
+            with self._lock:
+                self.root = parent
+                self._series = {digest: record}
+            if log:
+                log(f"Đã mở file DICOM: {file_path.name} ({len(headers_ordered)} frame)")
+            return self.snapshot()
+
+        if file_path.suffix.casefold() in IMG_EXTENSIONS:
+            folder = file_path.parent
+            manifest = None
+            try:
+                manifest = mpr_engine.read_manifest(folder)
+            except Exception:
+                pass
+            digest = hashlib.sha256(str(file_path).casefold().encode("utf-8")).hexdigest()[:20]
+            modality = self._modality(folder, folder, manifest)
+            study_date, folder_modality, study_desc = _study_from_folder_path(folder)
+            manifest_date = str((manifest or {}).get("study_date") or "").strip()
+            study_date = study_date or manifest_date
+            record = SeriesRecord(
+                series_id=digest,
+                name=file_path.name,
+                folder=folder,
+                images=[file_path],
+                manifest=manifest or {"series_description": file_path.stem},
+                mpr_ready=False,
+                mpr_reason="File ảnh đơn lẻ",
+                modality=modality if modality in {"CT", "MR"} else (folder_modality or "UNKNOWN"),
+                source_type="image",
+                study_group=study_desc or folder.name,
+                study_date=study_date,
+            )
+            _enrich_single(record)
+            with self._lock:
+                self.root = folder
+                self._series = {digest: record}
+            if log:
+                log(f"Đã mở file ảnh: {file_path.name}")
+            return self.snapshot()
+
+        raise ValueError(
+            f"Không thể đọc file {file_path.name}. "
+            "Ứng dụng hỗ trợ file DICOM (.dcm, .dicom, .ima) và file ảnh (JPG, PNG, WEBP, BMP)."
+        )
+
     def open(
         self,
         value: os.PathLike[str] | str,
@@ -1157,6 +1325,8 @@ class ArchiveCatalog:
         should_stop: Optional[Callable[[], bool]] = None,
     ) -> dict:
         root = Path(value).expanduser().resolve(strict=True)
+        if root.is_file():
+            return self._open_file(root, log=log)
         if not root.is_dir():
             raise ValueError("Đường dẫn không phải thư mục.")
         if dcom_pipeline._read_patient_manifest(root) is None:
@@ -1174,35 +1344,11 @@ class ArchiveCatalog:
                 raise ValueError(
                     "Folder tổng chứa nhiều bệnh nhân. Hãy mở đúng folder có tên bắt đầu bằng mã bệnh nhân để tránh trộn phim."
                 )
-        patient_manifest = dcom_pipeline._read_patient_manifest(root)
-        if patient_manifest is None:
-            for parent in root.parents:
-                parent_manifest = dcom_pipeline._read_patient_manifest(parent)
-                if parent_manifest:
-                    patient_manifest = parent_manifest
-                    break
+        patient_manifest, direct_meta = self._provenance_sources(root)
 
         def _enrich_manifest_records(recs: dict[str, SeriesRecord]) -> None:
-            if not patient_manifest:
-                return
-            m_name = patient_manifest.get("patientName") or ""
-            m_id = patient_manifest.get("patientId") or ""
-            m_dob = patient_manifest.get("patientBirthDate") or ""
-            m_sex = patient_manifest.get("patientSex") or ""
             for rec in recs.values():
-                if rec.manifest and isinstance(rec.manifest, dict):
-                    if dcom_pipeline._is_redacted_patient_value(rec.manifest.get("patient_name")) and not dcom_pipeline._is_redacted_patient_value(m_name):
-                        rec.manifest["patient_name"] = m_name
-                        rec.manifest["patientName"] = m_name
-                    if dcom_pipeline._is_redacted_patient_value(rec.manifest.get("patient_id")) and not dcom_pipeline._is_redacted_patient_value(m_id):
-                        rec.manifest["patient_id"] = m_id
-                        rec.manifest["patientId"] = m_id
-                    if not rec.manifest.get("patient_birth_date") and m_dob:
-                        rec.manifest["patient_birth_date"] = m_dob
-                        rec.manifest["patientBirthDate"] = m_dob
-                    if not rec.manifest.get("patient_sex") and m_sex:
-                        rec.manifest["patient_sex"] = m_sex
-                        rec.manifest["patientSex"] = m_sex
+                self._enrich_record(rec, patient_manifest, direct_meta)
 
         dicom_records, unsupported_dicom, dicom_candidates = self._dicom_records(
             root, log=log, should_stop=should_stop,
@@ -2038,6 +2184,8 @@ class WebController:
         temporary = marker.with_suffix(marker.suffix + ".tmp")
         payload = {
             "format": "dcom-direct-download-v1",
+            "url": url,
+            "downloadUrl": url,
             "linkHash": hashlib.sha256(url.encode("utf-8")).hexdigest()[:8],
             "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
@@ -2164,6 +2312,153 @@ class WebController:
         temporary.replace(path)
         return {"saved": True, "count": len(annotations)}
 
+    def get_file_info(self, series_id: str, slice_index: int = 0) -> dict:
+        import pydicom
+        from PIL import Image
+
+        record = self.catalog.get(series_id)
+        images = record.images
+        if not images:
+            raise ValueError("Series không có file ảnh nào.")
+        index = max(0, min(int(slice_index or 0), len(images) - 1))
+        file_path = images[index]
+        manifest = record.manifest or {}
+
+        try:
+            stat = file_path.stat()
+            file_size = stat.st_size
+            file_mtime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))
+        except OSError:
+            file_size = 0
+            file_mtime = ""
+
+        if file_size >= 1024 * 1024:
+            size_formatted = f"{file_size / (1024 * 1024):.2f} MB"
+        elif file_size >= 1024:
+            size_formatted = f"{file_size / 1024:.1f} KB"
+        else:
+            size_formatted = f"{file_size} B"
+
+        file_info = {
+            "fileName": file_path.name,
+            "filePath": str(file_path),
+            "fileSize": file_size,
+            "fileSizeFormatted": size_formatted,
+            "modifiedAt": file_mtime,
+            "sliceIndex": index,
+            "sliceIndexDisplay": f"{index + 1}/{len(images)}",
+            "totalSlices": len(images),
+            "sourceType": record.source_type,
+            "format": "DICOM" if record.source_type == "dicom" else file_path.suffix.lstrip(".").upper(),
+        }
+
+        download_url = str(
+            manifest.get("downloadUrl")
+            or manifest.get("download_url")
+            or manifest.get("viewerUrl")
+            or manifest.get("viewer_url")
+            or ""
+        ).strip()
+        patient_code = str(manifest.get("patientCode") or manifest.get("patient_id") or manifest.get("patientId") or "").strip()
+        accession_no = str(manifest.get("accessionNumber") or manifest.get("accession_number") or "").strip()
+        hospital_key = str(manifest.get("hospitalKey") or manifest.get("hospital_key") or "").strip()
+        hospital_name = str(manifest.get("hospitalName") or manifest.get("hospital_name") or dcom_pipeline.HOSPITALS.get(hospital_key, {}).get("name", "")).strip()
+
+        provenance = {
+            "downloadUrl": download_url,
+            "viewerUrl": download_url,
+            "patientCode": patient_code,
+            "accessionNumber": accession_no,
+            "hospitalKey": hospital_key,
+            "hospitalName": hospital_name,
+            "downloadType": manifest.get("downloadType", "direct" if not hospital_key else "ris"),
+            "downloadedAt": manifest.get("downloadedAt", ""),
+        }
+
+        demographics = {
+            "patientName": manifest.get("patient_name") or manifest.get("patientName") or "",
+            "patientId": manifest.get("patient_id") or manifest.get("patientId") or "",
+            "patientBirthDate": manifest.get("patient_birth_date") or manifest.get("patientBirthDate") or "",
+            "patientSex": manifest.get("patient_sex") or manifest.get("patientSex") or "",
+            "patientAge": manifest.get("patient_age") or manifest.get("patientAge") or "",
+        }
+
+        study = {
+            "studyUid": manifest.get("study_instance_uid") or manifest.get("studyUid") or "",
+            "studyDate": manifest.get("study_date") or manifest.get("studyDate") or record.study_date,
+            "studyDescription": manifest.get("study_description") or manifest.get("studyDescription") or record.study_group,
+            "modality": record.modality,
+            "accessionNumber": accession_no,
+        }
+
+        series = {
+            "seriesId": record.series_id,
+            "seriesUid": manifest.get("series_instance_uid") or manifest.get("seriesUid") or record.series_id,
+            "seriesNumber": manifest.get("series_number") or manifest.get("seriesNumber") or "",
+            "seriesDescription": manifest.get("series_description") or manifest.get("seriesDescription") or record.name,
+            "rows": manifest.get("rows"),
+            "columns": manifest.get("columns"),
+            "sliceCount": len(images),
+            "pixelSpacing": manifest.get("pixel_spacing"),
+            "sliceSpacing": manifest.get("slice_spacing"),
+            "sliceThickness": manifest.get("slice_thickness") or manifest.get("sliceThickness"),
+            "orientation": manifest.get("image_orientation_patient"),
+            "frameOfReferenceUid": manifest.get("frame_of_reference_uid") or "",
+            "photometric": manifest.get("photometric", ""),
+            "windowCenter": manifest.get("window_center") or manifest.get("windowCenter"),
+            "windowWidth": manifest.get("window_width") or manifest.get("windowWidth"),
+        }
+
+        dicom_tags: list[dict] = []
+        if record.source_type == "dicom" or file_path.suffix.casefold() in {".dcm", ".dicom", ".ima"}:
+            try:
+                ds = pydicom.dcmread(str(file_path), force=True, stop_before_pixels=True)
+                for elem in ds:
+                    if elem.tag == 0x7FE00010:  # Skip raw PixelData
+                        continue
+                    tag_str = f"({elem.tag.group:04X},{elem.tag.element:04X})"
+                    val_str = ""
+                    try:
+                        val_str = str(elem.value)
+                        if len(val_str) > 300:
+                            val_str = val_str[:300] + "…"
+                    except Exception:
+                        val_str = "<unreadable>"
+                    dicom_tags.append({
+                        "tag": tag_str,
+                        "vr": str(elem.VR or ""),
+                        "name": str(elem.name or ""),
+                        "value": val_str,
+                    })
+            except Exception as exc:
+                dicom_tags.append({
+                    "tag": "(ERROR)",
+                    "vr": "",
+                    "name": "Lỗi đọc thẻ DICOM",
+                    "value": str(exc),
+                })
+        else:
+            try:
+                with Image.open(file_path) as img:
+                    dicom_tags.append({"tag": "(IMAGE,0001)", "vr": "CS", "name": "Image Format", "value": str(img.format)})
+                    dicom_tags.append({"tag": "(IMAGE,0002)", "vr": "CS", "name": "Color Mode", "value": str(img.mode)})
+                    dicom_tags.append({"tag": "(IMAGE,0003)", "vr": "IS", "name": "Width (Columns)", "value": str(img.width)})
+                    dicom_tags.append({"tag": "(IMAGE,0004)", "vr": "IS", "name": "Height (Rows)", "value": str(img.height)})
+                    if series.get("rows") is None:
+                        series["rows"] = img.height
+                        series["columns"] = img.width
+            except Exception:
+                pass
+
+        return {
+            "file": file_info,
+            "provenance": provenance,
+            "demographics": demographics,
+            "study": study,
+            "series": series,
+            "dicomTags": dicom_tags,
+        }
+
 
 class LocalApiServer:
     def __init__(self, controller: WebController, static_dir: Path):
@@ -2261,7 +2556,7 @@ class LocalApiServer:
                     raise ValueError("Payload phải là object.")
                 return value
 
-            def _api_get(self, path: str) -> Any:
+            def _api_get(self, path: str, query: str = "") -> Any:
                 if path == "/api/bootstrap":
                     return owner.controller.bootstrap()
                 if path == "/api/archive":
@@ -2286,6 +2581,15 @@ class LocalApiServer:
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/annotations", path)
                 if match:
                     return owner.controller.get_annotations(match.group(1))
+                match = re.fullmatch(r"/api/series/([a-f0-9]{20})/file-info", path)
+                if match:
+                    index = 0
+                    if query:
+                        from urllib.parse import parse_qs
+                        qs = parse_qs(query)
+                        if "index" in qs and qs["index"] and qs["index"][0].isdigit():
+                            index = int(qs["index"][0])
+                    return owner.controller.get_file_info(match.group(1), index)
                 raise KeyError("API không tồn tại.")
 
             def _api_post(self, path: str, payload: dict) -> Any:
@@ -2375,7 +2679,8 @@ class LocalApiServer:
                 self._send(HTTPStatus.OK, body, mime)
 
             def do_GET(self) -> None:  # noqa: N802
-                path = urlparse(self.path).path
+                parsed_url = urlparse(self.path)
+                path = parsed_url.path
                 if path.startswith("/api/"):
                     if not self._authorized():
                         self._json(HTTPStatus.UNAUTHORIZED, {"error": "Không được phép."})
@@ -2383,7 +2688,7 @@ class LocalApiServer:
                     try:
                         if self._serve_thumbnail(path) or self._serve_image(path):
                             return
-                        self._json(HTTPStatus.OK, self._api_get(path))
+                        self._json(HTTPStatus.OK, self._api_get(path, parsed_url.query))
                     except KeyError as exc:
                         self._json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
                     except (ValueError, IndexError) as exc:

@@ -150,6 +150,36 @@ class NativeApi:
         except Exception:
             return ""
 
+    def _safe_file_dialog(self, file_types: tuple[str, ...] = ()) -> str:
+        import webview
+
+        dialog_type = getattr(webview.FileDialog, "OPEN", getattr(webview, "OPEN_DIALOG", 10))
+        directory = str(self._controller.output_root if self._controller.output_root.is_dir() else Path.home())
+        types = file_types or (
+            "Medical files & Images (*.dcm;*.dicom;*.ima;*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.*)",
+            "DICOM Files (*.dcm;*.dicom;*.ima)",
+            "Image Files (*.jpg;*.jpeg;*.png;*.webp;*.bmp)",
+            "All Files (*.*)",
+        )
+        try:
+            result = self._window.create_file_dialog(
+                dialog_type,
+                directory=directory,
+                file_types=types,
+            )
+            if not result:
+                return ""
+            path = result[0] if isinstance(result, (list, tuple)) else result
+            return str(path or "")
+        except Exception:
+            return ""
+
+    def choose_file(self):
+        path = self._safe_file_dialog()
+        if not path:
+            return None
+        return self._controller.open_archive(path)
+
     def choose_archive(self):
         path = self._safe_folder_dialog()
         if not path:

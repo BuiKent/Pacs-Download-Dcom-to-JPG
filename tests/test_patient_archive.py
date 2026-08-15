@@ -1446,6 +1446,69 @@ class ViewerLinkFreshnessTests(unittest.TestCase):
         self.assertFalse(dcom_pipeline.DownloadStats().is_complete())
         self.assertEqual("unknown", dcom_pipeline.DownloadStats().status)
 
+    def test_manifest_records_download_and_viewer_provenance(self):
+        """Manifest ghi nhận đầy đủ downloadUrl, viewerUrl, patientCode, accessionNumber, hospital."""
+        root = Path(tempfile.mkdtemp())
+        patient_folder, manifest, _ = dcom_pipeline.ensure_patient_archive(
+            root,
+            patient_id="BN12345",
+            patient_name="NGUYEN VAN A",
+            hospital_key="dhy",
+            hospital_name="BV Đại học Y Hà Nội",
+        )
+        study_folder = patient_folder / "2026-08-15 - CT"
+        study_folder.mkdir(parents=True)
+        study = {
+            "study_uid": "1.2.840.113619.1.999",
+            "date": "2026-08-15",
+            "modality": "CT",
+            "desc": "CT So Nao",
+            "viewer_url": "https://pacsviet.vn/viewer/study-12345",
+            "patient_id": "BN12345",
+            "accession_number": "ACC-9988",
+            "hospital_key": "dhy",
+            "hospital_name": "BV Đại học Y Hà Nội",
+        }
+        dcom_pipeline.record_patient_study(
+            patient_folder,
+            study,
+            study_folder,
+            complete=True,
+            image_count=50,
+        )
+        updated_manifest = dcom_pipeline._read_patient_manifest(patient_folder)
+        self.assertIsNotNone(updated_manifest)
+        study_entry = updated_manifest["studies"]["1.2.840.113619.1.999"]
+        self.assertEqual(study_entry["downloadUrl"], "https://pacsviet.vn/viewer/study-12345")
+        self.assertEqual(study_entry["viewerUrl"], "https://pacsviet.vn/viewer/study-12345")
+        self.assertEqual(study_entry["patientCode"], "BN12345")
+        self.assertEqual(study_entry["accessionNumber"], "ACC-9988")
+        self.assertEqual(study_entry["hospitalKey"], "dhy")
+        self.assertEqual(study_entry["hospitalName"], "BV Đại học Y Hà Nội")
+
+        # Direct manifest
+        direct_root = Path(tempfile.mkdtemp())
+        dcom_pipeline.write_direct_patient_manifest(
+            direct_root,
+            direct_root,
+            {
+                "PatientID": "BN67890",
+                "PatientName": "TRAN THI B",
+                "viewer_url": "https://direct-viewer.org/view?id=456",
+                "AccessionNumber": "ACC-7766",
+                "StudyInstanceUID": "1.2.3.4.5",
+            },
+            image_count=10,
+            complete=True,
+        )
+        direct_manifest = dcom_pipeline._read_patient_manifest(direct_root)
+        self.assertIsNotNone(direct_manifest)
+        self.assertEqual(direct_manifest["directUrl"], "https://direct-viewer.org/view?id=456")
+        self.assertIn("1.2.3.4.5", direct_manifest["studies"])
+        direct_study = direct_manifest["studies"]["1.2.3.4.5"]
+        self.assertEqual(direct_study["downloadUrl"], "https://direct-viewer.org/view?id=456")
+        self.assertEqual(direct_study["accessionNumber"], "ACC-7766")
+
 
 if __name__ == "__main__":
     unittest.main()

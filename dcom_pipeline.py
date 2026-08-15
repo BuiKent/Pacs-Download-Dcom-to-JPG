@@ -3686,6 +3686,32 @@ def record_patient_study(
         status = "selected"
     else:
         status = previous.get("status", "incomplete")
+    viewer_url = str(
+        study.get("viewer_url")
+        or study.get("viewerUrl")
+        or study.get("url")
+        or study.get("direct_url")
+        or study.get("download_url")
+        or study.get("downloadUrl")
+        or previous.get("viewerUrl")
+        or previous.get("downloadUrl")
+        or ""
+    ).strip()
+    patient_code = str(
+        study.get("patient_id")
+        or study.get("patientId")
+        or manifest.get("patientId")
+        or previous.get("patientCode")
+        or ""
+    ).strip()
+    accession_no = str(
+        study.get("accession_number")
+        or study.get("accessionNumber")
+        or study.get("accession_no")
+        or metadata.get("AccessionNumber")
+        or previous.get("accessionNumber")
+        or ""
+    ).strip()
     manifest["studies"][uid] = {
         "studyUid": uid,
         "date": study.get("date") or "",
@@ -3696,6 +3722,13 @@ def record_patient_study(
         "imageCount": max(int(image_count or 0), int(previous.get("imageCount") or 0)),
         "downloadedAt": _now_local() if (complete or selection_complete) else previous.get("downloadedAt", ""),
         "selectedSeries": selected,
+        "downloadUrl": viewer_url,
+        "viewerUrl": viewer_url,
+        "patientCode": patient_code,
+        "accessionNumber": accession_no,
+        "downloadType": "ris" if (manifest.get("hospitalKey") and manifest.get("hospitalKey") != "direct") else "direct",
+        "hospitalKey": str(study.get("hospital_key") or manifest.get("hospitalKey") or ""),
+        "hospitalName": str(study.get("hospital_name") or manifest.get("hospitalName") or ""),
         "patientAgeRaw": metadata.get("PatientAgeRaw") or previous.get("patientAgeRaw", ""),
         "patientAgeAtStudy": metadata.get("PatientAge") or previous.get("patientAgeAtStudy", ""),
         "patientAgeAtStudyYears": (
@@ -4628,8 +4661,13 @@ def write_direct_patient_manifest(
     *,
     image_count: int,
     complete: bool,
+    source_url: str = "",
 ) -> None:
-    """Persist demographics for direct/CLI downloads, not only RIS archives."""
+    """Persist demographics for direct/CLI downloads, not only RIS archives.
+
+    `source_url` is the link the study was fetched from; it is recorded so the
+    viewer can show where a folder came from long after the download.
+    """
     root = Path(download_root)
     now = _now_local()
     manifest = _read_patient_manifest(root)
@@ -4653,6 +4691,20 @@ def write_direct_patient_manifest(
             "studies": {},
         }
     _merge_manifest_demographics(manifest, metadata)
+    direct_url = str(
+        source_url
+        or metadata.get("viewer_url")
+        or metadata.get("viewerUrl")
+        or metadata.get("url")
+        or metadata.get("direct_url")
+        or metadata.get("download_url")
+        or metadata.get("downloadUrl")
+        or manifest.get("directUrl")
+        or manifest.get("downloadUrl")
+        or ""
+    ).strip()
+    if direct_url and not manifest.get("directUrl"):
+        manifest["directUrl"] = direct_url
     uid = str(metadata.get("StudyInstanceUID") or "").strip()
     if uid:
         previous = manifest["studies"].get(uid) or {}
@@ -4660,6 +4712,7 @@ def write_direct_patient_manifest(
             relative = str(Path(jpg_dir).relative_to(root))
         except ValueError:
             relative = Path(jpg_dir).name
+        study_url = direct_url or previous.get("downloadUrl") or previous.get("viewerUrl") or ""
         manifest["studies"][uid] = {
             **previous,
             "studyUid": uid,
@@ -4675,6 +4728,13 @@ def write_direct_patient_manifest(
             "imageCount": max(int(image_count or 0), int(previous.get("imageCount") or 0)),
             "downloadedAt": now if complete else previous.get("downloadedAt", ""),
             "selectedSeries": previous.get("selectedSeries") or [],
+            "downloadUrl": study_url,
+            "viewerUrl": study_url,
+            "patientCode": str(manifest.get("patientId") or metadata.get("PatientID") or ""),
+            "accessionNumber": str(metadata.get("AccessionNumber") or previous.get("accessionNumber", "")),
+            "downloadType": "direct",
+            "hospitalKey": str(manifest.get("hospitalKey") or "direct"),
+            "hospitalName": str(manifest.get("hospitalName") or ""),
             "patientAgeRaw": metadata.get("PatientAgeRaw") or "",
             "patientAgeAtStudy": metadata.get("PatientAge") or "",
             "patientAgeAtStudyYears": metadata.get("PatientAgeYears"),
@@ -4845,6 +4905,7 @@ def run_pipeline(
                 metadata,
                 image_count=dl.total(),
                 complete=dl.is_complete(),
+                source_url=url,
             )
         except Exception as e:
             log(f"  (Ghi manifest hồ sơ bỏ qua: {e})")
@@ -5722,6 +5783,8 @@ def download_studies_list(
                 custom_username=custom_username,
                 custom_password=custom_password,
             )
+            st["viewer_url"] = viewer_url
+            st["download_url"] = viewer_url
         except Exception as e:
             log(f"❌ BỎ QUA CA {idx} — không lấy được link viewer: {e}")
             mark(st, st_out_dir, complete=False, image_count=0)

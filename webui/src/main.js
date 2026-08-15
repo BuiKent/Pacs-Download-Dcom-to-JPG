@@ -20,6 +20,7 @@ import {
   disposeViewer,
   configureTextPrompt,
   getActiveCompareInfo,
+  getActiveSliceIndex,
   setCompareScrollSync,
   setReferenceCursor,
   setReferenceLines,
@@ -93,6 +94,11 @@ const state = {
   manualPatientDob: "",
   showLoginCard: false,
   loginCardAction: null,
+  showFileInfoModal: false,
+  fileInfoData: null,
+  fileInfoLoading: false,
+  fileInfoError: "",
+  fileInfoTagFilter: "",
 };
 let viewerQueue = Promise.resolve();
 let viewerRequestId = 0;
@@ -103,6 +109,10 @@ let viewerRequestId = 0;
 const icons = {
   crosshair: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="22" x2="18" y1="12" y2="12"/><line x1="6" x2="2" y1="12" y2="12"/><line x1="12" x2="12" y1="6" y2="2"/><line x1="12" x2="12" y1="22" y2="18"/></svg>`,
   folder: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>`,
+  file: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>`,
+  info: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
+  copy: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`,
+  externalLink: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`,
   current: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`,
   single: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>`,
   compare: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></svg>`,
@@ -241,7 +251,10 @@ function renderToolbarGroups(series) {
       iconButton("invert", icons.invert, t("Đảo màu")),
       iconButton("reset", icons.reset, t("Đặt lại góc nhìn")),
     ].join("");
-    const output3d = iconButton("capture", icons.capture, t("Lưu ảnh 3D"));
+    const output3d = [
+      iconButton("capture", icons.capture, t("Lưu ảnh 3D")),
+      iconButton("file-info", icons.info, t("Thông tin file & Link tải")),
+    ].join("");
 
     return [
       `<div class="tool-cluster nav-tools">${nav3d}</div>`,
@@ -301,7 +314,10 @@ function renderToolbarGroups(series) {
       ]
     : [];
 
-  const output = iconButton("capture", icons.capture, t("Lưu ảnh"));
+  const output = [
+    iconButton("capture", icons.capture, t("Lưu ảnh")),
+    iconButton("file-info", icons.info, t("Thông tin file & Link tải")),
+  ].join("");
 
   return [
     `<div class="tool-cluster nav-tools">${nav}</div>`,
@@ -522,6 +538,7 @@ function render() {
       t("Tải phim"),
     )}
           ${iconButton("choose-archive", icons.folder, t("Mở folder DICOM hoặc JPG/PNG trong viewer"))}
+          ${iconButton("choose-file", icons.file, t("Mở file DICOM hoặc JPG/PNG đơn lẻ trong viewer"))}
           ${iconButton("refresh-archive", "⟳", t("Quét lại thư mục hiện tại"), false, !state.archive.root)}
           <button class="soft-button" data-action="toggle-language"
             title="${escapeHtml(t("Chuyển sang tiếng Anh"))}">${getLanguage() === "en" ? "VI" : "EN"}</button>
@@ -637,7 +654,10 @@ function render() {
           ${state.archive.series.length
       ? `<div class="viewer-loading">${state.busyViewer ? escapeHtml(t("Đang dựng khung xem…")) : ""}</div>`
       : `<div class="empty-state"><b>${escapeHtml(t("Mở folder DICOM hoặc JPG/PNG"))}</b>
-              <div class="empty-actions"><button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder trong viewer"))}</button></div></div>`}
+              <div class="empty-actions">
+                <button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder trong viewer"))}</button>
+                <button class="secondary" data-action="choose-file">${escapeHtml(t("Mở file..."))}</button>
+              </div></div>`}
         </section>
         <footer class="status-bar ${state.isError ? "error" : ""}">
           <span class="status-dot ${state.busyViewer ? "busy" : ""}"></span>
@@ -646,6 +666,7 @@ function render() {
         </footer>
       </main>
       ${renderLoginCard()}
+      ${renderFileInfoModal()}
     </div>
   `;
   bindEvents();
@@ -672,6 +693,334 @@ function renderLoginCard() {
       </div>
     </div>
   `;
+}
+
+function visibleDicomTags() {
+  const tags = state.fileInfoData?.dicomTags || [];
+  const query = (state.fileInfoTagFilter || "").toLowerCase().trim();
+  if (!query) return tags;
+  return tags.filter((tag) =>
+    (tag.tag || "").toLowerCase().includes(query) ||
+    (tag.name || "").toLowerCase().includes(query) ||
+    (tag.value || "").toLowerCase().includes(query));
+}
+
+function renderDicomTagRows(tags) {
+  if (!tags.length) {
+    return `<tr><td colspan="4" class="dicom-tags-empty">${escapeHtml(t("Không tìm thấy thẻ phù hợp"))}</td></tr>`;
+  }
+  return tags.map((tag) => `
+    <tr>
+      <td class="dicom-tag-col-tag">${escapeHtml(tag.tag)}</td>
+      <td class="dicom-tag-col-vr">${escapeHtml(tag.vr)}</td>
+      <td class="dicom-tag-col-name">${escapeHtml(tag.name)}</td>
+      <td class="dicom-tag-col-val">${escapeHtml(tag.value)}</td>
+    </tr>
+  `).join("");
+}
+
+function renderFileInfoModal() {
+  if (!state.showFileInfoModal) return "";
+  const data = state.fileInfoData;
+  const isLoading = state.fileInfoLoading;
+  const error = state.fileInfoError;
+
+  if (isLoading) {
+    return `
+      <div class="file-info-overlay">
+        <div class="file-info-dialog">
+          <header class="file-info-header">
+            <div class="file-info-title-wrap">
+              <h3 class="file-info-title">ℹ ${escapeHtml(t("Chi tiết file & Thẻ DICOM"))}</h3>
+            </div>
+            <button class="file-info-close-btn" data-action="close-file-info">✕</button>
+          </header>
+          <div class="file-info-body">
+            <div class="viewer-loading">${escapeHtml(t("Đang đọc thông tin file..."))}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (error) {
+    return `
+      <div class="file-info-overlay">
+        <div class="file-info-dialog">
+          <header class="file-info-header">
+            <div class="file-info-title-wrap">
+              <h3 class="file-info-title">ℹ ${escapeHtml(t("Chi tiết file & Thẻ DICOM"))}</h3>
+            </div>
+            <button class="file-info-close-btn" data-action="close-file-info">✕</button>
+          </header>
+          <div class="file-info-body">
+            <div class="safety-notice high">
+              <b>${escapeHtml(t("Lỗi"))}</b>
+              <span>${escapeHtml(error)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (!data) return "";
+
+  const file = data.file || {};
+  const prov = data.provenance || {};
+  const demo = data.demographics || {};
+  const study = data.study || {};
+  const series = data.series || {};
+
+  const filteredTags = visibleDicomTags();
+
+  const downloadUrl = prov.downloadUrl || prov.viewerUrl || "";
+
+  return `
+    <div class="file-info-overlay">
+      <div class="file-info-dialog">
+        <header class="file-info-header">
+          <div class="file-info-title-wrap">
+            <h3 class="file-info-title">ℹ ${escapeHtml(t("Chi tiết file & Thẻ DICOM"))}</h3>
+            <span class="file-info-subtitle">${escapeHtml(file.fileName || series.seriesDescription || "")} (${escapeHtml(file.sliceIndexDisplay || "1/1")})</span>
+          </div>
+          <button class="file-info-close-btn" data-action="close-file-info" title="${escapeHtml(t("Đóng"))}">✕</button>
+        </header>
+
+        <div class="file-info-body">
+          <!-- Provenance / Download Link Card -->
+          <div class="provenance-card">
+            <div class="provenance-card-title">
+              <span>🌐</span> ${escapeHtml(t("Nguồn gốc & Link tải"))}
+            </div>
+            ${downloadUrl ? `
+              <div class="provenance-link-row">
+                <span class="provenance-url-text" title="${escapeHtml(downloadUrl)}">${escapeHtml(downloadUrl)}</span>
+                <button class="provenance-action-btn" data-action="copy-download-url" data-url="${escapeHtml(downloadUrl)}">
+                  ${icons.copy} ${escapeHtml(t("Sao chép link"))}
+                </button>
+                <button class="provenance-action-btn secondary" data-action="open-download-url" data-url="${escapeHtml(downloadUrl)}">
+                  ${icons.externalLink} ${escapeHtml(t("Mở liên kết"))}
+                </button>
+              </div>
+            ` : `
+              <span class="muted">${escapeHtml(t("Chưa có thông tin link tải cho file này."))}</span>
+            `}
+            <div class="provenance-badges-grid">
+              ${prov.patientCode ? `
+                <div class="provenance-badge-item">
+                  <span class="provenance-badge-label">${escapeHtml(t("Mã bệnh nhân"))}</span>
+                  <span class="provenance-badge-value">${escapeHtml(prov.patientCode)}</span>
+                </div>
+              ` : ""}
+              ${prov.accessionNumber ? `
+                <div class="provenance-badge-item">
+                  <span class="provenance-badge-label">${escapeHtml(t("Mã ca chụp (Accession No)"))}</span>
+                  <span class="provenance-badge-value">${escapeHtml(prov.accessionNumber)}</span>
+                </div>
+              ` : ""}
+              ${prov.hospitalName ? `
+                <div class="provenance-badge-item">
+                  <span class="provenance-badge-label">${escapeHtml(t("Bệnh viện / Cơ sở"))}</span>
+                  <span class="provenance-badge-value">${escapeHtml(prov.hospitalName)}</span>
+                </div>
+              ` : ""}
+              ${study.studyDate ? `
+                <div class="provenance-badge-item">
+                  <span class="provenance-badge-label">${escapeHtml(t("Ngày chụp"))}</span>
+                  <span class="provenance-badge-value">${escapeHtml(formatDisplayDate(study.studyDate))}</span>
+                </div>
+              ` : ""}
+            </div>
+          </div>
+
+          <!-- Demographics & Study Info -->
+          <div class="info-section">
+            <h4 class="info-section-title">${escapeHtml(t("Thông tin ca chụp"))}</h4>
+            <div class="info-grid">
+              <div class="info-cell">
+                <span class="info-cell-label">${escapeHtml(t("Tên bệnh nhân"))}</span>
+                <span class="info-cell-value">${escapeHtml(demo.patientName || "—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${escapeHtml(t("Mã BN (ID)"))}</span>
+                <span class="info-cell-value">${escapeHtml(demo.patientId || prov.patientCode || "—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${escapeHtml(t("Năm sinh / Ngày sinh"))}</span>
+                <span class="info-cell-value">${escapeHtml(demo.patientBirthDate ? formatDisplayDate(demo.patientBirthDate) : "—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${escapeHtml(t("Giới tính"))}</span>
+                <span class="info-cell-value">${escapeHtml(demo.patientSex || "—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${escapeHtml(t("Modality"))}</span>
+                <span class="info-cell-value">${escapeHtml(study.modality || "—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${escapeHtml(t("Mô tả ca"))}</span>
+                <span class="info-cell-value">${escapeHtml(study.studyDescription || "—")}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- File & Image Parameters -->
+          <div class="info-section">
+            <h4 class="info-section-title">${escapeHtml(t("Thông số ảnh"))}</h4>
+            <div class="info-grid">
+              <div class="info-cell">
+                <span class="info-cell-label">${escapeHtml(t("Đường dẫn file"))}</span>
+                <span class="info-cell-value" title="${escapeHtml(file.filePath || "")}">${escapeHtml(file.filePath || "—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${escapeHtml(t("Kích thước file"))}</span>
+                <span class="info-cell-value">${escapeHtml(file.fileSizeFormatted || "—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${escapeHtml(t("Lát cắt hiện tại"))}</span>
+                <span class="info-cell-value">${escapeHtml(file.sliceIndexDisplay || "—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${escapeHtml(t("Độ phân giải"))}</span>
+                <span class="info-cell-value">${series.columns && series.rows ? `${series.columns} × ${series.rows}` : "—"}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${escapeHtml(t("Pixel Spacing"))}</span>
+                <span class="info-cell-value">${Array.isArray(series.pixelSpacing) ? series.pixelSpacing.map((v) => Number(v).toFixed(3)).join(" × ") + " mm" : "—"}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${escapeHtml(t("Khoảng cách lát cắt"))}</span>
+                <span class="info-cell-value">${series.sliceSpacing ? `${Number(series.sliceSpacing).toFixed(2)} mm` : "—"}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- DICOM Header Tags Table -->
+          <div class="info-section">
+            <h4 class="info-section-title">${escapeHtml(t("Bảng thẻ DICOM Header"))} (<span data-field="dicom-tag-count">${filteredTags.length}</span>)</h4>
+            <div class="dicom-tags-container">
+              <div class="dicom-tag-filter-row">
+                <input class="dicom-tag-search-input" id="dicom-tag-filter" type="text"
+                  placeholder="${escapeHtml(t("Tìm kiếm thẻ (Tag, Tên, Giá trị)..."))}"
+                  value="${escapeHtml(state.fileInfoTagFilter || "")}">
+              </div>
+              <div class="dicom-tags-table-wrap">
+                <table class="dicom-tags-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 110px;">${escapeHtml(t("Tag"))}</th>
+                      <th style="width: 50px;">${escapeHtml(t("VR"))}</th>
+                      <th style="width: 220px;">${escapeHtml(t("Tên thẻ"))}</th>
+                      <th>${escapeHtml(t("Giá trị"))}</th>
+                    </tr>
+                  </thead>
+                  <tbody>${renderDicomTagRows(filteredTags)}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function showCopyToast(message = t("Đã sao chép link tải vào clipboard!")) {
+  const existing = document.querySelector(".copy-toast");
+  if (existing) existing.remove();
+  const toast = document.createElement("div");
+  toast.className = "copy-toast";
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(() => {
+    toast.remove();
+  }, 2500);
+}
+
+async function copyTextToClipboard(text) {
+  if (!text) return;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+    showCopyToast();
+  } catch (_) {
+    showCopyToast(t("Không thể sao chép liên kết"));
+  }
+}
+
+async function openFileInfoModal() {
+  if (!state.selectedId) return;
+  state.showFileInfoModal = true;
+  state.fileInfoLoading = true;
+  state.fileInfoError = "";
+  state.fileInfoTagFilter = "";
+  render();
+  try {
+    const sliceIndex = getActiveSliceIndex();
+    const data = await api(`/api/series/${state.selectedId}/file-info?index=${sliceIndex}`);
+    state.fileInfoData = data;
+    state.fileInfoLoading = false;
+  } catch (err) {
+    state.fileInfoLoading = false;
+    state.fileInfoError = err.message || t("Không tải được thông tin file");
+  }
+  render();
+}
+
+function closeFileInfoModal() {
+  state.showFileInfoModal = false;
+  state.fileInfoData = null;
+  state.fileInfoError = "";
+  render();
+}
+
+async function chooseSingleFile() {
+  try {
+    if (window.pywebview?.api?.choose_file) {
+      const archive = await window.pywebview.api.choose_file();
+      if (archive) {
+        applyArchive(archive);
+        setStatus(tf("Đã mở file (1 series, {} lát).", archive.series?.[0]?.sliceCount || 1));
+      }
+      return;
+    }
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".dcm,.dicom,.ima,.jpg,.jpeg,.png,.webp,.bmp";
+    input.style.display = "none";
+    input.onchange = async (evt) => {
+      const file = evt.target?.files?.[0];
+      if (file) {
+        const path = file.path || file.name;
+        try {
+          const archive = await api("/api/archive/open", {
+            method: "POST",
+            body: JSON.stringify({ path }),
+          });
+          applyArchive(archive);
+        } catch (err) {
+          setStatus(err.message, true);
+        }
+      }
+      input.remove();
+    };
+    document.body.appendChild(input);
+    input.click();
+  } catch (error) {
+    setStatus(humanError(error), true);
+  }
 }
 
 // The thumbnail endpoint sits behind the same bearer token as every other
@@ -833,7 +1182,26 @@ function renderPatientStatus() {
 
 function bindEvents() {
   app.querySelectorAll("[data-action]").forEach((element) => {
-    element.addEventListener("click", () => action(element.dataset.action));
+    element.addEventListener("click", () => action(element.dataset.action, element));
+  });
+  // Backdrop click closes the dialog; a click that lands inside it must not,
+  // so the overlay checks the target rather than having the dialog swallow the
+  // event on its way up.
+  const fileInfoOverlay = app.querySelector(".file-info-overlay");
+  fileInfoOverlay?.addEventListener("click", (event) => {
+    if (event.target === fileInfoOverlay) closeFileInfoModal();
+  });
+  // Only the tag rows depend on the filter, so they are swapped in place.
+  // Re-rendering the dialog here would mean calling bindEvents() again, which
+  // adds a second click listener to every [data-action] in the app — one more
+  // per keystroke, so a later click on a header button would fire many times.
+  app.querySelector("#dicom-tag-filter")?.addEventListener("input", (event) => {
+    state.fileInfoTagFilter = event.target.value;
+    const tags = visibleDicomTags();
+    const body = app.querySelector(".dicom-tags-table tbody");
+    if (body) body.innerHTML = renderDicomTagRows(tags);
+    const counter = app.querySelector("[data-field='dicom-tag-count']");
+    if (counter) counter.textContent = String(tags.length);
   });
   app.querySelector(".app-header [data-action='toggle-download']")
     ?.setAttribute("aria-expanded", state.downloadOpen ? "true" : "false");
@@ -1022,7 +1390,7 @@ async function refreshHistory() {
   }
 }
 
-async function action(name) {
+async function action(name, element = null) {
   try {
     if (name === "cancel-login") {
       state.showLoginCard = false;
@@ -1112,6 +1480,28 @@ async function action(name) {
         setStatus(t("Đang nhận diện DICOM hoặc JPG/PNG trong folder…"));
         startJobPolling();
       }
+      return;
+    }
+    if (name === "choose-file") {
+      await chooseSingleFile();
+      return;
+    }
+    if (name === "file-info") {
+      await openFileInfoModal();
+      return;
+    }
+    if (name === "close-file-info") {
+      closeFileInfoModal();
+      return;
+    }
+    if (name === "copy-download-url") {
+      const url = element?.dataset?.url;
+      if (url) await copyTextToClipboard(url);
+      return;
+    }
+    if (name === "open-download-url") {
+      const url = element?.dataset?.url;
+      if (url) window.open(url, "_blank");
       return;
     }
     if (name === "import-dicom-folder") {

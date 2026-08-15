@@ -2901,3 +2901,22 @@ function releaseOtherSeries(keepSeriesId) {
     if (seriesId !== keepSeriesId) purgeSeriesCache(seriesId);
   }
 }
+
+export function getActiveSliceIndex() {
+  if (!engineIsLive() || !activeViewportId) return 0;
+  try {
+    const vp = renderingEngine.getViewport(activeViewportId);
+    if (vp) {
+      if (typeof vp.getCurrentImageIdIndex === "function") {
+        const idx = vp.getCurrentImageIdIndex();
+        if (typeof idx === "number" && !Number.isNaN(idx)) return Math.max(0, idx);
+      }
+      if (typeof vp.getSliceIndex === "function") {
+        const idx = vp.getSliceIndex();
+        if (typeof idx === "number" && !Number.isNaN(idx)) return Math.max(0, idx);
+      }
+    }
+  } catch (_) {}
+  return 0;
+}
+

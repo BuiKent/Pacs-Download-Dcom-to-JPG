@@ -1149,6 +1149,92 @@ class CustomCredentialsTests(unittest.TestCase):
             self.assertEqual(kwargs.get("custom_password"), "testpass")
 
 
+class OpenFileAndFileInfoTests(unittest.TestCase):
+    """Tests for single file opening and file-info inspection."""
+
+    def setUp(self) -> None:
+        self.temp_dir = Path(tempfile.mkdtemp())
+
+    def test_open_single_image_file_loads_series(self) -> None:
+        from PIL import Image
+        img_path = self.temp_dir / "slice_001.jpg"
+        img = Image.new("RGB", (100, 100), color=(128, 128, 128))
+        img.save(img_path)
+
+        catalog = ArchiveCatalog()
+        archive = catalog.open(img_path)
+
+        series_records = list(catalog._series.values())
+        self.assertEqual(len(series_records), 1)
+        series = series_records[0]
+        self.assertEqual(series.images[0].resolve(), img_path.resolve())
+        self.assertEqual(archive["series"][0]["sliceCount"], 1)
+
+    def test_open_single_file_enriches_from_ancestor_patient_index(self) -> None:
+        from PIL import Image
+        import json
+        study_folder = self.temp_dir / "2026-08-15 - CT - So Nao" / "JPG" / "Series_1"
+        study_folder.mkdir(parents=True)
+        img_path = study_folder / "img_01.jpg"
+        Image.new("RGB", (80, 80)).save(img_path)
+
+        # Write patient-index.json at self.temp_dir
+        manifest = {
+            "format": "dcom-patient-index-v1",
+            "patientName": "LE VAN C",
+            "patientId": "BN99999",
+            "studies": {
+                "study-99": {
+                    "downloadUrl": "https://ris.example.com/view/99",
+                    "viewerUrl": "https://ris.example.com/view/99",
+                    "patientCode": "BN99999",
+                    "accessionNumber": "ACC-5544",
+                    "hospitalName": "BV Bach Mai",
+                }
+            },
+        }
+        (self.temp_dir / "patient-index.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        catalog = ArchiveCatalog()
+        controller = WebController()
+        controller.catalog = catalog
+        archive = catalog.open(img_path)
+        series_records = list(catalog._series.values())
+        self.assertEqual(len(series_records), 1)
+
+        # The manifest is what the viewer overlay and /file-info read, and the
+        # file sits three levels below the patient-index.json that names it.
+        enriched = series_records[0].manifest
+        self.assertEqual(enriched["patientName"], "LE VAN C")
+        self.assertEqual(enriched["downloadUrl"], "https://ris.example.com/view/99")
+        self.assertEqual(enriched["accessionNumber"], "ACC-5544")
+        self.assertEqual(enriched["hospitalName"], "BV Bach Mai")
+
+        provenance = controller.get_file_info(archive["series"][0]["id"])["provenance"]
+        self.assertEqual(provenance["downloadUrl"], "https://ris.example.com/view/99")
+        self.assertEqual(provenance["patientCode"], "BN99999")
+        self.assertEqual(provenance["accessionNumber"], "ACC-5544")
+        self.assertEqual(provenance["hospitalName"], "BV Bach Mai")
+
+    def test_web_controller_get_file_info(self) -> None:
+        from PIL import Image
+        img_path = self.temp_dir / "slice_test.png"
+        Image.new("RGB", (50, 50)).save(img_path)
+
+        controller = WebController()
+        archive = controller.catalog.open(img_path)
+        series_id = archive["series"][0]["id"]
+
+        info = controller.get_file_info(series_id, 0)
+        self.assertIn("file", info)
+        self.assertIn("demographics", info)
+        self.assertIn("study", info)
+        self.assertIn("series", info)
+        self.assertIn("provenance", info)
+        self.assertIn("dicomTags", info)
+        self.assertEqual(info["file"]["fileName"], "slice_test.png")
+        self.assertGreater(info["file"]["fileSize"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
-
