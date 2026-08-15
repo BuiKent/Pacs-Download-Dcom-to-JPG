@@ -259,20 +259,37 @@ def _multipart_parts(body: bytes, content_type: str = "") -> "list[tuple[str, by
             continue
         mt = re.search(rb"(?i)content-type:\s*([^\r\n]+)", head)
         pct = mt.group(1).decode("latin-1", "replace").strip() if mt else ""
-        parts.append((pct, payload.rstrip(b"\r\n")))
+        # RFC 2046: đúng MỘT CRLF trước delimiter là của delimiter. `rstrip` sẽ ăn
+        # luôn pixel thật, vì 0x0D/0x0A nằm đầy trong dữ liệu ảnh 16-bit.
+        if payload.endswith(b"\r\n"):
+            payload = payload[:-2]
+        parts.append((pct, payload))
     return parts
 
 
-# Content-type của frame WADO-RS -> Transfer Syntax UID tương ứng
+# Content-type của frame WADO-RS -> Transfer Syntax UID tương ứng.
+# Bảng theo PS3.18 Table 6.1.1.8-3b, đối chiếu cornerstonewadoimageloader vốn đã
+# va đủ các biến thể mà server thật trả về.
 _FRAME_TS_BY_MIME = {
+    "image/dicom+jpeg": "1.2.840.10008.1.2.4.50",
     "image/jpeg": "1.2.840.10008.1.2.4.50",
+    "image/jll": "1.2.840.10008.1.2.4.70",
     "image/jls": "1.2.840.10008.1.2.4.80",
     "image/x-jls": "1.2.840.10008.1.2.4.80",
+    "image/x-dicom-rle": "1.2.840.10008.1.2.5",
+    "image/dicom-rle": "1.2.840.10008.1.2.5",
     "image/jp2": "1.2.840.10008.1.2.4.90",
     "image/j2c": "1.2.840.10008.1.2.4.90",
     "image/x-j2c": "1.2.840.10008.1.2.4.90",
+    "image/jpx": "1.2.840.10008.1.2.4.92",
     "image/jphc": "1.2.840.10008.1.2.4.201",
+    "image/jxl": "1.2.840.10008.1.2.4.140",
 }
+
+# Kiểu media ảnh/video nào cũng là dữ liệu ĐÃ NÉN. Không tra ra Transfer Syntax mà
+# vẫn ghi thẳng vào PixelData thì ra file mở được nhưng ảnh sai — hỏng kiểu không
+# ai nhìn thấy. Thà trả None để tầng trên đổi đường tải.
+_COMPRESSED_MEDIA_RE = re.compile(r"\b(?:image|video)/", re.I)
 
 
 def _dicom_from_meta_frames(meta: dict, frames: "list[bytes]",
@@ -308,6 +325,9 @@ def _dicom_from_meta_frames(meta: dict, frames: "list[bytes]",
                 if mime in ct:
                     ts = uid
                     break
+            if ts is None and _COMPRESSED_MEDIA_RE.search(ct):
+                log_unknown = ct.strip() or "(rỗng)"
+                raise ValueError(f"Không rõ Transfer Syntax cho kiểu nén {log_unknown}")
 
         if ts is None or ts in ("1.2.840.10008.1.2", "1.2.840.10008.1.2.1"):
             # octet-stream: điểm ảnh thô không nén — ghép các frame lại
@@ -1149,6 +1169,62 @@ def _dicomweb_series_choices(body: bytes) -> list[dict]:
         if raw["SeriesInstanceUID"] and not _is_non_image_modality(raw["Modality"]):
             choices.append(_normalise_series_choice(raw, "dicomweb", index))
     return choices
+
+
+def _with_query_params(raw_url: str, **params: Any) -> str:
+    """Gắn/ghi đè tham số truy vấn mà giữ nguyên mọi tham số phiên đang có."""
+    import urllib.parse
+
+    parts = urllib.parse.urlsplit(raw_url)
+    query = dict(urllib.parse.parse_qsl(parts.query, keep_blank_values=True))
+    query.update({k: str(v) for k, v in params.items()})
+    return urllib.parse.urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(query), parts.fragment)
+    )
+
+
+def _qido_fetch_all(get_json: Callable[[str], Any], url: str, *,
+                    page_size: int = 500, max_pages: int = 400,
+                    stop: Optional[Callable[[], bool]] = None) -> list[dict]:
+    """Đọc hết một truy vấn QIDO-RS, tự phân trang bằng `offset`.
+
+    PS3.18 8.3.4: server ĐƯỢC PHÉP trả ít kết quả hơn `limit` mà client xin và
+    bắt client tự lật trang. dcm4chee/Orthanc mặc định chặn ở vài trăm dòng, nên
+    một ca CT vài nghìn ảnh mà chỉ gọi một phát là thiếu ảnh. Thuật toán theo
+    `dicomweb-client`: lặp tới khi một trang trả về rỗng, KHÔNG dừng sớm chỉ vì
+    trang ngắn hơn `limit`.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    offset = 0
+    for _page in range(max_pages):
+        if stop is not None and stop():
+            break
+        batch = get_json(_with_query_params(url, limit=page_size, offset=offset))
+        # Vài server trả thẳng một object thay vì mảng một phần tử.
+        if isinstance(batch, dict):
+            rows = [batch]
+        elif isinstance(batch, list):
+            rows = [row for row in batch if isinstance(row, dict)]
+        else:
+            rows = []
+        if not rows:
+            break
+        added = 0
+        for row in rows:
+            key = str(_dicom_json_value(row, "00080018") or "").strip()
+            if key:
+                if key in seen:
+                    continue
+                seen.add(key)
+            out.append(row)
+            added += 1
+        # Server phớt lờ `offset` sẽ trả lại đúng trang cũ mãi mãi; thêm được 0
+        # dòng mới là dấu hiệu dừng, nếu không vòng lặp không bao giờ kết thúc.
+        if not added:
+            break
+        offset += len(rows)
+    return out
 
 
 def _dicomweb_instance_plan(
@@ -3794,6 +3870,9 @@ def _download_via_dicomweb(captured, save_body, stats,
         body, _ = get_raw(u, accept="application/dicom+json, application/json")
         return json.loads(body.decode("utf-8", "replace"))
 
+    def get_json_paged(u):
+        return _qido_fetch_all(get_json, u, stop=stop)
+
     def V(el, tag):
         return _dicom_json_value(el, tag)
 
@@ -3815,7 +3894,7 @@ def _download_via_dicomweb(captured, save_body, stats,
         if _is_non_image_modality(V(s, "00080060")):
             continue
         try:
-            insts = get_json(profile.instances_search_url(suid))
+            insts = get_json_paged(profile.instances_search_url(suid))
         except Exception:
             insts = []
         if not insts:
@@ -3836,15 +3915,15 @@ def _download_via_dicomweb(captured, save_body, stats,
     # diagnostic stacks. Recover from the study-wide instance/metadata endpoint
     # and regroup by SeriesInstanceUID before declaring anything complete.
     if missing and not stop():
-        for endpoint in (
-            profile.study_instances_search_url(limit=100000),
-            profile.study_instances_search_url(),
-            profile.study_metadata_url(),
+        # `instances` là QIDO nên phải lật trang; `metadata` là Retrieve, gọi thẳng.
+        for endpoint, paged in (
+            (profile.study_instances_search_url(), True),
+            (profile.study_metadata_url(), False),
         ):
             if stop():
                 return
             try:
-                candidate = get_json(endpoint)
+                candidate = get_json_paged(endpoint) if paged else get_json(endpoint)
             except Exception:
                 continue
             if not isinstance(candidate, list) or not candidate:

@@ -1,4 +1,5 @@
-import {extractManifestCandidates,clusterCandidates,candidateProbePlan,recordsForSuccessfulShapes,manifestRecipeFromDiscovery,looksLikeDicomJson,urlShape} from '../lib/generic_discovery.js';
+import assert from 'node:assert/strict';
+import {extractManifestCandidates,clusterCandidates,candidateProbePlan,recordsForSuccessfulShapes,manifestRecipeFromDiscovery,looksLikeDicomJson,urlShape,studyProfileFromProbeDetails} from '../lib/generic_discovery.js';
 
 const payload={patient:{PatientName:'TEST^GENERIC',PatientID:'P7'},study:{StudyInstanceUID:'1.2.840.7',series:[{SeriesInstanceUID:'1.2.840.7.1',SeriesNumber:1,SeriesDescription:'T2 AX',objects:[{SOPInstanceUID:'1.2.840.7.1.1',v:'/blob/93f1a2?id=aa'},{SOPInstanceUID:'1.2.840.7.1.2',v:'/blob/a19c22?id=bb'}]},{SeriesInstanceUID:'1.2.840.7.2',SeriesNumber:2,SeriesDescription:'T1 SAG',objects:[{SOPInstanceUID:'1.2.840.7.2.1',v:'/blob/88af77?id=cc'}]}]}};
 const rows=extractManifestCandidates(payload,'https://pacs.example/api/manifest');
@@ -13,3 +14,25 @@ if(urlShape('https://pacs.example/blob/12345?id=x')!==urlShape('https://pacs.exa
 const djson=[{'00080018':{vr:'UI',Value:['1.2.3']},'0020000D':{vr:'UI',Value:['1.2']},'0020000E':{vr:'UI',Value:['1.2.1']}}];
 if(!looksLikeDicomJson(djson))throw new Error('DICOM JSON fingerprint');
 console.log('Generic discovery tests OK');
+
+// Ngày sinh và số accession do manifest khai (`birthDate`/`accession`) phải tới
+// được nơi tiêu thụ, vốn hỏi bằng tên của header DICOM.
+{
+  const payload={PatientName:'NGUYEN^VAN^A',PatientID:'BN001',PatientBirthDate:'19900101',AccessionNumber:'ACC-7788',
+    series:[{SeriesInstanceUID:'1.2.3.1',images:[{url:'/img/1.dcm'}]}]};
+  const declared=extractManifestCandidates(payload,'https://pacs.test/api/x')[0].meta;
+  assert.equal(declared.birthDate,'19900101');
+  assert.equal(declared.accession,'ACC-7788');
+
+  const profile=studyProfileFromProbeDetails([{meta:declared}]);
+  assert.equal(profile.patientBirthDate,'19900101');
+  assert.equal(profile.accessionNumber,'ACC-7788');
+  assert.equal(profile.patientName,'NGUYEN^VAN^A');
+
+  // Header DICOM thật vẫn được ưu tiên và không bị đổi tên.
+  const fromHeader=studyProfileFromProbeDetails([{meta:{patientBirthDate:'19801231',accessionNumber:'ACC-1'}}]);
+  assert.equal(fromHeader.patientBirthDate,'19801231');
+  assert.equal(fromHeader.accessionNumber,'ACC-1');
+}
+
+console.log('generic discovery: manifest birthDate/accession tests OK');

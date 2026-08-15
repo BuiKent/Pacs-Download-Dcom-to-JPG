@@ -522,3 +522,49 @@ export class RecipeStoreV2 {
     return [];
   }
 }
+
+/** Gắn/ghi đè tham số truy vấn mà giữ nguyên mọi tham số phiên đang có trên URL. */
+export function withQueryParams(rawUrl, params = {}) {
+  try {
+    const u = new URL(rawUrl);
+    for (const [k, v] of Object.entries(params)) u.searchParams.set(k, String(v));
+    return u.href;
+  } catch {
+    return rawUrl;
+  }
+}
+
+/**
+ * Đọc hết một truy vấn QIDO-RS, tự phân trang bằng `offset`.
+ *
+ * PS3.18 8.3.4: server ĐƯỢC PHÉP trả ít kết quả hơn `limit` client xin và bắt
+ * client tự lật trang. dcm4chee/Orthanc mặc định chặn ở vài trăm dòng, nên một
+ * ca CT vài nghìn ảnh mà chỉ gọi một phát là cụt — im lặng thiếu ảnh, hoặc chết
+ * ở bước đối chiếu số lượng. Thuật toán lấy theo `dicomweb-client`: lặp tới khi
+ * một trang trả về rỗng, KHÔNG dừng sớm chỉ vì trang ngắn hơn `limit`.
+ */
+export async function fetchQidoPaged(fetchJson, url, {
+  accept = 'application/dicom+json, application/json',
+  pageSize = 500,
+  maxPages = 400,
+  keyOf = null,
+} = {}) {
+  const out = [], seen = new Set();
+  for (let page = 0, offset = 0; page < maxPages; page++) {
+    const batch = await fetchJson(withQueryParams(url, { limit: pageSize, offset }), accept);
+    // Vài server trả thẳng một object thay vì mảng một phần tử.
+    const rows = Array.isArray(batch) ? batch : (batch && typeof batch === 'object' ? [batch] : []);
+    if (!rows.length) break;
+    let added = 0;
+    for (const row of rows) {
+      const key = keyOf ? keyOf(row) : null;
+      if (key) { if (seen.has(key)) continue; seen.add(key); }
+      out.push(row); added++;
+    }
+    // Server phớt lờ `offset` sẽ trả lại đúng trang cũ mãi mãi; thêm được 0 dòng
+    // mới là dấu hiệu dừng, nếu không vòng lặp sẽ không bao giờ kết thúc.
+    if (!added) break;
+    offset += rows.length;
+  }
+  return out;
+}

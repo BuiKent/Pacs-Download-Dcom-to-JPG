@@ -3,7 +3,14 @@ import { normalizeSeries, seriesFolderName, sanitizeSegment } from '../pacs.js';
 import { groupGenericEntries } from '../generic_discovery.js';
 
 const uid=v=>{const s=String(v||'').trim();return /^\d+(?:\.\d+)+$/.test(s)?s:'';};
-const metaField=(entry,name)=>String(entry?.meta?.[name]||entry?.declared?.[name]||'').trim();
+// `meta` là header DICOM thật đã dò (lib/dicom.js), `declared` là thứ manifest tự
+// khai (lib/generic_discovery.js). Hai bên đặt tên khác nhau cho cùng một trường,
+// nên phải tra bằng cả hai tên — nếu không, ngày sinh và số accession mà manifest
+// có sẵn sẽ rơi im lặng.
+const DECLARED_ALIAS={patientBirthDate:'birthDate',accessionNumber:'accession'};
+const metaField=(entry,name)=>String(
+  entry?.meta?.[name]||entry?.declared?.[name]||entry?.declared?.[DECLARED_ALIAS[name]||name]||''
+).trim();
 function entriesFromState(state){
   const entries=Array.isArray(state?.genericEntries)?state.genericEntries.filter(x=>x?.url):[];
   if(entries.length)return entries;

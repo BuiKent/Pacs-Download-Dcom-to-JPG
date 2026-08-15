@@ -232,6 +232,54 @@ class DownloadPipelineIntegrityTests(unittest.TestCase):
             all_ok = bool(saved and all(saved))
             self.assertFalse(all_ok)
 
+    def test_multipart_keeps_pixel_bytes_that_happen_to_end_with_newline(self):
+        """Byte 0x0D/0x0A nằm đầy trong pixel 16-bit, không phải dấu xuống dòng.
+
+        Cắt sạch chúng ở cuối mỗi part là ăn mất pixel thật: file vẫn "hợp lệ"
+        nhưng thiếu dữ liệu, đúng kiểu hỏng không ai nhìn ra.
+        """
+        payload = bytes([1, 2, 3, 0x0D, 0x0A, 0x0A])
+        body = (
+            b"--b\r\nContent-Type: application/octet-stream\r\n\r\n" + payload +
+            b"\r\n--b--\r\n"
+        )
+        parts = dcom_pipeline._multipart_parts(body, "multipart/related; boundary=b")
+        self.assertEqual([payload], [data for _ct, data in parts])
+
+        two = (
+            b"--b\r\nContent-Type: application/octet-stream\r\n\r\n" + bytes([9, 0x0A]) +
+            b"\r\n--b\r\nContent-Type: application/octet-stream\r\n\r\n" + bytes([8, 0x0D]) +
+            b"\r\n--b--\r\n"
+        )
+        self.assertEqual(
+            [bytes([9, 0x0A]), bytes([8, 0x0D])],
+            [data for _ct, data in dcom_pipeline._multipart_parts(two, "multipart/related; boundary=b")],
+        )
+
+    def test_frames_of_unknown_compressed_media_type_are_refused(self):
+        """Không tra ra Transfer Syntax thì phải bỏ, không được đoán là chưa nén.
+
+        Ghi thẳng byte JPEG-Lossless/RLE vào PixelData sẽ ra file mở được nhưng
+        ảnh sai hoàn toàn.
+        """
+        meta = {
+            "00080016": {"vr": "UI", "Value": ["1.2.840.10008.5.1.4.1.1.7"]},
+            "00080018": {"vr": "UI", "Value": ["1.2.3.4"]},
+            "00280010": {"vr": "US", "Value": [4]},
+            "00280011": {"vr": "US", "Value": [4]},
+            "00280100": {"vr": "US", "Value": [16]},
+        }
+        frames = [bytes(range(32))]
+        self.assertIsNone(dcom_pipeline._dicom_from_meta_frames(meta, frames, "image/quaila"))
+        # ...nhưng kiểu nén đã biết thì vẫn dựng được, không chặn nhầm.
+        # (image/jxl cố tình không có trong danh sách này: pydicom 3.0.2 chưa nhận
+        # 1.2.840.10008.1.2.4.140 nên vẫn hỏng đóng — đúng hướng an toàn.)
+        for media_type in ("image/jll", "image/jpx", "image/x-dicom-rle", "image/jphc"):
+            self.assertIsNotNone(
+                dcom_pipeline._dicom_from_meta_frames(meta, frames, media_type),
+                f"{media_type} phải dựng được",
+            )
+
     def test_multipart_with_non_image_part_and_valid_dicom_is_accepted(self):
         # Multipart chứa 1 part JSON cảnh báo/thông tin và 1 part DICOM lành -> phải chấp nhận và lưu thành công
         valid_part = _make_raw_dicom_bytes()

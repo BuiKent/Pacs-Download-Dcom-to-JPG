@@ -99,18 +99,42 @@ function pixelDataEncapsulated(frames){
   return concatBytes([head,...items,u16(0xFFFE),u16(0xE0DD),u32(0)]);
 }
 
+// PS3.18 Table 6.1.1.8-3b: kiểu media của frame ↔ Transfer Syntax. Bảng lấy theo
+// cornerstonewadoimageloader, vốn đã va đủ các biến thể server thật trả về.
+const FRAME_TS_BY_MEDIA_TYPE={
+  'image/jpeg':'1.2.840.10008.1.2.4.50',
+  'image/dicom+jpeg':'1.2.840.10008.1.2.4.50',
+  'image/jll':'1.2.840.10008.1.2.4.70',
+  'image/jls':'1.2.840.10008.1.2.4.80',
+  'image/x-jls':'1.2.840.10008.1.2.4.80',
+  'image/x-dicom-rle':'1.2.840.10008.1.2.5',
+  'image/dicom-rle':'1.2.840.10008.1.2.5',
+  'image/jp2':'1.2.840.10008.1.2.4.90',
+  'image/j2c':'1.2.840.10008.1.2.4.90',
+  'image/x-j2c':'1.2.840.10008.1.2.4.90',
+  'image/jpx':'1.2.840.10008.1.2.4.92',
+  'image/jphc':'1.2.840.10008.1.2.4.201',
+  'image/jxl':'1.2.840.10008.1.2.4.140',
+};
+
+/**
+ * Trả Transfer Syntax của frame, hoặc '' khi không nhận ra kiểu nén.
+ *
+ * Chuỗi rỗng là câu trả lời có ý nghĩa: đoán bừa thành "không nén" sẽ ghi thẳng
+ * byte đã nén vào PixelData, ra một file mở được nhưng ảnh sai — kiểu hỏng nguy
+ * hiểm nhất vì không ai nhìn ra.
+ */
 export function transferSyntaxFromContentType(contentType=''){
-  const ct=String(contentType).toLowerCase();const m=ct.match(/transfer-syntax\s*=\s*"?([0-9.]+)/i);if(m)return m[1];
-  if(ct.includes('image/jpeg'))return '1.2.840.10008.1.2.4.50';
-  if(ct.includes('image/jls')||ct.includes('image/x-jls'))return '1.2.840.10008.1.2.4.80';
-  if(ct.includes('image/jp2')||ct.includes('image/j2c')||ct.includes('image/x-j2c'))return '1.2.840.10008.1.2.4.90';
-  if(ct.includes('image/jphc'))return '1.2.840.10008.1.2.4.201';
+  const ct=String(contentType).toLowerCase();const m=ct.match(/transfer-syntax\s*=\s*"?([0-9][0-9.]*)/i);if(m)return m[1];
+  for(const [mime,ts] of Object.entries(FRAME_TS_BY_MEDIA_TYPE))if(ct.includes(mime))return ts;
+  if(/\b(?:image|video)\//.test(ct))return '';
   return '1.2.840.10008.1.2.1';
 }
 
 export function buildPart10FromFrames(meta,frames,frameContentType=''){
   if(!meta||!frames?.length)throw new Error('Thiếu metadata/frames để dựng DICOM.');
   const sourceTs=transferSyntaxFromContentType(frameContentType);if(sourceTs==='1.2.840.10008.1.2.2')throw new Error('Không dựng raw Big Endian an toàn.');
+  if(!sourceTs)throw new Error(`Không rõ Transfer Syntax cho kiểu nén "${String(frameContentType).trim()}" — từ chối dựng file để khỏi ra ảnh sai.`);
   const compressed=!['1.2.840.10008.1.2','1.2.840.10008.1.2.1'].includes(sourceTs);
   const outputTs=compressed?sourceTs:'1.2.840.10008.1.2.1';
   const bits=Number(metaString(meta,'00280100','16'))||16;const preamble=new Uint8Array(132);preamble.set(ascii('DICM'),128);
@@ -128,8 +152,18 @@ export function parseMultipart(bytes,contentType=''){
   while(markerPos>=0){
     let p=markerPos+marker.length;if(a[p]===45&&a[p+1]===45)break;if(a[p]===13&&a[p+1]===10)p+=2;
     const headerEnd=indexOfBytes(a,headerSep,p);if(headerEnd<0)break;const headerText=decLatin1.decode(a.slice(p,headerEnd));const payloadStart=headerEnd+4;
-    let next=indexOfBytes(a,crlfMarker,payloadStart);if(next<0){const raw=indexOfBytes(a,marker,payloadStart);next=raw<0?a.length:raw;}let payloadEnd=next;
-    while(payloadEnd>payloadStart&&(a[payloadEnd-1]===13||a[payloadEnd-1]===10))payloadEnd--;
+    // RFC 2046: đúng MỘT dấu xuống dòng trước boundary là của delimiter, phần còn
+    // lại là dữ liệu. Cắt sạch mọi CR/LF cuối sẽ ăn mất pixel thật — byte 0x0A và
+    // 0x0D nằm đầy trong ảnh 16-bit.
+    let next=indexOfBytes(a,crlfMarker,payloadStart),payloadEnd;
+    if(next>=0){
+      payloadEnd=next;  // crlfMarker bắt đầu ngay tại CRLF của delimiter
+    }else{
+      // Qua được `\r\n\r\n` của header nghĩa là server dùng CRLF. Vậy mà không thấy
+      // `\r\n--boundary` thì boundary này thật sự không có CRLF dẫn trước — byte
+      // ngay trước nó là dữ liệu, cắt đi là mất pixel.
+      const raw=indexOfBytes(a,marker,payloadStart);next=raw<0?a.length:raw;payloadEnd=next;
+    }
     const ct=(headerText.match(/content-type:\s*([^\r\n]+)/i)||[])[1]||'';out.push({contentType:ct.trim(),data:a.slice(payloadStart,payloadEnd)});
     markerPos=next<a.length?(a[next]===13?next+2:next):-1;
   }

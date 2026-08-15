@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import unittest
+import urllib.parse
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -839,6 +840,68 @@ class StrategyStoreTests(unittest.TestCase):
                 res, budget=None, stop=lambda: True, tracker=tracker
             )
         self.assertTrue(res.is_closed)
+
+    def _instance(self, sop_uid):
+        return {"00080018": {"vr": "UI", "Value": [sop_uid]}}
+
+    def test_qido_paging_reads_past_a_server_side_result_cap(self):
+        """Server chặn ở 100 dòng dù xin 500 — phải lật trang tiếp, không cụt.
+
+        Đây là kiểu thiếu ảnh nguy hiểm: không có lỗi nào nổi lên, chỉ là ca chụp
+        về ít hơn thực tế.
+        """
+        total = [self._instance(f"1.2.3.{i}") for i in range(1, 351)]
+        seen_urls = []
+
+        def get_json(url):
+            seen_urls.append(url)
+            query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+            offset = int(query["offset"])
+            return total[offset:offset + 100]  # server tự chặn 100 bất kể `limit`
+
+        rows = dcom_pipeline._qido_fetch_all(get_json, "https://pacs.test/rs/instances")
+        self.assertEqual(350, len(rows))
+        # 100+100+100+50 rồi thêm một lượt nữa trả rỗng để biết đã hết — trang ngắn
+        # không phải dấu hiệu kết thúc, vì server có quyền chặn dưới `limit`.
+        self.assertEqual(5, len(seen_urls))
+        self.assertEqual(
+            [str(i) for i in (0, 100, 200, 300, 350)],
+            [dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(u).query))["offset"] for u in seen_urls],
+        )
+
+    def test_qido_paging_stops_when_server_ignores_offset(self):
+        """Server phớt lờ `offset` trả lại đúng trang cũ — phải dừng, không lặp vô hạn."""
+        page = [self._instance(f"1.2.3.{i}") for i in range(1, 31)]
+        calls = []
+
+        def get_json(url):
+            calls.append(url)
+            return page
+
+        rows = dcom_pipeline._qido_fetch_all(get_json, "https://pacs.test/rs/instances")
+        self.assertEqual(30, len(rows))
+        self.assertEqual(2, len(calls))
+
+    def test_qido_paging_keeps_session_query_params(self):
+        captured = []
+        dcom_pipeline._qido_fetch_all(
+            lambda url: captured.append(url) or [],
+            "https://pacs.test/rs/instances?StudyInstanceUID=1.2.3&token=abc",
+        )
+        query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(captured[0]).query))
+        self.assertEqual("1.2.3", query["StudyInstanceUID"])
+        self.assertEqual("abc", query["token"])
+        self.assertIn("limit", query)
+
+    def test_qido_paging_accepts_a_lone_object_instead_of_an_array(self):
+        """Vài server trả thẳng một dataset thay vì mảng một phần tử."""
+        replies = [self._instance("1.2.3.9"), []]
+
+        rows = dcom_pipeline._qido_fetch_all(
+            lambda _url: replies.pop(0), "https://pacs.test/rs/instances",
+        )
+        self.assertEqual(1, len(rows))
+        self.assertEqual("1.2.3.9", dcom_pipeline._dicom_json_value(rows[0], "00080018"))
 
     def test_tracked_opener_interrupts_request_still_stuck_inside_urlopen(self):
         """Ca treo hay gặp nhất trên mạng viện: server nhận kết nối rồi im.
