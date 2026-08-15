@@ -26,11 +26,13 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import http.client
 import io
 import json
 import math
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -1130,6 +1132,7 @@ class ViewerCapture:
     budget: Any = None
     strategy_fingerprint: str = ""
     existing_sop_uids: set[str] = field(default_factory=set)
+    socket_tracker: Optional[ActiveSocketTracker] = None
 
     def as_legacy_dict(self) -> dict:
         """Đúng cái dict mà `_download_via_*()` đang nhận.
@@ -1154,6 +1157,7 @@ class ViewerCapture:
             "budget": self.budget,
             "strategy_fingerprint": self.strategy_fingerprint,
             "existing_sop_uids": self.existing_sop_uids,
+            "socket_tracker": self.socket_tracker,
         }
 
 
@@ -1432,6 +1436,123 @@ class DownloadBudget:
         return time.monotonic() - self.started_at >= self.hard_deadline_s
 
 
+class ActiveSocketTracker:
+    """Theo dõi và ngắt cưỡng chế các socket đang block ở tầng OS khi huỷ hoặc timeout."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._active_resources: set = set()
+
+    def track(self, resource: Any) -> None:
+        if resource is None:
+            return
+        with self._lock:
+            self._active_resources.add(resource)
+
+    def untrack(self, resource: Any) -> None:
+        if resource is None:
+            return
+        with self._lock:
+            self._active_resources.discard(resource)
+
+    def interrupt_all(self) -> None:
+        with self._lock:
+            targets = list(self._active_resources)
+            self._active_resources.clear()
+        for res in targets:
+            self._close_resource(res)
+
+    def opener(self, context=None):
+        """Opener ghi sổ socket NGAY lúc mở, tức là trước cả bắt tay TLS.
+
+        Chỉ bọc ở tầng đọc body là quá muộn: lúc worker còn kẹt trong `urlopen()`
+        (bắt tay TLS, chờ header đầu tiên) thì chưa có gì để ngắt, nên bấm Cancel
+        vẫn phải chờ hết `timeout` — đúng kiểu treo mà người dùng thấy.
+        """
+        import urllib.request
+
+        tracker = self
+
+        def _create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                               source_address=None):
+            sock = socket.create_connection(address, timeout, source_address)
+            tracker.track(sock)
+            return sock
+
+        class _TrackedConnection(http.client.HTTPConnection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._create_connection = _create_connection
+
+        class _TrackedSecureConnection(http.client.HTTPSConnection):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._create_connection = _create_connection
+
+        class _TrackedHandler(urllib.request.HTTPHandler):
+            def http_open(self, req):
+                return self.do_open(_TrackedConnection, req)
+
+        class _TrackedSecureHandler(urllib.request.HTTPSHandler):
+            def https_open(self, req):
+                return self.do_open(_TrackedSecureConnection, req, context=self._context)
+
+        return urllib.request.build_opener(_TrackedHandler,
+                                           _TrackedSecureHandler(context=context))
+
+    def release(self, res: Any) -> None:
+        """Bỏ ghi sổ một response *và* socket nằm dưới nó khi đã đọc xong.
+
+        Socket được ghi sổ từ lúc mở kết nối, nên nếu không bỏ ra thì một study
+        vài nghìn ảnh sẽ giữ lại từng đó socket đã đóng trong bộ nhớ.
+        """
+        self.untrack(res)
+        self.untrack(self._socket_of(res))
+
+    @staticmethod
+    def _socket_of(res: Any) -> Any:
+        if isinstance(res, socket.socket):
+            return res
+        sock = getattr(res, "_sock", None)
+        if sock is None:
+            fp = getattr(res, "fp", None)
+            if fp is not None:
+                raw = getattr(fp, "raw", None)
+                if raw is not None:
+                    sock = getattr(raw, "_sock", None)
+                if sock is None:
+                    sock = getattr(fp, "_sock", None)
+        return sock
+
+    @classmethod
+    def _close_resource(cls, res: Any) -> None:
+        try:
+            sock = cls._socket_of(res)
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                # Trên Windows, `shutdown()` không huỷ được lệnh `recv` đang chờ,
+                # còn `close()` chỉ giảm số tham chiếu — response nào đang mở
+                # `makefile()` thì socket vẫn sống và worker vẫn treo. `_real_close()`
+                # mới thực sự đóng handle, khiến `recv` bật ra ngay (WSAENOTSOCK).
+                real_close = getattr(sock, "_real_close", None)
+                if callable(real_close):
+                    try:
+                        real_close()
+                    except Exception:
+                        pass
+            if hasattr(res, "close"):
+                res.close()
+        except Exception:
+            pass
+
+
 class PacsStrategyStore:
     """Lưu trữ và tối ưu hóa các chiến lược tải đã thành công (Không lưu bí mật, token hay PII)."""
 
@@ -1684,6 +1805,7 @@ def download_all(
     stats = DownloadStats()
     budget = DownloadBudget()
     identity_guard = StudyIdentityGuard()
+    tracker = ActiveSocketTracker()
     selected_series = (
         {str(value) for value in selected_series_ids if str(value).strip()}
         if selected_series_ids is not None else None
@@ -1743,7 +1865,10 @@ def download_all(
             log(f"Thử lại: đã có sẵn {stats.total()} ảnh trong folder — sẽ bổ sung ảnh mới, bỏ trùng.")
 
     def stop() -> bool:
-        return bool(should_stop and should_stop())
+        if bool(should_stop and should_stop()):
+            tracker.interrupt_all()
+            return True
+        return False
 
     def save_body(body: bytes, _depth: int = 0, fidelity: str = "original") -> bool:
         """Lưu 1 ảnh (nhận diện theo NỘI DUNG, không phụ thuộc endpoint), tự loại
@@ -1840,6 +1965,7 @@ def download_all(
         budget=budget,
         strategy_fingerprint=compute_url_fingerprint(url),
         existing_sop_uids=seen_sop_uids,
+        socket_tracker=tracker,
     )
     capture_bodies = selected_series is None
 
@@ -2002,6 +2128,10 @@ def download_all(
                         page.wait_for_timeout(settle_ms)
         finally:
             try:
+                tracker.interrupt_all()
+            except Exception:
+                pass
+            try:
                 browser.close()
             except Exception:
                 pass
@@ -2131,8 +2261,20 @@ def discover_viewer_series(
         return {"source": source, "series": choices, "selectable": True}
 
 
+def _shutdown_executor(ex, wait: bool) -> None:
+    """Đóng pool; khi huỷ thì trả về ngay, bỏ luôn các task chưa kịp chạy."""
+    if wait:
+        ex.shutdown(wait=True)
+        return
+    try:
+        ex.shutdown(wait=False, cancel_futures=True)
+    except TypeError:  # Python < 3.9 chưa có cancel_futures
+        ex.shutdown(wait=False)
+
+
 def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
                      stop: Callable[[], bool], budget: Optional[DownloadBudget] = None,
+                     tracker: Optional[ActiveSocketTracker] = None,
                      passes: int = 3) -> None:
     """Tải song song và LÀM LẠI phần hỏng, rồi ghi lại số còn hỏng.
 
@@ -2140,18 +2282,26 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
     chúng chính là kiểu mất ảnh nguy hiểm nhất với dùng lâm sàng. Ở đây mỗi ảnh
     hỏng được giữ lại thử tiếp, số còn hỏng cuối cùng vào `stats.failed`.
     """
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
     def attempt(task) -> bool:
         if stop():
+            if tracker is not None:
+                tracker.interrupt_all()
             return True  # dừng theo lệnh người dùng, không tính là ảnh hỏng
         if budget is not None and budget.is_expired():
+            if tracker is not None:
+                tracker.interrupt_all()
             return False
         try:
             ok = bool(fetch(task))
             if ok and budget is not None:
                 budget.touch()
             return ok
+        except (InterruptedError, ConnectionResetError, OSError):
+            if stop() and tracker is not None:
+                tracker.interrupt_all()
+            return False
         except Exception:
             return False
 
@@ -2159,15 +2309,57 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
     pending = list(tasks)
     for round_no in range(1, max(1, passes) + 1):
         if not pending or stop() or (budget is not None and budget.is_expired()):
+            if (stop() or (budget is not None and budget.is_expired())) and tracker is not None:
+                tracker.interrupt_all()
             break
         if round_no > 1:
             log(f"  ↻ Tải lại {len(pending)} ảnh bị hỏng (lượt {round_no}/{passes})...")
-            time.sleep(1.5)
-        with ThreadPoolExecutor(max_workers=6) as ex:
-            results = list(ex.map(attempt, pending))
-        pending = [task for task, ok in zip(pending, results) if not ok]
+            for _ in range(15):
+                if stop() or (budget is not None and budget.is_expired()):
+                    if tracker is not None:
+                        tracker.interrupt_all()
+                    break
+                time.sleep(0.1)
+            if stop() or (budget is not None and budget.is_expired()):
+                break
+
+        # Không dùng `with ThreadPoolExecutor(...)`: lúc thoát khối `with`, Python
+        # gọi `shutdown(wait=True)` và chặn cho tới khi worker cuối cùng xong. Khi
+        # đó watchdog phát hiện huỷ trong 50ms cũng vô nghĩa — hàm vẫn không trả về
+        # được, và người dùng vẫn thấy treo đúng bằng `timeout` của socket.
+        ex = ThreadPoolExecutor(max_workers=6)
+        aborted = False
+        try:
+            future_to_task = {ex.submit(attempt, task): task for task in pending}
+            uncompleted = set(future_to_task.keys())
+            completed_success = set()
+            while uncompleted:
+                if stop() or (budget is not None and budget.is_expired()):
+                    if tracker is not None:
+                        tracker.interrupt_all()
+                    aborted = True
+                    break
+                done, uncompleted = wait(uncompleted, timeout=0.05, return_when=FIRST_COMPLETED)
+                for f in done:
+                    try:
+                        if f.result():
+                            completed_success.add(f)
+                    except Exception:
+                        pass
+
+            if not aborted and (stop() or (budget is not None and budget.is_expired())):
+                if tracker is not None:
+                    tracker.interrupt_all()
+                aborted = True
+            pending = [task for f, task in future_to_task.items() if f not in completed_success]
+        finally:
+            _shutdown_executor(ex, wait=not aborted)
+        if aborted:
+            break
 
     if stop():
+        if tracker is not None:
+            tracker.interrupt_all()
         stats.cancelled = True
     stats.failed = 0 if stop() else len(pending)
     stats.completed_tasks = max(stats.completed_tasks, original_count - len(pending))
@@ -2175,6 +2367,7 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
 
 def _read_response_chunks(response, budget: Optional[DownloadBudget] = None,
                           stop: Optional[Callable[[], bool]] = None,
+                          tracker: Optional[ActiveSocketTracker] = None,
                           chunk_size: int = 1024 * 1024) -> bytes:
     """Read a bounded socket response while observing cancel/deadline between chunks.
 
@@ -2182,29 +2375,43 @@ def _read_response_chunks(response, budget: Optional[DownloadBudget] = None,
     is blocked; this helper prevents a large response from hiding progress or
     ignoring cancel for the entire body.
     """
+    if tracker is not None and response is not None:
+        tracker.track(response)
     chunks: list[bytes] = []
-    while True:
-        if stop is not None and stop():
-            raise InterruptedError("Download cancelled")
-        if budget is not None and budget.is_expired():
-            raise TimeoutError("Download budget expired")
-        try:
-            chunk = response.read(chunk_size)
-        except TypeError:
-            # Small deterministic test doubles and a few file-like wrappers
-            # expose only ``read()``; real HTTPResponse supports sized reads.
-            chunk = response.read()
-            if chunk:
-                chunks.append(chunk)
-                if budget is not None:
-                    budget.touch()
-            break
-        if not chunk:
-            break
-        chunks.append(chunk)
-        if budget is not None:
-            budget.touch()
-    return b"".join(chunks)
+    try:
+        while True:
+            if stop is not None and stop():
+                if tracker is not None:
+                    tracker.interrupt_all()
+                raise InterruptedError("Download cancelled")
+            if budget is not None and budget.is_expired():
+                if tracker is not None:
+                    tracker.interrupt_all()
+                raise TimeoutError("Download budget expired")
+            try:
+                chunk = response.read(chunk_size)
+            except (OSError, ConnectionResetError, http.client.RemoteDisconnected):
+                if stop is not None and stop():
+                    raise InterruptedError("Download cancelled")
+                raise
+            except TypeError:
+                # Small deterministic test doubles and a few file-like wrappers
+                # expose only ``read()``; real HTTPResponse supports sized reads.
+                chunk = response.read()
+                if chunk:
+                    chunks.append(chunk)
+                    if budget is not None:
+                        budget.touch()
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if budget is not None:
+                budget.touch()
+        return b"".join(chunks)
+    finally:
+        if tracker is not None and response is not None:
+            tracker.release(response)
 
 
 def _report_download_result(stats: DownloadStats, expected: int, log: LogFn,
@@ -2309,11 +2516,16 @@ def _download_via_manifest(captured, save_body, stats,
         log(f"Manifest: {selected_count} series đã chọn/{len(series_list)} series, ~{total_expected} ảnh. "
             f"Đang tải trực tiếp {len(tasks)} ảnh (6 luồng song song)...")
 
-    def fetch_one(u) -> bool:
-        with urllib.request.urlopen(u, timeout=45, context=sslctx) as r:
-            return save_body(_read_response_chunks(r, captured.get("budget"), stop))
+    tracker = captured.get("socket_tracker") or ActiveSocketTracker()
+    opener = tracker.opener(sslctx)
 
-    _run_fetch_tasks(tasks, fetch_one, stats, log, stop, captured.get("budget"))
+    def fetch_one(u) -> bool:
+        if stop():
+            return True
+        with opener.open(u, timeout=45) as r:
+            return save_body(_read_response_chunks(r, captured.get("budget"), stop, tracker=tracker))
+
+    _run_fetch_tasks(tasks, fetch_one, stats, log, stop, captured.get("budget"), tracker=tracker)
     _report_download_result(stats, total_expected or len(tasks), log, stop)
 
 
@@ -2372,12 +2584,17 @@ def _download_via_vrpacs(captured, save_body, stats,
     log(f"Manifest (vrpacs): {n_series} series, {len(tasks)} ảnh. "
         f"Đang tải trực tiếp (6 luồng song song)...")
 
-    def fetch_one(u) -> bool:
-        req = urllib.request.Request(u, headers={"Cookie": cj} if cj else {})
-        with urllib.request.urlopen(req, timeout=45, context=sslctx) as r:
-            return save_body(_read_response_chunks(r, captured.get("budget"), stop))
+    tracker = captured.get("socket_tracker") or ActiveSocketTracker()
+    opener = tracker.opener(sslctx)
 
-    _run_fetch_tasks(tasks, fetch_one, stats, log, stop, captured.get("budget"))
+    def fetch_one(u) -> bool:
+        if stop():
+            return True
+        req = urllib.request.Request(u, headers={"Cookie": cj} if cj else {})
+        with opener.open(req, timeout=45) as r:
+            return save_body(_read_response_chunks(r, captured.get("budget"), stop, tracker=tracker))
+
+    _run_fetch_tasks(tasks, fetch_one, stats, log, stop, captured.get("budget"), tracker=tracker)
     _report_download_result(stats, len(tasks), log, stop)
 
 
@@ -2520,12 +2737,17 @@ def _download_via_vietmy(captured, save_body, stats,
     log(f"Manifest (VietMy): {n_series} series, {len(tasks)} ảnh. "
         f"Đang tải DICOM gốc trực tiếp (6 luồng song song)...")
 
-    def fetch_one(u) -> bool:
-        req = urllib.request.Request(u, headers={"Cookie": cj} if cj else {})
-        with urllib.request.urlopen(req, timeout=45, context=sslctx) as r:
-            return save_body(_read_response_chunks(r, captured.get("budget"), stop))
+    tracker = captured.get("socket_tracker") or ActiveSocketTracker()
+    opener = tracker.opener(sslctx)
 
-    _run_fetch_tasks(tasks, fetch_one, stats, log, stop, captured.get("budget"))
+    def fetch_one(u) -> bool:
+        if stop():
+            return True
+        req = urllib.request.Request(u, headers={"Cookie": cj} if cj else {})
+        with opener.open(req, timeout=45) as r:
+            return save_body(_read_response_chunks(r, captured.get("budget"), stop, tracker=tracker))
+
+    _run_fetch_tasks(tasks, fetch_one, stats, log, stop, captured.get("budget"), tracker=tracker)
     _report_download_result(stats, len(tasks), log, stop)
 
 
@@ -2587,15 +2809,22 @@ def _download_via_dicomweb(captured, save_body, stats,
     sslctx.check_hostname = False
     sslctx.verify_mode = ssl.CERT_NONE
 
+    tracker = captured.get("socket_tracker") or ActiveSocketTracker()
+    opener = tracker.opener(sslctx)
+
     def get_raw(u, accept=None):
         if budget is not None and budget.is_expired():
+            tracker.interrupt_all()
             raise TimeoutError("Download budget expired")
+        if stop():
+            tracker.interrupt_all()
+            raise InterruptedError("Download cancelled")
         h = dict(hdr)
         if accept:
             h["Accept"] = accept
         req = urllib.request.Request(u, headers=h)
-        with urllib.request.urlopen(req, timeout=60, context=sslctx) as r:
-            data = _read_response_chunks(r, budget, stop)
+        with opener.open(req, timeout=60) as r:
+            data = _read_response_chunks(r, budget, stop, tracker=tracker)
             return data, (r.headers.get("Content-Type") or "")
 
     def get_json(u):
@@ -2771,7 +3000,7 @@ def _download_via_dicomweb(captured, save_body, stats,
                 continue
         return False
 
-    _run_fetch_tasks(tasks, fetch_one, stats, log, stop, captured.get("budget"))
+    _run_fetch_tasks(tasks, fetch_one, stats, log, stop, captured.get("budget"), tracker=tracker)
     completed_pending = max(0, pending_total - stats.failed)
     stats.completed_tasks = max(stats.completed_tasks, skipped_count + completed_pending)
     stats.preferred_routes = list(order)

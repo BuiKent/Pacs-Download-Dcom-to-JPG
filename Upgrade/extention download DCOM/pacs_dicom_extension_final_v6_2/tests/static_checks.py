@@ -81,4 +81,18 @@ assert 'runZfpJob' in off and 'ZFP_TAKE_REQUEST' in off and 'ZFP_TAKE_REQUEST' i
 assert 'ZFP_RELOAD_REQUEST' in off and 'ZFP_RELOAD_REQUEST' in bg
 assert "ZFP_TAKE:'take'" in (root/'content.js').read_text(encoding='utf-8')
 
+# Recipe hoc theo dang link: cho GHI va cho DOC phai dung chung mot ham sinh
+# khoa. Truoc day cho ghi kem them adapterId con cho doc thi khong, nen khong lan
+# nao tra trung - recipe ghi ra chi nam do an cho.
+assert 'function recipeKeyForUrl(' in bg
+assert bg.count('computeUrlFingerprint(') == 1, \
+    'computeUrlFingerprint chi duoc goi mot cho duy nhat: trong recipeKeyForUrl'
+
+# Vong hoc route phai khep kin: engine bao route nao thang -> luu lai -> lan sau
+# dua nguoc vao task. Thieu mot mat xich la hoc xong khong dung duoc.
+assert 'preferredRoutes' in off, 'engine phai bao lai route da thang'
+assert 'orderRoutes' in off, 'engine phai chay route theo thu tu da hoc'
+assert 'getPreferredRoutes' in bg, 'task phai mang theo route da hoc'
+assert 'getPreferredAdapter' in bg, 'xep hang adapter phai dung ket qua da hoc'
+
 print('Static architecture checks OK')

@@ -938,6 +938,26 @@ class PatientDemographicsTests(unittest.TestCase):
             )
 
 
+class FakeOpener:
+    """Đứng thay opener có ghi sổ socket của pipeline.
+
+    Pipeline không gọi thẳng `urllib.request.urlopen` nữa: nó mở qua một opener
+    riêng để socket được ghi sổ ngay từ lúc kết nối, nhờ đó bấm Cancel là cắt
+    được cả những worker còn đang kẹt trong `urlopen()`.
+    """
+
+    def __init__(self, handler):
+        self._handler = handler
+
+    def open(self, request, timeout=None):
+        return self._handler(request)
+
+
+def patch_pacs_network(handler):
+    return patch.object(dcom_pipeline.ActiveSocketTracker, "opener",
+                        lambda _self, _context=None: FakeOpener(handler))
+
+
 class SeriesSelectionTests(unittest.TestCase):
     @staticmethod
     def _tag(value):
@@ -1124,9 +1144,9 @@ class SeriesSelectionTests(unittest.TestCase):
             "qido_series": "https://pacs.test/rs/studies/STUDY/series",
             "api_headers": {}, "cookies": [], "wado_tmpl": None,
         }
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen), patch(
+        with patch_pacs_network(fake_urlopen), patch(
             "dcom_pipeline._run_fetch_tasks",
-            side_effect=lambda tasks, *_args: planned.extend(tasks),
+            side_effect=lambda tasks, *_args, **_kwargs: planned.extend(tasks),
         ), patch("dcom_pipeline._report_download_result"):
             dcom_pipeline._download_via_dicomweb(
                 captured,
@@ -1169,7 +1189,7 @@ class SeriesSelectionTests(unittest.TestCase):
             "qido_series": "https://pacs.test/rs/studies/STUDY/series",
             "api_headers": {}, "cookies": [], "wado_tmpl": None,
         }
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch_pacs_network(fake_urlopen):
             with self.assertRaisesRegex(RuntimeError, "PLAIN.*0/115"):
                 dcom_pipeline._download_via_dicomweb(
                     captured,
@@ -1235,7 +1255,7 @@ class SeriesSelectionTests(unittest.TestCase):
             "getstudies": body,
             "template_url": "https://viewer.test/GetImage?token=x",
         }
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch_pacs_network(fake_urlopen):
             dcom_pipeline._download_via_manifest(
                 captured,
                 lambda _body: True,

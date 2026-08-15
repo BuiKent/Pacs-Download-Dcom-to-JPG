@@ -76,6 +76,20 @@ export function inventoryIsCovered(job, completedSopUids) {
   return expected.every(uid => completed.has(uid)) && completed.size >= logicalTotal;
 }
 
+/**
+ * Xếp lại thứ tự các route lấy ảnh theo cái đã học được ở lần tải trước.
+ *
+ * Route nào không có trong danh sách đã học thì giữ nguyên vị trí tương đối phía
+ * sau — chưa từng thắng không có nghĩa là hỏng, chỉ là chưa cần tới.
+ */
+export function orderRoutes(candidates, preferred) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  if (!Array.isArray(preferred) || !preferred.length) return list;
+  const rank = new Map(preferred.map((route, i) => [String(route), i]));
+  const at = c => rank.has(c?.route) ? rank.get(c.route) : Number.MAX_SAFE_INTEGER;
+  return [...list].sort((a, b) => at(a) - at(b));
+}
+
 export function dedupeTasksBySop(tasks) {
   const seen = new Set();
   const out = [];

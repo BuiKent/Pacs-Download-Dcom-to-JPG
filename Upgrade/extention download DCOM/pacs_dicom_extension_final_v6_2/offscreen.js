@@ -2,7 +2,7 @@
 import { buildPart10FromFrames, isPart10, parseMultipart, numberOfFrames, validatePart10 } from './lib/dicom.js';
 import { zfpMetaToDicomJson } from './lib/pacs.js';
 import { AsyncSemaphore, sleepAbortable, fetchStreamWithTimeout } from './lib/semaphore.js';
-import { dicomTaskIdentityError } from './lib/orchestrator.js';
+import { dicomTaskIdentityError, orderRoutes } from './lib/orchestrator.js';
 
 const FS_DB='pacs_dicom_fs_v1',FS_STORE='handles',FS_KEY='download-root';
 const jobs=new Map();
@@ -47,15 +47,16 @@ async function parallelOrdered(count,limit,fn){const out=new Array(count);let ne
 
 async function prepareDicomweb(task,signal,frameConcurrency){
   let first='';
-  for(const url of [task.url,task.instanceBase].filter(Boolean)){
-    try{const got=await fetchRaw(url,task,'multipart/related; type="application/dicom", application/dicom, */*',signal);const d=dicomFromResponse(got.bytes,got.contentType);if(d)return{bytes:d,provenance:'original'};first=responseProblem(got.bytes,got.contentType);}catch(e){first=String(e?.message||e);}
+  const candidates=[{route:'wadouri',url:task.url},{route:'wadors',url:task.instanceBase}].filter(c=>c.url);
+  for(const c of orderRoutes(candidates,task.preferredRoutes)){
+    try{const got=await fetchRaw(c.url,task,'multipart/related; type="application/dicom", application/dicom, */*',signal);const d=dicomFromResponse(got.bytes,got.contentType);if(d)return{bytes:d,provenance:'original',route:c.route};first=responseProblem(got.bytes,got.contentType);}catch(e){first=String(e?.message||e);}
   }
   let meta=task.meta||null;if(Array.isArray(meta))meta=meta[0]||{};
   const enough=meta&&meta['00080016']&&meta['00080018']&&meta['00280010']&&meta['00280011']&&meta['00280100'];if(!enough){const mj=await fetchJson(`${task.instanceBase}/metadata`,task,signal);meta=Array.isArray(mj)?(mj[0]||{}):mj;}
   if(!meta||!Object.keys(meta).length)throw new Error(first||'Không có metadata instance.');
   const nf=Math.max(Number(task.numberOfFrames)||1,numberOfFrames(meta));
   const frameResults=await parallelOrdered(nf,frameConcurrency,async i=>{const got=await fetchRaw(`${task.instanceBase}/frames/${i+1}`,task,'multipart/related; type="application/octet-stream"; transfer-syntax=1.2.840.10008.1.2.1, multipart/related; type="application/octet-stream", */*',signal);const parts=parseMultipart(got.bytes,got.contentType);return{frames:parts.length?parts.map(p=>p.data):[got.bytes],ct:(parts[0]?.contentType||got.contentType)};});
-  const frames=[];let ct='';for(const r of frameResults){ct=ct||r.ct;frames.push(...r.frames);}if(!frames.length)throw new Error(first||'Không lấy được frame ảnh.');return{bytes:buildPart10FromFrames(meta,frames,ct),provenance:'reconstructed'};
+  const frames=[];let ct='';for(const r of frameResults){ct=ct||r.ct;frames.push(...r.frames);}if(!frames.length)throw new Error(first||'Không lấy được frame ảnh.');return{bytes:buildPart10FromFrames(meta,frames,ct),provenance:'reconstructed',route:'frames'};
 }
 
 /**
@@ -78,7 +79,7 @@ async function prepareTask(task,signal,frameConcurrency){
   let result;
   if(task.strategy==='dicomweb-instance')result=await prepareDicomweb(task,signal,frameConcurrency);
   else if(task.strategy==='fetch-dicom'){
-    const got=await fetchRaw(task.url,task,'application/dicom, multipart/related; type="application/dicom", application/octet-stream, */*',signal);const bytes=dicomFromResponse(got.bytes,got.contentType);if(!bytes)throw new Error(responseProblem(got.bytes,got.contentType));result={bytes,provenance:'original'};
+    const got=await fetchRaw(task.url,task,'application/dicom, multipart/related; type="application/dicom", application/octet-stream, */*',signal);const bytes=dicomFromResponse(got.bytes,got.contentType);if(!bytes)throw new Error(responseProblem(got.bytes,got.contentType));result={bytes,provenance:'original',route:'direct'};
   }else throw new Error(`Strategy không hỗ trợ: ${task.strategy}`);
   const check=validatePart10(result.bytes);if(!check.ok)throw new Error(check.reason);const identityError=dicomTaskIdentityError(task,check.meta);if(identityError)throw new Error(identityError);return{...result,meta:check.meta};
 }
@@ -129,6 +130,7 @@ async function runTask(job,task,index){
       const got=job.prefetched?.has(index)?job.prefetched.get(index):await prepareTask(task,job.controller.signal,job.frameConcurrency);
       if(job.prefetched?.has(index))job.prefetched.delete(index);
       await commit(job,task,got);
+      if(got.route)job.routeHits.set(got.route,(job.routeHits.get(got.route)||0)+1);
       if(task.strategy==='fetch-dicom'&&task.url)chrome.runtime.sendMessage({type:'ENGINE_LEARNED_URL',tabId:job.tabId,url:task.url}).catch(()=>{});
       emit(job,true);
       return;
@@ -207,6 +209,7 @@ async function runJob(spec){
     original:0,
     reconstructed:0,
     bytesWritten:0,
+    routeHits:new Map(),
     currentFile:'',
     errors:[],
     cancelled:false,
@@ -245,6 +248,9 @@ async function runJob(spec){
     studyFolder,
     saveMode,
     attemptId:job.attemptId||'',
+    // Route nào thực sự lấy được ảnh, xếp theo số lần thắng — lần tải sau khỏi
+    // phải dò lại từ đầu trên cùng một PACS.
+    preferredRoutes:[...job.routeHits.entries()].sort((a,b)=>b[1]-a[1]).map(([route])=>route),
     completedSopUids:[...job.completedSopUids]
   };
 }

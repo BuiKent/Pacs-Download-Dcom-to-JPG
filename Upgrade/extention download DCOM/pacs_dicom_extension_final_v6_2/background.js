@@ -1,5 +1,5 @@
 'use strict';
-import {cleanUrl,classifyPacsUrl,viewerUrlScore,originPattern,bestDetectedRequest,safeHeaders,replayContentType,viewerStudyHint,classifyViewerShell,sanitizeSegment} from './lib/pacs.js';
+import {cleanUrl,classifyPacsUrl,viewerUrlScore,originPattern,bestDetectedRequest,safeHeaders,replayContentType,viewerStudyHint,classifyViewerShell,sanitizeSegment,computeUrlFingerprint,RecipeStoreV2} from './lib/pacs.js';
 import {matchingAdapters,adapterById} from './lib/adapters/registry.js';
 import {compatibleAdapterIds,mapSeriesSelection,tasksBelongToStudy,cumulativeAttemptCounters,inventoryIsCovered,dedupeTasksBySop} from './lib/orchestrator.js';
 
@@ -10,43 +10,106 @@ let learnedRecipes={};
 const tabKey=id=>`${TAB_PREFIX}${id}`,invKey=id=>`${INV_PREFIX}${id}`,jobKey=id=>`${JOB_PREFIX}${id}`;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function pathSignature(raw){try{const u=new URL(raw),parts=u.pathname.split('/').map(seg=>{if(!seg)return'';if(/^[0-9a-f]{8}-[0-9a-f-]{20,}$/i.test(seg)||/^[0-9a-f]{20,}$/i.test(seg)||/^\d+(?:\.\d+){3,}$/.test(seg)||seg.length>40)return'*';return seg;});const keys=[...u.searchParams.keys()].filter(k=>!/(token|sig|signature|session|auth|key|password|pass|stoken)/i.test(k)).sort();return`${u.origin}${parts.join('/')}?${keys.join('&')}`;}catch{return'';}}
-function recipeForOrigin(origin){
-  const raw=learnedRecipes[origin];
-  if(!raw||typeof raw!=='object')return{schemaVersion:2,dicom:[],manifest:[],adapters:{}};
-  if(Array.isArray(raw))return{schemaVersion:2,dicom:[...raw],manifest:[],adapters:{}};
+function recipeForOrigin(origin, rawInput){
+  const raw=rawInput || learnedRecipes[origin];
+  if(!raw||typeof raw!=='object')return{schemaVersion:2,dicom:[],manifest:[],adapters:{},updatedAt:Date.now()};
+  if(Array.isArray(raw))return{schemaVersion:2,dicom:[...raw],manifest:[],adapters:{},updatedAt:Date.now()};
   return{
     schemaVersion:2,
     dicom:Array.isArray(raw.dicom)?raw.dicom:[],
     manifest:Array.isArray(raw.manifest)?raw.manifest:[],
     adapters:(raw.adapters&&typeof raw.adapters==='object')?raw.adapters:{},
+    updatedAt:raw.updatedAt || Date.now(),
   };
 }
-async function loadRecipes(){const o=await chrome.storage.local.get(RECIPES_KEY);learnedRecipes=o[RECIPES_KEY]&&typeof o[RECIPES_KEY]==='object'?o[RECIPES_KEY]:{};for(const origin of Object.keys(learnedRecipes))learnedRecipes[origin]=recipeForOrigin(origin);}
+/**
+ * Khoá lưu recipe theo dạng link. Ghi và đọc BẮT BUỘC đi qua đúng hàm này:
+ * trước đây chỗ ghi kèm thêm adapterId còn chỗ đọc thì không, nên không lần nào
+ * tra trúng, mà mỗi adapter lại đẻ một khoá rác ăn hết chỗ lưu.
+ */
+function recipeKeyForUrl(rawUrl){return computeUrlFingerprint(rawUrl);}
+function recipeForUrl(rawUrl){
+  if(!rawUrl)return recipeForOrigin('');
+  const fp=recipeKeyForUrl(rawUrl);
+  if(learnedRecipes[fp])return learnedRecipes[fp];
+  try{
+    const origin=new URL(rawUrl).origin;
+    if(learnedRecipes[origin])return learnedRecipes[origin];
+  }catch{}
+  return recipeForOrigin('');
+}
+async function loadRecipes(){
+  const o=await chrome.storage.local.get(RECIPES_KEY);
+  const rawMap=o[RECIPES_KEY]&&typeof o[RECIPES_KEY]==='object'?o[RECIPES_KEY]:{};
+  learnedRecipes={};
+  for(const [key, raw] of Object.entries(rawMap)){
+    learnedRecipes[key]=recipeForOrigin(key, raw);
+  }
+  learnedRecipes=RecipeStoreV2.purgeExpired(learnedRecipes);
+  learnedRecipes=RecipeStoreV2.pruneCapacity(learnedRecipes, 200);
+}
 function learnedRole(raw,role){const sig=pathSignature(raw);if(!sig)return false;try{return recipeForOrigin(new URL(raw).origin)[role]?.includes(sig)||false;}catch{return false;}}
 function isLearnedUrl(raw){return learnedRole(raw,'dicom');}
 function isLearnedManifestUrl(raw){return learnedRole(raw,'manifest');}
-async function learnUrl(raw,role='dicom'){const sig=pathSignature(raw);if(!sig||!['dicom','manifest'].includes(role))return;let origin='';try{origin=new URL(raw).origin;}catch{return;}const recipe=recipeForOrigin(origin),list=[...(recipe[role]||[])];if(!list.includes(sig))list.push(sig);recipe[role]=list.slice(-40);learnedRecipes[origin]=recipe;await chrome.storage.local.set({[RECIPES_KEY]:learnedRecipes});}
-async function recordAdapterOutcome(origin,adapterId,outcome={}){
-  if(!origin||!adapterId)return;
-  const recipe=recipeForOrigin(origin);
-  const adapters=recipe.adapters||{};
-  const ad=adapters[adapterId]||{preferredRoutes:[],success:0,partial:0,failureByClass:{timeout:0,auth:0,server:0,invalidDicom:0,other:0},latencyEwmaMs:0,lastSuccessAt:0};
-  if(outcome.status==='done'||outcome.status==='complete'){
-    ad.success=(ad.success||0)+1;
-    ad.lastSuccessAt=Date.now();
-    if(Array.isArray(outcome.preferredRoutes)&&outcome.preferredRoutes.length)ad.preferredRoutes=outcome.preferredRoutes;
-    if(outcome.latencyMs>0)ad.latencyEwmaMs=Math.round(0.7*(ad.latencyEwmaMs||outcome.latencyMs)+0.3*outcome.latencyMs);
-  }else if(outcome.status==='partial'){
-    ad.partial=(ad.partial||0)+1;
-  }else if(outcome.status==='error'||outcome.status==='failed'||outcome.status==='done_with_errors'){
-    const errClass=outcome.errorClass||'other';
-    if(!ad.failureByClass)ad.failureByClass={timeout:0,auth:0,server:0,invalidDicom:0,other:0};
-    ad.failureByClass[errClass]=(ad.failureByClass[errClass]||0)+1;
-  }
-  adapters[adapterId]=ad;
-  recipe.adapters=adapters;
+async function learnUrl(raw,role='dicom'){
+  const sig=pathSignature(raw);
+  if(!sig||!['dicom','manifest'].includes(role))return;
+  let origin='';
+  try{origin=new URL(raw).origin;}catch{return;}
+  const recipe=recipeForOrigin(origin),list=[...(recipe[role]||[])];
+  if(!list.includes(sig))list.push(sig);
+  recipe[role]=list.slice(-40);
+  recipe.updatedAt=Date.now();
   learnedRecipes[origin]=recipe;
+  learnedRecipes=RecipeStoreV2.purgeExpired(learnedRecipes);
+  learnedRecipes=RecipeStoreV2.pruneCapacity(learnedRecipes, 200);
   await chrome.storage.local.set({[RECIPES_KEY]:learnedRecipes});
+}
+async function recordAdapterOutcome(urlOrOrigin,adapterId,outcome={}){
+  if(!urlOrOrigin||!adapterId)return;
+  const now=Date.now();
+  let origin='';
+  let fingerprint='';
+  if(urlOrOrigin.startsWith('http://')||urlOrOrigin.startsWith('https://')){
+    try{
+      origin=new URL(urlOrOrigin).origin;
+      fingerprint=recipeKeyForUrl(urlOrOrigin);
+    }catch{}
+  }else{
+    origin=urlOrOrigin;
+  }
+
+  if(origin){
+    const recipe=recipeForOrigin(origin);
+    recipe.updatedAt=now;
+    const adapters=recipe.adapters||{};
+    adapters[adapterId]=RecipeStoreV2.updateRecipe(adapters[adapterId],adapterId,outcome,now);
+    recipe.adapters=adapters;
+    learnedRecipes[origin]=recipe;
+  }
+
+  if(fingerprint && fingerprint!==origin){
+    const fpRecipe=learnedRecipes[fingerprint]||{schemaVersion:2,fingerprint,dicom:[],manifest:[],adapters:{},updatedAt:now};
+    fpRecipe.updatedAt=now;
+    const fpAdapters=fpRecipe.adapters||{};
+    fpAdapters[adapterId]=RecipeStoreV2.updateRecipe(fpAdapters[adapterId],adapterId,outcome,now);
+    fpRecipe.adapters=fpAdapters;
+    learnedRecipes[fingerprint]=fpRecipe;
+  }
+
+  learnedRecipes=RecipeStoreV2.purgeExpired(learnedRecipes, now);
+  learnedRecipes=RecipeStoreV2.pruneCapacity(learnedRecipes, 200);
+  await chrome.storage.local.set({[RECIPES_KEY]:learnedRecipes});
+}
+/** Điểm xếp hạng adapter cho đúng dạng link này, từ những lần tải trước. */
+function adapterScore(ad){
+  if(!ad)return 0;
+  // Adapter đã thực sự tải xong study trên dạng link này thì đôn hẳn lên đầu,
+  // đừng để một lần chậm mạng đẩy nó xuống sau adapter chưa bao giờ chạy được.
+  const proven=RecipeStoreV2.getPreferredAdapter(ad)?1000:0;
+  const wins=(ad.success||0)-((ad.failure||0)+(ad.failureByClass?.auth||0)*2);
+  const slowness=ad.latencyEwmaMs?Math.min(50,ad.latencyEwmaMs/100):0;
+  return proven+wins*100-slowness;
 }
 function candidateDisplay(raw){try{const u=new URL(raw),keys=[...u.searchParams.keys()].filter(Boolean);return`${u.host}${u.pathname}${keys.length?`?${keys.join('&')}`:''}`;}catch{return String(raw||'');}}
 function extractUrlsFromJson(value,baseUrl){const out=new Set(),seen=new Set();function add(raw){let x=String(raw||'').trim();if(!x||x.length>8000)return;for(const p of ['wadouri:','wadors:','dicomweb:','dicomfile:'])if(x.toLowerCase().startsWith(p)){x=x.slice(p.length);break;}if(!(x.startsWith('/')||x.startsWith('?')||/^https?:\/\//i.test(x)))return;try{const u=new URL(x,baseUrl);if(['http:','https:'].includes(u.protocol))out.add(u.href);}catch{}}function walk(v,depth=0){if(depth>9||v==null)return;if(typeof v==='string'){add(v);return;}if(typeof v!=='object')return;if(seen.has(v))return;seen.add(v);if(Array.isArray(v)){for(const x of v.slice(0,20000))walk(x,depth+1);return;}for(const x of Object.values(v))walk(x,depth+1);}walk(value);return[...out].slice(0,3000);}
@@ -170,13 +233,11 @@ async function analyzeTab(tabId){
   let inv=null,lastError=null;
   const inventories={};
   const allMatching=matchingAdapters(summary,state);
-  let origin='';try{origin=new URL(summary.currentUrl||state.currentUrl).origin;}catch{}
-  const recipe=recipeForOrigin(origin);
-  const ranked=[...allMatching].sort((a,b)=>{
-    const sa=recipe.adapters?.[a.id]?.success||0;
-    const sb=recipe.adapters?.[b.id]?.success||0;
-    return sb-sa;
-  });
+  const currentUrl=summary.currentUrl||state.currentUrl||'';
+  const recipe=recipeForUrl(currentUrl);
+  // Hoà điểm thì giữ nguyên thứ tự trong registry — `sort` của JS ổn định, nên
+  // không cần khoá phụ (adapter không có field `priority` nào cả).
+  const ranked=[...allMatching].sort((a,b)=>adapterScore(recipe.adapters?.[b.id])-adapterScore(recipe.adapters?.[a.id]));
   for(const adapter of ranked){
     try{
       const candidate=await adapter.analyze(adapterContext(summary,state));
@@ -205,7 +266,7 @@ function scheduleAnalyze(tabId,delay=500){clearTimeout(analyzeTimers.get(tabId))
 
 async function ensureOffscreen(){const url=chrome.runtime.getURL('offscreen.html');const c=await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT'],documentUrls:[url]});if(c.length)return;await chrome.offscreen.createDocument({url:'offscreen.html',reasons:['BLOBS'],justification:'Tải và ghi DICOM trực tiếp vào thư mục người dùng đã chọn.'});}
 function safeFolderName(inv){const p=inv.patient||{},name=sanitizeSegment(String(p.name||'').replace(/\^+/g,' ').replace(/\s+/g,' ').trim(),'Unknown'),id=sanitizeSegment(p.id||'NoID','NoID');let d=String(p.studyDate||'').replace(/[^0-9]/g,'');const date=d.length>=8?`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`:sanitizeSegment(p.studyDate||'NoDate','NoDate');return`${name} - ${id} - ${date}`;}
-async function buildTasksForAdapter(inv,selected,adapterId){const id=adapterId||inv.adapter,state=await getTabState(inv.tabId),adapter=adapterById(id);if(!adapter)throw new Error(`Không có adapter ${id}.`);const sourceInv=id===inv.adapter?inv:inv.adapterInventories?.[id];if(!sourceInv)throw new Error(`Adapter ${id} chưa phân tích thành công study này.`);const mappedSelected=id===inv.adapter?selected:mapSeriesSelection(inv,sourceInv,selected);if(!mappedSelected.length)throw new Error(`Không ánh xạ được series đã chọn sang adapter ${id}.`);const ctx=adapterContext(sourceInv.summary||inv.summary||await scanTab(inv.tabId),state);const tasks=dedupeTasksBySop(await adapter.enumerate(sourceInv,mappedSelected,ctx));if(!tasksBelongToStudy(tasks,inv.studyUid))throw new Error(`Adapter ${id} trả task khác StudyInstanceUID.`);return tasks.map(t=>({...t,tabId:inv.tabId}));}
+async function buildTasksForAdapter(inv,selected,adapterId){const id=adapterId||inv.adapter,state=await getTabState(inv.tabId),adapter=adapterById(id);if(!adapter)throw new Error(`Không có adapter ${id}.`);const sourceInv=id===inv.adapter?inv:inv.adapterInventories?.[id];if(!sourceInv)throw new Error(`Adapter ${id} chưa phân tích thành công study này.`);const mappedSelected=id===inv.adapter?selected:mapSeriesSelection(inv,sourceInv,selected);if(!mappedSelected.length)throw new Error(`Không ánh xạ được series đã chọn sang adapter ${id}.`);const ctx=adapterContext(sourceInv.summary||inv.summary||await scanTab(inv.tabId),state);const tasks=dedupeTasksBySop(await adapter.enumerate(sourceInv,mappedSelected,ctx));if(!tasksBelongToStudy(tasks,inv.studyUid))throw new Error(`Adapter ${id} trả task khác StudyInstanceUID.`);const learnedRoutes=RecipeStoreV2.getPreferredRoutes(recipeForUrl(inv.summary?.currentUrl||inv.context?.url||'').adapters?.[id]);return tasks.map(t=>learnedRoutes.length?{...t,tabId:inv.tabId,preferredRoutes:learnedRoutes}:{...t,tabId:inv.tabId});}
 async function buildTasks(inv,selected){return buildTasksForAdapter(inv,selected,inv.adapter);}
 
 function scheduleJobFlush(tabId,force=false){if(force){clearTimeout(jobFlushTimers.get(tabId));jobFlushTimers.delete(tabId);const j=jobMemory.get(tabId);if(j)setSession(jobKey(tabId),j).catch(()=>{});return;}if(jobFlushTimers.has(tabId))return;jobFlushTimers.set(tabId,setTimeout(()=>{jobFlushTimers.delete(tabId);const j=jobMemory.get(tabId);if(j)setSession(jobKey(tabId),j).catch(()=>{});},600));}
@@ -215,12 +276,29 @@ if(inv){
   const row=await upsertHistory(inv,{status:job.status,lastDownloadAt:Date.now(),completed:job.completed||0,total:job.total||0,failed:job.failed||0});
   if(row){inv={...inv,previousDownload:row};await setSession(invKey(tabId),inv);}
   try{
-    const origin=new URL(inv.summary?.currentUrl||inv.context?.url||'').origin;
-    if(origin&&job.adapter){
-      await recordAdapterOutcome(origin,job.adapter,{
+    const studyUrl=inv.summary?.currentUrl||inv.context?.url||'';
+    if(studyUrl&&job.adapter){
+      let errorClass='other';
+      if(job.errors?.length){
+        const errText=job.errors.join(' ').toLowerCase();
+        if(errText.includes('timeout')||errText.includes('stall')||errText.includes('deadline')){
+          errorClass='timeout';
+        }else if(errText.includes('401')||errText.includes('403')||errText.includes('auth')||errText.includes('token')||errText.includes('login')||errText.includes('hết hạn')){
+          errorClass='auth';
+        }else if(errText.includes('500')||errText.includes('502')||errText.includes('503')||errText.includes('504')||errText.includes('server')){
+          errorClass='server';
+        }else if(errText.includes('dicom')||errText.includes('dataset')||errText.includes('sop')||errText.includes('studyinstanceuid')){
+          errorClass='invalidDicom';
+        }
+      }
+      const preferredRoutes=Array.isArray(engineResult?.preferredRoutes)&&engineResult.preferredRoutes.length
+        ? engineResult.preferredRoutes
+        : (Array.isArray(job.preferredRoutes)?job.preferredRoutes:[]);
+      await recordAdapterOutcome(studyUrl,job.adapter,{
         status:job.status,
         latencyMs:Date.now()-(job.startedAt||Date.now()),
-        errorClass:job.errors?.length?'timeout':'other'
+        preferredRoutes,
+        errorClass
       });
     }
   }catch{}

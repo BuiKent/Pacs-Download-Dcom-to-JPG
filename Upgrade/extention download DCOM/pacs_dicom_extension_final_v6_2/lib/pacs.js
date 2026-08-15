@@ -399,3 +399,126 @@ export function safeHeaders(headers) {
   }
   return out;
 }
+
+export function computeUrlFingerprint(url, adapterName = '') {
+  try {
+    const u = new URL(url);
+    const origin = `${u.protocol}//${u.host}`.toLowerCase();
+    let path = u.pathname;
+    path = path.replace(/\b\d+(\.\d+)+\b/g, '*');
+    path = path.replace(/[0-9a-fA-F\-]{8,}/g, '*');
+    path = path.replace(/\/\d+(?=\/|$)/g, '/*');
+    const queryKeys = new Set([...u.searchParams.keys()].filter(Boolean));
+    const hash = u.hash || '';
+    const qpos = hash.indexOf('?');
+    if (qpos >= 0) {
+      const hp = new URLSearchParams(hash.slice(qpos + 1));
+      for (const k of hp.keys()) if (k) queryKeys.add(k);
+    }
+    const sortedKeys = [...queryKeys].sort().join(',');
+    const adapterToken = adapterName ? String(adapterName).toUpperCase() : '*';
+    return `${origin}|${path}?${sortedKeys}|${adapterToken}`;
+  } catch {
+    return `generic|*|${adapterName ? String(adapterName).toUpperCase() : '*'}`;
+  }
+}
+
+export class RecipeStoreV2 {
+  static SCHEMA_VERSION = 2;
+  static TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 ngày (7,776,000,000 ms)
+  static MAX_RECIPES = 200;
+
+  static purgeExpired(recipes = {}, now = Date.now()) {
+    const valid = {};
+    if (!recipes || typeof recipes !== 'object') return valid;
+    for (const [k, v] of Object.entries(recipes)) {
+      if (!v || typeof v !== 'object') continue;
+      const lastAct = v.lastSuccessAt || v.updatedAt || 0;
+      let hasRecentAdapter = false;
+      if (v.adapters && typeof v.adapters === 'object') {
+        for (const ad of Object.values(v.adapters)) {
+          if (ad && typeof ad === 'object' && ad.lastSuccessAt && (now - ad.lastSuccessAt < RecipeStoreV2.TTL_MS)) {
+            hasRecentAdapter = true;
+            break;
+          }
+        }
+      }
+      if ((now - lastAct < RecipeStoreV2.TTL_MS) || hasRecentAdapter) {
+        valid[k] = v;
+      }
+    }
+    return valid;
+  }
+
+  static pruneCapacity(recipes = {}, maxEntries = RecipeStoreV2.MAX_RECIPES) {
+    const entries = Object.entries(recipes);
+    if (entries.length <= maxEntries) return recipes;
+    entries.sort((a, b) => {
+      const timeA = a[1]?.lastSuccessAt || a[1]?.updatedAt || 0;
+      const timeB = b[1]?.lastSuccessAt || b[1]?.updatedAt || 0;
+      return timeB - timeA;
+    });
+    return Object.fromEntries(entries.slice(0, maxEntries));
+  }
+
+  static createRecipe(fingerprint = '', adapter = '', now = Date.now()) {
+    return {
+      schemaVersion: RecipeStoreV2.SCHEMA_VERSION,
+      fingerprint,
+      adapter: String(adapter || ''),
+      preferredRoutes: [],
+      success: 0,
+      partial: 0,
+      failure: 0,
+      failureByClass: { timeout: 0, auth: 0, server: 0, invalidDicom: 0, other: 0 },
+      latencyEwmaMs: 0,
+      lastSuccessAt: 0,
+      lastFailureClass: '',
+      updatedAt: now,
+    };
+  }
+
+  static updateRecipe(existing, adapter, outcome = {}, now = Date.now()) {
+    const r = existing ? { ...existing } : RecipeStoreV2.createRecipe('', adapter, now);
+    if (adapter) r.adapter = adapter;
+    r.schemaVersion = RecipeStoreV2.SCHEMA_VERSION;
+    r.updatedAt = now;
+
+    const status = String(outcome.status || '').toLowerCase();
+    if (['done', 'complete'].includes(status)) {
+      r.success = (r.success || 0) + 1;
+      r.lastSuccessAt = now;
+      if (Array.isArray(outcome.preferredRoutes) && outcome.preferredRoutes.length) {
+        r.preferredRoutes = [...outcome.preferredRoutes];
+      }
+      if (outcome.latencyMs > 0) {
+        const oldEwma = r.latencyEwmaMs || outcome.latencyMs;
+        r.latencyEwmaMs = Math.round(0.7 * oldEwma + 0.3 * outcome.latencyMs);
+      }
+    } else if (status === 'partial') {
+      r.partial = (r.partial || 0) + 1;
+    } else if (['error', 'failed', 'done_with_errors'].includes(status)) {
+      r.failure = (r.failure || 0) + 1;
+      const errClass = outcome.errorClass || outcome.failureClass || 'other';
+      r.lastFailureClass = errClass;
+      if (!r.failureByClass) r.failureByClass = { timeout: 0, auth: 0, server: 0, invalidDicom: 0, other: 0 };
+      r.failureByClass[errClass] = (r.failureByClass[errClass] || 0) + 1;
+    }
+    return r;
+  }
+
+  static getPreferredAdapter(recipe) {
+    if (!recipe) return null;
+    if ((recipe.success || 0) > (recipe.failure || 0) && recipe.adapter) {
+      return recipe.adapter;
+    }
+    return null;
+  }
+
+  static getPreferredRoutes(recipe) {
+    if (recipe && Array.isArray(recipe.preferredRoutes)) {
+      return recipe.preferredRoutes;
+    }
+    return [];
+  }
+}

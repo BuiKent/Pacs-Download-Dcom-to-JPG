@@ -6,6 +6,7 @@ import {
   dedupeTasksBySop,
   isSameKnownStudy,
   mapSeriesSelection,
+  orderRoutes,
   inventoryIsCovered,
   tasksBelongToStudy,
 } from '../lib/orchestrator.js';
@@ -91,3 +92,17 @@ const allDoneTasks = allTasks.filter(t => {
 assert.equal(allDoneTasks.length, 0);
 
 console.log('orchestrator fallback tests passed');
+
+// orderRoutes: engine phai lay duoc route da hoc, khong dò lại từ đầu mỗi lần.
+{
+  const candidates = [{ route: 'wadouri', url: 'u' }, { route: 'wadors', url: 'r' }];
+  assert.deepEqual(orderRoutes(candidates, ['wadors']).map(c => c.route), ['wadors', 'wadouri']);
+  // Chua hoc gi thi giu nguyen thu tu mac dinh cua adapter.
+  assert.deepEqual(orderRoutes(candidates, []).map(c => c.route), ['wadouri', 'wadors']);
+  assert.deepEqual(orderRoutes(candidates, undefined).map(c => c.route), ['wadouri', 'wadors']);
+  // Route la khong lam mat route con lai, chi day chung xuong sau.
+  assert.deepEqual(orderRoutes(candidates, ['frames']).map(c => c.route), ['wadouri', 'wadors']);
+  assert.equal(orderRoutes(candidates, ['wadors']).length, 2);
+}
+
+console.log('orderRoutes tests passed');

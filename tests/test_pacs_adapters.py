@@ -705,6 +705,233 @@ class StrategyStoreTests(unittest.TestCase):
             dcom_pipeline._read_response_chunks(response, Budget(), lambda: reads >= 1)
         self.assertEqual(1, reads)
 
+    def test_active_socket_tracker_interrupts_blocked_socket_immediately(self):
+        import socket
+        import threading
+        import time
+
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.bind(("127.0.0.1", 0))
+        server_sock.listen(1)
+        port = server_sock.getsockname()[1]
+
+        client_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client_sock.connect(("127.0.0.1", port))
+        conn, _ = server_sock.accept()
+
+        tracker = dcom_pipeline.ActiveSocketTracker()
+        tracker.track(client_sock)
+
+        # In a separate thread, trigger interrupt after 50ms
+        def interrupt_soon():
+            time.sleep(0.05)
+            tracker.interrupt_all()
+
+        t = threading.Thread(target=interrupt_soon)
+        t.start()
+
+        # Reading from client_sock would block indefinitely if not interrupted
+        t0 = time.monotonic()
+        try:
+            # Setting a 10s socket timeout, but tracker should abort in < 0.2s
+            client_sock.settimeout(10.0)
+            data = client_sock.recv(1024)
+        except (OSError, ConnectionResetError, socket.error):
+            data = b""
+        elapsed = time.monotonic() - t0
+        t.join()
+
+        conn.close()
+        server_sock.close()
+        client_sock.close()
+
+        self.assertLess(elapsed, 1.0, f"Socket interruption took too long ({elapsed}s)")
+
+    def test_run_fetch_tasks_watchdog_interrupts_stalled_workers_instantly(self):
+        import socket
+        import threading
+        import time
+
+        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_sock.bind(("127.0.0.1", 0))
+        server_sock.listen(5)
+        port = server_sock.getsockname()[1]
+
+        conns = []
+        client_socks = []
+        tracker = dcom_pipeline.ActiveSocketTracker()
+
+        def fetch_task(task_id):
+            cs = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client_socks.append(cs)
+            cs.connect(("127.0.0.1", port))
+            tracker.track(cs)
+            cs.settimeout(10.0)
+            data = cs.recv(1024)
+            return len(data) > 0
+
+        def accept_clients():
+            for _ in range(3):
+                try:
+                    c, _ = server_sock.accept()
+                    conns.append(c)
+                except Exception:
+                    break
+
+        accept_thread = threading.Thread(target=accept_clients)
+        accept_thread.start()
+
+        should_cancel = False
+        def stop_fn():
+            return should_cancel
+
+        stats = dcom_pipeline.DownloadStats()
+        def run_fetch():
+            try:
+                dcom_pipeline._run_fetch_tasks(
+                    [1, 2, 3], fetch_task, stats, lambda _: None, stop_fn, tracker=tracker
+                )
+            except Exception:
+                pass
+
+        fetch_thread = threading.Thread(target=run_fetch)
+        fetch_thread.start()
+
+        time.sleep(0.08)
+        t0 = time.monotonic()
+        should_cancel = True
+        fetch_thread.join(timeout=2.0)
+        elapsed = time.monotonic() - t0
+
+        self.assertFalse(fetch_thread.is_alive(), "_run_fetch_tasks did not terminate promptly")
+        self.assertLess(elapsed, 0.5, f"Cancellation took too long: {elapsed}s")
+        self.assertTrue(stats.cancelled)
+
+        accept_thread.join(timeout=1.0)
+        server_sock.close()
+        for c in conns:
+            try: c.close()
+            except Exception: pass
+        for s in client_socks:
+            try: s.close()
+            except Exception: pass
+
+    def test_read_response_chunks_with_tracker_aborts_immediately_on_cancel(self):
+        tracker = dcom_pipeline.ActiveSocketTracker()
+        closed = []
+
+        class MockSocketResource:
+            def __init__(self):
+                self._sock = object()
+                self.is_closed = False
+            def close(self):
+                self.is_closed = True
+                closed.append(True)
+            def read(self, size=1024):
+                return b"data"
+
+        res = MockSocketResource()
+        with self.assertRaises(InterruptedError):
+            dcom_pipeline._read_response_chunks(
+                res, budget=None, stop=lambda: True, tracker=tracker
+            )
+        self.assertTrue(res.is_closed)
+
+    def test_tracked_opener_interrupts_request_still_stuck_inside_urlopen(self):
+        """Ca treo hay gặp nhất trên mạng viện: server nhận kết nối rồi im.
+
+        Worker lúc đó còn kẹt trong `urlopen()` chờ dòng header đầu tiên, chưa
+        có response nào để ngắt — nếu chỉ ghi sổ ở tầng đọc body thì bấm Cancel
+        vẫn phải chờ hết `timeout`.
+        """
+        import socket
+        import threading
+        import time
+
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        self.addCleanup(server.close)
+
+        accepted = []
+        def accept_and_stay_silent():
+            try:
+                conn, _ = server.accept()
+                accepted.append(conn)
+            except Exception:
+                pass
+
+        accept_thread = threading.Thread(target=accept_and_stay_silent)
+        accept_thread.start()
+        self.addCleanup(accept_thread.join)
+
+        tracker = dcom_pipeline.ActiveSocketTracker()
+        opener = tracker.opener()
+        outcome = {}
+
+        def call():
+            try:
+                with opener.open(f"http://127.0.0.1:{port}/x.dcm", timeout=30) as r:
+                    outcome["body"] = r.read()
+            except Exception as exc:
+                outcome["error"] = type(exc).__name__
+
+        caller = threading.Thread(target=call)
+        caller.start()
+        time.sleep(0.3)  # đủ để kết nối xong và kẹt ở chỗ chờ header
+
+        t0 = time.monotonic()
+        tracker.interrupt_all()
+        caller.join(timeout=5.0)
+        elapsed = time.monotonic() - t0
+
+        for conn in accepted:
+            try: conn.close()
+            except Exception: pass
+
+        self.assertFalse(caller.is_alive(), "urlopen() không bị ngắt, vẫn chờ hết timeout")
+        self.assertLess(elapsed, 2.0, f"Ngắt urlopen() quá chậm: {elapsed}s")
+        self.assertIn("error", outcome)
+
+    def test_run_fetch_tasks_returns_at_once_even_if_a_worker_cannot_be_interrupted(self):
+        """Huỷ phải trả quyền điều khiển lại ngay, kể cả khi còn worker chưa chết.
+
+        `with ThreadPoolExecutor(...)` khi thoát sẽ `shutdown(wait=True)`, nên chỉ
+        phát hiện huỷ nhanh thôi chưa đủ — hàm vẫn kẹt đúng bằng thời gian worker
+        còn chạy.
+        """
+        import threading
+        import time
+
+        tracker = dcom_pipeline.ActiveSocketTracker()
+        cancelled = threading.Event()
+
+        def stop():
+            if cancelled.is_set():
+                tracker.interrupt_all()
+                return True
+            return False
+
+        def fetch(_task):
+            time.sleep(3.0)  # worker không ngắt được bằng socket
+            return True
+
+        stats = dcom_pipeline.DownloadStats()
+        runner = threading.Thread(target=lambda: dcom_pipeline._run_fetch_tasks(
+            [1, 2, 3], fetch, stats, lambda _m: None, stop, tracker=tracker, passes=1))
+        runner.start()
+
+        time.sleep(0.2)
+        t0 = time.monotonic()
+        cancelled.set()
+        runner.join(timeout=5.0)
+        elapsed = time.monotonic() - t0
+
+        self.assertFalse(runner.is_alive(), "_run_fetch_tasks không trả về")
+        self.assertLess(elapsed, 0.5, f"Huỷ vẫn bị chặn ở shutdown: {elapsed}s")
+        self.assertTrue(stats.cancelled)
+
 
 if __name__ == "__main__":
     unittest.main()
