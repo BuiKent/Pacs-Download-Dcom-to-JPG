@@ -841,6 +841,27 @@ class StrategyStoreTests(unittest.TestCase):
             )
         self.assertTrue(res.is_closed)
 
+    def test_frame_transfer_syntax_separates_unknown_from_uncompressed(self):
+        f = dcom_pipeline._frame_transfer_syntax
+        # Không có thông tin nén -> "" (coi như dữ liệu thô), KHÁC với không tra ra.
+        self.assertEqual("", f("application/octet-stream"))
+        self.assertEqual("", f(""))
+        self.assertEqual("1.2.840.10008.1.2.4.70", f("image/jll"))
+        self.assertEqual("1.2.840.10008.1.2.4.50",
+                         f('multipart/related; type="image/jpeg"'))
+        self.assertEqual("1.2.840.10008.1.2.4.90",
+                         f('application/octet-stream; transfer-syntax=1.2.840.10008.1.2.4.90'))
+        # Ảnh/video đã nén mà không tra ra -> None, phải từ chối chứ không đoán.
+        self.assertIsNone(f("image/quaila"))
+        self.assertIsNone(f("video/quaila"))
+
+        w = dcom_pipeline._frame_ts_is_writable
+        self.assertTrue(w("application/octet-stream"))
+        self.assertTrue(w("image/jll"))
+        self.assertFalse(w("image/quaila"))
+        # pydicom 3.0.2 chưa nhận JPEG XL -> biết trước là không ghi được.
+        self.assertFalse(w("application/octet-stream; transfer-syntax=1.2.840.10008.1.2.4.140"))
+
     def _instance(self, sop_uid):
         return {"00080018": {"vr": "UI", "Value": [sop_uid]}}
 

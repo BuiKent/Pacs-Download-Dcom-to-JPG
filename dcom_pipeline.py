@@ -291,6 +291,56 @@ _FRAME_TS_BY_MIME = {
 # ai nhìn thấy. Thà trả None để tầng trên đổi đường tải.
 _COMPRESSED_MEDIA_RE = re.compile(r"\b(?:image|video)/", re.I)
 
+_UNCOMPRESSED_TS = ("1.2.840.10008.1.2", "1.2.840.10008.1.2.1")
+
+# Thứ tự xin frame của WADO-RS, tốt nhất trước.
+#
+# `transfer-syntax=*` bảo server "cứ đưa nguyên cái anh đang giữ": pixel về đúng
+# bitstream máy chụp ghi ra, không qua một lần giải nén/nén lại nào. Server nào
+# không chiều (thường trả 406) hoặc đưa kiểu nén mà pydicom chưa ghi được thì lùi
+# về cách cũ — để server giải nén sẵn, mất bitstream gốc nhưng vẫn có ảnh đúng.
+_FRAME_ACCEPT_LADDER = (
+    'multipart/related; type="application/octet-stream"; transfer-syntax=*',
+    'multipart/related; type="application/octet-stream", */*',
+)
+
+
+def _frame_transfer_syntax(frame_ct: str) -> Optional[str]:
+    """Transfer Syntax của một frame WADO-RS, suy từ Content-Type.
+
+    Trả UID khi tra ra; `""` khi không có thông tin nén (coi như dữ liệu thô);
+    `None` khi là ảnh/video đã nén mà KHÔNG tra ra được — lúc đó phải từ chối
+    dựng file, vì đoán bừa thành "chưa nén" sẽ cho ra ảnh sai.
+    """
+    ct = (frame_ct or "").lower()
+    m = re.search(r'transfer-syntax="?([0-9][0-9.]+)"?', ct)
+    if m:
+        return m.group(1)
+    for mime, uid in _FRAME_TS_BY_MIME.items():
+        if mime in ct:
+            return uid
+    if _COMPRESSED_MEDIA_RE.search(ct):
+        return None
+    return ""
+
+
+def _frame_ts_is_writable(frame_ct: str) -> bool:
+    """Dựng được file từ frame kiểu này không?
+
+    Hỏi ngay sau frame đầu tiên để khỏi kéo hết cả stack vài trăm ảnh rồi mới
+    phát hiện không dùng được.
+    """
+    ts = _frame_transfer_syntax(frame_ct)
+    if ts is None:
+        return False
+    if not ts or ts in _UNCOMPRESSED_TS:
+        return True
+    try:
+        from pydicom.uid import UID
+        return bool(UID(ts).is_transfer_syntax)
+    except Exception:
+        return False
+
 
 def _dicom_from_meta_frames(meta: dict, frames: "list[bytes]",
                             frame_ct: str) -> Optional[bytes]:
@@ -315,21 +365,12 @@ def _dicom_from_meta_frames(meta: dict, frames: "list[bytes]",
             if k.group == 0x0002:
                 del ds[k]
 
-        ct = (frame_ct or "").lower()
-        ts = None
-        m = re.search(r'transfer-syntax="?([0-9][0-9.]+)"?', ct)
-        if m:
-            ts = m.group(1)
-        else:
-            for mime, uid in _FRAME_TS_BY_MIME.items():
-                if mime in ct:
-                    ts = uid
-                    break
-            if ts is None and _COMPRESSED_MEDIA_RE.search(ct):
-                log_unknown = ct.strip() or "(rỗng)"
-                raise ValueError(f"Không rõ Transfer Syntax cho kiểu nén {log_unknown}")
+        ts = _frame_transfer_syntax(frame_ct)
+        if ts is None:
+            raise ValueError("Không rõ Transfer Syntax cho kiểu nén "
+                             f"{(frame_ct or '').strip() or '(rỗng)'}")
 
-        if ts is None or ts in ("1.2.840.10008.1.2", "1.2.840.10008.1.2.1"):
+        if not ts or ts in _UNCOMPRESSED_TS:
             # octet-stream: điểm ảnh thô không nén — ghép các frame lại
             pix = b"".join(frames)
             if len(pix) % 2:
@@ -4002,27 +4043,39 @@ def _download_via_dicomweb(captured, save_body, stats,
             nf = max(nf, int(str(V(meta, "00280008") or nf)))
         except Exception:
             pass
-        frames, fct = [], ""
-        for fi in range(1, nf + 1):
-            if budget is not None and budget.is_expired():
-                return False
-            body, ct = get_raw(f"{base}/frames/{fi}",
-                               accept='multipart/related; type="application/octet-stream", */*')
-            parts = _multipart_parts(body, ct)
-            if parts:
-                fct = fct or parts[0][0]
-                frames.extend(d for _pct, d in parts)
-            else:
-                fct = fct or ct
-                frames.append(body)
-        if not any(frames):
-            return False
-        blob = _dicom_from_meta_frames(meta, frames, fct)
-        if not blob:
-            return False
-        # File này do app tự dựng từ metadata + frame, không phải Part-10 gốc
-        # của PACS — phải khai đúng để báo cáo cuối nói thật.
-        return save_body(blob, fidelity="reconstructed")
+        # Đi từ cách tốt nhất xuống: xin nguyên bitstream gốc trước, không được
+        # thì lùi về để server giải nén sẵn. Nấc nào ra được ảnh thì dừng ở đó.
+        for accept in _FRAME_ACCEPT_LADDER:
+            frames, fct, usable = [], "", True
+            for fi in range(1, nf + 1):
+                if budget is not None and budget.is_expired():
+                    return False
+                try:
+                    body, ct = get_raw(f"{base}/frames/{fi}", accept=accept)
+                except (InterruptedError, TimeoutError):
+                    raise  # huỷ/hết giờ là lệnh dừng hẳn, không phải cớ để lùi nấc
+                except Exception:
+                    usable = False
+                    break
+                parts = _multipart_parts(body, ct)
+                if parts:
+                    fct = fct or parts[0][0]
+                    frames.extend(d for _pct, d in parts)
+                else:
+                    fct = fct or ct
+                    frames.append(body)
+                if fi == 1 and not _frame_ts_is_writable(fct):
+                    usable = False  # biết ngay từ frame đầu, khỏi kéo hết stack
+                    break
+            if not usable or not any(frames):
+                continue
+            blob = _dicom_from_meta_frames(meta, frames, fct)
+            if not blob:
+                continue
+            # File này do app tự dựng từ metadata + frame, không phải Part-10 gốc
+            # của PACS — phải khai đúng để báo cáo cuối nói thật.
+            return save_body(blob, fidelity="reconstructed")
+        return False
 
     fetchers = {"wadouri": try_wadouri, "wadors": try_wadors, "frames": try_frames}
 
