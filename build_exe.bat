@@ -24,7 +24,7 @@ if errorlevel 1 goto :failed
 echo.
 if exist "dist\Dicom_Downloader_App.exe" (
   echo XONG. File nam o: dist\Dicom_Downloader_App.exe
-  echo UI moi dung WebView2 co san tren Windows. Co the chay --classic de dung UI cu.
+  echo UI dung WebView2 co san tren Windows. Neu may thieu WebView2, app tu mo UI Tk cu.
 ) else (
   goto :failed
 )

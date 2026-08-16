@@ -112,10 +112,13 @@ const state = {
   concatClips: [],
   concatTargetHeight: 1080,
   concatTargetFps: 30,
-  theme: localStorage.getItem("dcom.theme") || "dark",
   tabs: [],
   activeTabId: "worklist",
   worklistSearch: "",
+  // Which Worklist tab is showing: the patient/study list or the queue+history.
+  worklistTab: "studies",
+  // Latest /api/job snapshot, kept so the Activity panel can draw it.
+  job: null,
 };
 let viewerQueue = Promise.resolve();
 let viewerRequestId = 0;
@@ -658,15 +661,164 @@ function renderPhotoEditorStudio(series) {
   `;
 }
 
-function renderWorklistView() {
-  const historyEntries = state.history || [];
+/** History rows matching the worklist search box. */
+function filteredHistoryEntries() {
   const search = (state.worklistSearch || "").toLowerCase().trim();
-
-  const filteredHistory = historyEntries.filter((entry) => {
-    const text = `${entry.folder} ${entry.patientName || ""} ${entry.patientId || ""}`.toLowerCase();
-    if (search && !text.includes(search)) return false;
-    return true;
+  // The stored entry is only `{folder, url, time}` — the patient name and code
+  // live inside the folder path, so matching the path covers both.
+  return (state.history || []).filter((entry) => {
+    if (!search) return true;
+    return `${entry.folder || ""} ${entry.url || ""}`.toLowerCase().includes(search);
   });
+}
+
+/**
+ * Inner HTML of `.worklist-tree`.
+ *
+ * The search box repaints this node on every keystroke instead of re-rendering
+ * the shell, so both paths have to build the same markup — keeping it in one
+ * function is what stops the two copies from drifting apart.
+ */
+function renderWorklistTreeInner() {
+  const filteredHistory = filteredHistoryEntries();
+  if (filteredHistory.length === 0) {
+    return `
+      <div class="empty-state">
+        <b>${escapeHtml(t("Chưa có hồ sơ nào trong danh sách"))}</b>
+        <div class="empty-actions" style="margin-top: 10px;">
+          <button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder bệnh nhân"))}</button>
+        </div>
+      </div>
+    `;
+  }
+  return filteredHistory.map((entry) => {
+    const folderName = entry.folder ? entry.folder.split(/[\\/]/).pop() : "Folder";
+    return `
+      <div class="worklist-patient-card">
+        <div class="worklist-patient-header">
+          <div class="worklist-patient-info">
+            <span style="font-size: 16px;">📁</span>
+            <div>
+              <span class="worklist-patient-name">${escapeHtml(folderName)}</span>
+              <div class="worklist-patient-meta">${escapeHtml(entry.folder || "")}</div>
+            </div>
+          </div>
+          <button class="soft-button worklist-open-btn primary" data-action="open-worklist-item" data-folder="${escapeHtml(entry.folder || "")}">
+            ${escapeHtml(t("Xem phim"))}
+          </button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+/** Attach the open-folder listeners to freshly written worklist markup. */
+function bindWorklistOpenButtons(host) {
+  host?.querySelectorAll("[data-action='open-worklist-item']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const folder = button.dataset.folder;
+      if (folder) openHistoryEntry({ folder });
+    });
+  });
+}
+
+function renderStudyListPanel() {
+  return `
+    <div class="worklist-filter-bar">
+      <input type="text" data-field="worklist-search" placeholder="${escapeHtml(t("Tìm kiếm mã BN, tên bệnh nhân, thư mục..."))}" value="${escapeHtml(state.worklistSearch || "")}">
+    </div>
+
+    <div class="worklist-tree">${renderWorklistTreeInner()}</div>
+  `;
+}
+
+/** Job kinds carry internal names; the queue shows what the doctor started. */
+const JOB_KIND_LABELS = {
+  "download": "Tải ca theo mã bệnh nhân",
+  "direct-download": "Tải theo link viewer",
+  "local-import": "Nhập thư mục từ đĩa",
+  "archive": "Quét lại kho",
+  "search": "Tìm ca chụp",
+  "series-discovery": "Dò danh sách series",
+};
+
+/**
+ * Inner HTML of the Activity & Queue panel.
+ *
+ * Split out from `renderWorklistView` because `pollJob` refreshes this alone
+ * every second: a full `render()` would rebuild `#app` and tear the viewer
+ * canvas down with it.
+ */
+function renderActivityPanelInner() {
+  const job = state.job || state.bootstrap?.job || {};
+  const running = job.status === "running";
+  const series = state.archive?.series || [];
+  const sliceTotal = series.reduce((sum, item) => sum + (Number(item.sliceCount) || 0), 0);
+  const history = state.history || [];
+
+  const stats = [
+    { value: history.length, label: t("Hồ sơ gần đây") },
+    { value: state.tabs.length, label: t("Tab đang mở") },
+    { value: series.length, label: t("Series trong kho") },
+    { value: sliceTotal.toLocaleString("vi-VN"), label: t("Ảnh & lát cắt") },
+  ];
+
+  return `
+    <div class="activity-summary">
+      ${stats.map((item) => `
+        <div class="activity-stat">
+          <b>${escapeHtml(String(item.value))}</b>
+          <small>${escapeHtml(item.label)}</small>
+        </div>
+      `).join("")}
+    </div>
+
+    <div class="activity-head">${escapeHtml(t("Đang xử lý"))}</div>
+    ${running ? `
+      <div class="activity-job">
+        <b>${escapeHtml(t(JOB_KIND_LABELS[job.kind] || "Tác vụ nền"))}</b>
+        <button class="soft-button danger" data-action="stop-job">${escapeHtml(t("Dừng"))}</button>
+        <div class="activity-bar indeterminate"><i></i></div>
+        <small class="activity-job-msg">${escapeHtml(translateLog(job.message || "") || t("Đang chạy..."))}</small>
+      </div>
+    ` : `
+      <div class="activity-idle">${escapeHtml(t("Không có tác vụ nào đang chạy."))}</div>
+    `}
+
+    <div class="activity-head">${escapeHtml(t("Gần đây"))}</div>
+    <div class="activity-history">
+      ${history.length === 0 ? `
+        <div class="activity-idle">${escapeHtml(t("Chưa có thư mục nào được mở hoặc tải."))}</div>
+      ` : history.map((entry) => `
+        <div class="activity-hrow">
+          <span class="activity-time">${escapeHtml(entry.time || "")}</span>
+          <span class="activity-path" title="${escapeHtml(entry.folder || "")}">${escapeHtml(entry.folder || "")}</span>
+          <span class="activity-acts">
+            <button class="soft-button" data-action="open-worklist-item" data-folder="${escapeHtml(entry.folder || "")}">${escapeHtml(t("Mở"))}</button>
+          </span>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+/** Repaint only the Activity panel, leaving the rest of the shell untouched. */
+function refreshActivityPanel() {
+  if (state.activeTabId !== "worklist" || state.worklistTab !== "activity") return;
+  const host = getDomRoot()?.querySelector("#activity-panel");
+  if (!host) return;
+  host.innerHTML = renderActivityPanelInner();
+  // innerHTML drops the old listeners with the old nodes, so the buttons this
+  // panel owns have to be wired again on every repaint.
+  bindWorklistOpenButtons(host);
+  host.querySelector("[data-action='stop-job']")
+    ?.addEventListener("click", () => action("stop-job"));
+}
+
+function renderWorklistView() {
+  const tab = state.worklistTab === "activity" ? "activity" : "studies";
+  const job = state.job || state.bootstrap?.job || {};
+  const activityCount = job.status === "running" ? 1 : 0;
 
   return `
     <main class="worklist-view">
@@ -674,50 +826,26 @@ function renderWorklistView() {
         <div class="worklist-title-group">
           <h2>${escapeHtml(t("Worklist & Danh Sách Ca Chụp"))}</h2>
         </div>
-        <div class="worklist-stats">
-          <div class="worklist-stat-card">
-            <span class="stat-num">${historyEntries.length}</span>
-            <span class="stat-label">${escapeHtml(t("Tổng hồ sơ"))}</span>
-          </div>
-          <div class="worklist-stat-card">
-            <span class="stat-num">${state.tabs.length}</span>
-            <span class="stat-label">${escapeHtml(t("Tab đang mở"))}</span>
-          </div>
-        </div>
       </div>
 
-      <div class="worklist-filter-bar">
-        <input type="text" data-field="worklist-search" placeholder="${escapeHtml(t("Tìm kiếm mã BN, tên bệnh nhân, thư mục..."))}" value="${escapeHtml(state.worklistSearch || "")}">
+      <div class="worklist-tabs" role="tablist">
+        <button class="worklist-tab${tab === "studies" ? " active" : ""}" role="tab"
+          aria-selected="${tab === "studies"}"
+          data-action="worklist-tab" data-worklist-tab="studies">
+          ${escapeHtml(t("Study List"))}
+          <span class="worklist-tab-count">${filteredHistoryEntries().length}</span>
+        </button>
+        <button class="worklist-tab${tab === "activity" ? " active" : ""}" role="tab"
+          aria-selected="${tab === "activity"}"
+          data-action="worklist-tab" data-worklist-tab="activity">
+          ${escapeHtml(t("Activity & Queue"))}
+          ${activityCount ? `<span class="worklist-tab-count running">${activityCount}</span>` : ""}
+        </button>
       </div>
 
-      <div class="worklist-tree">
-        ${filteredHistory.length === 0 ? `
-          <div class="empty-state">
-            <b>${escapeHtml(t("Chưa có hồ sơ nào trong danh sách"))}</b>
-            <div class="empty-actions" style="margin-top: 10px;">
-              <button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder bệnh nhân"))}</button>
-            </div>
-          </div>
-        ` : filteredHistory.map((entry) => {
-          const folderName = entry.folder ? entry.folder.split(/[\\/]/).pop() : "Folder";
-          return `
-            <div class="worklist-patient-card">
-              <div class="worklist-patient-header">
-                <div class="worklist-patient-info">
-                  <span style="font-size: 16px;">📁</span>
-                  <div>
-                    <span class="worklist-patient-name">${escapeHtml(folderName)}</span>
-                    <div class="worklist-patient-meta">${escapeHtml(entry.folder || "")}</div>
-                  </div>
-                </div>
-                <button class="soft-button worklist-open-btn primary" data-action="open-worklist-item" data-folder="${escapeHtml(entry.folder)}">
-                  ${escapeHtml(t("Xem phim"))}
-                </button>
-              </div>
-            </div>
-          `;
-        }).join("")}
-      </div>
+      ${tab === "studies"
+      ? renderStudyListPanel()
+      : `<div id="activity-panel" class="activity-panel">${renderActivityPanelInner()}</div>`}
     </main>
   `;
 }
@@ -758,14 +886,8 @@ function render() {
           ${iconButton("choose-archive", icons.folder, t("Mở folder DICOM hoặc JPG/PNG trong viewer"))}
           ${iconButton("choose-file", icons.file, t("Mở file DICOM hoặc JPG/PNG đơn lẻ trong viewer"))}
           ${iconButton("refresh-archive", "⟳", t("Quét lại thư mục hiện tại"), false, !state.archive.root)}
-          <select class="soft-button theme-select" data-field="theme"
-            title="${escapeHtml(t("Giao diện"))}">${Object.entries(THEME_LABELS)
-              .map(([value, label]) => `<option value="${value}"${state.theme === value ? " selected" : ""}>${escapeHtml(label)}</option>`)
-              .join("")}</select>
           <button class="soft-button" data-action="toggle-language"
             title="${escapeHtml(t("Chuyển sang tiếng Anh"))}">${getLanguage() === "en" ? "VI" : "EN"}</button>
-          <button class="soft-button" data-action="classic"
-            title="${escapeHtml(t("Khởi động lại bằng --classic"))}">Classic</button>
         </div>
       </header>
 
@@ -1509,10 +1631,6 @@ function bindEvents() {
   });
   app.querySelector(".app-header [data-action='toggle-download']")
     ?.setAttribute("aria-expanded", state.downloadOpen ? "true" : "false");
-  app.querySelector("[data-field='theme']")?.addEventListener("change", (event) => {
-    state.theme = event.target.value;
-    applyTheme();
-  });
   app.querySelector("[data-field='series']")?.addEventListener("change", (event) => {
     state.selectedId = event.target.value;
     const selected = selectedSeries();
@@ -1548,53 +1666,16 @@ function bindEvents() {
       if (tabId) closeTab(tabId);
     });
   });
-  app.querySelectorAll("[data-action='open-worklist-item']").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const folder = btn.dataset.folder;
-      if (folder) openHistoryEntry({ folder });
-    });
-  });
+  bindWorklistOpenButtons(app);
   app.querySelector("[data-field='worklist-search']")?.addEventListener("input", (event) => {
     state.worklistSearch = event.target.value;
     const tree = app.querySelector(".worklist-tree");
-    if (tree) {
-      const filtered = (state.history || []).filter((entry) => {
-        const text = `${entry.folder} ${entry.patientName || ""} ${entry.patientId || ""}`.toLowerCase();
-        return !state.worklistSearch || text.includes(state.worklistSearch.toLowerCase().trim());
-      });
-      tree.innerHTML = filtered.length === 0 ? `
-        <div class="empty-state">
-          <b>${escapeHtml(t("Chưa có hồ sơ nào trong danh sách"))}</b>
-          <div class="empty-actions" style="margin-top: 10px;">
-            <button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder bệnh nhân"))}</button>
-          </div>
-        </div>
-      ` : filtered.map((entry) => {
-        const folderName = entry.folder ? entry.folder.split(/[\\/]/).pop() : "Folder";
-        return `
-          <div class="worklist-patient-card">
-            <div class="worklist-patient-header">
-              <div class="worklist-patient-info">
-                <span style="font-size: 16px;">📁</span>
-                <div>
-                  <span class="worklist-patient-name">${escapeHtml(folderName)}</span>
-                  <div class="worklist-patient-meta">${escapeHtml(entry.folder || "")}</div>
-                </div>
-              </div>
-              <button class="soft-button worklist-open-btn primary" data-action="open-worklist-item" data-folder="${escapeHtml(entry.folder)}">
-                ${escapeHtml(t("Xem phim"))}
-              </button>
-            </div>
-          </div>
-        `;
-      }).join("");
-      app.querySelectorAll("[data-action='open-worklist-item']").forEach((b) => {
-        b.addEventListener("click", () => {
-          const folder = b.dataset.folder;
-          if (folder) openHistoryEntry({ folder });
-        });
-      });
-    }
+    if (!tree) return;
+    tree.innerHTML = renderWorklistTreeInner();
+    bindWorklistOpenButtons(tree);
+    // The Study List tab shows the match count, so it has to follow the box.
+    const count = app.querySelector(".worklist-tab[data-worklist-tab='studies'] .worklist-tab-count");
+    if (count) count.textContent = String(filteredHistoryEntries().length);
   });
   app.querySelectorAll("[data-series-id]").forEach((element) => {
     element.addEventListener("click", async () => {
@@ -2101,6 +2182,13 @@ async function action(name, element = null) {
     }
     if (name === "stop-job") {
       await api("/api/job/stop", { method: "POST", body: "{}" });
+      return;
+    }
+    if (name === "worklist-tab") {
+      const next = element?.dataset.worklistTab === "activity" ? "activity" : "studies";
+      if (next === state.worklistTab) return;
+      state.worklistTab = next;
+      render();
       return;
     }
     if (name?.startsWith("mode-")) {
@@ -2672,10 +2760,6 @@ async function action(name, element = null) {
       setStatus(tf("Đã xuất PDF thành công: {}", res.outputPath));
       return;
     }
-    if (name === "classic") {
-      if (!window.pywebview?.api) throw new Error(t("Chế độ classic chỉ có trong ứng dụng desktop."));
-      await window.pywebview.api.restart_classic();
-    }
   } catch (error) {
     const errorMsg = String(error?.message || error);
     if (errorMsg.includes("Không đăng nhập được RIS") || errorMsg.includes("Không thể đăng nhập vào RIS")) {
@@ -3076,6 +3160,10 @@ function renderStudyList() {
 async function pollJob() {
   const job = await api("/api/job");
   state.bootstrap.job = job;
+  state.job = job;
+  // Repaints the queue card in place. A full render() here would rebuild #app
+  // once a second and take the viewer's WebGL canvas down with it.
+  refreshActivityPanel();
   if (job.kind === "search" && job.status === "complete") {
     const foundStudies = Array.isArray(job.result) ? job.result : job.result?.studies || [];
     state.patient = Array.isArray(job.result) ? null : job.result?.patient || null;
@@ -3273,19 +3361,6 @@ async function autoPasteFromClipboard() {
   }
 }
 
-const THEME_LABELS = {
-  dark: "DCom",
-  notion: "Notion",
-  google: "Google",
-  win11: "Windows 11",
-};
-
-/** Apply state.theme to the document and remember the choice locally. */
-function applyTheme() {
-  document.documentElement.dataset.theme = state.theme;
-  localStorage.setItem("dcom.theme", state.theme);
-}
-
 /** Keep the viewer's own text-note dialog in the selected language. */
 function applyTextPromptLanguage() {
   configureTextPrompt({
@@ -3301,7 +3376,6 @@ async function boot() {
   state.bootstrap = await api("/api/bootstrap");
   setLanguage(state.bootstrap.language || "en");
   applyTextPromptLanguage();
-  applyTheme();
   state.history = Array.isArray(state.bootstrap.history) ? state.bootstrap.history : [];
   state.lastDirectUrl = state.bootstrap.lastDirectUrl || "";
   state.showManualInfo = Boolean(state.lastDirectUrl.trim());
@@ -3377,6 +3451,9 @@ if (!isRunningInTest) {
 export {
   state,
   action,
+  renderWorklistView,
+  renderActivityPanelInner,
+  filteredHistoryEntries,
   getSeriesMediaType,
   getPhotoSourcePath,
   getVideoSourcePath,

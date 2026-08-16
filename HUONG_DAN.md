@@ -1,7 +1,8 @@
 # DICOM/JPG Downloader & Viewer v1.1
 
-> Giao diện mặc định dùng WebView2/Cornerstone3D. Nếu cần giao diện cũ, chạy
-> `Dicom_Downloader_App.exe --classic` hoặc `python dcom_web_app.py --classic`.
+> Ứng dụng dùng giao diện WebView2/Cornerstone3D. Giao diện Tk cũ không còn chọn
+> được nữa; nó chỉ tự bật khi máy thiếu WebView2 và giao diện mới không khởi động
+> được, để máy đó vẫn xem được phim thay vì không mở nổi ứng dụng.
 
 ## Cách dùng giao diện mới
 

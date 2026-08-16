@@ -1,13 +1,26 @@
+/* ============================================================
+   Bảng màu Notion — nền trắng ấm, phẳng, bo góc nhỏ, font Inter.
+   Đây là giao diện DUY NHẤT của app; không còn cơ chế đổi theme.
+
+   Chỉ phần CHROME (header, winbar, worklist, khu tải phim, badge,
+   alert, log, status bar) dùng bảng màu này. Vùng đọc phim —
+   toolbar viewer, series thumbnail và canvas ảnh — cố tình giữ
+   nền tối bằng mã màu hardcode riêng bên dưới, đúng cách trạm đọc
+   lâm sàng luôn để vùng chẩn đoán tối bất kể vỏ app sáng hay tối,
+   để không sai lệch cảm nhận thang xám (Window/Level, HU).
+   ============================================================ */
 :root {
-  font-family: var(--app-font, Inter, "Segoe UI", system-ui, sans-serif);
-  color: var(--body-fg, #dce7f2);
-  background: var(--shell-bg, #060a10);
+  font-family: var(--app-font);
+  color: var(--body-fg);
+  background: var(--shell-bg);
   font-synthesis: none;
+
+  --app-font: "Inter", "Segoe UI", system-ui, sans-serif;
 
   /* Form & General Control Tokens */
   --control-height: 34px;
   --control-height-sm: 30px;
-  --control-radius: 6px;
+  --control-radius: 8px;
   --control-pad: 0 11px;
 
   /* Viewing Toolbar & Icon Tokens */
@@ -16,87 +29,8 @@
   --toolbar-icon-size: 15px;
   --toolbar-divider-height: 16px;
 
-  --control-fg: #d6e9f6;
-  --control-border: #304a60;
-  --control-bg: #152533;
-  --control-bg-hover: #1b2f40;
-
-  --field-fg: #e7f1f8;
-  --field-border: #2a3b4c;
-  --field-border-focus: #34688f;
-  --field-bg: #101923;
-
-  --label-fg: #94a9ba;
-  --label-muted: #7890a2;
-  --panel-bg: #0b1119;
-
-  --accent-border: #007fc5;
-  --accent-bg: #0074b6;
-  --danger-fg: #ff9f9f;
-  --danger-border: #61343a;
-  --danger-bg: #29191d;
-
-  /* Chrome extra tokens for default dark mode */
-  --shell-bg: #060a10;
-  --header-bg: #0d141d;
-  --chrome-border: #223040;
-  --header-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
-  --brand-fg: #eff8ff;
-  --brand-mark-border: #1d5f8c;
-  --brand-mark-bg: #123a55;
-  --brand-sub-fg: #78a9c8;
-  --panel-title-fg: #8fd3ff;
-  --list-border: #1c2a36;
-  --list-bg: #080e14;
-  --list-item-border: #17232e;
-  --pill-new-fg: #9ee6bd;
-  --pill-new-bg: #123523;
-  --pill-downloaded-fg: #a8bad0;
-  --pill-downloaded-bg: #24313e;
-  --pill-incomplete-fg: #ffd594;
-  --pill-incomplete-bg: #3c2b13;
-  --alert-fg: #91a9ba;
-  --alert-border: #28506a;
-  --alert-bg: #0c1d28;
-  --alert-existing-border: #326445;
-  --alert-existing-bg: #10251a;
-  --alert-warning-border: #8a6b2d;
-  --alert-warning-bg: #30250f;
-  --alert-danger-border: #7b3c43;
-  --alert-danger-bg: #30171b;
-  --alert-danger-fg: #ffc2c2;
-  --muted-fg: #607587;
-  --credit-fg: #5d7385;
-  --log-fg: #9bc3db;
-  --log-border: #1d2a35;
-  --log-bg: #05090d;
-  --statusbar-border: #192530;
-  --statusbar-bg: #0c131a;
-  --status-dot-bg: #27bd72;
-}
-
-/* ============================================================
-   Theme skin: notion  —  Notion — nền trắng ấm, phẳng, bo góc nhỏ, font Inter
-   Only the app CHROME (header, download panel, badges, alerts,
-   job log, status bar) is themed here. The viewer toolbar,
-   series thumbnails and image canvas intentionally stay on the
-   fixed dark palette above, the way clinical viewers keep the
-   reading area dark regardless of the app's own theme.
-   ============================================================ */
-:root[data-theme="notion"] {
-  --app-font: "Inter","Segoe UI",system-ui,sans-serif;
   --body-fg: #37352f;
-  --shell-bg: #ffffff;
-  --header-bg: #ffffff;
-  --chrome-border: #e9e9e7;
-  --header-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 
-  --brand-fg: #37352f;
-  --brand-mark-border: #d8d8d5;
-  --brand-mark-bg: #f1f1ef;
-  --brand-sub-fg: #9b9a97;
-
-  --control-radius: 8px;
   --control-fg: #37352f;
   --control-border: #e9e9e7;
   --control-bg: #ffffff;
@@ -117,22 +51,34 @@
   --danger-border: #f2b0a4;
   --danger-bg: #ffe2dd;
 
+  --shell-bg: #ffffff;
+  --header-bg: #ffffff;
+  --chrome-border: #e9e9e7;
+  --header-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --brand-fg: #37352f;
+  --brand-mark-border: #d8d8d5;
+  --brand-mark-bg: #f1f1ef;
+  --brand-sub-fg: #9b9a97;
   --panel-title-fg: #37352f;
   --list-border: #e9e9e7;
   --list-bg: #ffffff;
   --list-item-border: #f1f1ef;
-
-  --pill-new-fg: #448361;       --pill-new-bg: #dbeddb;
-  --pill-downloaded-fg: #6b6a66; --pill-downloaded-bg: #e9e9e7;
-  --pill-incomplete-fg: #d9730d; --pill-incomplete-bg: #fadec9;
-
+  --pill-new-fg: #448361;
+  --pill-new-bg: #dbeddb;
+  --pill-downloaded-fg: #6b6a66;
+  --pill-downloaded-bg: #e9e9e7;
+  --pill-incomplete-fg: #d9730d;
+  --pill-incomplete-bg: #fadec9;
   --alert-fg: #6b6a66;
   --alert-border: #cfe6fa;
   --alert-bg: #f2f8fd;
-  --alert-existing-border: #bfe3cd; --alert-existing-bg: #eaf6ee;
-  --alert-warning-border: #f7dcb0;   --alert-warning-bg: #fdf3e3;
-  --alert-danger-border: #f2b0a4;     --alert-danger-bg: #ffe2dd; --alert-danger-fg: #e03e3e;
-
+  --alert-existing-border: #bfe3cd;
+  --alert-existing-bg: #eaf6ee;
+  --alert-warning-border: #f7dcb0;
+  --alert-warning-bg: #fdf3e3;
+  --alert-danger-border: #f2b0a4;
+  --alert-danger-bg: #ffe2dd;
+  --alert-danger-fg: #e03e3e;
   --muted-fg: #9b9a97;
   --credit-fg: #9b9a97;
   --log-fg: #37352f;
@@ -141,142 +87,6 @@
   --statusbar-border: #e9e9e7;
   --statusbar-bg: #ffffff;
   --status-dot-bg: #188038;
-}
-
-/* ============================================================
-   Theme skin: google  —  Google Material — nền trắng/xám nhạt, nút bo tròn (tonal), font Roboto
-   Only the app CHROME (header, download panel, badges, alerts,
-   job log, status bar) is themed here. The viewer toolbar,
-   series thumbnails and image canvas intentionally stay on the
-   fixed dark palette above, the way clinical viewers keep the
-   reading area dark regardless of the app's own theme.
-   ============================================================ */
-:root[data-theme="google"] {
-  --app-font: "Google Sans","Roboto",Arial,sans-serif;
-  --body-fg: #202124;
-  --shell-bg: #f8f9fa;
-  --header-bg: #ffffff;
-  --chrome-border: #dadce0;
-  --header-shadow: 0 1px 2px rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
-
-  --brand-fg: #202124;
-  --brand-mark-border: #d2e3fc;
-  --brand-mark-bg: #e8f0fe;
-  --brand-sub-fg: #5f6368;
-
-  --control-radius: 14px;
-  --control-fg: #3c4043;
-  --control-border: #dadce0;
-  --control-bg: #ffffff;
-  --control-bg-hover: #f1f3f4;
-
-  --field-fg: #202124;
-  --field-border: #dadce0;
-  --field-border-focus: #1a73e8;
-  --field-bg: #ffffff;
-
-  --label-fg: #5f6368;
-  --label-muted: #80868b;
-  --panel-bg: #ffffff;
-
-  --accent-border: #1a73e8;
-  --accent-bg: #d2e3fc;
-  --danger-fg: #d93025;
-  --danger-border: #f6aea9;
-  --danger-bg: #fce8e6;
-
-  --panel-title-fg: #1a73e8;
-  --list-border: #dadce0;
-  --list-bg: #ffffff;
-  --list-item-border: #e8eaed;
-
-  --pill-new-fg: #188038;       --pill-new-bg: #e6f4ea;
-  --pill-downloaded-fg: #5f6368; --pill-downloaded-bg: #f1f3f4;
-  --pill-incomplete-fg: #b06000; --pill-incomplete-bg: #fef7e0;
-
-  --alert-fg: #5f6368;
-  --alert-border: #d2e3fc;
-  --alert-bg: #eef4fe;
-  --alert-existing-border: #ceead6; --alert-existing-bg: #e6f4ea;
-  --alert-warning-border: #fce8b2;   --alert-warning-bg: #fef7e0;
-  --alert-danger-border: #f6aea9;     --alert-danger-bg: #fce8e6; --alert-danger-fg: #d93025;
-
-  --muted-fg: #80868b;
-  --credit-fg: #9aa0a6;
-  --log-fg: #202124;
-  --log-border: #dadce0;
-  --log-bg: #f8f9fa;
-  --statusbar-border: #dadce0;
-  --statusbar-bg: #ffffff;
-  --status-dot-bg: #188038;
-}
-
-/* ============================================================
-   Theme skin: win11  —  Windows 11 Fluent — nền Mica xám nhạt, bo góc nhỏ chuẩn Fluent, font Segoe UI Variable
-   Only the app CHROME (header, download panel, badges, alerts,
-   job log, status bar) is themed here. The viewer toolbar,
-   series thumbnails and image canvas intentionally stay on the
-   fixed dark palette above, the way clinical viewers keep the
-   reading area dark regardless of the app's own theme.
-   ============================================================ */
-:root[data-theme="win11"] {
-  --app-font: "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
-  --body-fg: #1b1b1b;
-  --shell-bg: #f3f3f3;
-  --header-bg: #f3f3f3;
-  --chrome-border: #e5e5e5;
-  --header-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-
-  --brand-fg: #1b1b1b;
-  --brand-mark-border: #cfe4fa;
-  --brand-mark-bg: #e5f1fb;
-  --brand-sub-fg: #5c5c5c;
-
-  --control-radius: 4px;
-  --control-fg: #1b1b1b;
-  --control-border: #d6d6d6;
-  --control-bg: #ffffff;
-  --control-bg-hover: #f3f3f3;
-
-  --field-fg: #1b1b1b;
-  --field-border: #d6d6d6;
-  --field-border-focus: #0078d4;
-  --field-bg: #ffffff;
-
-  --label-fg: #5c5c5c;
-  --label-muted: #767676;
-  --panel-bg: #f9f9f9;
-
-  --accent-border: #0078d4;
-  --accent-bg: #cfe4fa;
-  --danger-fg: #c42b1c;
-  --danger-border: #f1a9a0;
-  --danger-bg: #fde7e9;
-
-  --panel-title-fg: #0078d4;
-  --list-border: #e5e5e5;
-  --list-bg: #ffffff;
-  --list-item-border: #ececec;
-
-  --pill-new-fg: #0f7b0f;       --pill-new-bg: #dff6dd;
-  --pill-downloaded-fg: #5c5c5c; --pill-downloaded-bg: #eeeeee;
-  --pill-incomplete-fg: #9d5d00; --pill-incomplete-bg: #fff4ce;
-
-  --alert-fg: #5c5c5c;
-  --alert-border: #cfe4fa;
-  --alert-bg: #f3f9fe;
-  --alert-existing-border: #c3ecc2; --alert-existing-bg: #e9f7e8;
-  --alert-warning-border: #f6e4ad;   --alert-warning-bg: #fff9e8;
-  --alert-danger-border: #f1a9a0;     --alert-danger-bg: #fde7e9; --alert-danger-fg: #c42b1c;
-
-  --muted-fg: #8a8a8a;
-  --credit-fg: #8a8a8a;
-  --log-fg: #1b1b1b;
-  --log-border: #e5e5e5;
-  --log-bg: #f9f9f9;
-  --statusbar-border: #e5e5e5;
-  --statusbar-bg: #f3f3f3;
-  --status-dot-bg: #0f7b0f;
 }
 
 * { box-sizing: border-box; }
@@ -525,6 +335,162 @@ button { cursor: pointer; }
   font-size: 11px;
 }
 
+/* ---- Worklist: Study List / Activity & Queue tabs ---- */
+.worklist-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--chrome-border);
+}
+.worklist-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px;
+  margin-bottom: -1px;
+  color: var(--label-fg);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+}
+.worklist-tab:hover { color: var(--body-fg); }
+.worklist-tab.active {
+  color: var(--body-fg);
+  border-bottom-color: var(--field-border-focus);
+}
+.worklist-tab-count {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--pill-downloaded-bg);
+  color: var(--pill-downloaded-fg);
+  font-size: 10px;
+  font-weight: 600;
+}
+.worklist-tab-count.running {
+  background: var(--pill-incomplete-bg);
+  color: var(--pill-incomplete-fg);
+}
+
+/* ---- Activity & Queue panel ---- */
+.activity-panel { display: flex; flex-direction: column; gap: 10px; }
+.activity-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+.activity-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+  border: 1px solid var(--list-border);
+  border-radius: var(--control-radius);
+  background: var(--panel-bg);
+}
+.activity-stat b { font-size: 19px; color: var(--field-fg); }
+.activity-stat small {
+  color: var(--label-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.activity-head {
+  margin-top: 6px;
+  color: var(--label-fg);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.activity-idle {
+  padding: 14px;
+  color: var(--muted-fg);
+  border: 1px dashed var(--list-border);
+  border-radius: var(--control-radius);
+  font-size: 11px;
+  text-align: center;
+}
+
+.activity-job {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--alert-border);
+  border-radius: var(--control-radius);
+  background: var(--alert-bg);
+}
+.activity-job b { font-size: 12px; color: var(--body-fg); }
+.activity-job-msg {
+  grid-column: 1 / -1;
+  color: var(--label-fg);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.activity-bar {
+  grid-column: 1 / -1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--list-item-border);
+}
+/* The backend reports a status, never a percentage, so the bar says "working"
+   rather than inventing a number the job never sent. */
+.activity-bar.indeterminate i {
+  display: block;
+  width: 35%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--field-border-focus);
+  animation: activity-slide 1.3s ease-in-out infinite;
+}
+@keyframes activity-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-bar.indeterminate i { animation: none; width: 100%; opacity: 0.5; }
+}
+
+.activity-history {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--list-border);
+  border-radius: var(--control-radius);
+  background: var(--list-bg);
+  overflow: hidden;
+}
+.activity-hrow {
+  display: grid;
+  grid-template-columns: 130px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--list-item-border);
+  font-size: 11px;
+}
+.activity-hrow:last-child { border-bottom: 0; }
+.activity-time { color: var(--label-muted); white-space: nowrap; }
+.activity-path {
+  color: var(--body-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-acts button {
+  height: var(--control-height-sm);
+  padding: 0 12px;
+  font-size: 11px;
+}
+@media (max-width: 700px) {
+  .activity-hrow { grid-template-columns: 1fr auto; }
+  .activity-time { grid-column: 1 / -1; }
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -591,8 +557,6 @@ button { cursor: pointer; }
 /* A fixed width keeps the header from shifting when VI/EN swap places. */
 .soft-button { min-width: 62px; padding: 0 10px; }
 .soft-button:hover { color: var(--field-fg, #eaf4fb); background: var(--control-bg-hover, #1b2b39); }
-/* Wide enough for "Windows 11" without shifting the buttons beside it. */
-.theme-select { min-width: 96px; }
 
 .download-panel {
   position: relative;
@@ -1895,17 +1859,17 @@ button:disabled { opacity: .35; cursor: default; }
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
-  background: var(--panel-bg, #0b131b);
-  border-top: 1px solid var(--border-color, #182736);
-  color: var(--text-color, #e1e9f0);
+  background: #0b131b;
+  border-top: 1px solid #182736;
+  color: #e1e9f0;
   font-size: 12px;
   z-index: 10;
 }
 
 .surgery-video-controls .control-btn {
-  background: var(--button-bg, #142330);
-  border: 1px solid var(--button-border, #203548);
-  color: var(--text-color, #e1e9f0);
+  background: #142330;
+  border: 1px solid #203548;
+  color: #e1e9f0;
   border-radius: 4px;
   padding: 5px 10px;
   cursor: pointer;
@@ -1918,34 +1882,34 @@ button:disabled { opacity: .35; cursor: default; }
 }
 
 .surgery-video-controls .control-btn:hover {
-  background: var(--button-hover-bg, #1f364a);
-  border-color: var(--accent, #3b82f6);
+  background: #1f364a;
+  border-color: #3b82f6;
 }
 
 .surgery-video-controls .control-btn.primary {
-  background: var(--accent, #1a73e8);
+  background: #1a73e8;
   color: #fff;
   border-color: transparent;
 }
 
 .surgery-video-controls .video-scrubber {
   flex: 1;
-  accent-color: var(--accent, #3b82f6);
+  accent-color: #3b82f6;
   cursor: pointer;
 }
 
 .surgery-video-controls .video-time {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
-  color: var(--label-muted, #89a3b8);
+  color: #89a3b8;
   min-width: 90px;
   text-align: center;
 }
 
 .surgery-video-sidebar {
   width: 280px;
-  border-left: 1px solid var(--border-color, #182736);
-  background: var(--panel-bg, #090f16);
+  border-left: 1px solid #182736;
+  background: #090f16;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1955,8 +1919,8 @@ button:disabled { opacity: .35; cursor: default; }
   padding: 10px 14px;
   font-weight: 600;
   font-size: 12px;
-  border-bottom: 1px solid var(--border-color, #182736);
-  color: var(--text-color, #d1e2f2);
+  border-bottom: 1px solid #182736;
+  color: #d1e2f2;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1973,8 +1937,8 @@ button:disabled { opacity: .35; cursor: default; }
 
 .surgery-bookmark-card {
   padding: 8px 10px;
-  background: var(--card-bg, #101c27);
-  border: 1px solid var(--border-color, #1a2e40);
+  background: #101c27;
+  border: 1px solid #1a2e40;
   border-radius: 6px;
   cursor: pointer;
   display: flex;
@@ -1984,8 +1948,8 @@ button:disabled { opacity: .35; cursor: default; }
 }
 
 .surgery-bookmark-card:hover {
-  background: var(--card-hover-bg, #182c3f);
-  border-color: var(--accent, #3b82f6);
+  background: #182c3f;
+  border-color: #3b82f6;
 }
 
 .surgery-bookmark-time {
@@ -2029,15 +1993,15 @@ button:disabled { opacity: .35; cursor: default; }
   align-items: center;
   gap: 6px;
   padding: 8px 14px;
-  background: var(--panel-bg, #0b131b);
-  border-bottom: 1px solid var(--border-color, #182736);
+  background: #0b131b;
+  border-bottom: 1px solid #182736;
   z-index: 10;
 }
 
 .photo-editor-toolbar .tool-btn {
-  background: var(--button-bg, #142330);
-  border: 1px solid var(--button-border, #203548);
-  color: var(--text-color, #e1e9f0);
+  background: #142330;
+  border: 1px solid #203548;
+  color: #e1e9f0;
   border-radius: 4px;
   padding: 5px 10px;
   cursor: pointer;
@@ -2048,12 +2012,12 @@ button:disabled { opacity: .35; cursor: default; }
 }
 
 .photo-editor-toolbar .tool-btn:hover {
-  background: var(--button-hover-bg, #1f364a);
-  border-color: var(--accent, #3b82f6);
+  background: #1f364a;
+  border-color: #3b82f6;
 }
 
 .photo-editor-toolbar .tool-btn.active {
-  background: var(--accent, #1a73e8);
+  background: #1a73e8;
   color: #fff;
   border-color: transparent;
 }
@@ -2065,8 +2029,8 @@ button:disabled { opacity: .35; cursor: default; }
   width: min(560px, 92vw);
   max-height: 85vh;
   padding: 20px;
-  background: var(--panel-bg, #0f1620);
-  border: 1px solid var(--field-border, #1c2a38);
+  background: #0f1620;
+  border: 1px solid #1c2a38;
   border-radius: 8px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
   overflow: hidden;
@@ -2076,14 +2040,14 @@ button:disabled { opacity: .35; cursor: default; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid var(--border-subtle, #1c2a38);
+  border-bottom: 1px solid #1c2a38;
   padding-bottom: 10px;
 }
 
 .concat-modal-header h3 {
   margin: 0;
   font-size: 15px;
-  color: var(--field-fg, #e2e8f0);
+  color: #e2e8f0;
 }
 
 .concat-clip-list {
@@ -2100,8 +2064,8 @@ button:disabled { opacity: .35; cursor: default; }
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  background: var(--bg-card, #131c26);
-  border: 1px solid var(--border-subtle, #1c2a38);
+  background: #131c26;
+  border: 1px solid #1c2a38;
   border-radius: 6px;
 }
 
@@ -2112,7 +2076,7 @@ button:disabled { opacity: .35; cursor: default; }
 .concat-clip-order {
   font-weight: 700;
   font-size: 12px;
-  color: var(--accent, #8ab4f8);
+  color: #8ab4f8;
   width: 24px;
 }
 
@@ -2124,7 +2088,7 @@ button:disabled { opacity: .35; cursor: default; }
 .concat-clip-title {
   font-size: 13px;
   font-weight: 600;
-  color: var(--field-fg, #e2e8f0);
+  color: #e2e8f0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2132,7 +2096,7 @@ button:disabled { opacity: .35; cursor: default; }
 
 .concat-clip-meta {
   font-size: 11px;
-  color: var(--label-muted, #7890a2);
+  color: #7890a2;
 }
 
 .concat-clip-reorder {
@@ -2145,9 +2109,9 @@ button:disabled { opacity: .35; cursor: default; }
   font-size: 11px;
   height: 24px;
   line-height: 1;
-  background: var(--button-bg, #1a2736);
-  border: 1px solid var(--border-subtle, #25384c);
-  color: var(--button-fg, #e2e8f0);
+  background: #1a2736;
+  border: 1px solid #25384c;
+  color: #e2e8f0;
   border-radius: 4px;
   cursor: pointer;
 }
@@ -2161,8 +2125,8 @@ button:disabled { opacity: .35; cursor: default; }
   display: flex;
   gap: 16px;
   padding: 10px 0;
-  border-top: 1px solid var(--border-subtle, #1c2a38);
-  border-bottom: 1px solid var(--border-subtle, #1c2a38);
+  border-top: 1px solid #1c2a38;
+  border-bottom: 1px solid #1c2a38;
   font-size: 12px;
   flex-wrap: wrap;
 }
@@ -2171,14 +2135,14 @@ button:disabled { opacity: .35; cursor: default; }
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--field-fg, #e2e8f0);
+  color: #e2e8f0;
 }
 
 .concat-settings select {
   padding: 4px 8px;
-  background: var(--field-bg, #0c131a);
-  border: 1px solid var(--field-border, #1c2a38);
-  color: var(--field-fg, #e2e8f0);
+  background: #0c131a;
+  border: 1px solid #1c2a38;
+  color: #e2e8f0;
   border-radius: 4px;
 }
 

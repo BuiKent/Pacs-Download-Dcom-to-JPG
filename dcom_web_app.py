@@ -1,7 +1,9 @@
 """WebView2 entry point for DCom JPG PACS v1.1.
 
-Use ``--classic`` to launch the retained Tk viewer.  If WebView2 cannot start,
-the application falls back to the classic UI automatically.
+The WebView2 UI is the only interface users can choose.  The retained Tk viewer
+is kept solely as an emergency net: if WebView2 cannot start at all — a hospital
+workstation missing the runtime, say — ``launch_classic()`` runs so the machine
+still has a usable viewer instead of an app that refuses to open.
 """
 
 from __future__ import annotations
@@ -11,7 +13,6 @@ import ctypes
 import json
 import os
 import re
-import subprocess
 import sys
 import threading
 import time
@@ -219,16 +220,6 @@ class NativeApi:
         if not target.is_dir():
             raise ValueError("Chỉ mở thư mục.")
         os.startfile(str(target))  # type: ignore[attr-defined]
-        return True
-
-    def restart_classic(self):
-        command = [sys.executable, "--classic"] if getattr(sys, "frozen", False) else [
-            sys.executable,
-            str(Path(__file__).resolve()),
-            "--classic",
-        ]
-        subprocess.Popen(command, close_fds=True)
-        self._window.destroy()
         return True
 
 
@@ -687,15 +678,11 @@ def main() -> None:
     except (AttributeError, ValueError):
         pass
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--classic", action="store_true")
     parser.add_argument("--debug-web", action="store_true")
     parser.add_argument("--archive", default="")
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--smoke-result", default="")
     args, _ = parser.parse_known_args()
-    if args.classic:
-        launch_classic()
-        return
     try:
         launch_web(
             debug=args.debug_web,
