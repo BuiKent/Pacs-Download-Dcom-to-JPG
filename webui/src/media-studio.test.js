@@ -198,6 +198,8 @@ describe("Surgery Video Studio Action Handlers", () => {
       series: [{ id: "series_video_1", name: "phau_thuat.mp4", mediaType: "video", patientName: "BN 02" }],
     };
     state.selectedId = "series_video_1";
+    state.activeTabId = "tab_1";
+    state.tabs = [{ id: "tab_1", title: "BN 02" }];
     state.videoWorkingPath = "D:/storage/surgery_01.mp4";
     state.videoBookmarks = [];
     document.body.innerHTML = `
@@ -297,35 +299,56 @@ describe("Surgery Video Studio Action Handlers", () => {
     expect(state.videoBookmarks[0]).toEqual({ time: 15.5, text: "Rạch da bộc lộ tổn thương" });
   });
 
-  it("video-tool-concat calls concat API with all video series sources", async () => {
+  it("video-tool-concat opens modal, allows reordering and selection, and start-concat-video calls concat API", async () => {
     state.archive.series.push({
       id: "series_video_2",
       name: "phau_thuat_part2.mp4",
       mediaType: "video",
       patientName: "BN 02",
+      durationSeconds: 120,
     });
 
+    // 1. Open modal
+    await action("video-tool-concat");
+    expect(state.showConcatModal).toBe(true);
+    expect(state.concatClips.length).toBe(2);
+    expect(state.concatClips[0].seriesId).toBe("series_video_1");
+    expect(state.concatClips[1].seriesId).toBe("series_video_2");
+
+    // 2. Reorder clips (move clip 1 down -> swap with clip 2)
+    await action("move-concat-clip-down", { dataset: { clipIdx: "0" } });
+    expect(state.concatClips[0].seriesId).toBe("series_video_2");
+    expect(state.concatClips[1].seriesId).toBe("series_video_1");
+
+    // 3. Toggle clip selection
+    await action("toggle-concat-clip", { dataset: { clipIdx: "1" } });
+    expect(state.concatClips[1].selected).toBe(false);
+    await action("toggle-concat-clip", { dataset: { clipIdx: "1" } });
+    expect(state.concatClips[1].selected).toBe(true);
+
+    // 4. Start concat with reordered clips
     const fetchMock = vi.fn().mockImplementation(async (url) => {
-      if (String(url).includes("/file-paths")) {
+      if (String(url).includes("/series_video_2/file-paths") || String(url).includes("/file-paths")) {
         return mockJsonResponse({ images: ["D:/storage/surgery_02.mp4"] });
       }
       return mockJsonResponse({ outputPath: "D:/storage/concatenated.mp4", url: "/api/media/work-file?name=concatenated.mp4" });
     });
     global.fetch = fetchMock;
 
-    await action("video-tool-concat");
+    await action("start-concat-video");
 
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("/api/media/video/concat"),
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
-          sources: ["D:/storage/surgery_01.mp4", "D:/storage/surgery_02.mp4"],
+          sources: ["D:/storage/surgery_02.mp4", "D:/storage/surgery_01.mp4"],
           targetHeight: 1080,
           targetFps: 30,
         }),
       })
     );
+    expect(state.showConcatModal).toBe(false);
     expect(state.videoWorkingPath).toBe("D:/storage/concatenated.mp4");
   });
 

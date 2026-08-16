@@ -49,7 +49,15 @@ import {
   viewerDiagnostics,
 } from "./viewer.js";
 
-const app = document.querySelector("#app");
+let app = typeof document !== "undefined" ? document.querySelector("#app") : null;
+
+function getDomRoot() {
+  if (typeof document === "undefined") return null;
+  if (!app || !app.isConnected) {
+    app = document.querySelector("#app");
+  }
+  return (app && app.isConnected) ? app : document;
+}
 const sessionUrl = new URL(location.href);
 let sessionToken = sessionUrl.searchParams.get("token") || "";
 configureApi(sessionToken);
@@ -100,6 +108,10 @@ const state = {
   fileInfoLoading: false,
   fileInfoError: "",
   fileInfoTagFilter: "",
+  showConcatModal: false,
+  concatClips: [],
+  concatTargetHeight: 1080,
+  concatTargetFps: 30,
   theme: localStorage.getItem("dcom.theme") || "dark",
   tabs: [],
   activeTabId: "worklist",
@@ -720,6 +732,8 @@ function render() {
   }
   const safety = seriesSafetyNotice(series);
   const mprDisabled = !series?.mprReady;
+  if (!app && typeof document !== "undefined") app = document.querySelector("#app");
+  if (!app) return;
   app.innerHTML = `
     <div class="app-shell ${state.downloadOpen ? "" : "download-collapsed"}">
       <header class="app-header">
@@ -883,6 +897,7 @@ function render() {
       `}
       ${renderLoginCard()}
       ${renderFileInfoModal()}
+      ${renderConcatModal()}
     </div>
   `;
   bindEvents();
@@ -1137,6 +1152,62 @@ function renderFileInfoModal() {
               </div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderConcatModal() {
+  if (!state.showConcatModal) return "";
+  const clips = state.concatClips || [];
+  const selectedCount = clips.filter((c) => c.selected).length;
+  return `
+    <div class="modal-overlay concat-modal-overlay">
+      <div class="concat-modal-card">
+        <div class="concat-modal-header">
+          <h3>🔗 ${escapeHtml(t("Ghép & Sắp xếp thứ tự clip phẫu thuật"))}</h3>
+          <button class="icon-button" data-action="close-concat-modal" title="${escapeHtml(t("Đóng"))}">✕</button>
+        </div>
+        <p style="margin:0; font-size:12px; color:var(--label-muted,#7890a2);">${escapeHtml(t("Chọn các clip và sử dụng nút ▲/▼ để sắp xếp thứ tự ghép nối theo trình tự phẫu thuật:"))}</p>
+        <div class="concat-clip-list">
+          ${clips.length === 0 ? `<div class="empty-state" style="padding:20px;"><b>${escapeHtml(t("Không tìm thấy clip video nào trong ca mổ"))}</b></div>` : clips.map((clip, idx) => `
+            <div class="concat-clip-item ${clip.selected ? "" : "disabled"}" data-clip-id="${escapeHtml(clip.seriesId)}">
+              <input type="checkbox" class="concat-clip-checkbox" data-action="toggle-concat-clip" data-clip-idx="${idx}" ${clip.selected ? "checked" : ""} style="cursor:pointer;" title="${escapeHtml(t("Bật/tắt clip này"))}">
+              <span class="concat-clip-order">#${idx + 1}</span>
+              <div class="concat-clip-info">
+                <div class="concat-clip-title">${escapeHtml(clip.name)}</div>
+                <div class="concat-clip-meta">⏱ ${clip.duration ? formatVideoTime(clip.duration) : t("Không rõ thời lượng")}</div>
+              </div>
+              <div class="concat-clip-reorder">
+                <button class="concat-reorder-btn" data-action="move-concat-clip-up" data-clip-idx="${idx}" ${idx === 0 ? "disabled" : ""} title="${escapeHtml(t("Di chuyển lên trước"))}">▲</button>
+                <button class="concat-reorder-btn" data-action="move-concat-clip-down" data-clip-idx="${idx}" ${idx === clips.length - 1 ? "disabled" : ""} title="${escapeHtml(t("Di chuyển xuống sau"))}">▼</button>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+        <div class="concat-settings">
+          <label>
+            <span>${escapeHtml(t("Độ phân giải:"))}</span>
+            <select id="concat-resolution-select" data-field="concat-resolution">
+              <option value="1080" ${state.concatTargetHeight === 1080 ? "selected" : ""}>1080p (Full HD)</option>
+              <option value="720" ${state.concatTargetHeight === 720 ? "selected" : ""}>720p (HD)</option>
+              <option value="480" ${state.concatTargetHeight === 480 ? "selected" : ""}>480p (SD)</option>
+            </select>
+          </label>
+          <label>
+            <span>${escapeHtml(t("Tốc độ khung hình:"))}</span>
+            <select id="concat-fps-select" data-field="concat-fps">
+              <option value="30" ${state.concatTargetFps === 30 ? "selected" : ""}>30 fps (${escapeHtml(t("Tiêu chuẩn"))})</option>
+              <option value="60" ${state.concatTargetFps === 60 ? "selected" : ""}>60 fps (${escapeHtml(t("Mượt"))})</option>
+            </select>
+          </label>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:4px;">
+          <button class="control-btn" data-action="close-concat-modal">${escapeHtml(t("Hủy"))}</button>
+          <button class="control-btn primary" data-action="start-concat-video" ${selectedCount < 2 ? "disabled" : ""}>
+            🔗 ${escapeHtml(tf("Bắt đầu ghép ({} clip)", selectedCount))}
+          </button>
         </div>
       </div>
     </div>
@@ -1398,6 +1469,8 @@ function renderPatientStatus() {
 }
 
 function bindEvents() {
+  if (!app && typeof document !== "undefined") app = document.querySelector("#app");
+  if (!app) return;
   app.querySelectorAll("[data-action]").forEach((element) => {
     element.addEventListener("click", () => action(element.dataset.action, element));
   });
@@ -1407,6 +1480,20 @@ function bindEvents() {
   const fileInfoOverlay = app.querySelector(".file-info-overlay");
   fileInfoOverlay?.addEventListener("click", (event) => {
     if (event.target === fileInfoOverlay) closeFileInfoModal();
+  });
+
+  const concatOverlay = app.querySelector(".concat-modal-overlay");
+  concatOverlay?.addEventListener("click", (event) => {
+    if (event.target === concatOverlay) {
+      state.showConcatModal = false;
+      render();
+    }
+  });
+  app.querySelector("[data-field='concat-resolution']")?.addEventListener("change", (event) => {
+    state.concatTargetHeight = Number(event.target.value) || 1080;
+  });
+  app.querySelector("[data-field='concat-fps']")?.addEventListener("change", (event) => {
+    state.concatTargetFps = Number(event.target.value) || 30;
   });
   // Only the tag rows depend on the filter, so they are swapped in place.
   // Re-rendering the dialog here would mean calling bindEvents() again, which
@@ -2172,17 +2259,19 @@ async function action(name, element = null) {
       return;
     }
     if (name === "video-rewind-5") {
-      const video = app.querySelector("#surgery-video-player");
+      const domRoot = getDomRoot();
+      const video = domRoot?.querySelector("#surgery-video-player");
       if (video) video.currentTime = Math.max(0, video.currentTime - 5);
       return;
     }
     if (name === "video-forward-5") {
-      const video = app.querySelector("#surgery-video-player");
+      const domRoot = getDomRoot();
+      const video = domRoot?.querySelector("#surgery-video-player");
       if (video) video.currentTime = Math.min(video.duration || 0, video.currentTime + 5);
       return;
     }
     if (name === "add-video-bookmark") {
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const domRoot = getDomRoot();
       const video = domRoot?.querySelector("#surgery-video-player");
       const currentTime = video ? video.currentTime : 0;
       const note = prompt(t("Nhập ghi chú / mốc phẫu thuật:")) || t("Mốc phẫu thuật");
@@ -2194,13 +2283,13 @@ async function action(name, element = null) {
     }
     if (name === "seek-video") {
       const time = Number(element?.dataset?.time || 0);
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const domRoot = getDomRoot();
       const video = domRoot?.querySelector("#surgery-video-player");
       if (video) video.currentTime = time;
       return;
     }
     if (name === "video-snapshot") {
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const domRoot = getDomRoot();
       const video = domRoot?.querySelector("#surgery-video-player");
       if (video) {
         const canvas = document.createElement("canvas");
@@ -2219,7 +2308,7 @@ async function action(name, element = null) {
     if (name === "seek-filmstrip-idx") {
       const idx = Number(element?.dataset?.idx || 0);
       const total = Number(element?.dataset?.total || 1);
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const domRoot = getDomRoot();
       const video = domRoot?.querySelector("#surgery-video-player");
       if (video && video.duration) {
         video.currentTime = (idx / total) * video.duration;
@@ -2229,7 +2318,7 @@ async function action(name, element = null) {
     if (name === "video-tool-trim") {
       const series = selectedSeries();
       if (!series) return;
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const domRoot = getDomRoot();
       const video = domRoot?.querySelector("#surgery-video-player");
       const current = video ? video.currentTime : 0;
       const duration = video ? video.duration || 60 : 60;
@@ -2319,26 +2408,83 @@ async function action(name, element = null) {
       return;
     }
     if (name === "video-tool-concat") {
-      const allVideoSeries = (state.archive?.series || []).filter(s => getSeriesMediaType(s) === "video");
+      const allVideoSeries = (state.archive?.series || []).filter((s) => getSeriesMediaType(s) === "video");
       if (allVideoSeries.length < 2 && !state.videoWorkingPath) {
-        throw new Error(t("Cần ít nhất 2 clip video để ghép."));
+        throw new Error(t("Cần ít nhất 2 clip video trong ca mổ để ghép."));
       }
-      setStatus(t("Đang chuẩn bị ghép các đoạn video clip..."));
+      state.concatClips = allVideoSeries.map((s, idx) => ({
+        seriesId: s.id,
+        name: s.description || s.name || tf("Clip video {}", idx + 1),
+        duration: s.durationSeconds || 0,
+        selected: true,
+      }));
+      state.showConcatModal = true;
+      render();
+      return;
+    }
+    if (name === "close-concat-modal") {
+      state.showConcatModal = false;
+      render();
+      return;
+    }
+    if (name === "toggle-concat-clip") {
+      const idx = Number(element?.dataset?.clipIdx);
+      if (state.concatClips && state.concatClips[idx]) {
+        state.concatClips[idx].selected = !state.concatClips[idx].selected;
+        render();
+      }
+      return;
+    }
+    if (name === "move-concat-clip-up") {
+      const idx = Number(element?.dataset?.clipIdx);
+      if (state.concatClips && idx > 0) {
+        const temp = state.concatClips[idx];
+        state.concatClips[idx] = state.concatClips[idx - 1];
+        state.concatClips[idx - 1] = temp;
+        render();
+      }
+      return;
+    }
+    if (name === "move-concat-clip-down") {
+      const idx = Number(element?.dataset?.clipIdx);
+      if (state.concatClips && idx < state.concatClips.length - 1) {
+        const temp = state.concatClips[idx];
+        state.concatClips[idx] = state.concatClips[idx + 1];
+        state.concatClips[idx + 1] = temp;
+        render();
+      }
+      return;
+    }
+    if (name === "start-concat-video") {
+      const selected = (state.concatClips || []).filter((c) => c.selected);
+      if (selected.length < 2) {
+        throw new Error(t("Cần chọn ít nhất 2 clip video để ghép."));
+      }
+      setStatus(tf("Đang chuẩn bị ghép {} clip video...", selected.length));
       const sources = [];
-      for (const s of allVideoSeries) {
-        const p = await getVideoSourcePath(s);
-        if (p && !sources.includes(p)) sources.push(p);
+      for (const clip of selected) {
+        const series = (state.archive?.series || []).find((s) => s.id === clip.seriesId);
+        if (series) {
+          const p = await getVideoSourcePath(series);
+          if (p && !sources.includes(p)) sources.push(p);
+        }
       }
       if (sources.length < 2) {
         throw new Error(t("Không đủ số lượng file video hợp lệ để ghép."));
       }
+      state.showConcatModal = false;
+      render();
       setStatus(tf("Đang ghép {} clip video bằng FFmpeg...", sources.length));
       const res = await api("/api/media/video/concat", {
         method: "POST",
-        body: JSON.stringify({ sources, targetHeight: 1080, targetFps: 30 }),
+        body: JSON.stringify({
+          sources,
+          targetHeight: state.concatTargetHeight || 1080,
+          targetFps: state.concatTargetFps || 30,
+        }),
       });
       state.videoWorkingPath = res.outputPath;
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const domRoot = getDomRoot();
       const video = domRoot?.querySelector("#surgery-video-player");
       if (video) {
         video.src = `${res.url}&t=${Date.now()}`;
@@ -2350,7 +2496,7 @@ async function action(name, element = null) {
     if (name === "video-tool-thumb") {
       const series = selectedSeries();
       if (!series) return;
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const domRoot = getDomRoot();
       const video = domRoot?.querySelector("#surgery-video-player");
       const current = video ? video.currentTime : 0;
       setStatus(tf("Đang tạo ảnh đại diện thumbnail tại {:.1f}s...", current));
@@ -2379,7 +2525,7 @@ async function action(name, element = null) {
         body: JSON.stringify({ path, degrees: 90 }),
       });
       state.photoWorkingPath = res.outputPath;
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const domRoot = getDomRoot();
       const img = domRoot?.querySelector("#photo-editor-img");
       if (img) img.src = `${res.url}&t=${Date.now()}`;
       setStatus(t("Đã xoay ảnh 90° thành công."));

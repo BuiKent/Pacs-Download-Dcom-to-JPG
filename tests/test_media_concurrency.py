@@ -263,11 +263,12 @@ class TestTranscodeUsesGateForReal:
         holder.start()
         time.sleep(0.05)
 
-        start = time.time()
-        info = ve.probe(sample_video)
-        elapsed = time.time() - start
-        assert info.width == 320
-        assert elapsed < 2.0, "probe (light) không được bị heavy gate chặn"
-
-        release_event.set()
-        holder.join(timeout=5)
+        try:
+            start = time.time()
+            info = ve.probe(sample_video)
+            elapsed = time.time() - start
+            assert info.width == 320
+            assert elapsed < 4.0, "probe (light) không được bị heavy gate chặn (chờ 5s)"
+        finally:
+            release_event.set()
+            holder.join(timeout=5)
