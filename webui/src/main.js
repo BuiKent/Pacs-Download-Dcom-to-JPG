@@ -367,7 +367,7 @@ export function formatDisplayDate(dateStr) {
   return dateStr;
 }
 
-export function groupSeriesHierarchically(seriesList) {
+function groupSeriesHierarchically(seriesList) {
   if (!Array.isArray(seriesList) || !seriesList.length) return [];
 
   const dateMap = new Map();
@@ -437,7 +437,7 @@ function seriesLabel(item) {
   return item.description || item.name || t("Series");
 }
 
-export function renderSeriesOptions(archive, selectedId) {
+function renderSeriesOptions(archive, selectedId) {
   const groups = groupSeriesHierarchically(archive.series);
   if (!groups.length) return "";
   return groups.map((group) => {
@@ -455,7 +455,7 @@ export function renderSeriesOptions(archive, selectedId) {
   }).join("");
 }
 
-export function renderSeriesStripContent(seriesList) {
+function renderSeriesStripContent(seriesList) {
   const groups = groupSeriesHierarchically(seriesList);
   if (!groups.length) return "";
 
@@ -534,7 +534,7 @@ function renderWinbar() {
   </nav>`;
 }
 
-export function getSeriesMediaType(series) {
+function getSeriesMediaType(series) {
   if (!series) return "dicom";
   if (series.mediaType) return series.mediaType;
   const desc = (series.description || "").toLowerCase();
@@ -561,10 +561,21 @@ function formatVideoTime(seconds) {
 
 function renderSurgeryVideoStudio(series) {
   if (!series) return `<div class="empty-state"><b>${escapeHtml(t("Chưa có video nào"))}</b></div>`;
-  const videoUrl = `/api/series/${series.id}/image/0`;
+  const videoUrl = state.videoWorkingPath ? `/api/media/work-file?name=${encodeURIComponent(state.videoWorkingPath.split(/[\\/]/).pop())}` : `/api/series/${series.id}/image/0`;
   const bookmarks = state.videoBookmarks || [];
+  const filmstrip = state.videoFilmstrip || [];
   return `
     <div class="surgery-video-studio">
+      <div class="surgery-video-toolbar" style="display:flex; gap:8px; padding:8px 12px; background:var(--bg-card); border-bottom:1px solid var(--border-subtle); align-items:center; flex-wrap:wrap;">
+        <button class="tool-btn" data-action="video-tool-trim" title="${escapeHtml(t("Cắt đoạn video"))}">✂ ${escapeHtml(t("Cắt đoạn"))}</button>
+        <button class="tool-btn" data-action="video-tool-concat" title="${escapeHtml(t("Ghép các clip video"))}">🔗 ${escapeHtml(t("Ghép clips"))}</button>
+        <button class="tool-btn" data-action="video-tool-burn-text" title="${escapeHtml(t("Đóng dấu / Chèn thông tin phẫu thuật"))}">🏷 ${escapeHtml(t("Đóng dấu thông tin"))}</button>
+        <button class="tool-btn" data-action="video-tool-thumb" title="${escapeHtml(t("Trích xuất ảnh đại diện Thumbnail"))}">🖼 ${escapeHtml(t("Tạo Thumbnail"))}</button>
+        <button class="tool-btn" data-action="video-tool-filmstrip" title="${escapeHtml(t("Tạo chuỗi ảnh Filmstrip"))}">🎞 ${escapeHtml(t("Tạo Filmstrip"))}</button>
+        <button class="tool-btn" data-action="video-tool-transcode" title="${escapeHtml(t("Tối ưu hoá mã hoá MP4 (H.264)"))}">⚡ ${escapeHtml(t("Tối ưu MP4"))}</button>
+        <span style="flex:1;"></span>
+        <div id="video-meta-badge" class="badge" style="font-size:11px; padding:4px 8px; opacity:0.85;">🎬 ${escapeHtml(series.patientName || "Video Phẫu Thuật")}</div>
+      </div>
       <div class="surgery-video-body">
         <div class="surgery-video-stage">
           <video id="surgery-video-player" class="surgery-video-element" src="${videoUrl}" playsinline preload="metadata"></video>
@@ -584,6 +595,14 @@ function renderSurgeryVideoStudio(series) {
           </div>
         </aside>
       </div>
+      ${filmstrip.length > 0 ? `
+        <div class="surgery-video-filmstrip" style="display:flex; gap:6px; padding:6px 12px; background:var(--bg-canvas); overflow-x:auto; border-top:1px solid var(--border-subtle);">
+          ${filmstrip.map((framePath, idx) => {
+            const frameName = framePath.split(/[\\/]/).pop();
+            return `<img src="/api/media/work-file?name=${encodeURIComponent(frameName)}" style="height:48px; border-radius:4px; cursor:pointer; border:1px solid var(--border-subtle);" title="Frame ${idx + 1}" data-action="seek-filmstrip-idx" data-idx="${idx}" data-total="${filmstrip.length}" />`;
+          }).join("")}
+        </div>
+      ` : ""}
       <div class="surgery-video-controls">
         <button class="control-btn" data-action="video-play-pause" title="${escapeHtml(t("Phát / Tạm dừng"))}">⏯</button>
         <button class="control-btn" data-action="video-rewind-5" title="${escapeHtml(t("Tua lùi 5s"))}">-5s</button>
@@ -1686,6 +1705,34 @@ function initMediaEvents() {
   }
 }
 
+async function getVideoSourcePath(series) {
+  if (!series) return null;
+  if (state.videoWorkingPath && (!state.selectedId || series.id === state.selectedId)) {
+    return state.videoWorkingPath;
+  }
+  const filePathsRes = await api(`/api/series/${series.id}/file-paths`).catch(() => null);
+  const filePath = filePathsRes?.images?.[0];
+  if (filePath) {
+    if (!state.selectedId || series.id === state.selectedId) state.videoWorkingPath = filePath;
+    return filePath;
+  }
+  return null;
+}
+
+async function getPhotoSourcePath(series) {
+  if (!series) return null;
+  if (state.photoWorkingPath && (!state.selectedId || series.id === state.selectedId)) {
+    return state.photoWorkingPath;
+  }
+  const filePathsRes = await api(`/api/series/${series.id}/file-paths`).catch(() => null);
+  const filePath = filePathsRes?.images?.[0];
+  if (filePath) {
+    if (!state.selectedId || series.id === state.selectedId) state.photoWorkingPath = filePath;
+    return filePath;
+  }
+  return null;
+}
+
 async function action(name, element = null) {
   try {
     if (name === "cancel-login") {
@@ -2110,7 +2157,8 @@ async function action(name, element = null) {
       return;
     }
     if (name === "add-video-bookmark") {
-      const video = app.querySelector("#surgery-video-player");
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const video = domRoot?.querySelector("#surgery-video-player");
       const currentTime = video ? video.currentTime : 0;
       const note = prompt(t("Nhập ghi chú / mốc phẫu thuật:")) || t("Mốc phẫu thuật");
       if (!state.videoBookmarks) state.videoBookmarks = [];
@@ -2121,12 +2169,14 @@ async function action(name, element = null) {
     }
     if (name === "seek-video") {
       const time = Number(element?.dataset?.time || 0);
-      const video = app.querySelector("#surgery-video-player");
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const video = domRoot?.querySelector("#surgery-video-player");
       if (video) video.currentTime = time;
       return;
     }
     if (name === "video-snapshot") {
-      const video = app.querySelector("#surgery-video-player");
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const video = domRoot?.querySelector("#surgery-video-player");
       if (video) {
         const canvas = document.createElement("canvas");
         canvas.width = video.videoWidth || 1280;
@@ -2141,25 +2191,314 @@ async function action(name, element = null) {
       }
       return;
     }
+    if (name === "seek-filmstrip-idx") {
+      const idx = Number(element?.dataset?.idx || 0);
+      const total = Number(element?.dataset?.total || 1);
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const video = domRoot?.querySelector("#surgery-video-player");
+      if (video && video.duration) {
+        video.currentTime = (idx / total) * video.duration;
+      }
+      return;
+    }
+    if (name === "video-tool-trim") {
+      const series = selectedSeries();
+      if (!series) return;
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const video = domRoot?.querySelector("#surgery-video-player");
+      const current = video ? video.currentTime : 0;
+      const duration = video ? video.duration || 60 : 60;
+      const startStr = prompt(t("Nhập thời gian bắt đầu (giây):"), Math.max(0, current - 5).toFixed(1));
+      if (startStr === null) return;
+      const endStr = prompt(t("Nhập thời gian kết thúc (giây):"), Math.min(duration, current + 5).toFixed(1));
+      if (endStr === null) return;
+      const startSeconds = parseFloat(startStr);
+      const endSeconds = parseFloat(endStr);
+      if (isNaN(startSeconds) || isNaN(endSeconds) || startSeconds >= endSeconds) {
+        throw new Error(t("Thời gian cắt không hợp lệ (Bắt đầu phải nhỏ hơn Kết thúc)."));
+      }
+      setStatus(t("Đang cắt video bằng FFmpeg..."));
+      const path = await getVideoSourcePath(series);
+      if (!path) throw new Error(t("Không tìm thấy đường dẫn video gốc."));
+      const res = await api("/api/media/video/trim", {
+        method: "POST",
+        body: JSON.stringify({ path, startSeconds, endSeconds, reencode: false }),
+      });
+      state.videoWorkingPath = res.outputPath;
+      if (video) {
+        video.src = `${res.url}&t=${Date.now()}`;
+        video.load();
+      }
+      setStatus(tf("Đã cắt đoạn video ({:.1f}s - {:.1f}s) thành công.", startSeconds, endSeconds));
+      return;
+    }
+    if (name === "video-tool-burn-text") {
+      const series = selectedSeries();
+      if (!series) return;
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const video = domRoot?.querySelector("#surgery-video-player");
+      const text = prompt(t("Nhập nội dung đóng dấu / thông tin phẫu thuật:"), `${series.patientName || "BN"} - ${new Date().toLocaleDateString()}`);
+      if (!text) return;
+      setStatus(t("Đang đóng dấu thông tin lên video..."));
+      const path = await getVideoSourcePath(series);
+      if (!path) throw new Error(t("Không tìm thấy đường dẫn video gốc."));
+      const res = await api("/api/media/video/burn-text", {
+        method: "POST",
+        body: JSON.stringify({
+          path,
+          overlays: [{ text, x: 24, y: 24, font_size: 24, font_color: "yellow", box: true }],
+        }),
+      });
+      state.videoWorkingPath = res.outputPath;
+      if (video) {
+        video.src = `${res.url}&t=${Date.now()}`;
+        video.load();
+      }
+      setStatus(t("Đã đóng dấu thông tin lên video thành công."));
+      return;
+    }
+    if (name === "video-tool-filmstrip") {
+      const series = selectedSeries();
+      if (!series) return;
+      setStatus(t("Đang trích xuất chuỗi khung hình filmstrip..."));
+      const path = await getVideoSourcePath(series);
+      if (!path) throw new Error(t("Không tìm thấy đường dẫn video gốc."));
+      const res = await api("/api/media/video/filmstrip", {
+        method: "POST",
+        body: JSON.stringify({ path, count: 6, maxWidth: 160 }),
+      });
+      state.videoFilmstrip = res.frames || [];
+      render();
+      initMediaEvents();
+      setStatus(tf("Đã trích xuất {} khung hình filmstrip.", state.videoFilmstrip.length));
+      return;
+    }
+    if (name === "video-tool-transcode") {
+      const series = selectedSeries();
+      if (!series) return;
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const video = domRoot?.querySelector("#surgery-video-player");
+      setStatus(t("Đang tối ưu hoá mã hoá video MP4 (H.264)..."));
+      const path = await getVideoSourcePath(series);
+      if (!path) throw new Error(t("Không tìm thấy đường dẫn video gốc."));
+      const res = await api("/api/media/video/transcode", {
+        method: "POST",
+        body: JSON.stringify({ path, crf: 23, use_hw: true }),
+      });
+      state.videoWorkingPath = res.outputPath;
+      if (video) {
+        video.src = `${res.url}&t=${Date.now()}`;
+        video.load();
+      }
+      setStatus(t("Đã tối ưu hoá và xuất video MP4 thành công."));
+      return;
+    }
+    if (name === "video-tool-concat") {
+      const allVideoSeries = (state.archive?.series || []).filter(s => getSeriesMediaType(s) === "video");
+      if (allVideoSeries.length < 2 && !state.videoWorkingPath) {
+        throw new Error(t("Cần ít nhất 2 clip video để ghép."));
+      }
+      setStatus(t("Đang chuẩn bị ghép các đoạn video clip..."));
+      const sources = [];
+      for (const s of allVideoSeries) {
+        const p = await getVideoSourcePath(s);
+        if (p && !sources.includes(p)) sources.push(p);
+      }
+      if (sources.length < 2) {
+        throw new Error(t("Không đủ số lượng file video hợp lệ để ghép."));
+      }
+      setStatus(tf("Đang ghép {} clip video bằng FFmpeg...", sources.length));
+      const res = await api("/api/media/video/concat", {
+        method: "POST",
+        body: JSON.stringify({ sources, targetHeight: 1080, targetFps: 30 }),
+      });
+      state.videoWorkingPath = res.outputPath;
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const video = domRoot?.querySelector("#surgery-video-player");
+      if (video) {
+        video.src = `${res.url}&t=${Date.now()}`;
+        video.load();
+      }
+      setStatus(tf("Đã ghép thành công {} đoạn video clip.", sources.length));
+      return;
+    }
+    if (name === "video-tool-thumb") {
+      const series = selectedSeries();
+      if (!series) return;
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const video = domRoot?.querySelector("#surgery-video-player");
+      const current = video ? video.currentTime : 0;
+      setStatus(tf("Đang tạo ảnh đại diện thumbnail tại {:.1f}s...", current));
+      const path = await getVideoSourcePath(series);
+      if (!path) throw new Error(t("Không tìm thấy đường dẫn video gốc."));
+      const res = await api("/api/media/video/thumbnail", {
+        method: "POST",
+        body: JSON.stringify({ path, atSeconds: current, maxWidth: 480 }),
+      });
+      const link = document.createElement("a");
+      link.href = res.url;
+      link.download = `thumb_${Math.floor(current)}s.jpg`;
+      link.click();
+      setStatus(tf("Đã tạo ảnh đại diện thumbnail thành công ({:.1f}s).", current));
+      return;
+    }
+
     if (name === "photo-rotate-cw") {
-      state.photoRotation = ((state.photoRotation || 0) + 90) % 360;
-      const img = app.querySelector("#photo-editor-img");
-      if (img) img.style.transform = `rotate(${state.photoRotation}deg)`;
+      const series = selectedSeries();
+      if (!series) return;
+      setStatus(t("Đang xoay ảnh 90°..."));
+      const path = await getPhotoSourcePath(series);
+      if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
+      const res = await api("/api/media/photo/rotate", {
+        method: "POST",
+        body: JSON.stringify({ path, degrees: 90 }),
+      });
+      state.photoWorkingPath = res.outputPath;
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const img = domRoot?.querySelector("#photo-editor-img");
+      if (img) img.src = `${res.url}&t=${Date.now()}`;
+      setStatus(t("Đã xoay ảnh 90° thành công."));
+      return;
+    }
+    if (name === "photo-tool-crop") {
+      const series = selectedSeries();
+      if (!series) return;
+      const path = await getPhotoSourcePath(series);
+      if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
+      setStatus(t("Đang cắt ảnh..."));
+      const info = await api("/api/media/photo/info", {
+        method: "POST",
+        body: JSON.stringify({ path }),
+      });
+      const w = info?.info?.width || 800;
+      const h = info?.info?.height || 600;
+      const marginX = Math.round(w * 0.05);
+      const marginY = Math.round(h * 0.05);
+      const rect = { x: marginX, y: marginY, width: w - 2 * marginX, height: h - 2 * marginY };
+      const res = await api("/api/media/photo/crop", {
+        method: "POST",
+        body: JSON.stringify({ path, rect }),
+      });
+      state.photoWorkingPath = res.outputPath;
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const img = domRoot?.querySelector("#photo-editor-img");
+      if (img) img.src = `${res.url}&t=${Date.now()}`;
+      setStatus(t("Đã cắt vùng chọn ảnh thành công."));
+      return;
+    }
+    if (name === "photo-tool-redact") {
+      const series = selectedSeries();
+      if (!series) return;
+      const path = await getPhotoSourcePath(series);
+      if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
+      setStatus(t("Đang che vùng thông tin định danh..."));
+      const info = await api("/api/media/photo/info", {
+        method: "POST",
+        body: JSON.stringify({ path }),
+      });
+      const w = info?.info?.width || 800;
+      const h = info?.info?.height || 600;
+      const regions = [{ x: 10, y: 10, width: Math.min(320, Math.round(w * 0.4)), height: Math.min(60, Math.round(h * 0.15)) }];
+      const res = await api("/api/media/photo/redact", {
+        method: "POST",
+        body: JSON.stringify({ path, regions, fill: [0, 0, 0] }),
+      });
+      state.photoWorkingPath = res.outputPath;
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const img = domRoot?.querySelector("#photo-editor-img");
+      if (img) img.src = `${res.url}&t=${Date.now()}`;
+      setStatus(t("Đã che vùng danh tính (ĐÃ CHE) thành công."));
+      return;
+    }
+    if (name === "photo-tool-arrow") {
+      const series = selectedSeries();
+      if (!series) return;
+      const path = await getPhotoSourcePath(series);
+      if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
+      setStatus(t("Đang chèn mũi tên chỉ điểm..."));
+      const info = await api("/api/media/photo/info", {
+        method: "POST",
+        body: JSON.stringify({ path }),
+      });
+      const w = info?.info?.width || 800;
+      const h = info?.info?.height || 600;
+      const arrows = [{ x1: Math.round(w * 0.2), y1: Math.round(h * 0.2), x2: Math.round(w * 0.5), y2: Math.round(h * 0.5), color: [255, 70, 70] }];
+      const res = await api("/api/media/photo/annotate", {
+        method: "POST",
+        body: JSON.stringify({ path, arrows, texts: [], boxes: [] }),
+      });
+      state.photoWorkingPath = res.outputPath;
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const img = domRoot?.querySelector("#photo-editor-img");
+      if (img) img.src = `${res.url}&t=${Date.now()}`;
+      setStatus(t("Đã chèn mũi tên chỉ điểm thành công."));
+      return;
+    }
+    if (name === "photo-tool-box") {
+      const series = selectedSeries();
+      if (!series) return;
+      const path = await getPhotoSourcePath(series);
+      if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
+      setStatus(t("Đang khoanh vùng tổn thương..."));
+      const info = await api("/api/media/photo/info", {
+        method: "POST",
+        body: JSON.stringify({ path }),
+      });
+      const w = info?.info?.width || 800;
+      const h = info?.info?.height || 600;
+      const boxes = [{ rect: { x: Math.round(w * 0.35), y: Math.round(h * 0.35), width: Math.round(w * 0.3), height: Math.round(h * 0.3) }, color: [255, 70, 70], width: 3 }];
+      const res = await api("/api/media/photo/annotate", {
+        method: "POST",
+        body: JSON.stringify({ path, boxes, texts: [], arrows: [] }),
+      });
+      state.photoWorkingPath = res.outputPath;
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const img = domRoot?.querySelector("#photo-editor-img");
+      if (img) img.src = `${res.url}&t=${Date.now()}`;
+      setStatus(t("Đã khoanh vùng tổn thương thành công."));
+      return;
+    }
+    if (name === "photo-tool-text") {
+      const series = selectedSeries();
+      if (!series) return;
+      const path = await getPhotoSourcePath(series);
+      if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
+      const textInput = prompt(t("Nhập ghi chú chữ:")) || t("Ghi chú lâm sàng");
+      setStatus(t("Đang chèn chữ..."));
+      const info = await api("/api/media/photo/info", {
+        method: "POST",
+        body: JSON.stringify({ path }),
+      });
+      const w = info?.info?.width || 800;
+      const h = info?.info?.height || 600;
+      const texts = [{ text: textInput, x: Math.round(w * 0.1), y: Math.round(h * 0.9), fontSize: 24, color: [255, 255, 0] }];
+      const res = await api("/api/media/photo/annotate", {
+        method: "POST",
+        body: JSON.stringify({ path, texts, arrows: [], boxes: [] }),
+      });
+      state.photoWorkingPath = res.outputPath;
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const img = domRoot?.querySelector("#photo-editor-img");
+      if (img) img.src = `${res.url}&t=${Date.now()}`;
+      setStatus(t("Đã chèn ghi chú chữ thành công."));
       return;
     }
     if (name === "photo-export-pdf") {
-      setStatus(t("Đang xuất file PDF..."));
       const series = selectedSeries();
-      const sources = (series?.images || []).map(img => img.path || img);
-      if (!sources.length && series) sources.push(series.id);
-      api("/api/media/photo/export-pdf", {
+      if (!series) return;
+      setStatus(t("Đang xuất file PDF..."));
+      const payload = state.photoWorkingPath
+        ? { sources: [state.photoWorkingPath] }
+        : { seriesId: series.id };
+      const res = await api("/api/media/photo/export-pdf", {
         method: "POST",
-        body: JSON.stringify({ sources, outputPath: `${state.archive.root || "."}/export_document.pdf` })
-      }).then((res) => {
-        setStatus(tf("Đã xuất PDF thành công: {}", res.outputPath));
-      }).catch((err) => {
-        setStatus(tf("Lỗi xuất PDF: {}", err.message), true);
+        body: JSON.stringify(payload),
       });
+      const link = document.createElement("a");
+      link.href = res.url;
+      link.download = `patient_document_${Date.now()}.pdf`;
+      link.click();
+      setStatus(tf("Đã xuất PDF thành công: {}", res.outputPath));
       return;
     }
     if (name === "classic") {
@@ -2331,6 +2670,14 @@ function renderViewer() {
   if (!series) return viewerQueue;
   const mediaType = getSeriesMediaType(series);
   if (mediaType === "video" || mediaType === "photo" || mediaType === "doc") {
+    if (state._lastPhotoSeriesId !== series.id) {
+      state._lastPhotoSeriesId = series.id;
+      state.photoWorkingPath = null;
+      state.photoRotation = 0;
+      state.videoWorkingPath = null;
+      state.videoFilmstrip = [];
+      state._videoInfoLoaded = false;
+    }
     clearViewer();
     state.busyViewer = false;
     const requestedWorkspace = document.querySelector("#workspace");
@@ -2455,7 +2802,8 @@ function renderViewer() {
 function setStatus(message, isError = false) {
   state.status = message;
   state.isError = Boolean(isError);
-  const bar = app.querySelector(".status-bar");
+  const container = app || (typeof document !== "undefined" ? document.querySelector("#app") : null);
+  const bar = container?.querySelector(".status-bar");
   if (bar) {
     bar.classList.toggle("error", state.isError);
     const textEl = bar.querySelector(".status-text");
@@ -2843,10 +3191,29 @@ async function boot() {
   await renderViewer();
 }
 
-boot().catch((error) => {
-  app.innerHTML = `<div class="fatal-error"><b>${escapeHtml(t("Không khởi động được DICOM/JPG Downloader & Viewer"))}</b>
-    <pre>${escapeHtml(error.stack || error.message)}</pre>
-    <button class="primary" id="fatal-reload">${escapeHtml(t("Tải lại"))}</button></div>`;
-  // The local API forbids inline handlers, so the listener is attached here.
-  document.querySelector("#fatal-reload")?.addEventListener("click", () => location.reload());
-});
+const isRunningInTest = (typeof process !== "undefined" && Boolean(process.env?.VITEST)) || (typeof import.meta !== "undefined" && import.meta.env?.MODE === "test");
+
+if (!isRunningInTest) {
+  boot().catch((error) => {
+    app.innerHTML = `<div class="fatal-error"><b>${escapeHtml(t("Không khởi động được DICOM/JPG Downloader & Viewer"))}</b>
+      <pre>${escapeHtml(error.stack || error.message)}</pre>
+      <button class="primary" id="fatal-reload">${escapeHtml(t("Tải lại"))}</button></div>`;
+    // The local API forbids inline handlers, so the listener is attached here.
+    document.querySelector("#fatal-reload")?.addEventListener("click", () => location.reload());
+  });
+}
+
+export {
+  state,
+  action,
+  getSeriesMediaType,
+  getPhotoSourcePath,
+  getVideoSourcePath,
+  renderSurgeryVideoStudio,
+  renderPhotoEditorStudio,
+  renderViewer,
+  initMediaEvents,
+  groupSeriesHierarchically,
+  renderSeriesOptions,
+  renderSeriesStripContent,
+};

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   hasCompleteSeriesSelection,
   initialiseStudySelections,
@@ -15,8 +16,8 @@ const studies = [
   { study_uid: "study-b", date: "2026-08-01", local_status: "incomplete" },
 ];
 
-const mainSource = readFileSync(new URL("./main.js", import.meta.url), "utf8");
-const cssSource = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+const mainSource = readFileSync(resolve(process.cwd(), "src/main.js"), "utf8");
+const cssSource = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
 
 describe("download-all UI contract", () => {
   it("keeps the default-on checkbox wired to discovery and both download paths", () => {

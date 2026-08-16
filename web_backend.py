@@ -14,8 +14,10 @@ import math
 import os
 import re
 import secrets
+import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,6 +33,8 @@ import mpr_engine
 APP_VERSION = "1.1.0"
 IMG_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 ANNOTATIONS_NAME = "viewer-annotations.json"
+MEDIA_WORK_ROOT = Path(tempfile.gettempdir()) / "concord_media_work"
+MEDIA_WORK_ROOT.mkdir(parents=True, exist_ok=True)
 # The classic Tk app writes the same file. Sharing it means a user who switches
 # between the two UIs keeps one download history instead of two partial ones.
 HISTORY_FILE = Path.home() / ".dcom_downloader_history.json"
@@ -2639,6 +2643,53 @@ class LocalApiServer:
                     raise ValueError("Payload phải là object.")
                 return value
 
+            def _get_allowed_roots(self, catalog) -> list[Path]:
+                roots = [MEDIA_WORK_ROOT.resolve()]
+                if catalog and catalog.root:
+                    roots.append(Path(catalog.root).resolve())
+                if owner.controller.output_root:
+                    roots.append(Path(owner.controller.output_root).resolve())
+                return roots
+
+            def _resolve_media_path(self, path_str: str, catalog) -> Path:
+                if not path_str:
+                    raise ValueError("Đường dẫn file không được để trống.")
+                path = Path(path_str).resolve()
+                allowed = self._get_allowed_roots(catalog)
+                if not any(self._is_relative_to(path, r) for r in allowed):
+                    raise PermissionError(f"Truy cập bị từ chối: Đường dẫn nằm ngoài phạm vi cho phép ({path_str})")
+                if not path.exists():
+                    raise FileNotFoundError(f"Không tìm thấy file: {path_str}")
+                return path
+
+            def _is_relative_to(self, path: Path, root: Path) -> bool:
+                try:
+                    path.relative_to(root)
+                    return True
+                except ValueError:
+                    return False
+
+            def _new_media_work_path(self, suffix: str) -> Path:
+                MEDIA_WORK_ROOT.mkdir(parents=True, exist_ok=True)
+                return MEDIA_WORK_ROOT / f"{uuid.uuid4().hex}{suffix}"
+
+            def _serve_work_file(self, path: str, query: str) -> bool:
+                if not path.startswith("/api/media/work-file"):
+                    return False
+                from urllib.parse import parse_qs
+                qs = parse_qs(query)
+                filename = qs.get("name", [""])[0] or qs.get("path", [""])[0]
+                if not filename:
+                    raise ValueError("Thiếu tham số tên file work.")
+                safe_name = Path(filename).name
+                target = (MEDIA_WORK_ROOT / safe_name).resolve()
+                if not self._is_relative_to(target, MEDIA_WORK_ROOT.resolve()) or not target.is_file():
+                    raise FileNotFoundError("Không tìm thấy file kết quả.")
+                ext = target.suffix.lower()
+                content_type = MIME_TYPES.get(ext, "application/octet-stream")
+                self._send(HTTPStatus.OK, target.read_bytes(), content_type, {"Cache-Control": "no-cache"})
+                return True
+
             def _api_get(self, path: str, query: str = "") -> Any:
                 session_id = self._get_session_id()
                 catalog = owner.controller.sessions.get_catalog(session_id)
@@ -2661,10 +2712,6 @@ class LocalApiServer:
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/manifest", path)
                 if match:
                     record = catalog.get(match.group(1))
-                    # The manifest holds ordered_slices with 3D positions
-                    # that crosslinking needs. Crosslinking only requires
-                    # valid geometry — not the stricter MPR/3D threshold
-                    # (101+ uniform slices). Serve whenever present.
                     if not record.manifest:
                         raise ValueError(
                             record.mpr_reason
@@ -2674,6 +2721,10 @@ class LocalApiServer:
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/annotations", path)
                 if match:
                     return owner.controller.get_annotations(match.group(1), catalog=catalog)
+                match = re.fullmatch(r"/api/series/([a-f0-9]{20})/file-paths", path)
+                if match:
+                    record = catalog.get(match.group(1))
+                    return {"images": [str(p) for p in record.images]}
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/file-info", path)
                 if match:
                     index = 0
@@ -2720,63 +2771,101 @@ class LocalApiServer:
                     return owner.controller.set_language(str(payload.get("language") or ""))
                 if path == "/api/media/photo/info":
                     import photo_engine as pe
-                    info = pe.probe(payload.get("path"))
+                    src = self._resolve_media_path(payload.get("path"), catalog)
+                    info = pe.probe(src)
                     return {"info": {"width": info.width, "height": info.height, "format": info.format, "mode": info.mode, "sizeBytes": info.size_bytes}}
                 if path == "/api/media/photo/rotate":
                     import photo_engine as pe
-                    out = pe.rotate(payload.get("path"), payload.get("outputPath"), int(payload.get("degrees", 90)))
-                    return {"outputPath": str(out)}
+                    src = self._resolve_media_path(payload.get("path"), catalog)
+                    out = self._new_media_work_path(src.suffix or ".jpg")
+                    pe.rotate(src, out, int(payload.get("degrees", 90)))
+                    return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 if path == "/api/media/photo/crop":
                     import photo_engine as pe
+                    src = self._resolve_media_path(payload.get("path"), catalog)
+                    out = self._new_media_work_path(src.suffix or ".jpg")
                     r = payload.get("rect", {})
-                    out = pe.crop(payload.get("path"), payload.get("outputPath"), pe.Rect(x=r.get("x", 0), y=r.get("y", 0), width=r.get("width", 0), height=r.get("height", 0)))
-                    return {"outputPath": str(out)}
+                    pe.crop(src, out, pe.Rect(x=r.get("x", 0), y=r.get("y", 0), width=r.get("width", 0), height=r.get("height", 0)))
+                    return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 if path == "/api/media/photo/redact":
                     import photo_engine as pe
+                    src = self._resolve_media_path(payload.get("path"), catalog)
+                    out = self._new_media_work_path(src.suffix or ".jpg")
                     regions = [pe.Rect(x=r.get("x", 0), y=r.get("y", 0), width=r.get("width", 0), height=r.get("height", 0)) for r in payload.get("regions", [])]
                     fill = tuple(payload.get("fill", (0, 0, 0)))
-                    out = pe.redact(payload.get("path"), payload.get("outputPath"), regions, fill=fill)
-                    return {"outputPath": str(out)}
+                    pe.redact(src, out, regions, fill=fill)
+                    return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 if path == "/api/media/photo/annotate":
                     import photo_engine as pe
+                    src = self._resolve_media_path(payload.get("path"), catalog)
+                    out = self._new_media_work_path(src.suffix or ".jpg")
                     texts = [pe.TextAnnotation(**t) for t in payload.get("texts", [])]
                     arrows = [pe.ArrowAnnotation(**a) for a in payload.get("arrows", [])]
                     boxes = [pe.BoxAnnotation(rect=pe.Rect(**b["rect"]), color=tuple(b.get("color", (255, 70, 70))), width=b.get("width", 3)) for b in payload.get("boxes", [])]
-                    out = pe.annotate(payload.get("path"), payload.get("outputPath"), texts=texts, arrows=arrows, boxes=boxes)
-                    return {"outputPath": str(out)}
+                    pe.annotate(src, out, texts=texts, arrows=arrows, boxes=boxes)
+                    return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 if path == "/api/media/photo/export-pdf":
                     import photo_engine as pe
-                    out = pe.export_pdf(payload.get("sources", []), payload.get("outputPath"))
-                    return {"outputPath": str(out)}
+                    sources_in = payload.get("sources", [])
+                    resolved_sources = []
+                    for s in sources_in:
+                        if re.fullmatch(r"[a-f0-9]{20}", str(s)):
+                            rec = catalog.get(str(s))
+                            if rec and rec.images:
+                                resolved_sources.extend(rec.images)
+                        else:
+                            resolved_sources.append(self._resolve_media_path(s, catalog))
+                    if not resolved_sources and payload.get("seriesId"):
+                        rec = catalog.get(str(payload.get("seriesId")))
+                        if rec and rec.images:
+                            resolved_sources.extend(rec.images)
+                    if not resolved_sources:
+                        raise ValueError("Cần ít nhất một ảnh hợp lệ để xuất PDF.")
+                    out = self._new_media_work_path(".pdf")
+                    pe.export_pdf(resolved_sources, out)
+                    return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 if path == "/api/media/video/info":
                     import video_engine as ve
-                    info = ve.probe(payload.get("path"))
+                    src = self._resolve_media_path(payload.get("path"), catalog)
+                    info = ve.probe(src)
                     return {"info": {"durationSeconds": info.duration_s, "width": info.width, "height": info.height, "fps": info.fps, "codec": info.codec, "formatName": info.format_name, "hasAudio": info.has_audio, "sizeBytes": info.size_bytes}}
                 if path == "/api/media/video/thumbnail":
                     import video_engine as ve
-                    out = ve.extract_thumbnail(payload.get("path"), payload.get("outputPath"), float(payload.get("atSeconds", 0.0)), int(payload.get("maxWidth", 320)))
-                    return {"outputPath": str(out)}
+                    src = self._resolve_media_path(payload.get("path"), catalog)
+                    out = self._new_media_work_path(".jpg")
+                    ve.extract_thumbnail(src, out, float(payload.get("atSeconds", 0.0)), int(payload.get("maxWidth", 320)))
+                    return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 if path == "/api/media/video/filmstrip":
                     import video_engine as ve
-                    frames = ve.extract_filmstrip(payload.get("path"), payload.get("outputDir"), int(payload.get("count", 12)), int(payload.get("maxWidth", 160)))
+                    src = self._resolve_media_path(payload.get("path"), catalog)
+                    out_dir = self._new_media_work_path("")
+                    frames = ve.extract_filmstrip(src, out_dir, int(payload.get("count", 12)), int(payload.get("maxWidth", 160)))
                     return {"frames": [str(f) for f in frames]}
                 if path == "/api/media/video/trim":
                     import video_engine as ve
-                    out = ve.trim(payload.get("path"), payload.get("outputPath"), float(payload.get("startSeconds", 0.0)), float(payload.get("endSeconds", 0.0)), bool(payload.get("reencode", False)))
-                    return {"outputPath": str(out)}
+                    src = self._resolve_media_path(payload.get("path"), catalog)
+                    out = self._new_media_work_path(".mp4")
+                    ve.trim(src, out, float(payload.get("startSeconds", 0.0)), float(payload.get("endSeconds", 0.0)), bool(payload.get("reencode", False)))
+                    return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 if path == "/api/media/video/concat":
                     import video_engine as ve
-                    out = ve.concat(payload.get("sources", []), payload.get("outputPath"), int(payload.get("targetHeight", 1080)), int(payload.get("targetFps", 30)))
-                    return {"outputPath": str(out)}
+                    sources = [self._resolve_media_path(p, catalog) for p in payload.get("sources", [])]
+                    out = self._new_media_work_path(".mp4")
+                    ve.concat(sources, out, int(payload.get("targetHeight", 1080)), int(payload.get("targetFps", 30)))
+                    return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 if path == "/api/media/video/burn-text":
                     import video_engine as ve
+                    src = self._resolve_media_path(payload.get("path"), catalog)
+                    out = self._new_media_work_path(".mp4")
                     overlays = [ve.TextOverlay(**o) for o in payload.get("overlays", [])]
-                    out = ve.burn_text(payload.get("path"), payload.get("outputPath"), overlays)
-                    return {"outputPath": str(out)}
+                    ve.burn_text(src, out, overlays)
+                    return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 if path == "/api/media/video/transcode":
                     import video_engine as ve
-                    out = ve.transcode(payload.get("path"), payload.get("outputPath"), bool(payload.get("useHw", False)), int(payload.get("crf", 20)))
-                    return {"outputPath": str(out)}
+                    src = self._resolve_media_path(payload.get("path"), catalog)
+                    out = self._new_media_work_path(".mp4")
+                    ve.transcode(src, out, bool(payload.get("useHw", False)), int(payload.get("crf", 20)))
+                    return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/annotations", path)
                 if match:
                     return owner.controller.save_annotations(match.group(1), payload, catalog=catalog)
@@ -2852,11 +2941,15 @@ class LocalApiServer:
                         self._json(HTTPStatus.UNAUTHORIZED, {"error": "Không được phép."})
                         return
                     try:
-                        if self._serve_thumbnail(path) or self._serve_image(path):
+                        if self._serve_thumbnail(path) or self._serve_image(path) or self._serve_work_file(path, parsed_url.query):
                             return
                         self._json(HTTPStatus.OK, self._api_get(path, parsed_url.query))
                     except KeyError as exc:
                         self._json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+                    except FileNotFoundError as exc:
+                        self._json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+                    except PermissionError as exc:
+                        self._json(HTTPStatus.FORBIDDEN, {"error": str(exc)})
                     except (ValueError, IndexError) as exc:
                         self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
                     except Exception as exc:
@@ -2873,10 +2966,21 @@ class LocalApiServer:
                     self._json(HTTPStatus.OK, self._api_post(path, self._read_json()))
                 except KeyError as exc:
                     self._json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+                except FileNotFoundError as exc:
+                    self._json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+                except PermissionError as exc:
+                    self._json(HTTPStatus.FORBIDDEN, {"error": str(exc)})
                 except (ValueError, RuntimeError) as exc:
                     self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
                 except Exception as exc:
-                    self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+                    import photo_engine as pe
+                    import video_engine as ve
+                    if isinstance(exc, (pe.ServerBusyError, ve.ServerBusyError)):
+                        self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": str(exc)})
+                    elif isinstance(exc, (pe.PhotoEngineError, ve.VideoEngineError)):
+                        self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                    else:
+                        self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.httpd.daemon_threads = True

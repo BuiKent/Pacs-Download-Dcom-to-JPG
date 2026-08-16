@@ -759,28 +759,106 @@ class ServerSecurityTests(unittest.TestCase):
             self.assertEqual(body["info"]["height"], 800)
 
         # Test rotate
-        out_rot = catalog_dir / "rotated.jpg"
-        with self.post_json("/api/media/photo/rotate", {"path": str(img_path), "outputPath": str(out_rot), "degrees": 90}, token=self.server.token) as res:
+        with self.post_json("/api/media/photo/rotate", {"path": str(img_path), "degrees": 90}, token=self.server.token) as res:
             self.assertEqual(res.status, 200)
+            body = json.loads(res.read().decode("utf-8"))
+            out_rot = Path(body["outputPath"])
             self.assertTrue(out_rot.exists())
+            self.assertIn("url", body)
 
         # Test crop
-        out_crop = catalog_dir / "cropped.jpg"
-        with self.post_json("/api/media/photo/crop", {"path": str(img_path), "outputPath": str(out_crop), "rect": {"x": 10, "y": 10, "width": 100, "height": 100}}, token=self.server.token) as res:
+        with self.post_json("/api/media/photo/crop", {"path": str(img_path), "rect": {"x": 10, "y": 10, "width": 100, "height": 100}}, token=self.server.token) as res:
             self.assertEqual(res.status, 200)
+            body = json.loads(res.read().decode("utf-8"))
+            out_crop = Path(body["outputPath"])
             self.assertTrue(out_crop.exists())
+            self.assertIn("url", body)
 
         # Test redact
-        out_redact = catalog_dir / "redacted.jpg"
-        with self.post_json("/api/media/photo/redact", {"path": str(img_path), "outputPath": str(out_redact), "regions": [{"x": 40, "y": 40, "width": 200, "height": 40}]}, token=self.server.token) as res:
+        with self.post_json("/api/media/photo/redact", {"path": str(img_path), "regions": [{"x": 40, "y": 40, "width": 200, "height": 40}]}, token=self.server.token) as res:
             self.assertEqual(res.status, 200)
+            body = json.loads(res.read().decode("utf-8"))
+            out_redact = Path(body["outputPath"])
             self.assertTrue(out_redact.exists())
+            self.assertIn("url", body)
 
         # Test export PDF
-        out_pdf = catalog_dir / "export.pdf"
-        with self.post_json("/api/media/photo/export-pdf", {"sources": [str(img_path)], "outputPath": str(out_pdf)}, token=self.server.token) as res:
+        with self.post_json("/api/media/photo/export-pdf", {"sources": [str(img_path)]}, token=self.server.token) as res:
             self.assertEqual(res.status, 200)
+            body = json.loads(res.read().decode("utf-8"))
+            out_pdf = Path(body["outputPath"])
             self.assertTrue(out_pdf.exists())
+            self.assertIn("url", body)
+
+    def test_media_video_api_endpoints(self):
+        catalog_dir = Path(self.tmp.name) / "archive"
+        vid_path = catalog_dir / "test_video.mp4"
+        import subprocess
+        import video_engine as ve
+        # Generate 2s test video using bundled ffmpeg
+        subprocess.run([
+            ve._ffmpeg(), "-y",
+            "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=2",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            str(vid_path),
+        ], check=True, capture_output=True)
+
+        # Test video status and encoders
+        req_status = urllib.request.Request(
+            f"{self.server.url.split('?')[0]}api/media/video/status",
+            headers={"X-DCom-Token": self.server.token}
+        )
+        with urllib.request.urlopen(req_status) as res:
+            self.assertEqual(res.status, 200)
+            body = json.loads(res.read().decode("utf-8"))
+            self.assertIn("stats", body)
+
+        # Test video info
+        with self.post_json("/api/media/video/info", {"path": str(vid_path)}, token=self.server.token) as res:
+            self.assertEqual(res.status, 200)
+            body = json.loads(res.read().decode("utf-8"))
+            self.assertEqual(body["info"]["width"], 320)
+            self.assertEqual(body["info"]["height"], 240)
+            self.assertGreater(body["info"]["durationSeconds"], 1.5)
+
+        # Test video thumbnail
+        with self.post_json("/api/media/video/thumbnail", {"path": str(vid_path), "atSeconds": 0.5}, token=self.server.token) as res:
+            self.assertEqual(res.status, 200)
+            body = json.loads(res.read().decode("utf-8"))
+            out_thumb = Path(body["outputPath"])
+            self.assertTrue(out_thumb.exists())
+            self.assertIn("url", body)
+
+        # Test video trim
+        with self.post_json("/api/media/video/trim", {"path": str(vid_path), "startSeconds": 0.0, "endSeconds": 1.0, "reencode": False}, token=self.server.token) as res:
+            self.assertEqual(res.status, 200)
+            body = json.loads(res.read().decode("utf-8"))
+            out_trim = Path(body["outputPath"])
+            self.assertTrue(out_trim.exists())
+            self.assertIn("url", body)
+
+        # Test video burn-text
+        with self.post_json("/api/media/video/burn-text", {"path": str(vid_path), "overlays": [{"text": "TEST OVERLAY"}]}, token=self.server.token) as res:
+            self.assertEqual(res.status, 200)
+            body = json.loads(res.read().decode("utf-8"))
+            out_burn = Path(body["outputPath"])
+            self.assertTrue(out_burn.exists())
+            self.assertIn("url", body)
+
+        # Test video filmstrip
+        with self.post_json("/api/media/video/filmstrip", {"path": str(vid_path), "count": 3}, token=self.server.token) as res:
+            self.assertEqual(res.status, 200)
+            body = json.loads(res.read().decode("utf-8"))
+            self.assertIn("frames", body)
+            self.assertEqual(len(body["frames"]), 3)
+
+        # Test video transcode
+        with self.post_json("/api/media/video/transcode", {"path": str(vid_path), "crf": 30, "use_hw": False}, token=self.server.token) as res:
+            self.assertEqual(res.status, 200)
+            body = json.loads(res.read().decode("utf-8"))
+            out_trans = Path(body["outputPath"])
+            self.assertTrue(out_trans.exists())
+            self.assertIn("url", body)
 
     def test_api_rejects_missing_token(self):
         with self.assertRaises(urllib.error.HTTPError) as caught:
@@ -1209,6 +1287,13 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.temp_dir = Path(tempfile.mkdtemp())
+        self.controller = WebController()
+        self.controller.output_root = self.temp_dir
+        self.server = LocalApiServer(self.controller, Path(tempfile.mkdtemp()))
+        self.server.start()
+
+    def tearDown(self) -> None:
+        self.server.stop()
 
     def test_open_single_image_file_loads_series(self) -> None:
         from PIL import Image
@@ -1340,6 +1425,57 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertEqual(study_entry["mediaType"], "photo")
         self.assertEqual(study_entry["durationSeconds"], 120)
         self.assertEqual(study_entry["status"], "complete")
+
+    def test_media_routes_block_path_traversal(self) -> None:
+        import urllib.request
+        from PIL import Image
+        
+        # Test rotating a file outside allowed roots
+        payload = json.dumps({"path": "C:\\Windows\\system.ini", "degrees": 90}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.server.url.split('?')[0]}api/media/photo/rotate",
+            data=payload,
+            headers={"Content-Type": "application/json", "X-DCom-Token": self.server.token},
+            method="POST"
+        )
+        try:
+            urllib.request.urlopen(req)
+            self.fail("Should have raised HTTP error for path outside allowed roots")
+        except urllib.error.HTTPError as exc:
+            self.assertIn(exc.code, (403, 404))
+
+    def test_media_routes_preserve_original_file(self) -> None:
+        import urllib.request
+        from PIL import Image
+        
+        img_path = self.temp_dir / "sample_photo.jpg"
+        img = Image.new("RGB", (120, 80), color=(100, 150, 200))
+        img.save(img_path)
+        original_bytes = img_path.read_bytes()
+        
+        # Call rotate on valid image in catalog root
+        payload = json.dumps({"path": str(img_path), "degrees": 90}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self.server.url.split('?')[0]}api/media/photo/rotate",
+            data=payload,
+            headers={"Content-Type": "application/json", "X-DCom-Token": self.server.token},
+            method="POST"
+        )
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
+            data = json.loads(resp.read().decode("utf-8"))
+            out_path = Path(data["outputPath"])
+            self.assertTrue(out_path.exists())
+            self.assertNotEqual(str(out_path), str(img_path), "Output path must NEVER equal original file")
+            self.assertEqual(img_path.read_bytes(), original_bytes, "Original file must be 100% untouched")
+            
+            # Verify work-file server
+            work_url = f"{self.server.url.split('?')[0]}api/media/work-file?name={out_path.name}"
+            req_get = urllib.request.Request(work_url, headers={"X-DCom-Token": self.server.token})
+            with urllib.request.urlopen(req_get) as get_resp:
+                self.assertEqual(get_resp.status, 200)
+                self.assertEqual(get_resp.headers.get("Content-Type"), "image/jpeg")
+                self.assertEqual(len(get_resp.read()), out_path.stat().st_size)
 
 
 if __name__ == "__main__":

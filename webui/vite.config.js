@@ -8,4 +8,8 @@ export default defineConfig({
     target: "chrome109",
     chunkSizeWarningLimit: 1800,
   },
+  test: {
+    include: ["src/**/*.test.js"],
+    environment: "jsdom",
+  },
 });

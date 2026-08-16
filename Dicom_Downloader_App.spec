@@ -14,6 +14,9 @@ hiddenimports += [
     'clr_loader',
 ]
 datas += [('web_dist', 'web_dist')]
+import os
+if os.path.exists('tools/bin'):
+    datas += [('tools/bin', 'tools/bin')]
 
 
 a = Analysis(

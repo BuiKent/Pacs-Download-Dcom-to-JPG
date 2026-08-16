@@ -1,12 +1,27 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { setLanguage } from "./i18n.js";
-import { getSeriesMediaType } from "./main.js";
+import {
+  state,
+  action,
+  getSeriesMediaType,
+  getPhotoSourcePath,
+  getVideoSourcePath,
+  renderSurgeryVideoStudio,
+  renderPhotoEditorStudio,
+  renderViewer,
+} from "./main.js";
 
 describe("Media Studio Detection & Layouts", () => {
   beforeEach(() => {
     setLanguage("vi");
+    state.photoWorkingPath = null;
+    state.photoRotation = 0;
+    state.videoWorkingPath = null;
+    state.videoFilmstrip = [];
+    state.videoBookmarks = [];
+    state._videoInfoLoaded = false;
   });
 
   it("identifies video series correctly", () => {
@@ -24,5 +39,325 @@ describe("Media Studio Detection & Layouts", () => {
   it("defaults to dicom for regular imaging series", () => {
     expect(getSeriesMediaType({ description: "T1 SAG 5mm", sliceCount: 24 })).toBe("dicom");
     expect(getSeriesMediaType(null)).toBe("dicom");
+  });
+
+  it("renders surgery video studio layout with toolbar and bookmarks", () => {
+    const series = { id: "vid_01", patientName: "Nguyen Van A", mediaType: "video" };
+    state.videoBookmarks = [{ time: 12.5, text: "Bắt đầu rạch da" }];
+    state.videoFilmstrip = ["/work/frame_0.jpg", "/work/frame_1.jpg"];
+
+    const html = renderSurgeryVideoStudio(series);
+    expect(html).toContain("surgery-video-studio");
+    expect(html).toContain("video-tool-trim");
+    expect(html).toContain("video-tool-burn-text");
+    expect(html).toContain("video-tool-filmstrip");
+    expect(html).toContain("video-tool-transcode");
+    expect(html).toContain("Bắt đầu rạch da");
+    expect(html).toContain("frame_0.jpg");
+    expect(html).toContain("frame_1.jpg");
+  });
+
+  it("renders photo editor studio layout with all tools", () => {
+    const series = { id: "photo_01", patientName: "Tran Van B", mediaType: "photo" };
+    const html = renderPhotoEditorStudio(series);
+    expect(html).toContain("photo-editor-studio");
+    expect(html).toContain("photo-rotate-cw");
+    expect(html).toContain("photo-tool-crop");
+    expect(html).toContain("photo-tool-redact");
+    expect(html).toContain("photo-tool-arrow");
+    expect(html).toContain("photo-tool-box");
+    expect(html).toContain("photo-tool-text");
+    expect(html).toContain("photo-export-pdf");
+  });
+});
+
+describe("Photo & Video Path Resolvers", () => {
+  beforeEach(() => {
+    state.photoWorkingPath = null;
+    state.videoWorkingPath = null;
+  });
+
+  it("getPhotoSourcePath returns working path when set", async () => {
+    state.photoWorkingPath = "C:/tmp/working_photo.jpg";
+    const path = await getPhotoSourcePath({ id: "s1" });
+    expect(path).toBe("C:/tmp/working_photo.jpg");
+  });
+
+  it("getVideoSourcePath returns working path when set", async () => {
+    state.videoWorkingPath = "C:/tmp/working_video.mp4";
+    const path = await getVideoSourcePath({ id: "s1" });
+    expect(path).toBe("C:/tmp/working_video.mp4");
+  });
+});
+
+function mockJsonResponse(data) {
+  return {
+    ok: true,
+    status: 200,
+    headers: {
+      get: (h) => (h.toLowerCase() === "content-type" ? "application/json" : null),
+    },
+    json: async () => data,
+    text: async () => JSON.stringify(data),
+  };
+}
+
+describe("Photo Studio Action Handlers", () => {
+  beforeEach(() => {
+    state.archive = {
+      series: [{ id: "series_photo_1", name: "gpb.jpg", mediaType: "photo", patientName: "BN 01" }],
+    };
+    state.selectedId = "series_photo_1";
+    state.photoWorkingPath = "D:/storage/photo_01.jpg";
+    document.body.innerHTML = `
+      <div id="app">
+        <div id="workspace"></div>
+        <img id="photo-editor-img" src="/placeholder.jpg" />
+      </div>
+    `;
+  });
+
+  it("photo-rotate-cw calls rotate API and updates photoWorkingPath and img element", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ outputPath: "D:/storage/rotated_01.jpg", url: "/api/media/work-file?name=rotated_01.jpg" })
+    );
+    global.fetch = fetchMock;
+
+    await action("photo-rotate-cw");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/photo/rotate"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ path: "D:/storage/photo_01.jpg", degrees: 90 }),
+      })
+    );
+    expect(state.photoWorkingPath).toBe("D:/storage/rotated_01.jpg");
+    const img = document.querySelector("#photo-editor-img");
+    expect(img.src).toContain("rotated_01.jpg");
+  });
+
+  it("photo-tool-crop calls info and crop APIs", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockJsonResponse({ info: { width: 1000, height: 800 } }))
+      .mockResolvedValueOnce(mockJsonResponse({ outputPath: "D:/storage/cropped_01.jpg", url: "/api/media/work-file?name=cropped_01.jpg" }));
+    global.fetch = fetchMock;
+
+    await action("photo-tool-crop");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(state.photoWorkingPath).toBe("D:/storage/cropped_01.jpg");
+  });
+
+  it("photo-tool-redact calls redact API", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockJsonResponse({ info: { width: 1000, height: 800 } }))
+      .mockResolvedValueOnce(mockJsonResponse({ outputPath: "D:/storage/redacted_01.jpg", url: "/api/media/work-file?name=redacted_01.jpg" }));
+    global.fetch = fetchMock;
+
+    await action("photo-tool-redact");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(state.photoWorkingPath).toBe("D:/storage/redacted_01.jpg");
+  });
+
+  it("photo-tool-arrow, photo-tool-box, photo-tool-text call annotate API", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url) => {
+      if (String(url).includes("/info")) {
+        return mockJsonResponse({ info: { width: 1000, height: 800 } });
+      }
+      return mockJsonResponse({ outputPath: "D:/storage/annotated_01.jpg", url: "/api/media/work-file?name=annotated_01.jpg" });
+    });
+    global.fetch = fetchMock;
+
+    window.prompt = vi.fn().mockReturnValue("Ghi chú thử nghiệm");
+
+    await action("photo-tool-arrow");
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/photo/annotate"),
+      expect.objectContaining({ method: "POST" })
+    );
+
+    await action("photo-tool-box");
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/photo/annotate"),
+      expect.objectContaining({ method: "POST" })
+    );
+
+    await action("photo-tool-text");
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/photo/annotate"),
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+});
+
+describe("Surgery Video Studio Action Handlers", () => {
+  beforeEach(() => {
+    state.archive = {
+      series: [{ id: "series_video_1", name: "phau_thuat.mp4", mediaType: "video", patientName: "BN 02" }],
+    };
+    state.selectedId = "series_video_1";
+    state.videoWorkingPath = "D:/storage/surgery_01.mp4";
+    state.videoBookmarks = [];
+    document.body.innerHTML = `
+      <div id="app">
+        <div id="workspace"></div>
+        <video id="surgery-video-player" src="/placeholder.mp4"></video>
+      </div>
+    `;
+  });
+
+  it("video-tool-trim calls trim API and updates video player src", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ outputPath: "D:/storage/trimmed_01.mp4", url: "/api/media/work-file?name=trimmed_01.mp4" })
+    );
+    global.fetch = fetchMock;
+
+    window.prompt = vi.fn()
+      .mockReturnValueOnce("2.0")  // start
+      .mockReturnValueOnce("10.0"); // end
+
+    await action("video-tool-trim");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/video/trim"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ path: "D:/storage/surgery_01.mp4", startSeconds: 2.0, endSeconds: 10.0, reencode: false }),
+      })
+    );
+    expect(state.videoWorkingPath).toBe("D:/storage/trimmed_01.mp4");
+  });
+
+  it("video-tool-burn-text calls burn-text API", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ outputPath: "D:/storage/burned_01.mp4", url: "/api/media/work-file?name=burned_01.mp4" })
+    );
+    global.fetch = fetchMock;
+
+    window.prompt = vi.fn().mockReturnValue("Bệnh nhân: BN 02 - Mô tả phẫu thuật");
+
+    await action("video-tool-burn-text");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/video/burn-text"),
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("Bệnh nhân: BN 02 - Mô tả phẫu thuật"),
+      })
+    );
+    expect(state.videoWorkingPath).toBe("D:/storage/burned_01.mp4");
+  });
+
+  it("video-tool-filmstrip calls filmstrip API and populates videoFilmstrip", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ frames: ["/work/f1.jpg", "/work/f2.jpg", "/work/f3.jpg"] })
+    );
+    global.fetch = fetchMock;
+
+    await action("video-tool-filmstrip");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/video/filmstrip"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ path: "D:/storage/surgery_01.mp4", count: 6, maxWidth: 160 }),
+      })
+    );
+    expect(state.videoFilmstrip).toEqual(["/work/f1.jpg", "/work/f2.jpg", "/work/f3.jpg"]);
+  });
+
+  it("video-tool-transcode calls transcode API", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ outputPath: "D:/storage/transcoded_01.mp4", url: "/api/media/work-file?name=transcoded_01.mp4" })
+    );
+    global.fetch = fetchMock;
+
+    await action("video-tool-transcode");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/video/transcode"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ path: "D:/storage/surgery_01.mp4", crf: 23, use_hw: true }),
+      })
+    );
+    expect(state.videoWorkingPath).toBe("D:/storage/transcoded_01.mp4");
+  });
+
+  it("add-video-bookmark appends bookmark to state.videoBookmarks", async () => {
+    window.prompt = vi.fn().mockReturnValue("Rạch da bộc lộ tổn thương");
+    const video = document.querySelector("#surgery-video-player");
+    Object.defineProperty(video, "currentTime", { value: 15.5, writable: true });
+
+    await action("add-video-bookmark");
+
+    expect(state.videoBookmarks.length).toBe(1);
+    expect(state.videoBookmarks[0]).toEqual({ time: 15.5, text: "Rạch da bộc lộ tổn thương" });
+  });
+
+  it("video-tool-concat calls concat API with all video series sources", async () => {
+    state.archive.series.push({
+      id: "series_video_2",
+      name: "phau_thuat_part2.mp4",
+      mediaType: "video",
+      patientName: "BN 02",
+    });
+
+    const fetchMock = vi.fn().mockImplementation(async (url) => {
+      if (String(url).includes("/file-paths")) {
+        return mockJsonResponse({ images: ["D:/storage/surgery_02.mp4"] });
+      }
+      return mockJsonResponse({ outputPath: "D:/storage/concatenated.mp4", url: "/api/media/work-file?name=concatenated.mp4" });
+    });
+    global.fetch = fetchMock;
+
+    await action("video-tool-concat");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/video/concat"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          sources: ["D:/storage/surgery_01.mp4", "D:/storage/surgery_02.mp4"],
+          targetHeight: 1080,
+          targetFps: 30,
+        }),
+      })
+    );
+    expect(state.videoWorkingPath).toBe("D:/storage/concatenated.mp4");
+  });
+
+  it("video-tool-thumb calls thumbnail API at current timestamp", async () => {
+    const video = document.querySelector("#surgery-video-player");
+    Object.defineProperty(video, "currentTime", { value: 25.0, writable: true });
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ outputPath: "D:/storage/thumb_25s.jpg", url: "/api/media/work-file?name=thumb_25s.jpg" })
+    );
+    global.fetch = fetchMock;
+
+    await action("video-tool-thumb");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/video/thumbnail"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ path: "D:/storage/surgery_01.mp4", atSeconds: 25.0, maxWidth: 480 }),
+      })
+    );
+  });
+
+  it("seek-video and seek-filmstrip-idx set video currentTime", async () => {
+    const video = document.querySelector("#surgery-video-player");
+    Object.defineProperty(video, "currentTime", { value: 0, writable: true });
+    Object.defineProperty(video, "duration", { value: 100, writable: true });
+
+    await action("seek-video", { dataset: { time: "42.5" } });
+    expect(video.currentTime).toBe(42.5);
+
+    await action("seek-filmstrip-idx", { dataset: { idx: "2", total: "4" } });
+    expect(video.currentTime).toBe(50);
   });
 });

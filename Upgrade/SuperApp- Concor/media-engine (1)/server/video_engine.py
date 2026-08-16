@@ -20,6 +20,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -136,23 +137,62 @@ _FFPROBE_BIN: str | None = None
 
 
 def configure_binaries(ffmpeg_dir: Path | None = None) -> None:
-    """Gọi một lần lúc khởi động app, trỏ tới thư mục chứa ffmpeg.exe/ffprobe.exe
-    đóng gói kèm bản cài đặt (vd. <app_root>/bin/ffmpeg/). Nếu không gọi hoặc
-    không tìm thấy, engine rơi về PATH hệ thống.
-    """
+    """Định vị ffmpeg và ffprobe."""
     global _FFMPEG_BIN, _FFPROBE_BIN
     exe_suffix = ".exe" if _is_windows() else ""
-    if ffmpeg_dir:
-        candidate_ff = ffmpeg_dir / f"ffmpeg{exe_suffix}"
-        candidate_probe = ffmpeg_dir / f"ffprobe{exe_suffix}"
+
+    # 1. Nếu caller chỉ định thư mục cụ thể, chỉ kiểm tra thư mục đó
+    if ffmpeg_dir is not None:
+        cand_dir = Path(ffmpeg_dir)
+        cand_ff = cand_dir / f"ffmpeg{exe_suffix}"
+        cand_probe = cand_dir / f"ffprobe{exe_suffix}"
+        if cand_ff.exists() and cand_probe.exists():
+            _FFMPEG_BIN = str(cand_ff)
+            _FFPROBE_BIN = str(cand_probe)
+            logger.info("Dùng FFmpeg từ thư mục chỉ định: %s", cand_dir)
+            return
+        # Nếu thư mục chỉ định thiếu binary, rơi trực tiếp về PATH hệ thống cho cả 2
+        _FFMPEG_BIN = shutil.which("ffmpeg")
+        _FFPROBE_BIN = shutil.which("ffprobe")
+        if not _FFMPEG_BIN or not _FFPROBE_BIN:
+            _FFMPEG_BIN = None
+            _FFPROBE_BIN = None
+            raise RuntimeError(
+                "Không tìm thấy ffmpeg/ffprobe. Hãy đóng gói binary vào "
+                "<app_root>/tools/bin/ hoặc cài FFmpeg vào PATH hệ thống."
+            )
+        logger.info("Dùng FFmpeg từ PATH hệ thống (fallback từ thư mục chỉ định): %s", _FFMPEG_BIN)
+        return
+
+    # 2. ffmpeg_dir is None: Tự động tìm trong các thư mục đóng gói mặc định
+    search_dirs = []
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            search_dirs.append(Path(sys._MEIPASS) / "tools" / "bin")
+            search_dirs.append(Path(sys._MEIPASS) / "bin")
+        exe_dir = Path(sys.executable).resolve().parent
+        search_dirs.append(exe_dir / "tools" / "bin")
+        search_dirs.append(exe_dir / "bin")
+    else:
+        app_root = Path(__file__).resolve().parent
+        search_dirs.append(app_root / "tools" / "bin")
+        search_dirs.append(app_root / "bin")
+
+    for candidate_dir in search_dirs:
+        candidate_ff = candidate_dir / f"ffmpeg{exe_suffix}"
+        candidate_probe = candidate_dir / f"ffprobe{exe_suffix}"
         if candidate_ff.exists() and candidate_probe.exists():
             _FFMPEG_BIN = str(candidate_ff)
             _FFPROBE_BIN = str(candidate_probe)
-            logger.info("Dùng FFmpeg đóng gói kèm app: %s", ffmpeg_dir)
+            logger.info("Dùng FFmpeg đóng gói kèm app: %s", candidate_dir)
             return
+
+    # 3. Rơi về PATH hệ thống
     _FFMPEG_BIN = shutil.which("ffmpeg")
     _FFPROBE_BIN = shutil.which("ffprobe")
     if not _FFMPEG_BIN or not _FFPROBE_BIN:
+        _FFMPEG_BIN = None
+        _FFPROBE_BIN = None
         raise RuntimeError(
             "Không tìm thấy ffmpeg/ffprobe. Đóng gói binary kèm app vào "
             "<app_root>/bin/ffmpeg/ rồi gọi configure_binaries(path), hoặc "
@@ -582,7 +622,7 @@ def transcode(src: str | Path, out_path: str | Path, use_hw: bool = False,
     total_us = info.duration_s * 1_000_000
     start = time.time()
     with _heavy_gate:
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
         assert process.stdout is not None
         for line in process.stdout:
             if line.startswith("out_time_us=") and total_us > 0:
