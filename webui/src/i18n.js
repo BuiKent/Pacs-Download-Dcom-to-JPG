@@ -40,6 +40,8 @@ const EN = {
   "Mở folder bệnh nhân": "Open patient folder",
   "Xem phim": "View study",
   "Đóng tab": "Close tab",
+  "Chưa rõ mã BN": "Patient ID unknown",
+  "Chưa có thông tin hành chính": "No demographics recorded",
   // Worklist tabs: Study List / Activity & Queue
   "Hồ sơ gần đây": "Recent records",
   "Series trong kho": "Series in archive",

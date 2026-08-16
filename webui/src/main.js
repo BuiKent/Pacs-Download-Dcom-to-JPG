@@ -664,24 +664,87 @@ function renderPhotoEditorStudio(series) {
 /** History rows matching the worklist search box. */
 function filteredHistoryEntries() {
   const search = (state.worklistSearch || "").toLowerCase().trim();
-  // The stored entry is only `{folder, url, time}` — the patient name and code
-  // live inside the folder path, so matching the path covers both.
   return (state.history || []).filter((entry) => {
     if (!search) return true;
     return `${entry.folder || ""} ${entry.url || ""}`.toLowerCase().includes(search);
   });
 }
 
+/** Returns patients from state or fallback constructed from history. */
+function getEffectiveWorklistPatients() {
+  if (Array.isArray(state.worklistPatients) && state.worklistPatients.length > 0) {
+    return state.worklistPatients;
+  }
+  const history = state.history || [];
+  return history.map((entry, idx) => {
+    const folderName = entry.folder ? entry.folder.split(/[\\/]/).pop() : "Folder";
+    return {
+      id: `p_hist_${idx}`,
+      patientId: folderName,
+      patientName: folderName,
+      // A history row carries only a path — sex, birth year and hospital are
+      // genuinely unknown here, so they stay blank instead of being invented.
+      gender: "",
+      birthYear: "",
+      hospital: "",
+      folder: entry.folder,
+      totalSizeFormatted: "",
+      mediaSummary: { dicom: 1, photo: 0, video: 0, doc: 0 },
+      studies: [
+        {
+          id: `s_hist_${idx}`,
+          studyDate: entry.time || "",
+          studyName: folderName,
+          modality: "DICOM",
+          seriesCount: 1,
+          sliceCount: 1,
+          folder: entry.folder,
+          status: entry.exists === false ? "miss" : "done",
+          statusLabel: entry.exists === false ? t("Thiếu folder") : t("Đã tải"),
+          mediaCounts: { dicom: 1, photo: 0, video: 0, doc: 0 },
+          primaryMediaType: "dicom",
+        },
+      ],
+    };
+  });
+}
+
+/** Patients matching the search box. */
+function filteredPatientList() {
+  const search = (state.worklistSearch || "").toLowerCase().trim();
+  const patients = getEffectiveWorklistPatients();
+  if (!search) return patients;
+
+  return patients.filter((p) => {
+    const pText = `${p.patientId || ""} ${p.patientName || ""} ${p.hospital || ""} ${p.gender || ""} ${p.birthYear || ""}`.toLowerCase();
+    if (pText.includes(search)) return true;
+    return (p.studies || []).some((s) => {
+      const sText = `${s.studyDate || ""} ${s.studyName || ""} ${s.modality || ""} ${s.folder || ""}`.toLowerCase();
+      return sText.includes(search);
+    });
+  });
+}
+
 /**
- * Inner HTML of `.worklist-tree`.
- *
- * The search box repaints this node on every keystroke instead of re-rendering
- * the shell, so both paths have to build the same markup — keeping it in one
- * function is what stops the two copies from drifting apart.
+ * Inner HTML of `.worklist-tree`, rendering the multi-level patient study tree.
  */
+/**
+ * "Tên · Giới · Năm sinh", skipping whatever the archive does not actually know.
+ *
+ * Never substitutes a default: a made-up sex or birth year sitting next to a
+ * patient's images is exactly the kind of detail a clinician trusts to confirm
+ * they opened the right chart.
+ */
+function patientIdentityLine(patient) {
+  const parts = [patient.patientName, patient.gender, patient.birthYear]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return parts.length ? parts.join(" · ") : t("Chưa có thông tin hành chính");
+}
+
 function renderWorklistTreeInner() {
-  const filteredHistory = filteredHistoryEntries();
-  if (filteredHistory.length === 0) {
+  const patients = filteredPatientList();
+  if (patients.length === 0) {
     return `
       <div class="empty-state">
         <b>${escapeHtml(t("Chưa có hồ sơ nào trong danh sách"))}</b>
@@ -691,30 +754,127 @@ function renderWorklistTreeInner() {
       </div>
     `;
   }
-  return filteredHistory.map((entry) => {
-    const folderName = entry.folder ? entry.folder.split(/[\\/]/).pop() : "Folder";
-    return `
-      <div class="worklist-patient-card">
-        <div class="worklist-patient-header">
-          <div class="worklist-patient-info">
-            <span style="font-size: 16px;">📁</span>
-            <div>
-              <span class="worklist-patient-name">${escapeHtml(folderName)}</span>
-              <div class="worklist-patient-meta">${escapeHtml(entry.folder || "")}</div>
-            </div>
+
+  state.expandedPatients = state.expandedPatients || {};
+
+  return `
+    <div class="plist">
+      ${patients.map((p) => {
+        const isExpanded = state.expandedPatients[p.id] !== false;
+        const media = p.mediaSummary || { dicom: 0, photo: 0, video: 0, doc: 0 };
+        return `
+          <div class="prow" role="button" tabindex="0" aria-expanded="${isExpanded}" data-toggle-patient="${escapeHtml(p.id)}">
+            <span class="twist">▶</span>
+            <span class="who">
+              <b>${escapeHtml(p.patientId || t("Chưa rõ mã BN"))}</b>
+              <small>${escapeHtml(patientIdentityLine(p))}</small>
+            </span>
+            <span class="meta">${escapeHtml(p.hospital || "—")}</span>
+            <span class="media">
+              ${media.dicom ? `<span class="mtag dicom"><i></i>${media.dicom} series</span>` : ""}
+              ${media.photo ? `<span class="mtag photo"><i></i>${media.photo} ảnh</span>` : ""}
+              ${media.video ? `<span class="mtag video"><i></i>${media.video} video</span>` : ""}
+              ${media.doc ? `<span class="mtag doc"><i></i>${media.doc} trang</span>` : ""}
+            </span>
+            <span class="meta">${escapeHtml(p.totalSizeFormatted || "")}</span>
+            <span class="rowacts">
+              <button class="soft-button" type="button" data-action="open-patient-record" data-patient-id="${escapeHtml(p.id)}">
+                ${escapeHtml(t("Mở hồ sơ"))}
+              </button>
+            </span>
           </div>
-          <button class="soft-button worklist-open-btn primary" data-action="open-worklist-item" data-folder="${escapeHtml(entry.folder || "")}">
-            ${escapeHtml(t("Xem phim"))}
-          </button>
-        </div>
-      </div>
-    `;
-  }).join("");
+
+          <div class="studies${isExpanded ? " on" : ""}" data-studies="${escapeHtml(p.id)}">
+            ${(p.studies || []).map((s) => {
+              const sm = s.mediaCounts || { dicom: 0, photo: 0, video: 0, doc: 0 };
+              return `
+                <div class="srow">
+                  <span class="rail"></span>
+                  <span class="who">
+                    <b>${escapeHtml(s.studyDate || "")} · ${escapeHtml(s.studyName || "")}</b>
+                    <small>${s.seriesCount || 1} series · ${s.sliceCount || 0} lát</small>
+                  </span>
+                  <span class="meta">${escapeHtml(s.modality || "DICOM")}</span>
+                  <span class="media">
+                    ${sm.dicom ? `<span class="mtag dicom"><i></i>${sm.dicom}</span>` : ""}
+                    ${sm.photo ? `<span class="mtag photo"><i></i>${sm.photo}</span>` : ""}
+                    ${sm.video ? `<span class="mtag video"><i></i>${sm.video}</span>` : ""}
+                    ${sm.doc ? `<span class="mtag doc"><i></i>${sm.doc}</span>` : ""}
+                  </span>
+                  <span class="badge ${s.status || "done"}">${escapeHtml(s.statusLabel || t("Đã tải"))}</span>
+                  <span class="rowacts">
+                    <button class="soft-button primary" type="button" data-action="open-study-viewer" data-folder="${escapeHtml(s.folder || "")}" ${s.status === "miss" ? "disabled" : ""}>
+                      ${escapeHtml(t("Mở viewer"))}
+                    </button>
+                    <button class="soft-button" type="button" data-action="reveal-study-folder" data-folder="${escapeHtml(s.folder || "")}">
+                      ${escapeHtml(t("Thư mục"))}
+                    </button>
+                  </span>
+                </div>
+              `;
+            }).join("")}
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
 }
 
-/** Attach the open-folder listeners to freshly written worklist markup. */
+/** Attach tree accordion and button listeners to worklist markup. */
 function bindWorklistOpenButtons(host) {
-  host?.querySelectorAll("[data-action='open-worklist-item']").forEach((button) => {
+  if (!host) return;
+
+  host.querySelectorAll("[data-toggle-patient]").forEach((prow) => {
+    prow.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      const pid = prow.dataset.togglePatient;
+      state.expandedPatients = state.expandedPatients || {};
+      state.expandedPatients[pid] = !(state.expandedPatients[pid] !== false);
+      const studies = host.querySelector(`[data-studies='${pid}']`);
+      if (studies) {
+        studies.classList.toggle("on", state.expandedPatients[pid]);
+        prow.setAttribute("aria-expanded", String(state.expandedPatients[pid]));
+      }
+    });
+  });
+
+  host.querySelectorAll("[data-action='open-study-viewer']").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const folder = btn.dataset.folder;
+      if (folder) openHistoryEntry({ folder });
+    });
+  });
+
+  host.querySelectorAll("[data-action='open-patient-record']").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const pid = btn.dataset.patientId;
+      const patient = getEffectiveWorklistPatients().find((p) => p.id === pid);
+      if (patient && patient.studies && patient.studies.length > 0) {
+        openHistoryEntry({ folder: patient.studies[0].folder });
+      }
+    });
+  });
+
+  host.querySelectorAll("[data-action='reveal-study-folder']").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const folder = btn.dataset.folder;
+      if (folder) {
+        try {
+          await api("/api/worklist/reveal-folder", {
+            method: "POST",
+            body: JSON.stringify({ folder }),
+          });
+        } catch (err) {
+          log(t("Không thể mở thư mục: ") + err.message);
+        }
+      }
+    });
+  });
+
+  host.querySelectorAll("[data-action='open-worklist-item']").forEach((button) => {
     button.addEventListener("click", () => {
       const folder = button.dataset.folder;
       if (folder) openHistoryEntry({ folder });
@@ -724,8 +884,8 @@ function bindWorklistOpenButtons(host) {
 
 function renderStudyListPanel() {
   return `
-    <div class="worklist-filter-bar">
-      <input type="text" data-field="worklist-search" placeholder="${escapeHtml(t("Tìm kiếm mã BN, tên bệnh nhân, thư mục..."))}" value="${escapeHtml(state.worklistSearch || "")}">
+    <div class="worklist-filter-bar filters">
+      <input type="search" data-field="worklist-search" placeholder="${escapeHtml(t("Tìm theo tên hoặc mã bệnh nhân, đợt khám…"))}" value="${escapeHtml(state.worklistSearch || "")}">
     </div>
 
     <div class="worklist-tree">${renderWorklistTreeInner()}</div>
@@ -833,7 +993,7 @@ function renderWorklistView() {
           aria-selected="${tab === "studies"}"
           data-action="worklist-tab" data-worklist-tab="studies">
           ${escapeHtml(t("Study List"))}
-          <span class="worklist-tab-count">${filteredHistoryEntries().length}</span>
+          <span class="worklist-tab-count">${filteredPatientList().length}</span>
         </button>
         <button class="worklist-tab${tab === "activity" ? " active" : ""}" role="tab"
           aria-selected="${tab === "activity"}"
@@ -1675,7 +1835,7 @@ function bindEvents() {
     bindWorklistOpenButtons(tree);
     // The Study List tab shows the match count, so it has to follow the box.
     const count = app.querySelector(".worklist-tab[data-worklist-tab='studies'] .worklist-tab-count");
-    if (count) count.textContent = String(filteredHistoryEntries().length);
+    if (count) count.textContent = String(filteredPatientList().length);
   });
   app.querySelectorAll("[data-series-id]").forEach((element) => {
     element.addEventListener("click", async () => {
@@ -2006,6 +2166,11 @@ async function action(name, element = null) {
         delete state.rememberedSeriesSelections.direct;
         renderSeriesPickerOnly();
       }
+      return;
+    }
+    if (name === "worklist-tab") {
+      state.worklistTab = element?.dataset?.worklistTab || "studies";
+      render();
       return;
     }
     if (name === "choose-archive") {
@@ -3454,6 +3619,9 @@ export {
   renderWorklistView,
   renderActivityPanelInner,
   filteredHistoryEntries,
+  filteredPatientList,
+  getEffectiveWorklistPatients,
+  renderWorklistTreeInner,
   getSeriesMediaType,
   getPhotoSourcePath,
   getVideoSourcePath,

@@ -14,6 +14,8 @@ import math
 import os
 import re
 import secrets
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -1756,6 +1758,15 @@ def _study_group_label(date: str, modality: str, description: str) -> str:
     return " - ".join(parts) if parts else "Không rõ ca chụp"
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    """True when `path` sits at or below `root`. Both must already be resolved."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def _is_writable_dir(folder: Path) -> bool:
     """Whether a new folder can be created inside `folder`.
 
@@ -1811,6 +1822,323 @@ def _local_import_plan(source: Path) -> tuple[list[tuple[Path, Path]], Path]:
         return [(folder, folder.parent / "JPG") for folder in nested], source
     destination = source / "JPG"
     return [(source, destination)], destination
+
+
+def _format_file_size(size_bytes: int) -> str:
+    if size_bytes <= 0:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    idx = 0
+    val = float(size_bytes)
+    while val >= 1024.0 and idx < len(units) - 1:
+        val /= 1024.0
+        idx += 1
+    if idx == 0:
+        return f"{int(val)} B"
+    return f"{val:.1f}".replace(".", ",") + f" {units[idx]}"
+
+
+class WorklistScanner:
+    """Discovers patient and study hierarchy for the clinical Worklist.
+
+    Structure:
+      Patient (patientId, patientName, gender, birthYear, hospital, totalSizeFormatted, mediaSummary)
+        └── Studies (studyDate, studyName, modality, seriesCount, sliceCount, folder, status, mediaCounts, primaryMediaType)
+    """
+
+    def __init__(self, controller: "WebController"):
+        self.controller = controller
+
+    def _manifest_patient_meta(self, patient_dir: Path) -> Optional[dict]:
+        """Patient identity straight from `patient-index.json`, when present.
+
+        The manifest is what the download pipeline actually recorded from the
+        DICOM tags, so it outranks anything guessed from a folder name. Reading
+        it is also the only way to get sex and birth date right — a folder named
+        `BN-9999` carries neither.
+        """
+        try:
+            raw = (patient_dir / "patient-index.json").read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except Exception:
+            return None
+        if not isinstance(data, dict) or not data.get("patientId"):
+            return None
+        # DICOM DA is YYYYMMDD; the worklist column only shows the year.
+        birth = re.sub(r"\D", "", str(data.get("patientBirthDate") or ""))
+        sex = str(data.get("patientSex") or "").strip().upper()
+        return {
+            "patientId": str(data.get("patientId") or "").strip(),
+            "patientName": str(data.get("patientName") or "").strip(),
+            "gender": {"M": "Nam", "F": "Nữ"}.get(sex, ""),
+            "birthYear": birth[:4] if len(birth) >= 4 else "",
+            "hospital": str(data.get("hospitalName") or "").strip(),
+        }
+
+    def _patient_meta_for(self, patient_dir: Path) -> dict:
+        """Manifest identity when the folder has one, folder-name guess otherwise.
+
+        Fields the manifest leaves blank fall back to the guess rather than
+        overwriting it with an empty string, so a partial manifest still helps.
+        """
+        guessed = self._parse_patient_meta(patient_dir.name)
+        recorded = self._manifest_patient_meta(patient_dir)
+        if not recorded:
+            return guessed
+        return {key: (recorded.get(key) or guessed.get(key, "")) for key in guessed}
+
+    def _parse_patient_meta(self, folder_name: str) -> dict:
+        name_clean = folder_name.replace("\\", "/").rstrip("/").split("/")[-1]
+        primary_chunks = [c.strip() for c in re.split(r"[_|]|\s+-\s+|\s+·\s+", name_clean) if c.strip()]
+        patient_id = primary_chunks[0] if primary_chunks else name_clean
+
+        remaining = " ".join(primary_chunks[1:]) if len(primary_chunks) > 1 else ""
+        words = [w.strip() for w in re.split(r"[\s,]+", remaining) if w.strip()]
+
+        gender = ""
+        for w in words:
+            if w.casefold() in {"nam", "male", "m"}:
+                gender = "Nam"
+            elif w.casefold() in {"nu", "nữ", "female", "f"}:
+                gender = "Nữ"
+
+        birth_year = ""
+        for w in words:
+            if re.fullmatch(r"(19\d\d|20\d\d)", w):
+                birth_year = w
+                break
+
+        hospital = ""
+        for i, w in enumerate(words):
+            if w.upper() in {"BV", "BENHVIEN", "BỆNHVIỆN"} and i + 1 < len(words):
+                hospital = f"BV {words[i+1].upper()}"
+                break
+            elif re.fullmatch(r"BV\s*[A-Za-z0-9]+", w, re.IGNORECASE):
+                hospital = w.upper()
+                break
+
+        name_tokens = []
+        for w in words:
+            if w == patient_id:
+                continue
+            if w.casefold() in {"nam", "nu", "nữ", "male", "female", "m", "f"}:
+                continue
+            if w == birth_year:
+                continue
+            if w.upper().startswith("BV") or w.upper() in {"BENHVIEN", "BỆNHVIỆN"}:
+                continue
+            if len(w) > 1 and not w.isdigit():
+                name_tokens.append(w)
+        patient_name = " ".join(name_tokens).upper() if name_tokens else (primary_chunks[1].upper() if len(primary_chunks) > 1 else patient_id)
+
+        # Anything not actually found stays empty. A worklist that invents a sex
+        # or a birth year is worse than one that shows a blank: those two fields
+        # are exactly what a clinician reads to confirm they opened the right
+        # patient, so a guess here can send images to the wrong chart.
+        return {
+            "patientId": patient_id,
+            "patientName": patient_name,
+            "gender": gender,
+            "birthYear": birth_year,
+            "hospital": hospital,
+        }
+
+    def _scan_study(self, study_dir: Path, patient_meta: dict) -> dict:
+        folder_str = str(study_dir)
+        exists = study_dir.is_dir()
+        if not exists:
+            return {
+                "id": hashlib.sha256(folder_str.encode("utf-8")).hexdigest()[:16],
+                "studyDate": time.strftime("%d/%m/%Y"),
+                "studyName": study_dir.name,
+                "modality": "DICOM",
+                "seriesCount": 0,
+                "sliceCount": 0,
+                "folder": folder_str,
+                "status": "miss",
+                "statusLabel": "Thiếu folder",
+                "mediaCounts": {"dicom": 0, "photo": 0, "video": 0, "doc": 0},
+                "primaryMediaType": "dicom",
+                "sizeBytes": 0,
+            }
+
+        date_match = re.search(r"(\d{4})[-_](\d{2})[-_](\d{2})|(\d{8})", study_dir.name)
+        if date_match:
+            if date_match.group(1):
+                study_date = f"{date_match.group(3)}/{date_match.group(2)}/{date_match.group(1)}"
+            else:
+                raw_d = date_match.group(4)
+                study_date = f"{raw_d[6:8]}/{raw_d[4:6]}/{raw_d[0:4]}"
+        else:
+            study_date = time.strftime("%d/%m/%Y")
+
+        study_name = study_dir.name
+        clean_study_name = re.sub(r"^\d{4}[-_]\d{2}[-_]\d{2}[\s_-]*|^\d{8}[\s_-]*", "", study_name).strip()
+        if clean_study_name.startswith("-"):
+            clean_study_name = clean_study_name.lstrip("- ").strip()
+        study_name = clean_study_name or study_dir.name
+
+        dicom_count = 0
+        photo_count = 0
+        video_count = 0
+        doc_count = 0
+        size_bytes = 0
+        series_folders = set()
+
+        try:
+            for root, dirs, files in os.walk(study_dir):
+                root_path = Path(root)
+                rel = root_path.relative_to(study_dir)
+                if len(rel.parts) == 1:
+                    series_folders.add(rel.parts[0])
+                for f in files:
+                    fp = root_path / f
+                    try:
+                        sz = fp.stat().st_size
+                        size_bytes += sz
+                    except OSError:
+                        pass
+                    ext = fp.suffix.lower()
+                    if ext in {".dcm", ".ima", ".dicom"} or "dicom" in str(fp).casefold():
+                        dicom_count += 1
+                    elif ext in {".mp4", ".avi", ".mkv", ".mov", ".webm"}:
+                        video_count += 1
+                    elif ext in {".pdf"}:
+                        doc_count += 1
+                    elif ext in {".jpg", ".png", ".jpeg", ".webp"}:
+                        if "doc" in str(fp).casefold() or "benh_an" in str(fp).casefold() or "scan" in str(fp).casefold():
+                            doc_count += 1
+                        else:
+                            photo_count += 1
+        except Exception:
+            pass
+
+        modality = "DICOM"
+        lower_name = study_dir.name.casefold()
+        if "mr" in lower_name or "mri" in lower_name:
+            modality = "MR"
+        elif "ct" in lower_name:
+            modality = "CT"
+        elif "xray" in lower_name or "x-ray" in lower_name or "xquang" in lower_name or "x-quang" in lower_name:
+            modality = "X-Quang"
+        elif video_count > 0 and video_count >= dicom_count:
+            modality = "Video"
+        elif doc_count > 0 and doc_count >= dicom_count:
+            modality = "Bệnh án"
+        elif photo_count > 0 and photo_count >= dicom_count:
+            modality = "Ảnh"
+
+        primary_media = "dicom"
+        if modality == "Video" or (video_count > 0 and dicom_count == 0):
+            primary_media = "video"
+        elif modality == "Bệnh án" or (doc_count > 0 and dicom_count == 0 and photo_count == 0):
+            primary_media = "doc"
+        elif modality == "Ảnh" or (photo_count > 0 and dicom_count == 0):
+            primary_media = "photo"
+
+        series_count = max(1, len(series_folders)) if (dicom_count or photo_count) else 1
+        slice_count = dicom_count if dicom_count else (photo_count + doc_count if (photo_count or doc_count) else video_count)
+
+        status = "done"
+        status_label = "Đã tải"
+        job_snap = self.controller.job.snapshot()
+        if job_snap.get("status") == "running" and str(study_dir).casefold() in str(job_snap.get("message", "")).casefold():
+            status = "busy"
+            status_label = "Đang tải"
+
+        return {
+            "id": hashlib.sha256(folder_str.encode("utf-8")).hexdigest()[:16],
+            "studyDate": study_date,
+            "studyName": study_name,
+            "modality": modality,
+            "seriesCount": series_count,
+            "sliceCount": slice_count,
+            "folder": folder_str,
+            "status": status,
+            "statusLabel": status_label,
+            "mediaCounts": {
+                "dicom": dicom_count,
+                "photo": photo_count,
+                "video": video_count,
+                "doc": doc_count,
+            },
+            "primaryMediaType": primary_media,
+            "sizeBytes": size_bytes,
+        }
+
+    def scan(self) -> list[dict]:
+        roots_to_scan = []
+        if self.controller.output_root and self.controller.output_root.is_dir():
+            roots_to_scan.append(self.controller.output_root)
+
+        history = self.controller.history_snapshot()
+        history_folders = [Path(item["folder"]) for item in history if item.get("folder")]
+
+        patient_map: dict[str, dict] = {}
+
+        for root in roots_to_scan:
+            try:
+                for child in root.iterdir():
+                    if child.is_dir() and not child.name.startswith("."):
+                        meta = self._patient_meta_for(child)
+                        pid = meta["patientId"]
+                        if pid not in patient_map:
+                            patient_map[pid] = {
+                                "id": f"p_{hashlib.sha256(pid.encode()).hexdigest()[:12]}",
+                                **meta,
+                                "folder": str(child),
+                                "exists": True,
+                                "studies": [],
+                            }
+                        subdirs = [s for s in child.iterdir() if s.is_dir() and not s.name.startswith(".")]
+                        study_subdirs = [s for s in subdirs if not s.name.upper() in {"DICOM", "JPG", "VIDEO", "PHOTO"}]
+                        if study_subdirs:
+                            for sdir in study_subdirs:
+                                st = self._scan_study(sdir, meta)
+                                patient_map[pid]["studies"].append(st)
+                        else:
+                            st = self._scan_study(child, meta)
+                            patient_map[pid]["studies"].append(st)
+            except Exception:
+                pass
+
+        for hpath in history_folders:
+            patient_dir = hpath.parent if hpath.name.casefold() in {"dicom", "jpg"} else hpath
+            meta = self._patient_meta_for(patient_dir)
+            pid = meta["patientId"]
+            if pid not in patient_map:
+                patient_map[pid] = {
+                    "id": f"p_{hashlib.sha256(pid.encode()).hexdigest()[:12]}",
+                    **meta,
+                    "folder": str(hpath),
+                    "exists": hpath.is_dir(),
+                    "studies": [],
+                }
+            existing_folders = {s["folder"].casefold() for s in patient_map[pid]["studies"]}
+            if str(hpath).casefold() not in existing_folders:
+                st = self._scan_study(hpath, meta)
+                patient_map[pid]["studies"].append(st)
+
+        patients = []
+        for p in patient_map.values():
+            total_size = sum(s.get("sizeBytes", 0) for s in p["studies"])
+            dicom_tot = sum(s["mediaCounts"]["dicom"] for s in p["studies"])
+            photo_tot = sum(s["mediaCounts"]["photo"] for s in p["studies"])
+            video_tot = sum(s["mediaCounts"]["video"] for s in p["studies"])
+            doc_tot = sum(s["mediaCounts"]["doc"] for s in p["studies"])
+
+            p["totalSizeBytes"] = total_size
+            p["totalSizeFormatted"] = _format_file_size(total_size)
+            p["mediaSummary"] = {
+                "dicom": dicom_tot,
+                "photo": photo_tot,
+                "video": video_tot,
+                "doc": doc_tot,
+            }
+            p["studies"].sort(key=lambda s: s.get("studyDate", ""), reverse=True)
+            patients.append(p)
+
+        return patients
 
 
 class WebController:
@@ -1900,6 +2228,7 @@ class WebController:
             "outputRoot": str(self.output_root),
             "language": self.language,
             "history": self.history_snapshot(),
+            "worklist": self.get_worklist(),
             "lastDirectUrl": self.history.url_for(archive.get("root", "")),
             "hospitals": [
                 {
@@ -1910,6 +2239,43 @@ class WebController:
                 for key, value in dcom_pipeline.HOSPITALS.items()
             ],
         }
+
+    def get_worklist(self) -> dict:
+        scanner = WorklistScanner(self)
+        patients = scanner.scan()
+        return {"patients": patients}
+
+    def _reveal_roots(self) -> list[Path]:
+        """Folders the UI is allowed to hand to the shell."""
+        roots: list[Path] = []
+        if self.output_root:
+            roots.append(Path(self.output_root).resolve())
+        catalog_root = getattr(self.catalog, "root", "")
+        if catalog_root:
+            roots.append(Path(catalog_root).resolve())
+        return roots
+
+    def reveal_folder(self, folder_str: str) -> dict:
+        """Open a study folder in the OS file browser.
+
+        `os.startfile` launches whatever the shell associates with the target,
+        so handing it a *file* would run it — an .exe or .bat under the archive
+        would execute. Two guards keep that shut: the path must resolve inside a
+        known root, and it must be a directory, never a file.
+        """
+        target = Path(folder_str).expanduser().resolve()
+        roots = self._reveal_roots()
+        if not roots or not any(_is_within(target, root) for root in roots):
+            raise PermissionError(
+                f"Truy cập bị từ chối: Đường dẫn nằm ngoài phạm vi cho phép ({folder_str})"
+            )
+        if not target.is_dir():
+            raise ValueError(f"Chỉ mở được thư mục, không mở file: {folder_str}")
+        if sys.platform.startswith("win"):
+            os.startfile(str(target))  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["xdg-open", str(target)])
+        return {"revealed": True, "folder": str(target)}
 
     def open_archive(self, path: str) -> dict:
         return self.catalog.open(path)
@@ -2701,6 +3067,8 @@ class LocalApiServer:
                     return owner.controller.job.snapshot()
                 if path == "/api/history":
                     return {"history": owner.controller.history_snapshot()}
+                if path == "/api/worklist":
+                    return owner.controller.get_worklist()
                 if path == "/api/sessions":
                     return {"sessions": owner.controller.sessions.list_sessions()}
                 if path == "/api/media/video/status":
@@ -2767,6 +3135,8 @@ class LocalApiServer:
                     return owner.controller.stop()
                 if path == "/api/history/open":
                     return owner.controller.start_history_open(str(payload.get("folder") or ""))
+                if path == "/api/worklist/reveal-folder":
+                    return owner.controller.reveal_folder(str(payload.get("folder") or ""))
                 if path == "/api/settings/language":
                     return owner.controller.set_language(str(payload.get("language") or ""))
                 if path == "/api/media/photo/info":

@@ -83,10 +83,25 @@
   --credit-fg: #9b9a97;
   --log-fg: #37352f;
   --log-border: #e9e9e7;
-  --log-bg: #fbfbfa;
   --statusbar-border: #e9e9e7;
   --statusbar-bg: #ffffff;
   --status-dot-bg: #188038;
+
+  /* Clinical Media Type Colors */
+  --m-dicom: #2383e2;
+  --m-photo: #2e7d32;
+  --m-video: #8e44ad;
+  --m-doc: #7f8c8d;
+
+  /* Worklist Status Badges */
+  --done-fg: #2e7d32;
+  --done-bg: #e8f5e9;
+  --ok-fg: #1976d2;
+  --ok-bg: #e3f2fd;
+  --warn-fg: #d9730d;
+  --warn-bg: #fadec9;
+  --bad-fg: #e03e3e;
+  --bad-bg: #ffe2dd;
 }
 
 * { box-sizing: border-box; }
@@ -2145,5 +2160,158 @@ button:disabled { opacity: .35; cursor: default; }
   color: #e2e8f0;
   border-radius: 4px;
 }
+
+/* ================= Cây Study List Đa Cấp ================= */
+.plist {
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--chrome-border, #e9e9e7);
+}
+
+.prow, .srow {
+  display: grid;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--chrome-border, #f1f1ef);
+}
+
+.prow {
+  grid-template-columns: 20px minmax(200px, 1.4fr) 96px 160px 96px 132px;
+  cursor: pointer;
+  background: var(--shell-bg, #ffffff);
+  transition: background 120ms ease;
+  user-select: none;
+}
+
+.prow:hover {
+  background: var(--control-bg-hover, #f7f7f5);
+}
+
+.prow .twist {
+  color: var(--label-muted, #9b9a97);
+  font-size: 11px;
+  transition: transform 140ms ease;
+  display: inline-block;
+}
+
+.prow[aria-expanded="true"] .twist {
+  transform: rotate(90deg);
+}
+
+.who b {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--body-fg, #37352f);
+}
+
+.who small {
+  display: block;
+  color: var(--label-muted, #9b9a97);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.meta {
+  color: var(--label-fg, #6b6a66);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.media {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 9px;
+  align-items: center;
+}
+
+.mtag {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  color: var(--label-fg, #6b6a66);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mtag i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.mtag.dicom i { background: var(--m-dicom, #2383e2); }
+.mtag.photo i { background: var(--m-photo, #2e7d32); }
+.mtag.doc i   { background: var(--m-doc, #7f8c8d); }
+.mtag.video i { background: var(--m-video, #8e44ad); }
+
+.badge {
+  justify-self: start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.badge.done { color: var(--done-fg, #2e7d32); background: var(--done-bg, #e8f5e9); }
+.badge.new  { color: var(--ok-fg, #1976d2);   background: var(--ok-bg, #e3f2fd); }
+.badge.part { color: var(--warn-fg, #d9730d); background: var(--warn-bg, #fadec9); }
+.badge.miss { color: var(--bad-fg, #e03e3e);  background: var(--bad-bg, #ffe2dd); }
+.badge.busy { color: #2383e2; background: #e8f3fc; }
+
+.rowacts {
+  display: flex;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.rowacts .btn, .rowacts .soft-button {
+  font-size: 11px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 6px;
+}
+
+.studies {
+  display: none;
+  background: var(--panel-bg, #fbfbfa);
+  border-bottom: 1px solid var(--chrome-border, #e9e9e7);
+}
+
+.studies.on {
+  display: block;
+}
+
+.srow {
+  grid-template-columns: 20px minmax(200px, 1.4fr) 96px 160px 96px 132px;
+  padding-left: 14px;
+  border-bottom: 1px solid var(--chrome-border, #f1f1ef);
+  background: transparent;
+}
+
+.srow:last-child {
+  border-bottom: 0;
+}
+
+.srow:hover {
+  background: var(--control-bg-hover, #f1f1ef);
+}
+
+.srow .rail {
+  justify-self: center;
+  width: 1px;
+  height: 100%;
+  min-height: 26px;
+  background: var(--control-border, #d8d8d5);
+}
+
+.srow .who b {
+  font-weight: 500;
+}
+
 
 

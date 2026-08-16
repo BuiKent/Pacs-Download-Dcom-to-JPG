@@ -1,11 +1,13 @@
 import io
 import json
+import shutil
 import tempfile
 import time
 import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pydicom
@@ -1477,6 +1479,116 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
                 self.assertEqual(get_resp.headers.get("Content-Type"), "image/jpeg")
                 self.assertEqual(len(get_resp.read()), out_path.stat().st_size)
 
+    def test_worklist_scanner_discovers_multi_level_hierarchy(self) -> None:
+        from web_backend import WorklistScanner
+        
+        # Create simulated patient folder with 2 studies
+        p_dir = self.temp_dir / "TEST-0001_NGUYEN VAN MAU - Nam - 1974 - BV A"
+        p_dir.mkdir(parents=True, exist_ok=True)
+        
+        s1 = p_dir / "2026-08-06 - MR - SO NAO CO TIEM"
+        s1.mkdir(parents=True, exist_ok=True)
+        # Add 3 dummy dicom files and 1 jpg
+        (s1 / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+        (s1 / "slice2.dcm").write_bytes(b"DICM" + b"\0" * 100)
+        (s1 / "photo.jpg").write_bytes(b"\xFF\xD8\xFF\xE0" + b"\0" * 50)
+        
+        s2 = p_dir / "2026-07-02 - MR - COT SONG"
+        s2.mkdir(parents=True, exist_ok=True)
+        (s2 / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+        
+        self.controller.output_root = self.temp_dir
+        scanner = WorklistScanner(self.controller)
+        patients = scanner.scan()
+        
+        self.assertTrue(len(patients) >= 1)
+        p = next((item for item in patients if item["patientId"] == "TEST-0001"), None)
+        self.assertIsNotNone(p)
+        self.assertEqual(p["patientName"], "NGUYEN VAN MAU")
+        self.assertEqual(p["gender"], "Nam")
+        self.assertEqual(p["birthYear"], "1974")
+        self.assertEqual(p["hospital"], "BV A")
+        self.assertEqual(p["mediaSummary"]["dicom"], 3)
+        self.assertEqual(p["mediaSummary"]["photo"], 1)
+        self.assertEqual(len(p["studies"]), 2)
+
+    def test_api_worklist_endpoints(self) -> None:
+        # Test GET /api/worklist
+        req = urllib.request.Request(
+            f"{self.server.url.split('?')[0]}api/worklist",
+            headers={"X-DCom-Token": self.server.token}
+        )
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
+            data = json.loads(resp.read().decode("utf-8"))
+            self.assertIn("patients", data)
+            self.assertIsInstance(data["patients"], list)
+
+    def test_worklist_never_invents_patient_demographics(self) -> None:
+        """A folder name without sex/birth year must not produce one.
+
+        Those two fields are what a clinician reads to confirm the right chart,
+        so an unknown value has to stay blank rather than default to something
+        plausible.
+        """
+        from web_backend import WorklistScanner
+
+        scanner = WorklistScanner(self.controller)
+        for folder in ("BN-9999", "TEST-0007_TRAN THI B", "20260816_CT_BUNG"):
+            meta = scanner._parse_patient_meta(folder)
+            self.assertEqual(meta["gender"], "", f"{folder} bịa giới tính")
+            self.assertEqual(meta["birthYear"], "", f"{folder} bịa năm sinh")
+            self.assertEqual(meta["hospital"], "", f"{folder} bịa bệnh viện")
+
+    def test_worklist_prefers_patient_index_over_folder_name(self) -> None:
+        """patient-index.json records the real DICOM tags, so it wins."""
+        from web_backend import WorklistScanner
+
+        patient_dir = self.temp_dir / "BN-9999"
+        patient_dir.mkdir(parents=True, exist_ok=True)
+        (patient_dir / "patient-index.json").write_text(json.dumps({
+            "format": "dcom-patient-index-v1",
+            "patientId": "TEST-0042",
+            "patientName": "TRẦN THỊ MẪU",
+            "patientBirthDate": "19880312",
+            "patientSex": "F",
+            "hospitalName": "BV Bạch Mai",
+            "studies": {},
+        }), encoding="utf-8")
+
+        meta = WorklistScanner(self.controller)._patient_meta_for(patient_dir)
+        self.assertEqual(meta["patientId"], "TEST-0042")
+        self.assertEqual(meta["patientName"], "TRẦN THỊ MẪU")
+        self.assertEqual(meta["gender"], "Nữ")
+        self.assertEqual(meta["birthYear"], "1988")
+        self.assertEqual(meta["hospital"], "BV Bạch Mai")
+
+    def test_reveal_folder_rejects_paths_outside_the_archive(self) -> None:
+        self.controller.output_root = self.temp_dir
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside, True)
+        with self.assertRaises(PermissionError):
+            self.controller.reveal_folder(str(outside))
+
+    def test_reveal_folder_refuses_files_so_it_cannot_launch_programs(self) -> None:
+        """`os.startfile` runs whatever it is given, so files must be refused."""
+        self.controller.output_root = self.temp_dir
+        payload = self.temp_dir / "payload.exe"
+        payload.write_bytes(b"MZ")
+        with self.assertRaises(ValueError):
+            self.controller.reveal_folder(str(payload))
+
+    def test_reveal_folder_opens_a_folder_inside_the_archive(self) -> None:
+        self.controller.output_root = self.temp_dir
+        study = self.temp_dir / "TEST-0001" / "2026-08-06 - MR"
+        study.mkdir(parents=True, exist_ok=True)
+        with mock.patch("web_backend.os.startfile", create=True) as startfile:
+            with mock.patch("web_backend.sys.platform", "win32"):
+                result = self.controller.reveal_folder(str(study))
+        startfile.assert_called_once()
+        self.assertTrue(result["revealed"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
