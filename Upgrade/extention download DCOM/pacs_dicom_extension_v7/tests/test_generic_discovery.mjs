@@ -15,8 +15,7 @@ const djson=[{'00080018':{vr:'UI',Value:['1.2.3']},'0020000D':{vr:'UI',Value:['1
 if(!looksLikeDicomJson(djson))throw new Error('DICOM JSON fingerprint');
 console.log('Generic discovery tests OK');
 
-// Ngày sinh và số accession do manifest khai (`birthDate`/`accession`) phải tới
-// được nơi tiêu thụ, vốn hỏi bằng tên của header DICOM.
+// Manifest-declared birthDate and accession must propagate correctly to the consumer.
 {
   const payload={PatientName:'NGUYEN^VAN^A',PatientID:'BN001',PatientBirthDate:'19900101',AccessionNumber:'ACC-7788',
     series:[{SeriesInstanceUID:'1.2.3.1',images:[{url:'/img/1.dcm'}]}]};
@@ -29,10 +28,11 @@ console.log('Generic discovery tests OK');
   assert.equal(profile.accessionNumber,'ACC-7788');
   assert.equal(profile.patientName,'NGUYEN^VAN^A');
 
-  // Header DICOM thật vẫn được ưu tiên và không bị đổi tên.
+  // Real DICOM header takes precedence and is not renamed.
   const fromHeader=studyProfileFromProbeDetails([{meta:{patientBirthDate:'19801231',accessionNumber:'ACC-1'}}]);
   assert.equal(fromHeader.patientBirthDate,'19801231');
   assert.equal(fromHeader.accessionNumber,'ACC-1');
 }
 
 console.log('generic discovery: manifest birthDate/accession tests OK');
+

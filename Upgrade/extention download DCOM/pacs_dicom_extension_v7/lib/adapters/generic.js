@@ -3,10 +3,8 @@ import { normalizeSeries, seriesFolderName, sanitizeSegment } from '../pacs.js';
 import { groupGenericEntries } from '../generic_discovery.js';
 
 const uid=v=>{const s=String(v||'').trim();return /^\d+(?:\.\d+)+$/.test(s)?s:'';};
-// `meta` là header DICOM thật đã dò (lib/dicom.js), `declared` là thứ manifest tự
-// khai (lib/generic_discovery.js). Hai bên đặt tên khác nhau cho cùng một trường,
-// nên phải tra bằng cả hai tên — nếu không, ngày sinh và số accession mà manifest
-// có sẵn sẽ rơi im lặng.
+// `meta` is from actual DICOM headers (lib/dicom.js), `declared` is from manifest discovery (lib/generic_discovery.js).
+// Look up using both naming conventions to avoid dropping fields like birthDate or accession.
 const DECLARED_ALIAS={patientBirthDate:'birthDate',accessionNumber:'accession'};
 const metaField=(entry,name)=>String(
   entry?.meta?.[name]||entry?.declared?.[name]||entry?.declared?.[DECLARED_ALIAS[name]||name]||''
@@ -21,7 +19,7 @@ export const GenericAdapter={
   id:'GENERIC',
   match(_summary,state){return entriesFromState(state).length>0;},
   async analyze(ctx){
-    const entries=entriesFromState(ctx.state);if(!entries.length)throw new Error('Chưa có endpoint DICOM đã được xác nhận.');
+    const entries=entriesFromState(ctx.state);if(!entries.length)throw new Error('No verified DICOM endpoints found.');
     const p=ctx.state.genericProfile||{},groups=groupGenericEntries(entries);
     const series=groups.map((g,i)=>normalizeSeries({SeriesInstanceUID:g.seriesUid,SeriesNumber:g.number,SeriesDescription:g.description,Modality:g.modality,ImageCount:g.entries.length},'generic',i));
     groups.forEach((g,i)=>g.choice=series[i]);
@@ -46,3 +44,4 @@ export const GenericAdapter={
     return tasks;
   }
 };
+

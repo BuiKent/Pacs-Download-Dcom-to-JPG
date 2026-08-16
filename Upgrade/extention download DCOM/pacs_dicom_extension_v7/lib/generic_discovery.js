@@ -126,8 +126,7 @@ export function manifestRecipeFromDiscovery(manifestUrl,requestMeta,winningRows)
 
 export function studyProfileFromProbeDetails(details){
   const metas=(details||[]).map(x=>x?.meta).filter(Boolean);if(!metas.length)return{};
-  // Nhận cả tên của header DICOM (`patientBirthDate`) lẫn tên của manifest
-  // (`birthDate`) — cùng một trường, hai nguồn đặt tên khác nhau.
+  // Accept both DICOM header names (patientBirthDate) and manifest names (birthDate).
   const first=(...fields)=>{for(const f of fields){const hit=metas.find(m=>text(m?.[f]));if(hit)return text(hit[f]);}return '';};
   return{
     studyUid:first('studyUid'),patientName:first('patientName'),patientId:first('patientId'),patientBirthDate:first('patientBirthDate','birthDate'),studyDate:first('studyDate'),studyDescription:first('studyDescription'),accessionNumber:first('accessionNumber','accession')

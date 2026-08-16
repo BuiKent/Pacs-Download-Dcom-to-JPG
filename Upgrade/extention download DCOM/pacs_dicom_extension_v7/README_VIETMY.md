@@ -1,20 +1,21 @@
-# VietMy PMR adapter
+# VietMy PMR Adapter
 
-VietMy được nhận diện qua request manifest:
+VietMy is detected via the manifest request:
 
 `/WS/ws.asmx/GetListImageFileInfo`
 
-Adapter đọc các record có `filePath`, nhóm theo series và tạo task tải từ `filePath`/`ws/getfile.ashx`. Trường `imagePath` bị bỏ qua vì là ảnh render dành cho viewer.
+The adapter reads records with `filePath`, groups them by series, and generates download tasks from `filePath`/`ws/getfile.ashx`. The `imagePath` field is ignored as it represents rendered images for viewer display.
 
-Luồng tải:
+Download pipeline:
 
-ShareStudy → GetListImageFileInfo → filePath → fetch bytes → validate DICOM Part-10 → lưu.
+ShareStudy → GetListImageFileInfo → filePath → fetch bytes → validate DICOM Part-10 → save.
 
-Manifest chỉ trả JSON cho POST đúng `Content-Type: application/json`; gọi GET thì server trả trang HTML kèm HTTP 200 (không phải lỗi 4xx), nên phải phát lại đúng POST.
+The manifest only returns JSON for POST requests with `Content-Type: application/json`; sending a GET returns an HTML page with HTTP 200 (not a 4xx error), so replaying the exact POST is required.
 
-Extension bật sau khi manifest đã chạy thì `webRequest` không ghi được method/body. Khi đó adapter tự dựng lại request từ hai thứ vẫn còn trên trang:
+If the extension is opened after the manifest request has already executed, `webRequest` will not have recorded the method/body. In this scenario, the adapter reconstructs the request from two remaining cues on the page:
 
-- `sToken` — tham số `stoken` trên URL chia sẻ;
-- `caseStudyId` — nằm trong id thẻ series của DOM viewer (`<a id="series560541_0">`), `scanPerformance` nhặt về qua trường `vietmyStudyId`.
+- `sToken` — the `stoken` parameter from the share URL;
+- `caseStudyId` — parsed from the series element ID in the viewer DOM (`<a id="series560541_0">`), retrieved by `scanPerformance` via `vietmyStudyId`.
 
-Không lấy được hai thứ đó thì adapter báo lỗi ngay và hướng dẫn bật `Theo dõi tab` rồi tải lại viewer, thay vì thử GET rồi hỏng khó hiểu.
+If neither cue can be extracted, the adapter reports a clear error advising the user to click `Track tab` and reload the viewer, preventing confusing GET fallbacks.
+

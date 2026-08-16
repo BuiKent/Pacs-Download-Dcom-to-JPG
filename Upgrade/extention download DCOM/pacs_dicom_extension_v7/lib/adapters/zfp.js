@@ -4,9 +4,8 @@ import { zfpSeriesChoices, seriesFolderName, sanitizeSegment } from '../pacs.js'
 /**
  * GE Centricity Universal Viewer — Zero Footprint.
  *
- * Khác mọi adapter còn lại: dòng này không phát request ảnh nào qua HTTP nên
- * `summary.requests` luôn rỗng. Cấu trúc study do móc WebSocket (`zfp-hook.js`)
- * nhặt trên trang, background lấy về qua `ctx.zfpInfo()`.
+ * Distinct from other adapters: GE ZFP does not fetch images over HTTP.
+ * Study structure is captured from WebSockets by `zfp-hook.js` and retrieved via `ctx.zfpInfo()`.
  */
 function sopToken(uid, index) {
   const s = String(uid || '').trim();
@@ -22,7 +21,7 @@ export const ZfpAdapter = {
     const info = ctx.summary?.zfpInfo || await ctx.zfpInfo?.();
     const groups = info?.groups || [];
     if (!groups.length) {
-      throw new Error('Chưa đọc được cấu trúc study từ viewer GE. Mở lại trang viewer rồi quét lại.');
+      throw new Error('Could not read study structure from GE viewer. Reload the viewer tab and rescan.');
     }
     const study = info.study || {};
     const demo = study.patientDemographics || {};
@@ -46,10 +45,9 @@ export const ZfpAdapter = {
   async enumerate(inv, selected, ctx) {
     const info = ctx.summary?.zfpInfo || await ctx.zfpInfo?.();
     const groups = info?.groups || [];
-    if (!groups.length) throw new Error('Cấu trúc study GE đã mất — mở lại viewer rồi thử lại.');
+    if (!groups.length) throw new Error('GE study structure lost — reload the viewer and try again.');
     const study = info.study || {};
-    // Chỉ mang theo phần study thật sự cần cho việc dựng DICOM: mỗi task đều
-    // đính kèm nên gói to là nhân lên vài trăm lần.
+    // Include only study fields required for DICOM reconstruction
     const studySlim = {
       patientDemographics: study.patientDemographics,
       studyDateTime: study.studyDateTime,
@@ -88,3 +86,4 @@ export const ZfpAdapter = {
     return tasks;
   }
 };
+

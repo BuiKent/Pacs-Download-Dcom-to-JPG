@@ -7,7 +7,7 @@ const sopOf = row => String(row?.['00080018']?.Value?.[0] || '');
 const offsetOf = url => new URL(url).searchParams.get('offset');
 
 test('QIDO paging reads past a server-side result cap', async () => {
-  // Server chặn 100 dòng bất kể `limit` client xin — dừng ở trang ngắn là cụt ảnh.
+  // Server enforces a 100-row cap regardless of requested limit.
   const total = Array.from({ length: 350 }, (_, i) => instance(`1.2.3.${i + 1}`));
   const urls = [];
   const fetchJson = async url => {
@@ -18,7 +18,7 @@ test('QIDO paging reads past a server-side result cap', async () => {
 
   const rows = await fetchQidoPaged(fetchJson, 'https://pacs.test/rs/instances', { keyOf: sopOf });
   assert.equal(rows.length, 350);
-  // 100+100+100+50 rồi một lượt rỗng để biết đã hết.
+  // 100+100+100+50 then an empty response to signal completion.
   assert.deepEqual(urls.map(offsetOf), ['0', '100', '200', '300', '350']);
 });
 
@@ -52,6 +52,7 @@ test('withQueryParams overrides only the named params', () => {
   assert.equal(q.get('token'), 'abc');
   assert.equal(q.get('limit'), '500');
   assert.equal(q.get('offset'), '0');
-  // URL hỏng thì trả nguyên bản, không ném lỗi làm sập cả lượt quét.
-  assert.equal(withQueryParams('khong-phai-url', { limit: 1 }), 'khong-phai-url');
+  // Return original input if URL is invalid without throwing.
+  assert.equal(withQueryParams('not-a-url', { limit: 1 }), 'not-a-url');
 });
+

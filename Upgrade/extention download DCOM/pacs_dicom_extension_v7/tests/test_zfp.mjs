@@ -1,9 +1,5 @@
 /**
  * GE Centricity Universal Viewer (ZFP).
- *
- * Fixture lay tu mot ca MR that: metadata do `image-provider` tra ve, cau truc
- * series do `ON_DICOM_GROUP_ADDED` tra ve. Pixel la 16-bit tho (IT_RAW), nen
- * so byte phai bang rows*cols*2 - day chinh la cho de sai nhat.
  */
 import { zfpMetaToDicomJson, zfpSeriesChoices } from '../lib/pacs.js';
 import { buildPart10FromFrames, validatePart10, parseDicomMeta } from '../lib/dicom.js';
@@ -23,7 +19,7 @@ const sopRow = {
 };
 const group = {
   studyInstanceUid: STUDY_UID, groupId: `${STUDY_UID}#${SERIES_UID}#0`,
-  description: 'Ax FSPGR 3D tiem thuoc', groupDisplayId: '4', modalities: ['MR'],
+  description: 'Ax FSPGR 3D contrast', groupDisplayId: '4', modalities: ['MR'],
   dicomSops: [sopRow, {...sopRow, sopInstanceUid: SOP_UID + '1', instanceNumber: 2}],
 };
 const screenSaveA = {studyInstanceUid: STUDY_UID, groupId: STUDY_UID + '#a#0', description: 'Screen Save',
@@ -46,43 +42,41 @@ const meta = {
   imageDate: '2026-05-13', imageTime: '17:29:45',
 };
 
-// 1. Dung DICOM Part-10 doc lai duoc, giu dung dinh danh benh nhan.
+// 1. Reconstruct readable DICOM Part-10, preserving patient identity.
 const dj = zfpMetaToDicomJson(meta, sopRow, group, study);
 const pixels = new Uint8Array(8 * 8 * 2);
 for (let i = 0; i < pixels.length; i++) pixels[i] = i & 0xff;
 const dcm = buildPart10FromFrames(dj, [pixels], 'application/octet-stream; transfer-syntax=1.2.840.10008.1.2.1');
 const v = validatePart10(dcm);
-if (!v.ok) throw new Error('DICOM dung tu ZFP khong hop le: ' + v.reason);
+if (!v.ok) throw new Error('DICOM constructed from ZFP invalid: ' + v.reason);
 const p = parseDicomMeta(dcm);
-if (p.patientName !== 'NGUYEN THI PHUONG 1961 F') throw new Error('ten BN sai: ' + p.patientName);
-if (p.patientId !== '25050532') throw new Error('ID BN sai: ' + p.patientId);
-if (p.studyDate !== '20260513') throw new Error('ngay chup sai: ' + p.studyDate);
-if (p.seriesDescription !== 'Ax FSPGR 3D tiem thuoc') throw new Error('mo ta series sai');
+if (p.patientName !== 'NGUYEN THI PHUONG 1961 F') throw new Error('Wrong patientName: ' + p.patientName);
+if (p.patientId !== '25050532') throw new Error('Wrong patientId: ' + p.patientId);
+if (p.studyDate !== '20260513') throw new Error('Wrong studyDate: ' + p.studyDate);
+if (p.seriesDescription !== 'Ax FSPGR 3D contrast') throw new Error('Wrong seriesDescription');
 
-// 2. Gio cua ZFP co dau hai cham, VR TM khong nhan -> phai lam sach.
-if (dj['00080031'].Value[0] !== '172945') throw new Error('gio anh phai bo dau hai cham: ' + dj['00080031'].Value[0]);
-if (dj['00080030'].Value[0] !== '172652') throw new Error('gio study phai bo dau hai cham');
+// 2. Format times to remove colons.
+if (dj['00080031'].Value[0] !== '172945') throw new Error('Image time must strip colons: ' + dj['00080031'].Value[0]);
+if (dj['00080030'].Value[0] !== '172652') throw new Error('Study time must strip colons');
 
-// 3. Hai series trung ten "Screen Save" phai co id khac nhau, khong thi chon
-//    loc series se dinh chum.
+// 3. Duplicate series names have distinct ids.
 const choices = zfpSeriesChoices([group, screenSaveA, screenSaveB]);
-if (new Set(choices.map(c => c.id)).size !== 3) throw new Error('id series bi trung nhau');
-if (choices[0].imageCount !== 2) throw new Error('dem so anh sai');
+if (new Set(choices.map(c => c.id)).size !== 3) throw new Error('Duplicate series ids');
+if (choices[0].imageCount !== 2) throw new Error('Wrong image count');
 
-// 4. enumerate ra dung task, chi cho series duoc chon, va mang du du lieu de
-//    dung DICOM (khong co URL nao de fetch nen thieu la hong han).
+// 4. Enumerate produces valid tasks with complete reconstruction data.
 const ctx = {summary: {zfpInfo: {groups: [group, screenSaveA], study}}, normalizeStudy: x => x};
 const inv = await ZfpAdapter.analyze(ctx);
-if (inv.patient.id !== '25050532') throw new Error('analyze doc sai benh nhan');
-if (inv.series.length !== 2) throw new Error('analyze doc sai so series');
+if (inv.patient.id !== '25050532') throw new Error('analyze read wrong patient');
+if (inv.series.length !== 2) throw new Error('analyze read wrong series count');
 const tasks = await ZfpAdapter.enumerate(inv, [choices[0].id], ctx);
-if (tasks.length !== 2) throw new Error('enumerate ra sai so task: ' + tasks.length);
+if (tasks.length !== 2) throw new Error('enumerate wrong task count: ' + tasks.length);
 for (const t of tasks) {
-  if (t.strategy !== 'zfp-image') throw new Error('strategy sai');
-  if (!t.zfp?.sop.endsWith('#0')) throw new Error('sop phai co hau to frame #0');
-  if (!t.zfp?.sopRow || !t.zfp?.group || !t.zfp?.study) throw new Error('task thieu du lieu de dung DICOM');
-  // Thu muc dat theo "<thu tu> - <so series> - <mo ta>", giong cac adapter khac.
-  if (!t.relativePath.startsWith('01 - 4 - Ax FSPGR 3D tiem thuoc/')) throw new Error('duong dan sai: ' + t.relativePath);
+  if (t.strategy !== 'zfp-image') throw new Error('Wrong strategy');
+  if (!t.zfp?.sop.endsWith('#0')) throw new Error('SOP must have frame #0 suffix');
+  if (!t.zfp?.sopRow || !t.zfp?.group || !t.zfp?.study) throw new Error('Task missing DICOM reconstruction data');
+  if (!t.relativePath.startsWith('01 - 4 - Ax FSPGR 3D contrast/')) throw new Error('Wrong relative path: ' + t.relativePath);
 }
 
 console.log('GE ZFP tests OK');
+

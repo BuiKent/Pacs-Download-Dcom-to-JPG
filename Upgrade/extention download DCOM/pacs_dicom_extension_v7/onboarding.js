@@ -5,8 +5,8 @@ async function finish(mode,text){await chrome.storage.local.set({[MODE_KEY]:mode
 document.getElementById('allSitesBtn').addEventListener('click',async()=>{
   try{
     const ok=await chrome.permissions.request({origins:['http://*/*','https://*/*']});
-    if(!ok){status.textContent='Chrome chưa cấp quyền.';return;}
-    await finish('global','Đã cấp quyền.');
+    if(!ok){status.textContent='Permission was not granted.';return;}
+    await finish('global','Permission granted.');
   }catch(e){status.textContent=String(e?.message||e);}
 });
-document.getElementById('perSiteBtn').addEventListener('click',()=>finish('per-site','Đã chọn cấp quyền từng site.'));
+document.getElementById('perSiteBtn').addEventListener('click',()=>finish('per-site','Per-site mode selected.'));

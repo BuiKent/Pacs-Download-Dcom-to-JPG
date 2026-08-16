@@ -99,8 +99,7 @@ function pixelDataEncapsulated(frames){
   return concatBytes([head,...items,u16(0xFFFE),u16(0xE0DD),u32(0)]);
 }
 
-// PS3.18 Table 6.1.1.8-3b: kiểu media của frame ↔ Transfer Syntax. Bảng lấy theo
-// cornerstonewadoimageloader, vốn đã va đủ các biến thể server thật trả về.
+// PS3.18 Table 6.1.1.8-3b: Media type of frame ↔ Transfer Syntax.
 const FRAME_TS_BY_MEDIA_TYPE={
   'image/jpeg':'1.2.840.10008.1.2.4.50',
   'image/dicom+jpeg':'1.2.840.10008.1.2.4.50',
@@ -118,11 +117,10 @@ const FRAME_TS_BY_MEDIA_TYPE={
 };
 
 /**
- * Trả Transfer Syntax của frame, hoặc '' khi không nhận ra kiểu nén.
+ * Returns the Transfer Syntax of the frame, or '' when compression format is unrecognized.
  *
- * Chuỗi rỗng là câu trả lời có ý nghĩa: đoán bừa thành "không nén" sẽ ghi thẳng
- * byte đã nén vào PixelData, ra một file mở được nhưng ảnh sai — kiểu hỏng nguy
- * hiểm nhất vì không ai nhìn ra.
+ * Empty string indicates unknown compression: blindly assuming uncompressed would write
+ * compressed bytes directly into PixelData, resulting in corrupt images.
  */
 export function transferSyntaxFromContentType(contentType=''){
   const ct=String(contentType).toLowerCase();const m=ct.match(/transfer-syntax\s*=\s*"?([0-9][0-9.]*)/i);if(m)return m[1];
@@ -132,9 +130,9 @@ export function transferSyntaxFromContentType(contentType=''){
 }
 
 export function buildPart10FromFrames(meta,frames,frameContentType=''){
-  if(!meta||!frames?.length)throw new Error('Thiếu metadata/frames để dựng DICOM.');
-  const sourceTs=transferSyntaxFromContentType(frameContentType);if(sourceTs==='1.2.840.10008.1.2.2')throw new Error('Không dựng raw Big Endian an toàn.');
-  if(!sourceTs)throw new Error(`Không rõ Transfer Syntax cho kiểu nén "${String(frameContentType).trim()}" — từ chối dựng file để khỏi ra ảnh sai.`);
+  if(!meta||!frames?.length)throw new Error('Missing metadata/frames to build DICOM.');
+  const sourceTs=transferSyntaxFromContentType(frameContentType);if(sourceTs==='1.2.840.10008.1.2.2')throw new Error('Cannot safely build raw Big Endian.');
+  if(!sourceTs)throw new Error(`Unknown Transfer Syntax for compression "${String(frameContentType).trim()}" — refusing to construct file to prevent corrupt images.`);
   const compressed=!['1.2.840.10008.1.2','1.2.840.10008.1.2.1'].includes(sourceTs);
   const outputTs=compressed?sourceTs:'1.2.840.10008.1.2.1';
   const bits=Number(metaString(meta,'00280100','16'))||16;const preamble=new Uint8Array(132);preamble.set(ascii('DICM'),128);
@@ -152,16 +150,11 @@ export function parseMultipart(bytes,contentType=''){
   while(markerPos>=0){
     let p=markerPos+marker.length;if(a[p]===45&&a[p+1]===45)break;if(a[p]===13&&a[p+1]===10)p+=2;
     const headerEnd=indexOfBytes(a,headerSep,p);if(headerEnd<0)break;const headerText=decLatin1.decode(a.slice(p,headerEnd));const payloadStart=headerEnd+4;
-    // RFC 2046: đúng MỘT dấu xuống dòng trước boundary là của delimiter, phần còn
-    // lại là dữ liệu. Cắt sạch mọi CR/LF cuối sẽ ăn mất pixel thật — byte 0x0A và
-    // 0x0D nằm đầy trong ảnh 16-bit.
+    // RFC 2046: delimiter CRLF precedes boundary marker.
     let next=indexOfBytes(a,crlfMarker,payloadStart),payloadEnd;
     if(next>=0){
-      payloadEnd=next;  // crlfMarker bắt đầu ngay tại CRLF của delimiter
+      payloadEnd=next;
     }else{
-      // Qua được `\r\n\r\n` của header nghĩa là server dùng CRLF. Vậy mà không thấy
-      // `\r\n--boundary` thì boundary này thật sự không có CRLF dẫn trước — byte
-      // ngay trước nó là dữ liệu, cắt đi là mất pixel.
       const raw=indexOfBytes(a,marker,payloadStart);next=raw<0?a.length:raw;payloadEnd=next;
     }
     const ct=(headerText.match(/content-type:\s*([^\r\n]+)/i)||[])[1]||'';out.push({contentType:ct.trim(),data:a.slice(payloadStart,payloadEnd)});
@@ -188,13 +181,7 @@ function readElementSpan(bytes,dv,pos,little,explicit){
 }
 
 /**
- * Nhảy qua trọn một sequence có ĐỘ DÀI KHÔNG XÁC ĐỊNH (0xFFFFFFFF), trả về vị
- * trí ngay sau Sequence Delimitation Item (FFFE,E0DD).
- *
- * Trước đây gặp sequence kiểu này là parser bỏ cuộc luôn, nên mọi tag nằm phía
- * sau đều mất. Máy Hitachi ghi (0008,1140) ReferencedImageSequence ngay trước
- * nhóm 0010, tức là mất sạch PatientName/PatientID/StudyInstanceUID — tên thư
- * mục lưu tụt xuống "Unknown - NoID - NoDate".
+ * Skip undefined-length sequence (0xFFFFFFFF) and return position after Sequence Delimitation Item (FFFE,E0DD).
  */
 function skipUndefinedLength(bytes,dv,start,little,explicit){
   let pos=start,depth=1,guard=0;
@@ -203,12 +190,12 @@ function skipUndefinedLength(bytes,dv,start,little,explicit){
       const element=dv.getUint16(pos+2,little),len=dv.getUint32(pos+4,little);
       pos+=8;
       if(element===0xE0DD){if(--depth===0)return pos;}
-      else if(element===0xE000&&len!==0xFFFFFFFF)pos+=len;   // item có độ dài rõ ràng
-      continue;                                              // (FFFE,E00D) chỉ đóng item
+      else if(element===0xE000&&len!==0xFFFFFFFF)pos+=len;
+      continue;
     }
     const span=readElementSpan(bytes,dv,pos,little,explicit);
     if(!span)return -1;
-    if(span.len===0xFFFFFFFF){depth++;pos=span.valuePos;}     // sequence lồng nhau
+    if(span.len===0xFFFFFFFF){depth++;pos=span.valuePos;}
     else{pos=span.valuePos+span.len;if(pos>bytes.length)return -1;}
   }
   return -1;
@@ -224,6 +211,7 @@ export function parseDicomMeta(input){
 }
 
 export function validatePart10(input,{requirePixelData=true}={}){
-  const bytes=input instanceof Uint8Array?input:new Uint8Array(input||0);if(!isPart10(bytes))return{ok:false,reason:'Không có DICOM Part-10 preamble.'};
-  const meta=parseDicomMeta(bytes);if(!meta)return{ok:false,reason:'Không đọc được File Meta.'};if(!meta.transferSyntax)return{ok:false,reason:'Thiếu Transfer Syntax.'};if(requirePixelData&&!meta.hasPixelData)return{ok:false,reason:'DICOM không có Pixel Data.',meta};return{ok:true,meta};
+  const bytes=input instanceof Uint8Array?input:new Uint8Array(input||0);if(!isPart10(bytes))return{ok:false,reason:'Missing DICOM Part-10 preamble.'};
+  const meta=parseDicomMeta(bytes);if(!meta)return{ok:false,reason:'Unable to read File Meta.'};if(!meta.transferSyntax)return{ok:false,reason:'Missing Transfer Syntax.'};if(requirePixelData&&!meta.hasPixelData)return{ok:false,reason:'DICOM has no Pixel Data.',meta};return{ok:true,meta};
 }
+

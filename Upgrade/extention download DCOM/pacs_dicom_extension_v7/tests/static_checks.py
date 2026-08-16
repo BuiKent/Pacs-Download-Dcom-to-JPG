@@ -32,88 +32,79 @@ ui=(root/'sidepanel.html').read_text(encoding='utf-8')+(root/'sidepanel.js').rea
 assert "startIn:'downloads'" in ui and "id:'pacs-dicom'" in ui
 
 # ---------------------------------------------------------------------------
-# Cac chot dat lai tu v6.2. Hanh vi tuong ung van con nguyen trong v7, chi rieng
-# phan canh gac la bi bo di - ma bo canh gac thi lan sau mat khong ai hay.
+# Architecture invariants maintained from v6.2.
 # ---------------------------------------------------------------------------
 content=(root/'content.js').read_text(encoding='utf-8')
 hook=(root/'zfp-hook.js').read_text(encoding='utf-8')
 
-# Quyen toi thieu: chi xin dung cai dang dung.
+# Minimum permissions: only request permissions actively needed.
 assert 'downloads' in m.get('permissions',[])
 assert 'unlimitedStorage' not in m.get('permissions',[])
 assert (root/'onboarding.html').exists() and (root/'onboarding.js').exists()
 
-# Offscreen document CHI truy cap duoc chrome.runtime; moi chrome.* khac deu
-# undefined o day. Quet phan code, bo dong comment.
+# Offscreen document can ONLY access chrome.runtime.
 off_code='\n'.join(l for l in off.splitlines() if not l.lstrip().startswith('//'))
 off_apis=sorted({x.group(1) for x in re.finditer(r'chrome\.([a-zA-Z]+)',off_code)})
-assert off_apis==['runtime'], f'offscreen chi dung duoc chrome.runtime, dang dung: {off_apis}'
-assert 'chrome.downloads' in bg, 'chrome.downloads phai nam o service worker'
+assert off_apis==['runtime'], f'offscreen can only use chrome.runtime, currently using: {off_apis}'
+assert 'chrome.downloads' in bg, 'chrome.downloads must be in service worker'
 
-# Bytes DICOM thuc nhan phai duoc doi chieu UID voi task truoc khi ghi - chong
-# tron anh giua cac ca chup khi token het han hoac server tra nham.
+# Received DICOM bytes must have UID cross-referenced against task before writing.
 assert 'dicomTaskIdentityError' in off
 assert 'adapterInventories' in bg and 'tasksBelongToStudy' in bg
 assert 'attemptId' in bg and 'attemptId' in off
-assert 'cumulativeAttemptCounters' in bg, 'progress attempt sau phai cong tren baseline logical job'
+assert 'cumulativeAttemptCounters' in bg, 'subsequent attempt progress must add onto logical baseline job'
 assert 'ENGINE_FINISHED' in off and 'ENGINE_FINISHED' in bg
 assert 'DOWNLOAD_BLOB' in off and 'DOWNLOAD_BLOB' in bg
 assert 'PROBE_DICOM_URLS' in bg and 'PROBE_DICOM_URLS' in off
 assert 'parallelOrdered' in off
 assert "from './lib/orchestrator.js'" in bg and "from './lib/semaphore.js'" in off
-assert 'previousDownload:row' in bg, 'finalizeJob phai gan ket qua vao inventory de panel doi trang thai ngay'
+assert 'previousDownload:row' in bg, 'finalizeJob must assign result to inventory for immediate panel status change'
 
-# "Dung theo doi" la lenh dut khoat cua nguoi dung: tab da dung thi khong ghi gi
-# nua, ke ca URL dung la PACS.
+# Stopped tracking must strictly halt request logging.
 assert "s.tracking!=='watching'" in bg
-assert bg.count("s.tracking==='stopped')return")>=2, 'webRequest phai ton trong trang thai stopped'
+assert bg.count("s.tracking==='stopped')return")>=2, 'webRequest must respect stopped tracking state'
 assert 'RECIPES_KEY' in bg and 'ENGINE_LEARNED_URL' in bg
 assert 'START_LEARNING' in bg and 'LEARN_CANDIDATE' in bg and 'materializeLearnedManifest' in bg
 assert 'learnToggleBtn' in ui and 'learnList' in ui
 
-# GE ZFP: moc chay o MAIN world tu document_start, va TUYET DOI khong gui lenh
-# xin anh - da do tren PACS that: server tu choi 100% lenh gui tu ngoai, chi con
-# duong HUNG anh viewer tu nap.
+# GE ZFP: hook runs in MAIN world at document_start.
 assert "world:'MAIN'" in bg and "runAt:'document_start'" in bg
 hook_code='\n'.join(l for l in hook.splitlines() if not l.lstrip().startswith(('//','/*','*')))
-assert 'GET_DICOM_IMAGE' not in hook_code, 'moc ZFP phai hung anh, khong duoc gui lenh xin anh'
+assert 'GET_DICOM_IMAGE' not in hook_code, 'ZFP hook must capture streaming images without external fetch'
 assert 'watchImages' in hook and 'MAX_QUEUE_BYTES' in hook
 assert 'runZfpJob' in off and 'ZFP_TAKE_REQUEST' in off and 'ZFP_TAKE_REQUEST' in bg
 assert 'ZFP_RELOAD_REQUEST' in off and 'ZFP_RELOAD_REQUEST' in bg
 assert "ZFP_TAKE:'take'" in content
 
-# Moi id ma sidepanel.js dung phai ton tai trong sidepanel.html - doi ten mot
-# phan tu la panel vo ngay ($(...) tra null) ma khong bao gi.
+# Every id used by sidepanel.js must exist in sidepanel.html.
 html_src=(root/'sidepanel.html').read_text(encoding='utf-8')
 js_src=(root/'sidepanel.js').read_text(encoding='utf-8')
 html_ids=set(re.findall(r'id="([A-Za-z0-9_-]+)"',html_src))
 js_ids=set(re.findall(r"\$\('([A-Za-z0-9_-]+)'\)",js_src))|set(re.findall(r"show\('([A-Za-z0-9_-]+)'",js_src))
 missing=sorted(js_ids-html_ids)
-assert not missing, f'sidepanel.js dung id khong co trong sidepanel.html: {missing}'
+assert not missing, f'sidepanel.js uses ids not in sidepanel.html: {missing}'
 for status in ['partial','done_with_errors','error','cancelled']:
-    assert status in js_src, f'thieu trang thai {status} trong sidepanel.js'
+    assert status in js_src, f'missing status {status} in sidepanel.js'
 for bad in ['MVP','AI generated','Local only.']:
     assert bad not in ui
 
-# Recipe hoc theo dang link: cho GHI va cho DOC phai dung chung mot ham sinh
-# khoa, neu khong se ghi mot dang doc mot dang va khong bao gio tra trung.
+# Recipe link structure keying.
 assert 'function recipeKeyForUrl(' in bg
 assert bg.count('computeUrlFingerprint(')==1, \
-    'computeUrlFingerprint chi duoc goi mot cho duy nhat: trong recipeKeyForUrl'
+    'computeUrlFingerprint must only be called in recipeKeyForUrl'
 assert 'getPreferredAdapter' in bg and 'getPreferredRoutes' in bg
-assert 'orderRoutes' in off, 'engine phai chay route theo thu tu da hoc'
-assert 'preferredRoutes' in off, 'engine phai bao lai route da thang'
+assert 'orderRoutes' in off, 'engine must run routes in learned order'
+assert 'preferredRoutes' in off, 'engine must report winning routes'
 
-# QIDO-RS: server duoc phep tra it hon `limit` va bat client lat trang. Goi mot
-# phat roi tin la du chinh la kieu thieu anh khong ai nhin ra.
+# QIDO-RS pagination.
 assert 'fetchQidoPaged' in (root/'lib/adapters/dicomweb.js').read_text(encoding='utf-8')
 assert 'limit=100000' not in (root/'lib/adapters/dicomweb.js').read_text(encoding='utf-8'), \
-    'dung mot `limit` khong lo thay cho phan trang that'
+    'must use real pagination instead of oversized limit'
 
-# Frame nen ma khong tra ra Transfer Syntax thi phai TU CHOI dung file, dung
-# doan la chua nen - se ra file mo duoc nhung anh sai.
+# Compressed frames without transfer syntax must reject instead of guessing.
 dicom_lib=(root/'lib/dicom.js').read_text(encoding='utf-8')
 assert 'FRAME_TS_BY_MEDIA_TYPE' in dicom_lib
 assert "if(!sourceTs)throw new Error" in dicom_lib
 
 print('Static architecture checks OK')
+

@@ -53,11 +53,11 @@ export function dicomTaskIdentityError(task, meta) {
   const expectedSeries = String(task?.seriesUid || '').trim();
   const expectedSop = String(task?.sopInstanceUid || '').trim();
 
-  if (!actualStudy) return 'DICOM thiếu StudyInstanceUID.';
-  if (!actualSop) return 'DICOM thiếu SOPInstanceUID.';
-  if (expectedStudy && actualStudy !== expectedStudy) return 'StudyInstanceUID thực nhận không khớp task.';
-  if (expectedSeries && (!actualSeries || actualSeries !== expectedSeries)) return 'SeriesInstanceUID thực nhận không khớp task.';
-  if (expectedSop && actualSop !== expectedSop) return 'SOPInstanceUID thực nhận không khớp task.';
+  if (!actualStudy) return 'DICOM missing StudyInstanceUID.';
+  if (!actualSop) return 'DICOM missing SOPInstanceUID.';
+  if (expectedStudy && actualStudy !== expectedStudy) return 'Received StudyInstanceUID does not match task.';
+  if (expectedSeries && (!actualSeries || actualSeries !== expectedSeries)) return 'Received SeriesInstanceUID does not match task.';
+  if (expectedSop && actualSop !== expectedSop) return 'Received SOPInstanceUID does not match task.';
   return '';
 }
 
@@ -77,10 +77,7 @@ export function inventoryIsCovered(job, completedSopUids) {
 }
 
 /**
- * Xếp lại thứ tự các route lấy ảnh theo cái đã học được ở lần tải trước.
- *
- * Route nào không có trong danh sách đã học thì giữ nguyên vị trí tương đối phía
- * sau — chưa từng thắng không có nghĩa là hỏng, chỉ là chưa cần tới.
+ * Re-order image retrieval routes according to learned preference from previous runs.
  */
 export function orderRoutes(candidates, preferred) {
   const list = Array.isArray(candidates) ? candidates : [];

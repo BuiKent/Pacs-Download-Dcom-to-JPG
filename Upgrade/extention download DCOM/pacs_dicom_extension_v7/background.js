@@ -27,9 +27,7 @@ function recipeForOrigin(origin, rawInput){
   };
 }
 /**
- * Khoá lưu recipe theo dạng link. Ghi và đọc BẮT BUỘC đi qua đúng hàm này:
- * trước đây chỗ ghi kèm thêm adapterId còn chỗ đọc thì không, nên không lần nào
- * tra trúng, mà mỗi adapter lại đẻ một khoá rác ăn hết chỗ lưu.
+ * Recipe storage key based on link structure. Writing and reading MUST go through this function.
  */
 function recipeKeyForUrl(rawUrl){return computeUrlFingerprint(rawUrl);}
 function recipeForUrl(rawUrl){
@@ -108,11 +106,10 @@ async function recordAdapterOutcome(urlOrOrigin,adapterId,outcome={}){
   learnedRecipes=RecipeStoreV2.pruneCapacity(learnedRecipes, 200);
   await chrome.storage.local.set({[RECIPES_KEY]:learnedRecipes});
 }
-/** Điểm xếp hạng adapter cho đúng dạng link này, từ những lần tải trước. */
+/** Adapter ranking score for this link pattern based on previous downloads. */
 function adapterScore(ad){
   if(!ad)return 0;
-  // Adapter đã thực sự tải xong study trên dạng link này thì đôn hẳn lên đầu,
-  // đừng để một lần chậm mạng đẩy nó xuống sau adapter chưa bao giờ chạy được.
+  // If adapter has successfully downloaded this link pattern previously, promote it to the top.
   const proven=RecipeStoreV2.getPreferredAdapter(ad)?1000:0;
   const wins=(ad.success||0)-((ad.failure||0)+(ad.failureByClass?.auth||0)*2);
   const slowness=ad.latencyEwmaMs?Math.min(50,ad.latencyEwmaMs/100):0;
@@ -139,7 +136,7 @@ async function injectContent(tabId){try{await chrome.scripting.executeScript({ta
 async function injectGenericHook(tabId){try{await chrome.scripting.executeScript({target:{tabId,allFrames:true},world:'MAIN',files:['generic-hook.js']});return true;}catch{try{await chrome.scripting.executeScript({target:{tabId},world:'MAIN',files:['generic-hook.js']});return true;}catch{return false;}}}
 async function ensurePanel(tabId){try{await chrome.sidePanel.setOptions({tabId,path:'sidepanel.html',enabled:true});}catch{}}
 
-async function setBadge(tabId){if(tabId<0)return;const s=await getTabState(tabId),inv=await getSession(invKey(tabId)),job=jobMemory.get(tabId)||await getSession(jobKey(tabId));let text='',color='#64748b',title='PACS DICOM Downloader';if(job&&['preparing','downloading','cancelling'].includes(job.status)){text='↓';color='#2563eb';title='Đang tải DICOM';}else if(inv?.previousDownload?.status==='done'){text='✓';color='#168a52';title='Study đã tải';}else if(inv?.series?.length){text=String(Math.min(99,inv.series.length));color='#168a52';title=`${inv.series.length} series`;}else if(s.tracking==='watching'){text='•';color='#2563eb';title='Đang theo dõi PACS';}else if(s.tracking==='candidate'){text='?';color='#b7791f';title='Có thể là PACS';}else if(s.tracking==='stopped'){text='Ⅱ';color='#7c8798';title='Đã dừng theo dõi';}await chrome.action.setBadgeBackgroundColor({tabId,color}).catch(()=>{});await chrome.action.setBadgeText({tabId,text}).catch(()=>{});await chrome.action.setTitle({tabId,title}).catch(()=>{});}
+async function setBadge(tabId){if(tabId<0)return;const s=await getTabState(tabId),inv=await getSession(invKey(tabId)),job=jobMemory.get(tabId)||await getSession(jobKey(tabId));let text='',color='#64748b',title='PACS DICOM Downloader';if(job&&['preparing','downloading','cancelling'].includes(job.status)){text='↓';color='#2563eb';title='Downloading DICOM';}else if(inv?.previousDownload?.status==='done'){text='✓';color='#168a52';title='Study downloaded';}else if(inv?.series?.length){text=String(Math.min(99,inv.series.length));color='#168a52';title=`${inv.series.length} series`;}else if(s.tracking==='watching'){text='•';color='#2563eb';title='Tracking PACS';}else if(s.tracking==='candidate'){text='?';color='#b7791f';title='Possible PACS';}else if(s.tracking==='stopped'){text='Ⅱ';color='#7c8798';title='Tracking stopped';}await chrome.action.setBadgeBackgroundColor({tabId,color}).catch(()=>{});await chrome.action.setBadgeText({tabId,text}).catch(()=>{});await chrome.action.setTitle({tabId,title}).catch(()=>{});}
 
 async function markCandidate(tabId,url){const clean=cleanUrl(url);if(tabId<0||!clean)return;const score=urlConfidence(clean);const s=await getTabState(tabId);s.currentUrl=clean;s.confidence=Math.max(Number(s.confidence)||0,Math.min(100,Math.round(score)));if(score>=AUTO_SCORE&&!['watching','stopped'].includes(s.tracking)){s.tracking='candidate';if(await hasOrigin(clean))await injectContent(tabId);}await saveTabState(tabId,s);await setBadge(tabId);}
 async function maybeRecaptureVietmy(tabId){try{const s=await getTabState(tabId);if(s.tracking!=='watching'||s.vietmyRecaptureDone)return;const shell=classifyViewerShell(s.currentUrl||'');if(shell?.type!=='SHARE_STUDY')return;const summary=await scanTab(tabId),seen=summary.requests.some(x=>x.type==='VIETMY_MANIFEST'),captured=(s.pacsRequests||[]).some(x=>x.type==='VIETMY_MANIFEST');if(seen&&!captured){s.vietmyRecaptureDone=true;await saveTabState(tabId,s);await chrome.tabs.reload(tabId);}}catch{}}
@@ -189,7 +186,7 @@ async function processGenericManifestPayload(tabId,url,requestMeta,payload,sourc
 async function materializeLearnedManifest(tabId,url,requestMeta){const s=await getTabState(tabId);let payload;try{payload=await fetchJsonFor(s,url,'application/json, application/dicom+json, text/json, */*',requestMeta);}catch{return{valid:[],discovered:0};}return processGenericManifestPayload(tabId,url,requestMeta,payload,'replay');}
 async function startLearning(tabId){const s=await startTracking(tabId,true);s.learning={active:true,startedAt:Date.now()};s.learnCandidates=[];await saveTabState(tabId,s);chrome.runtime.sendMessage({type:'LEARN_UPDATED',tabId}).catch(()=>{});return s;}
 async function stopLearning(tabId){const s=await getTabState(tabId);s.learning={active:false,startedAt:s.learning?.startedAt||0};await saveTabState(tabId,s);chrome.runtime.sendMessage({type:'LEARN_UPDATED',tabId}).catch(()=>{});return s;}
-async function markLearnCandidate(tabId,url,role){const s=await getTabState(tabId),row=[...(s.learnCandidates||[])].reverse().find(x=>x.url===cleanUrl(url));if(!row)throw new Error('Request không còn trong phiên học.');if(role==='dicom'){await ensureOffscreen();const task=probeTaskFromRow(s,row);const r=await chrome.runtime.sendMessage({target:'offscreen',type:'PROBE_DICOM_URLS',probes:[task]});if(!r?.valid?.includes(row.url))throw new Error('Request này không trả DICOM Part-10.');const inspected=await chrome.runtime.sendMessage({target:'offscreen',type:'INSPECT_DICOM_URLS',probes:[task]}).catch(()=>null),detail=inspected?.details?.find(x=>x.ok)||null;await learnUrl(row.url,'dicom');s.genericEntries=mergeGenericEntry(s.genericEntries,{url:row.url,method:row.method||'GET',requestBody:row.requestBody||null,contentType:row.contentType||detail?.contentType||'',declared:{},meta:detail?.meta||null,shape:pathSignature(row.url),source:'manual-learn'});pushUnique(s.genericDirectUrls,row.url,6000);s.genericDirectMeta[row.url]={contentType:row.contentType||'application/octet-stream',learned:true};if(detail?.meta)s.genericProfile={...(s.genericProfile||{}),...studyProfileFromProbeDetails([detail])};await saveTabState(tabId,s);scheduleAnalyze(tabId,80);return{role,valid:1};}if(role==='manifest'){await learnUrl(row.url,'manifest');const r=await materializeLearnedManifest(tabId,row.url,row);return{role,...r};}throw new Error('Loại học site không hợp lệ.');}
+async function markLearnCandidate(tabId,url,role){const s=await getTabState(tabId),row=[...(s.learnCandidates||[])].reverse().find(x=>x.url===cleanUrl(url));if(!row)throw new Error('Request is no longer in learning session.');if(role==='dicom'){await ensureOffscreen();const task=probeTaskFromRow(s,row);const r=await chrome.runtime.sendMessage({target:'offscreen',type:'PROBE_DICOM_URLS',probes:[task]});if(!r?.valid?.includes(row.url))throw new Error('This request does not return DICOM Part-10.');const inspected=await chrome.runtime.sendMessage({target:'offscreen',type:'INSPECT_DICOM_URLS',probes:[task]}).catch(()=>null),detail=inspected?.details?.find(x=>x.ok)||null;await learnUrl(row.url,'dicom');s.genericEntries=mergeGenericEntry(s.genericEntries,{url:row.url,method:row.method||'GET',requestBody:row.requestBody||null,contentType:row.contentType||detail?.contentType||'',declared:{},meta:detail?.meta||null,shape:pathSignature(row.url),source:'manual-learn'});pushUnique(s.genericDirectUrls,row.url,6000);s.genericDirectMeta[row.url]={contentType:row.contentType||'application/octet-stream',learned:true};if(detail?.meta)s.genericProfile={...(s.genericProfile||{}),...studyProfileFromProbeDetails([detail])};await saveTabState(tabId,s);scheduleAnalyze(tabId,80);return{role,valid:1};}if(role==='manifest'){await learnUrl(row.url,'manifest');const r=await materializeLearnedManifest(tabId,row.url,row);return{role,...r};}throw new Error('Invalid learning role.');}
 function encodePageBody(body){if(typeof body!=='string'||!body)return null;const bytes=new TextEncoder().encode(body),chunks=[];let bin='';for(let i=0;i<bytes.length;i+=0x8000){bin='';for(const b of bytes.subarray(i,i+0x8000))bin+=String.fromCharCode(b);chunks.push(btoa(bin));}return{kind:'raw',chunks};}
 async function handleGenericJsonCapture(tabId,row){if(tabId<0||!row?.url)return;const s=await getTabState(tabId);if(s.tracking!=='watching')return;if(/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(row.url))return;const recorded=requestMetaForObserved(s,row.url,row.method);if(!recorded)return;let payload;try{payload=JSON.parse(String(row.text||''));}catch{return;}const r=await processGenericManifestPayload(tabId,row.url,recorded,payload,'main-world');if(r?.valid?.length)recordCapabilities(row.url,{mainWorldJson:true}).catch(()=>{});}
 async function rememberRequest(tabId,raw,extra={}){if(tabId<0)return;const hit=classifyPacsUrl(raw);const learnedManifest=isLearnedManifestUrl(raw);const s=await getTabState(tabId);if(!hit&&s.tracking!=='watching'&&!learnedManifest)return;const generic=hit||(/\/(?:api|rest|services?)\//i.test(raw)&&/(study|series|instance|image|dicom|exam|patient)/i.test(raw)?{type:'PACS_GENERIC_API',url:cleanUrl(raw),score:35}:null)||(learnedManifest?{type:'LEARNED_MANIFEST',url:cleanUrl(raw),score:72}:null)||(s.tracking==='watching'&&learnCandidateAllowed(raw,extra.resourceType||extra.type)?{type:'PACS_OBSERVED_API',url:cleanUrl(raw),score:12}:null);if(!generic)return;const method=String(extra.method||'GET').toUpperCase(),bodySig=storedBodySignature(extra.requestBody),id=extra.requestId?`${generic.type}|req:${extra.requestId}`:`${generic.type}|${generic.url}|${method}|${bodySig}`;const i=s.pacsRequests.findIndex(x=>x._id===id);if(i>=0)s.pacsRequests.splice(i,1);s.pacsRequests.push({...generic,...extra,_id:id,time:Date.now()});if(s.pacsRequests.length>MAX_REQUESTS)s.pacsRequests.splice(0,s.pacsRequests.length-MAX_REQUESTS);s.confidence=Math.max(Number(s.confidence)||0,Math.min(100,Number(generic.score)||0));if(s.tracking!=='stopped')s.tracking='watching';await saveTabState(tabId,s);await setBadge(tabId);if(Number(generic.score||0)>=80||['PACS_GENERIC_API','DICOM_IMAGE_API'].includes(generic.type))scheduleAnalyze(tabId,450);if(learnedManifest)scheduleLearnedManifest(tabId,generic.url,extra,450);chrome.runtime.sendMessage({type:'PACS_SIGNAL',tabId,signal:generic.type}).catch(()=>{});}
@@ -262,8 +259,8 @@ return summary;}
 function headersForUrl(state,url){try{const h={...(state.headersByOrigin?.[new URL(url).origin]||{})};for(const k of Object.keys(h)){const l=k.toLowerCase();if(['content-type','cookie','origin','referer','host','content-length'].includes(l))delete h[k];}return h;}catch{return{};}}
 function restoreBody(stored){if(!stored)return undefined;if(stored.kind==='form'){const p=new URLSearchParams();for(const[k,vals]of Object.entries(stored.data||{}))for(const v of(Array.isArray(vals)?vals:[vals]))p.append(k,v);return p;}if(stored.kind==='raw'){const bins=(stored.chunks||[]).map(atob),len=bins.reduce((n,b)=>n+b.length,0),out=new Uint8Array(len);let off=0;for(const b of bins){for(let i=0;i<b.length;i++)out[off+i]=b.charCodeAt(i);off+=b.length;}return out;}return undefined;}
 async function fetchJsonFor(state,url,accept='application/json, application/dicom+json',requestMeta=null){const method=String(requestMeta?.method||'GET').toUpperCase(),body=['GET','HEAD'].includes(method)?undefined:restoreBody(requestMeta?.requestBody),headers={...headersForUrl(state,url),Accept:accept};if(!['GET','HEAD'].includes(method)){const ct=replayContentType(state,url,requestMeta,body);if(ct)headers['Content-Type']=ct;}const r=await fetch(url,{method,body,credentials:'include',cache:'no-store',redirect:'follow',headers});if(!r.ok)throw new Error(`HTTP ${r.status}: ${new URL(url).pathname}`);const text=await r.text(),head=text.trim().slice(0,1);
-if(head!=='{'&&head!=='['){const kind=/^\s*</.test(text)?'trang HTML':'dữ liệu không phải JSON';throw new Error(`Server trả ${kind} thay vì manifest JSON (${new URL(url).pathname}). Link có thể đã hết hạn, hoặc phải mở lại viewer khi đã bật "Theo dõi tab" để ghi đúng request.`);}
-try{return JSON.parse(text);}catch(e){throw new Error(`Manifest hỏng, không đọc được JSON (${new URL(url).pathname}).`);}}
+if(head!=='{'&&head!=='['){const kind=/^\s*</.test(text)?'HTML page':'non-JSON data';throw new Error(`Server returned ${kind} instead of manifest JSON (${new URL(url).pathname}). The link may have expired, or reopen the viewer after enabling "Track tab" to record the request.`);}
+try{return JSON.parse(text);}catch(e){throw new Error(`Corrupted manifest, failed to parse JSON (${new URL(url).pathname}).`);}}
 function inheritQuery(target,source){const t=new URL(target),s=new URL(source);for(const[k,v]of s.searchParams)if(!t.searchParams.has(k))t.searchParams.append(k,v);return t.href;}
 function normalizeStudy(inv){const p=inv.patient||{};return{adapter:inv.adapter||'',studyUid:String(inv.studyUid||''),patient:{name:String(p.name||''),id:String(p.id||''),birthDate:String(p.birthDate||''),studyDate:String(p.studyDate||''),description:String(p.description||''),accession:String(p.accession||'')},series:Array.isArray(inv.series)?inv.series:[],context:inv.context||{}};}
 function adapterContext(summary,state){return{summary,state,fetchJson:(url,accept,req)=>fetchJsonFor(state,url,accept,req),headersForUrl:url=>headersForUrl(state,url),inheritQuery,normalizeStudy,zfpInfo:()=>zfpInfo(state.tabId)};}
@@ -274,8 +271,7 @@ async function analyzeTab(tabId){
   const allMatching=matchingAdapters(summary,state);
   const currentUrl=summary.currentUrl||state.currentUrl||'';
   const recipe=recipeForUrl(currentUrl);
-  // Hoà điểm thì giữ nguyên thứ tự trong registry — `sort` của JS ổn định, nên
-  // không cần khoá phụ (adapter không có field `priority` nào cả).
+  // Tie-breaker maintains registry order — JS sort is stable.
   const ranked=[...allMatching].sort((a,b)=>adapterScore(recipe.adapters?.[b.id])-adapterScore(recipe.adapters?.[a.id]));
   for(const adapter of ranked){
     try{
@@ -290,8 +286,8 @@ async function analyzeTab(tabId){
     inv.adapterInventories=Object.fromEntries(inv.adapterCandidates.map(id=>[id,inventories[id]]));
   }
   if(!inv){
-    if(summary.detector==='RENDERED_ONLY')throw new Error('Viewer hiện chỉ phát ảnh render, chưa có DICOM.');
-    throw lastError||new Error(summary.tracking==='stopped'?'Đã dừng theo dõi.':'Chưa bắt được DICOM/manifest.');
+    if(summary.detector==='RENDERED_ONLY')throw new Error('Viewer currently serves rendered images only, no DICOM data.');
+    throw lastError||new Error(summary.tracking==='stopped'?'Tracking stopped.':'No DICOM/manifest captured yet.');
   }
   inv.tabId=tabId;inv.summary=summary;inv.createdAt=Date.now();
   const prev=await findHistory(inv);
@@ -303,9 +299,9 @@ async function analyzeTab(tabId){
 }
 function scheduleAnalyze(tabId,delay=500){clearTimeout(analyzeTimers.get(tabId));analyzeTimers.set(tabId,setTimeout(async()=>{analyzeTimers.delete(tabId);try{const inv=await analyzeTab(tabId);chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});}catch{}},delay));}
 
-async function ensureOffscreen(){const url=chrome.runtime.getURL('offscreen.html');const c=await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT'],documentUrls:[url]});if(c.length)return;await chrome.offscreen.createDocument({url:'offscreen.html',reasons:['BLOBS'],justification:'Tải và ghi DICOM trực tiếp vào thư mục người dùng đã chọn.'});}
+async function ensureOffscreen(){const url=chrome.runtime.getURL('offscreen.html');const c=await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT'],documentUrls:[url]});if(c.length)return;await chrome.offscreen.createDocument({url:'offscreen.html',reasons:['BLOBS'],justification:'Download and write DICOM directly to user selected directory.'});}
 function safeFolderName(inv){const p=inv.patient||{},name=sanitizeSegment(String(p.name||'').replace(/\^+/g,' ').replace(/\s+/g,' ').trim(),'Unknown'),id=sanitizeSegment(p.id||'NoID','NoID');let d=String(p.studyDate||'').replace(/[^0-9]/g,'');const date=d.length>=8?`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`:sanitizeSegment(p.studyDate||'NoDate','NoDate');return`${name} - ${id} - ${date}`;}
-async function buildTasksForAdapter(inv,selected,adapterId){const id=adapterId||inv.adapter,state=await getTabState(inv.tabId),adapter=adapterById(id);if(!adapter)throw new Error(`Không có adapter ${id}.`);const sourceInv=id===inv.adapter?inv:inv.adapterInventories?.[id];if(!sourceInv)throw new Error(`Adapter ${id} chưa phân tích thành công study này.`);const mappedSelected=id===inv.adapter?selected:mapSeriesSelection(inv,sourceInv,selected);if(!mappedSelected.length)throw new Error(`Không ánh xạ được series đã chọn sang adapter ${id}.`);const ctx=adapterContext(sourceInv.summary||inv.summary||await scanTab(inv.tabId),state);const tasks=dedupeTasksBySop(await adapter.enumerate(sourceInv,mappedSelected,ctx));if(!tasksBelongToStudy(tasks,inv.studyUid))throw new Error(`Adapter ${id} trả task khác StudyInstanceUID.`);const learnedRoutes=RecipeStoreV2.getPreferredRoutes(recipeForUrl(inv.summary?.currentUrl||inv.context?.url||'').adapters?.[id]);return tasks.map(t=>learnedRoutes.length?{...t,tabId:inv.tabId,preferredRoutes:learnedRoutes}:{...t,tabId:inv.tabId});}
+async function buildTasksForAdapter(inv,selected,adapterId){const id=adapterId||inv.adapter,state=await getTabState(inv.tabId),adapter=adapterById(id);if(!adapter)throw new Error(`Adapter ${id} not found.`);const sourceInv=id===inv.adapter?inv:inv.adapterInventories?.[id];if(!sourceInv)throw new Error(`Adapter ${id} has not successfully analyzed this study.`);const mappedSelected=id===inv.adapter?selected:mapSeriesSelection(inv,sourceInv,selected);if(!mappedSelected.length)throw new Error(`Unable to map selected series to adapter ${id}.`);const ctx=adapterContext(sourceInv.summary||inv.summary||await scanTab(inv.tabId),state);const tasks=dedupeTasksBySop(await adapter.enumerate(sourceInv,mappedSelected,ctx));if(!tasksBelongToStudy(tasks,inv.studyUid))throw new Error(`Adapter ${id} returned tasks with mismatched StudyInstanceUID.`);const learnedRoutes=RecipeStoreV2.getPreferredRoutes(recipeForUrl(inv.summary?.currentUrl||inv.context?.url||'').adapters?.[id]);return tasks.map(t=>learnedRoutes.length?{...t,tabId:inv.tabId,preferredRoutes:learnedRoutes}:{...t,tabId:inv.tabId});}
 async function buildTasks(inv,selected){return buildTasksForAdapter(inv,selected,inv.adapter);}
 
 function scheduleJobFlush(tabId,force=false){if(force){clearTimeout(jobFlushTimers.get(tabId));jobFlushTimers.delete(tabId);const j=jobMemory.get(tabId);if(j)setSession(jobKey(tabId),j).catch(()=>{});return;}if(jobFlushTimers.has(tabId))return;jobFlushTimers.set(tabId,setTimeout(()=>{jobFlushTimers.delete(tabId);const j=jobMemory.get(tabId);if(j)setSession(jobKey(tabId),j).catch(()=>{});},600));}
@@ -322,7 +318,7 @@ if(inv){
         const errText=job.errors.join(' ').toLowerCase();
         if(errText.includes('timeout')||errText.includes('stall')||errText.includes('deadline')){
           errorClass='timeout';
-        }else if(errText.includes('401')||errText.includes('403')||errText.includes('auth')||errText.includes('token')||errText.includes('login')||errText.includes('hết hạn')){
+        }else if(errText.includes('401')||errText.includes('403')||errText.includes('auth')||errText.includes('token')||errText.includes('login')||errText.includes('expired')||errText.includes('hết hạn')){
           errorClass='auth';
         }else if(errText.includes('500')||errText.includes('502')||errText.includes('503')||errText.includes('504')||errText.includes('server')){
           errorClass='server';
@@ -344,11 +340,11 @@ if(inv){
 }chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});if(inv)chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});await setDownloadUi(true);await setBadge(tabId);}
 async function startJob(tabId,selected,options={}){
   const existing=await getJob(tabId);
-  if(existing&&['preparing','downloading','cancelling'].includes(existing.status))throw new Error('Tab này đang tải DICOM.');
+  if(existing&&['preparing','downloading','cancelling'].includes(existing.status))throw new Error('This tab is currently downloading DICOM.');
   const inv=await getSession(invKey(tabId));
-  if(!inv)throw new Error('Chưa nhận diện được study.');
+  if(!inv)throw new Error('Study not yet recognized.');
   const tasks=await buildTasks(inv,selected);
-  if(!tasks.length)throw new Error('Không có DICOM trong các series đã chọn.');
+  if(!tasks.length)throw new Error('No DICOM images in selected series.');
   await ensureOffscreen();
   const attemptId=crypto.randomUUID();
   const expectedSopUids=[...new Set(tasks.map(t=>String(t.sopInstanceUid||'').trim()).filter(Boolean))];
@@ -404,10 +400,11 @@ async function startJob(tabId,selected,options={}){
   const r=await chrome.runtime.sendMessage({target:'offscreen',type:'START_ENGINE',spec}).catch(e=>({ok:false,error:String(e?.message||e)}));
   if(!r?.ok){
     await finalizeJob(tabId,{status:'error',failed:tasks.length,completed:0,errors:[r?.error||'Engine error']});
-    throw new Error(r?.error||'Không khởi động được download engine.');
+    throw new Error(r?.error||'Failed to start download engine.');
   }
   return job;
 }
+
 async function cancelJob(tabId){const j=await getJob(tabId);if(!j)return;jobMemory.set(tabId,{...j,status:'cancelling',updatedAt:Date.now()});scheduleJobFlush(tabId,true);await ensureOffscreen();await chrome.runtime.sendMessage({target:'offscreen',type:'CANCEL_ENGINE',tabId}).catch(()=>{});}
 
 async function siteAccessChanged(tabId){await injectContent(tabId);await startTracking(tabId,true);return scanTab(tabId);}
@@ -433,14 +430,11 @@ async function handleEngineProgress(m){
   jobMemory.set(tabId,job);scheduleJobFlush(tabId);chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});setBadge(tabId).catch(()=>{});
 }
 
-// chrome.downloads CHỈ sống ở service worker: offscreen document chỉ được dùng
-// chrome.runtime, nên gọi bên đó là undefined và cả chế độ lưu qua trình tải của
-// Chrome hỏng ở mọi file. Offscreen dựng blob (service worker không có
-// URL.createObjectURL) rồi nhờ chỗ này tải xuống.
+// chrome.downloads only runs in service workers: offscreen documents only have chrome.runtime.
+// Offscreen builds the blob and delegates download handling to this worker.
 // --- GE Centricity Universal Viewer (ZFP) ---------------------------------
-// Dong nay khong phat request anh nao qua HTTP: pixel chay trong WebSocket theo
-// giao thuc rieng cua GE. Phai nap `zfp-hook.js` vao MAIN world tu document_start
-// (dang ky truoc, tai lai trang moi an) roi hoi anh qua content script.
+// Pixel data travels via WebSocket over GE proprietary protocol.
+// `zfp-hook.js` is injected into MAIN world at document_start to extract image data via content script.
 const ZFP_SCRIPT_ID='zfp-hook';
 async function ensureZfpHook(url){
   const pattern=originPattern(url);
@@ -458,15 +452,12 @@ async function ensureZfpHook(url){
   }catch{return false;}
 }
 async function zfpAsk(tabId,type,args,timeoutMs){
-  // Nham dung khung chinh: gui cho moi khung thi khung khong co moc cung tra
-  // loi, va cau tra loi "khong co moc" rat de ve dich truoc.
-  try{const r=await chrome.tabs.sendMessage(tabId,{type,args,timeoutMs},{frameId:0});return r||{error:'Không có trả lời.'};}
+  // Send specifically to top frame (frameId: 0) to avoid unhooked subframes replying first.
+  try{const r=await chrome.tabs.sendMessage(tabId,{type,args,timeoutMs},{frameId:0});return r||{error:'No response.'};}
   catch(e){return{error:String(e?.message||e)};}
 }
 async function zfpInfo(tabId){const r=await zfpAsk(tabId,'ZFP_INFO',{},8000);return r?.groups?.length?r:null;}
-// Server ZFP khong nhan lenh xin anh cua nguoi ngoai (da thu du kieu, im lang
-// 100% so lan). Cai duy nhat lam no bom anh la chinh viewer nap study. Nen muon
-// lay lai nhung anh da chay qua truoc luc bam Tai thi phai cho trang nap lai.
+// GE ZFP viewer reloads study to stream un-cached image frames.
 async function zfpReloadViewer(tabId){
   try{await chrome.tabs.reload(tabId);}catch(e){return{ok:false,error:String(e?.message||e)};}
   for(let i=0;i<45;i++){
@@ -474,28 +465,25 @@ async function zfpReloadViewer(tabId){
     const info=await zfpInfo(tabId);
     if(info?.groups?.length)return{ok:true,groups:info.groups.length};
   }
-  return{ok:false,error:'Viewer nạp lại nhưng chưa đọc được cấu trúc study.'};
+  return{ok:false,error:'Viewer reloaded but study structure could not be read.'};
 }
-// Moc dang ky xong chi an tu lan tai trang sau, nen phai tai lai dung MOT lan.
+// Registered hook takes effect on next page load, so reload tab once if needed.
 async function maybeReloadForZfp(tabId,state){
   if(state.zfpReloadDone)return;
   const tab=await chrome.tabs.get(tabId).catch(()=>null);
   if(!tab?.url||!(await ensureZfpHook(tab.url)))return;
-  if(await zfpInfo(tabId))return;                 // moc da chay roi
+  if(await zfpInfo(tabId))return;                 // hook already running
   state.zfpReloadDone=true;await saveTabState(tabId,state);
   await chrome.tabs.reload(tabId).catch(()=>{});
 }
 
 const activeDownloads=new Map();
-// Mot ca 45 anh la 45 muc trong trinh tai cua Chrome, bong bong download nhay
-// lien tuc. Tat giao dien do trong luc chay job roi bat lai khi xong, de viec tai
-// dien ra ngam. (Duong luu bang File System Access thi von da khong sinh muc nao.)
+// Disable download shelf/bubbles while running to perform silent background downloads.
 async function setDownloadUi(enabled){try{await chrome.downloads.setUiOptions({enabled});}catch{}}
 function waitDownload(downloadId,timeoutMs=120000){return new Promise((resolve,reject)=>{let done=false;const finish=(err)=>{if(done)return;done=true;clearTimeout(timer);chrome.downloads.onChanged.removeListener(listener);err?reject(err):resolve();};const listener=delta=>{if(delta.id!==downloadId)return;if(delta.error?.current)finish(new Error(delta.error.current));else if(delta.state?.current==='complete')finish();};chrome.downloads.onChanged.addListener(listener);const timer=setTimeout(()=>finish(new Error('Download timeout')),timeoutMs);chrome.downloads.search({id:downloadId}).then(rows=>{const item=rows?.[0];if(item?.state==='complete')finish();else if(item?.state==='interrupted')finish(new Error(item.error||'Download interrupted'));}).catch(()=>{});});}
 async function downloadBlobUrl(jobId,url,filename){
-  // Chỉ nhận blob: — bytes đã tải và đã validate xong. Không bao giờ đưa URL của
-  // PACS cho Download Manager để nó tự gọi.
-  if(!String(url||'').startsWith('blob:'))throw new Error('Chỉ lưu được dữ liệu đã tải sẵn (blob:).');
+  // Accept only blob: URLs with validated bytes.
+  if(!String(url||'').startsWith('blob:'))throw new Error('Can only save pre-downloaded data (blob:).');
   const id=await chrome.downloads.download({url,filename,conflictAction:'overwrite',saveAs:false});
   let set=activeDownloads.get(jobId);if(!set){set=new Set();activeDownloads.set(jobId,set);}
   set.add(id);
@@ -512,7 +500,7 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
       const tabId=Number(m.tabId),old=jobMemory.get(tabId)||await getSession(jobKey(tabId));
       if(old?.id&&m.jobId&&old.id!==m.jobId)return;
       if(old?.attemptId&&m.attemptId&&old.attemptId!==m.attemptId)return;
-      const res=m.result||{status:'error',errors:['Engine kết thúc không có kết quả.']};
+      const res=m.result||{status:'error',errors:['Engine finished with no result.']};
       const completedSopList=[...new Set([...(old?.completedSopUids||[]),...(res.completedSopUids||[])])];
       if(old)old.completedSopUids=completedSopList;
       if(old)res.completed=Math.max(Number(res.completed)||0,completedSopList.length);

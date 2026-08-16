@@ -9,9 +9,9 @@ const jobs=new Map();
 const globalSemaphore = new AsyncSemaphore(12);
 const sleep = sleepAbortable;
 
-function openFsDb(){return new Promise((resolve,reject)=>{const r=indexedDB.open(FS_DB,1);r.onupgradeneeded=()=>{if(!r.result.objectStoreNames.contains(FS_STORE))r.result.createObjectStore(FS_STORE);};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error||new Error('Không mở được cấu hình thư mục.'));});}
+function openFsDb(){return new Promise((resolve,reject)=>{const r=indexedDB.open(FS_DB,1);r.onupgradeneeded=()=>{if(!r.result.objectStoreNames.contains(FS_STORE))r.result.createObjectStore(FS_STORE);};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error||new Error('Unable to open directory configuration.'));});}
 async function getStoredRoot(){const db=await openFsDb();try{return await new Promise((resolve,reject)=>{const tx=db.transaction(FS_STORE,'readonly'),r=tx.objectStore(FS_STORE).get(FS_KEY);r.onsuccess=()=>resolve(r.result||null);r.onerror=()=>reject(r.error);});}finally{db.close();}}
-async function ensureWritableRoot(){const h=await getStoredRoot();if(!h)throw new Error('Chưa chọn thư mục lưu.');if(typeof h.queryPermission==='function'){const p=await h.queryPermission({mode:'readwrite'});if(p!=='granted')throw new Error('Cần cấp lại quyền ghi thư mục.');}return h;}
+async function ensureWritableRoot(){const h=await getStoredRoot();if(!h)throw new Error('Save folder has not been selected.');if(typeof h.queryPermission==='function'){const p=await h.queryPermission({mode:'readwrite'});if(p!=='granted')throw new Error('Directory write permission needs to be re-granted.');}return h;}
 
 function headers(task,accept=''){const h=new Headers();for(const[k,v]of Object.entries(task.headers||{})){const lk=k.toLowerCase();if(['cookie','host','content-length','origin','referer'].includes(lk))continue;try{h.set(k,String(v));}catch{}}if(task?.contentType&&!h.has('Content-Type'))h.set('Content-Type',String(task.contentType));if(accept)h.set('Accept',accept);return h;}
 function decodeRequestBody(stored){if(!stored)return undefined;if(stored instanceof Uint8Array||stored instanceof ArrayBuffer||typeof stored==='string'||stored instanceof URLSearchParams)return stored;if(stored.kind==='form'){const p=new URLSearchParams();for(const[k,vals]of Object.entries(stored.data||{}))for(const v of(Array.isArray(vals)?vals:[vals]))p.append(k,v);return p;}if(stored.kind==='raw'){const bins=(stored.chunks||[]).map(atob),len=bins.reduce((n,b)=>n+b.length,0),out=new Uint8Array(len);let off=0;for(const b of bins){for(let i=0;i<b.length;i++)out[off+i]=b.charCodeAt(i);off+=b.length;}return out;}return undefined;}
@@ -47,7 +47,7 @@ async function inspectDicomPrefix(task){const got=await readPrefix(task,256*1024
 async function probeUrls(probes){const rows=(probes||[]).slice(0,96),valid=[];let next=0;async function worker(){while(true){const i=next++;if(i>=rows.length)return;const p=rows[i];if(p?.url&&await probeDicomPrefix(p))valid.push(p.url);}}await Promise.all(Array.from({length:Math.min(6,rows.length||1)},worker));return valid;}
 async function inspectUrls(probes){const rows=(probes||[]).slice(0,24),details=[];let next=0;async function worker(){while(true){const i=next++;if(i>=rows.length)return;const p=rows[i];if(!p?.url)continue;details.push(await inspectDicomPrefix(p));}}await Promise.all(Array.from({length:Math.min(4,rows.length||1)},worker));return details;}
 function dicomFromResponse(bytes,contentType){const v=validatePart10(bytes);if(v.ok)return bytes;for(const p of parseMultipart(bytes,contentType)){if(validatePart10(p.data).ok)return p.data;}return null;}
-function responseProblem(bytes,contentType){const ct=String(contentType||'').toLowerCase();if(ct.includes('text/html'))return'Server trả trang HTML thay vì DICOM.';if(bytes?.length){const head=new TextDecoder('utf-8',{fatal:false}).decode(bytes.slice(0,160)).toLowerCase();if(head.includes('<html')||head.includes('<!doctype'))return'Server trả trang đăng nhập/lỗi thay vì DICOM.';}return'Endpoint không trả DICOM Part-10.';}
+function responseProblem(bytes,contentType){const ct=String(contentType||'').toLowerCase();if(ct.includes('text/html'))return'Server returned HTML page instead of DICOM.';if(bytes?.length){const head=new TextDecoder('utf-8',{fatal:false}).decode(bytes.slice(0,160)).toLowerCase();if(head.includes('<html')||head.includes('<!doctype'))return'Server returned login/error page instead of DICOM.';}return'Endpoint did not return DICOM Part-10.';}
 
 async function parallelOrdered(count,limit,fn){const out=new Array(count);let next=0;const n=Math.min(Math.max(1,limit),count);async function worker(){while(true){const i=next++;if(i>=count)return;out[i]=await fn(i);}}await Promise.all(Array.from({length:n},worker));return out;}
 
@@ -59,16 +59,14 @@ async function prepareDicomweb(task,signal,frameConcurrency){
   }
   let meta=task.meta||null;if(Array.isArray(meta))meta=meta[0]||{};
   const enough=meta&&meta['00080016']&&meta['00080018']&&meta['00280010']&&meta['00280011']&&meta['00280100'];if(!enough){const mj=await fetchJson(`${task.instanceBase}/metadata`,task,signal);meta=Array.isArray(mj)?(mj[0]||{}):mj;}
-  if(!meta||!Object.keys(meta).length)throw new Error(first||'Không có metadata instance.');
+  if(!meta||!Object.keys(meta).length)throw new Error(first||'No instance metadata available.');
   const nf=Math.max(Number(task.numberOfFrames)||1,numberOfFrames(meta));
   const frameResults=await parallelOrdered(nf,frameConcurrency,async i=>{const got=await fetchRaw(`${task.instanceBase}/frames/${i+1}`,task,'multipart/related; type="application/octet-stream"; transfer-syntax=1.2.840.10008.1.2.1, multipart/related; type="application/octet-stream", */*',signal);const parts=parseMultipart(got.bytes,got.contentType);return{frames:parts.length?parts.map(p=>p.data):[got.bytes],ct:(parts[0]?.contentType||got.contentType)};});
-  const frames=[];let ct='';for(const r of frameResults){ct=ct||r.ct;frames.push(...r.frames);}if(!frames.length)throw new Error(first||'Không lấy được frame ảnh.');return{bytes:buildPart10FromFrames(meta,frames,ct),provenance:'reconstructed',route:'frames'};
+  const frames=[];let ct='';for(const r of frameResults){ct=ct||r.ct;frames.push(...r.frames);}if(!frames.length)throw new Error(first||'Failed to retrieve image frames.');return{bytes:buildPart10FromFrames(meta,frames,ct),provenance:'reconstructed',route:'frames'};
 }
 
 /**
- * GE ZFP: pixel chi lay duoc tu trang viewer (WebSocket), khong co URL nao de
- * fetch. Doi bytes tho + metadata cua GE thanh DICOM Part-10 - la ban DUNG LAI,
- * thieu vai tag so voi file goc cua may chup.
+ * GE ZFP: pixel data is received through viewer WebSocket connection and reconstructed to DICOM Part-10.
  */
 function zfpBytes(task,packet){
   const bin=atob(packet.b64),pixels=new Uint8Array(bin.length);
@@ -86,7 +84,7 @@ async function prepareTask(task,signal,frameConcurrency){
   if(task.strategy==='dicomweb-instance')result=await prepareDicomweb(task,signal,frameConcurrency);
   else if(task.strategy==='fetch-dicom'){
     const got=await fetchRaw(task.url,task,'application/dicom, multipart/related; type="application/dicom", application/octet-stream, */*',signal);const bytes=dicomFromResponse(got.bytes,got.contentType);if(!bytes)throw new Error(responseProblem(got.bytes,got.contentType));result={bytes,provenance:'original',route:'direct'};
-  }else throw new Error(`Strategy không hỗ trợ: ${task.strategy}`);
+  }else throw new Error(`Unsupported strategy: ${task.strategy}`);
   const check=validatePart10(result.bytes);if(!check.ok)throw new Error(check.reason);const identityError=dicomTaskIdentityError(task,check.meta);if(identityError)throw new Error(identityError);return{...result,meta:check.meta};
 }
 
@@ -99,7 +97,7 @@ async function writeViaDownloads(studyFolder,relativePath,bytes,job){
   const blob=new Blob([bytes],{type:'application/dicom'}),url=URL.createObjectURL(blob);
   try{
     const r=await chrome.runtime.sendMessage({type:'DOWNLOAD_BLOB',jobId:job.id,url,filename:`PACS_DICOM/${studyFolder}/${relativePath}`});
-    if(!r?.ok)throw new Error(r?.error||'Không lưu được qua trình tải của Chrome.');
+    if(!r?.ok)throw new Error(r?.error||'Failed to save via Chrome downloads.');
   }finally{URL.revokeObjectURL(url);}
 }
 
@@ -143,7 +141,7 @@ async function runTask(job,task,index){
     }catch(e){
       last=String(e?.message||e);
       if(e?.name==='AbortError'||job.cancelled)throw e;
-      if(/HTTP (401|403|404|410)|HTML thay vì DICOM/i.test(last))break;
+      if(/HTTP (401|403|404|410)|HTML instead of DICOM|HTML thay vì DICOM/i.test(last))break;
       if(attempt<3){
         const jitter=Math.floor(Math.random()*100);
         await sleep((attempt===1?350:700)+jitter,job.controller.signal);
@@ -170,7 +168,7 @@ async function runZfpJob(job,tasks){
     if(r&&r.b64){
       dry=0;
       const sop=String(r.sop||''),task=bySop.get(sop);
-      if(!task||done.has(sop))continue;          // anh cua series khong chon
+      if(!task||done.has(sop))continue;          // image of unselected series
       done.add(sop);job.currentFile=task.relativePath;
       try{
         const existing=job.saveMode==='filesystem'?await existingValid(job.studyRoot,task.relativePath):null;
@@ -182,15 +180,15 @@ async function runZfpJob(job,tasks){
     }
     dry++;
     if(dry===1&&reloads<ZFP_MAX_RELOADS){
-      reloads++;job.currentFile=`Nạp lại viewer để lấy nốt ${bySop.size-done.size} ảnh…`;emit(job,true);
+      reloads++;job.currentFile=`Reloading viewer to retrieve remaining ${bySop.size-done.size} images…`;emit(job,true);
       const rl=await zfpReload(job.tabId);
-      if(!rl?.ok){job.errors.push(`Không nạp lại được viewer: ${rl?.error||'không rõ lý do'}`);break;}
+      if(!rl?.ok){job.errors.push(`Failed to reload viewer: ${rl?.error||'unknown reason'}`);break;}
       dry=0;continue;
     }
     if(dry>=3)break;
     await sleep(1500);
   }
-  if(!job.cancelled)for(const[sop,t]of bySop){if(done.has(sop))continue;failTask(job,t.relativePath,'viewer không nạp ảnh này — mở series đó trong viewer rồi tải lại.');}
+  if(!job.cancelled)for(const[sop,t]of bySop){if(done.has(sop))continue;failTask(job,t.relativePath,'Viewer did not load this image — open that series in the viewer and retry.');}
   job.currentFile='';emit(job,true);
   return lastMeta;
 }
@@ -254,8 +252,7 @@ async function runJob(spec){
     studyFolder,
     saveMode,
     attemptId:job.attemptId||'',
-    // Route nào thực sự lấy được ảnh, xếp theo số lần thắng — lần tải sau khỏi
-    // phải dò lại từ đầu trên cùng một PACS.
+    // Winning route ranking for future downloads on the same PACS.
     preferredRoutes:[...job.routeHits.entries()].sort((a,b)=>b[1]-a[1]).map(([route])=>route),
     completedSopUids:[...job.completedSopUids]
   };
@@ -264,7 +261,7 @@ async function runJob(spec){
 chrome.runtime.onMessage.addListener((m,_s,sendResponse)=>{
   if(m?.target!=='offscreen')return false;
   if(m.type==='START_ENGINE'){
-    const tabId=Number(m.spec?.tabId);if(jobs.has(tabId)){sendResponse({ok:false,error:'Tab này đang tải.'});return false;}
+    const tabId=Number(m.spec?.tabId);if(jobs.has(tabId)){sendResponse({ok:false,error:'This tab is currently downloading.'});return false;}
     runJob(m.spec).then(result=>chrome.runtime.sendMessage({type:'ENGINE_FINISHED',tabId,jobId:m.spec.jobId,attemptId:m.spec?.attemptId||'',result}).catch(()=>{})).catch(e=>chrome.runtime.sendMessage({type:'ENGINE_FINISHED',tabId,jobId:m.spec.jobId,attemptId:m.spec?.attemptId||'',result:{status:'error',errors:[String(e?.message||e)]}}).catch(()=>{}));
     sendResponse({ok:true,started:true});return false;
   }
@@ -274,3 +271,4 @@ chrome.runtime.onMessage.addListener((m,_s,sendResponse)=>{
   if(m.type==='INSPECT_DICOM_URLS'){inspectUrls(m.probes||[]).then(details=>sendResponse({ok:true,details})).catch(e=>sendResponse({ok:false,error:String(e?.message||e)}));return true;}
   return false;
 });
+

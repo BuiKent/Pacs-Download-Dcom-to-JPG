@@ -1,6 +1,6 @@
-# PACS DICOM Downloader 7.0 — test matrix
+# PACS DICOM Downloader 7.0 — Test Matrix
 
-## Automated checks trong gói
+## Automated Checks
 
 ```bash
 node --check <all js/mjs>
@@ -15,20 +15,20 @@ python tests/validate_dicom_minimal.py tests/writer_raw.dcm
 python tests/validate_dicom_minimal.py tests/writer_jpeg.dcm
 ```
 
-## Generic discovery regression
+## Generic Discovery Regression
 
-`test_generic_discovery.mjs` khóa:
+`test_generic_discovery.mjs` validates:
 
-- URL field có tên vô nghĩa (`v`) vẫn được tìm;
-- metadata Study/Series/SOP được kế thừa từ JSON ancestry;
-- dynamic IDs được gom về cùng URL shape;
-- probe một shape có thể materialize cả collection;
-- DICOM JSON có fingerprint nội dung riêng;
-- manifest recipe nhớ POST + winning DICOM shape.
+- URL fields with arbitrary names (e.g. `v`) are correctly extracted;
+- Study/Series/SOP ancestor metadata propagates from JSON hierarchy;
+- Dynamic IDs are grouped into matching URL shapes;
+- Probing a single shape can materialize an entire collection;
+- DICOM JSON contains dedicated content fingerprints;
+- Manifest recipe records HTTP method + winning DICOM shape.
 
-## Generic POST transport
+## Generic POST Transport
 
-`test_network_transport.mjs` mở HTTP server local và xác nhận engine gửi thật:
+`test_network_transport.mjs` starts a local HTTP server and verifies the engine transmits actual POST payloads:
 
 ```http
 POST /retrieve
@@ -36,33 +36,30 @@ Content-Type: application/json
 {"imageId":42}
 ```
 
-không chỉ lưu method trong task.
+## DICOM Safety & Invariant Tests
 
-## DICOM safety regression
+- Raw/native pixel reconstruction;
+- Encapsulated JPEG;
+- Multipart parser;
+- Part-10 preamble and file meta information;
+- Study/Series/SOP identity guard;
+- Existing files skipped only when Part-10 validation succeeds.
 
-- raw/native reconstruction;
-- encapsulated JPEG;
-- multipart parsing;
-- Part-10 preamble/meta;
-- identity guard Study/Series/SOP;
-- existing file chỉ skip khi validate được.
-
-## Regression với app Python
+## Regression Against Python Downloader
 
 ```bash
 python tests/compare_dicom_dirs.py <PYTHON_DICOM_DIR> <EXTENSION_DICOM_DIR>
 ```
 
-So theo SOPInstanceUID, PixelData SHA-256 và các tag pixel/hình học chính.
+Compares SOPInstanceUID, PixelData SHA-256, and primary geometric tags.
 
-## Những thứ phải live-test trên Chrome/PACS thật
+## Live PACS Verification Checklist
 
-- generic manifest mới chưa từng thấy;
-- signed/one-shot POST endpoint;
-- cross-origin image server;
-- PACS chậm / manifest phát muộn;
-- ZFP `runZfpJob` đầy đủ trong extension;
-- auth portal nhiều tầng;
+- Unfamiliar generic JSON manifests;
+- Signed/one-shot POST endpoints;
+- Cross-origin image servers;
+- Delayed manifest transmissions;
+- Full ZFP `runZfpJob` execution in extension context;
+- Multi-tier auth portals;
 - File System Access permission persistence.
 
-Không coi static/unit test là bằng chứng đã live-test bệnh viện thật.

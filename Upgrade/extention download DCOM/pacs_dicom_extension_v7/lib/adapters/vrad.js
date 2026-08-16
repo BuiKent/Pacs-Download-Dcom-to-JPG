@@ -8,7 +8,7 @@ export const VradAdapter={
   id:'VRAD',
   match(summary){return summary?.detector==='VRAD'||Boolean(bestDetectedRequest(summary?.requests||[],['VRAD_MANIFEST']));},
   async analyze(ctx){
-    const man=bestDetectedRequest(ctx.summary.requests,['VRAD_MANIFEST']);if(!man)throw new Error('Chưa thấy manifest VRAD.');
+    const man=bestDetectedRequest(ctx.summary.requests,['VRAD_MANIFEST']);if(!man)throw new Error('VRAD manifest not detected.');
     const payload=await ctx.fetchJson(man.url,'application/json',man);const p=parseVradManifest(payload);const template=bestDetectedRequest(ctx.summary.requests,['DICOM_IMAGE_API']);
     return ctx.normalizeStudy({adapter:'VRAD',studyUid:String(p.study?.StuInsUID||p.study?.StudyInstanceUID||''),patient:p.patient,series:p.series,context:{manifestUrl:man.url,templateUrl:template?.url||'',completeKnown:true}});
   },
@@ -24,6 +24,7 @@ export const VradAdapter={
         const sop=String(im.SOPInstanceUID||'').trim();tasks.push({strategy:'fetch-dicom',url:`${base}?${qs}`,headers:ctx.headersForUrl(base),method:'GET',studyUid:inv.studyUid,seriesUid:choice.seriesUid||'',sopInstanceUid:sop,relativePath:`${folder}/IM_${String(k).padStart(5,'0')}_${sopToken(sop,k)}.dcm`});
       }
     }
-    if(expected&&tasks.length<expected)throw new Error(`Manifest có ${expected} ảnh nhưng chỉ tạo được ${tasks.length} URL DICOM.`);return tasks;
+    if(expected&&tasks.length<expected)throw new Error(`Manifest lists ${expected} images but only generated ${tasks.length} DICOM URLs.`);return tasks;
   }
 };
+

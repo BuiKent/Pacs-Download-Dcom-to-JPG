@@ -91,7 +91,7 @@ function shareToken(summary){
     try{
       const q=new URL(raw).searchParams;
       for(const key of ['stoken','sToken','token'])if(q.get(key))return q.get(key);
-      // ShareStudy đôi khi dùng query không tên: ?<token>
+      // ShareStudy occasionally uses an unnamed query parameter: ?<token>
       for(const [k,v] of q.entries())if(!k&&v)return v;
     }catch{}
   }
@@ -99,13 +99,7 @@ function shareToken(summary){
 }
 
 /**
- * Dựng lại POST manifest khi extension chưa ghi được request gốc.
- *
- * `webRequest` chỉ ghi method/body lúc tab đang được theo dõi, mà viewer gọi
- * manifest ngay khi mở trang — bật extension sau là mất. Trước đây rơi vào cảnh
- * này là adapter phát lại bằng GET, ASMX trả trang HTML kèm HTTP 200 rồi hỏng.
- * Hai tham số nó cần đều lấy lại được: `sToken` trên URL chia sẻ, còn
- * `caseStudyId` nằm trong id thẻ series của DOM viewer.
+ * Reconstruct POST manifest when original request was not captured.
  */
 function rebuiltManifestMeta(ctx,url){
   const studyId=String(ctx.summary?.vietmyStudyId||'').trim(),token=shareToken(ctx.summary);
@@ -125,13 +119,11 @@ export const VietmyAdapter={
   id:'VIETMY',
   match(summary){return summary?.detector==='VIETMY'||Boolean(bestDetectedRequest(summary?.requests||[],['VIETMY_MANIFEST']));},
   async analyze(ctx){
-    const hit=bestDetectedRequest(ctx.summary.requests,['VIETMY_MANIFEST']);if(!hit)throw new Error('Chưa thấy manifest VietMy.');
-    // Manifest này CHỈ trả JSON cho POST đúng kiểu; gọi GET là server đưa về
-    // trang HTML kèm HTTP 200. Không có gì để phát lại thì nói luôn, đừng thử.
+    const hit=bestDetectedRequest(ctx.summary.requests,['VIETMY_MANIFEST']);if(!hit)throw new Error('VietMy manifest not detected.');
     const meta=requestMetaFor(ctx,hit.url);
-    if(!meta)throw new Error('Chưa ghi được request manifest VietMy. Bật "Theo dõi tab" rồi tải lại trang viewer để extension ghi đúng request.');
+    if(!meta)throw new Error('VietMy manifest request not captured. Enable "Track tab" and reload the viewer page so the extension can capture the request.');
     const payload=await ctx.fetchJson(hit.url,'application/json, text/json, */*',meta);
-    const p=parseVietmyManifest(payload,hit.url);if(!p.groups.length)throw new Error('Manifest VietMy không có filePath DICOM.');
+    const p=parseVietmyManifest(payload,hit.url);if(!p.groups.length)throw new Error('VietMy manifest contains no DICOM filePath.');
     return ctx.normalizeStudy({adapter:'VIETMY',studyUid:p.studyUid,patient:p.patient,series:p.series,context:{manifestUrl:hit.url,viewerUrl:ctx.summary.bestViewerUrl||ctx.summary.currentUrl||'',completeKnown:true}});
   },
   async enumerate(inv,selected,ctx){
@@ -151,3 +143,4 @@ export const VietmyAdapter={
 };
 
 export { parseVietmyManifest };
+

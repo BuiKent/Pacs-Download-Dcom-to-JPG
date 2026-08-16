@@ -1,34 +1,22 @@
 /**
- * Móc vào WebSocket của GE Centricity Universal Viewer (Zero Footprint).
+ * GE Centricity Universal Viewer (Zero Footprint) WebSocket hook.
  *
- * Chạy ở MAIN world, lúc document_start — viewer mở WebSocket ngay khi nạp
- * trang, gắn muộn là mất sạch cấu trúc study lẫn những ảnh đầu tiên.
+ * Runs in MAIN world at document_start — viewer opens WebSockets immediately
+ * on page load, late hooking loses study structure and initial image frames.
  *
- * Vì sao phải làm thế này: dòng ZFP KHÔNG chuyển ảnh qua HTTP. Pixel đi trong
- * `ws://.../image-provider` theo giao thức JSON riêng của GE, nên
- * chrome.webRequest không nhìn thấy gì để mà học.
+ * Why this is needed: GE ZFP does NOT transfer pixel data over HTTP.
+ * Frames are sent across `ws://.../image-provider` in GE's private binary/JSON
+ * protocol, invisible to chrome.webRequest.
  *
- * QUAN TRỌNG — vì sao chỉ HỨNG chứ không HỎI:
- * bản trước gửi lệnh `GET_DICOM_IMAGE` y hệt viewer (đúng socket của trang,
- * đúng cấu trúc payload, correlationId dạng UUID) và server im lặng 100% số
- * lần. Đã loại trừ bằng thực nghiệm trên ca thật: sai định dạng
- * correlationId (không phải), sai socket (thử cả 4, đều câm), series chưa
- * hiển thị (series đang mở cũng câm), server bỏ qua ảnh đã gửi rồi (ảnh chưa
- * từng nạp cũng câm). Trong lúc server đang bơm 600 khung của chính viewer thì
- * không khung nào mang SOP mình hỏi. Server chỉ phục vụ ảnh do engine của nó
- * quyết định — không nhận lệnh của người ngoài.
- *
- * Nhưng chính viewer tự nạp gần trọn study khi mở trang (đo được 261/264 ảnh
- * trong ~45 giây). Nên ở đây ta không xin: ta ghép mỗi khung metadata với khung
- * nhị phân đi ngay sau nó trên cùng socket, xếp vào hàng đợi, rồi đẩy dần sang
- * extension. Mỗi ảnh lấy ra là bỏ khỏi hàng đợi ngay — giữ cả 264 ảnh trong
- * trang là ~138 MB, đủ để tab chết.
+ * CAPTURE ONLY, NEVER INJECT:
+ * The viewer loads almost the entire study automatically upon opening.
+ * We pair each metadata frame with the binary payload directly following it
+ * on the same socket, place it in an bounded queue, and stream to extension.
  */
 (() => {
   if (window.__zfp) return;
 
-  // Trần bộ nhớ hàng đợi. Cao hơn thì mở viewer xong bấm tải ngay vẫn còn đủ
-  // ảnh cũ; cao quá thì tab viewer nặng thêm đúng bằng ngần đó.
+  // Maximum memory limit for queue (96 MB)
   const MAX_QUEUE_BYTES = 96 * 1024 * 1024;
 
   const store = {
@@ -49,8 +37,7 @@
     const uid = String(meta.sopInstanceUid || '');
     if (!uid) return;
     store.captured++;
-    // Có người đang chờ thì đưa thẳng, khỏi qua hàng đợi — đây là đường đi
-    // thường trực lúc đang tải, nhờ nó bộ nhớ trang gần như không tăng.
+    // If a consumer is already waiting, deliver immediately without queuing
     const w = store.waiters.shift();
     if (w) { clearTimeout(w.timer); w.resolve(pack(meta, bytes)); return; }
     if (store.sopsQueued[uid]) return;
@@ -88,10 +75,8 @@
   function liveSockets() { return store.imageSockets.filter(s => s && s.readyState === 1).length; }
 
   function watchImages(ws) {
-    // Metadata và pixel là HAI khung liền nhau trên cùng socket; ghép sai cặp là
-    // ghi pixel của ảnh khác vào file. Số byte phải đúng rows*cols*bits/8*samples
-    // mới nhận — khung nào không khớp (JPEG xem nhanh, ảnh định vị, khung điều
-    // khiển) thì bỏ, thà thiếu còn hơn sai.
+    // Metadata and pixel bytes arrive as two sequential messages on the same socket.
+    // Verify byte size matches rows * cols * bits/8 * samples before accepting.
     let meta = null;
     ws.addEventListener('message', ev => {
       if (typeof ev.data === 'string') {
@@ -149,13 +134,10 @@
             groups: store.groups.length};
   }
 
-  // Cùng bề mặt với bản trong app Python (`_ZFP_HOOK` của dcom_pipeline.py) để
-  // hai bên test được bằng đúng một bộ test, và gõ tay được từ console.
   store.take = take;
   store.stats = stats;
 
-  // Cầu nối sang content script (ISOLATED world) — hai bên không thấy biến của
-  // nhau nên phải đi qua postMessage.
+  // Bridge to content script (ISOLATED world) via postMessage
   window.addEventListener('message', async ev => {
     if (ev.source !== window) return;
     const m = ev.data;
@@ -169,7 +151,7 @@
       } else if (m.kind === 'stats') {
         reply = stats();
       } else {
-        reply = {error: 'Lệnh không hỗ trợ: ' + m.kind};
+        reply = {error: 'Unsupported command: ' + m.kind};
       }
     } catch (e) {
       reply = {error: String((e && e.message) || e)};
@@ -177,3 +159,4 @@
     window.postMessage({__zfp: 'res', id: m.id, reply}, '*');
   });
 })();
+

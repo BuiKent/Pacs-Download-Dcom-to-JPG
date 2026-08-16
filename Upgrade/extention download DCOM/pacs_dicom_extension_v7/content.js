@@ -8,14 +8,14 @@
     if(/hospital|benhvien|hfh|pmr|cdhaviet|thanhnhan/i.test(host)&&location.port)add(16,'medical-host');
     if(/viewer|vrviewer|sharestudy|pacs|dicom|ohif|cornerstone/i.test(url))add(30,'viewer');
     if(/[?&#](?:token|stoken|study|studyuid|session|share|id)=/i.test(url))add(16,'key');
-    if(/pacs|dicom|radiolog|chẩn đoán hình ảnh|xem ảnh|ct scan|mri/i.test(title))add(16,'title');
+    if(/pacs|dicom|radiolog|diagnostic\s*imaging|view\s*image|image\s*viewer|chẩn đoán hình ảnh|xem ảnh|ct scan|mri/i.test(title))add(16,'title');
     if(document.querySelector('.cornerstone-canvas,[class*="cornerstone" i],[data-cornerstone-enabled]'))add(55,'cornerstone');
     else if(document.querySelectorAll('canvas').length>=2)add(9,'canvas');
     const iframeUrls=[];for(const f of document.querySelectorAll('iframe[src],frame[src]')){try{const u=new URL(f.getAttribute('src')||'',location.href);if(/^https?:$/.test(u.protocol))iframeUrls.push(u.href);}catch{}}
     if(iframeUrls.length)add(Math.min(18,iframeUrls.length*5),'frames');
-    let text='';try{text=(document.body?.innerText||'').slice(0,18000);}catch{}if(/xem\s*(?:hình|ảnh)|chẩn\s*đoán\s*hình\s*ảnh|pacs|dicom/i.test(text))add(14,'medical-ui');
-    // Nhan dien GE Centricity Universal Viewer (ZFP): can biet de nap moc
-    // WebSocket, vi dong nay khong phat request anh nao qua HTTP.
+    let text='';try{text=(document.body?.innerText||'').slice(0,18000);}catch{}if(/xem\s*(?:hình|ảnh)|chẩn\s*đoán\s*hình\s*ảnh|diagnostic\s*imaging|view\s*image|pacs|dicom/i.test(text))add(14,'medical-ui');
+    // Detect GE Centricity Universal Viewer (ZFP) to load WebSocket hook,
+    // as it does not fetch image frames over HTTP.
     const zfpViewer=/\/ZFP(\/|\?|#|$)/i.test(url)||/Universal Viewer|Zero Footprint/i.test(title);
     if(zfpViewer)add(40,'ge-zfp');
     return{score:Math.min(100,Math.max(0,score)),reasons:[...new Set(reasons)].slice(0,8),iframeUrls:[...new Set(iframeUrls)].slice(0,60),url,title,readyState:document.readyState,zfpViewer};
@@ -24,16 +24,15 @@
 
 
   // --- Bridge generic MAIN-world JSON observer --------------------------------
-  // Chỉ chuyển JSON nhỏ; binary DICOM/pixel không bao giờ đi qua postMessage này.
+  // Only forward small JSON payloads; binary DICOM/pixel data never passes through postMessage.
   window.addEventListener('message',ev=>{
     if(ev.source!==window)return;const m=ev.data;
     if(!m||m.__pacsGeneric!=='json'||!m.row)return;
     chrome.runtime.sendMessage({type:'GENERIC_JSON_CAPTURE',row:m.row}).catch(()=>{});
   });
 
-  // --- Cầu nối tới móc WebSocket của GE ZFP (nằm ở MAIN world) --------------
-  // Content script và MAIN world không thấy biến của nhau, nên mọi thứ phải đi
-  // qua postMessage. Ở đây chỉ làm nhiệm vụ chuyển tiếp.
+  // --- Bridge to GE ZFP WebSocket hook (MAIN world) ----------------------------
+  // Isolated world and MAIN world communicate via postMessage bridge.
   let zfpSeq=0;const zfpWaiting=new Map();
   window.addEventListener('message',ev=>{
     if(ev.source!==window)return;const m=ev.data;
@@ -43,7 +42,7 @@
   function zfpAsk(kind,args,timeoutMs){
     return new Promise(resolve=>{
       const id=`${Date.now()}-${++zfpSeq}`;
-      const timer=setTimeout(()=>{zfpWaiting.delete(id);resolve({error:'Trang không trả lời (móc ZFP chưa được nạp?).'});},timeoutMs||50000);
+      const timer=setTimeout(()=>{zfpWaiting.delete(id);resolve({error:'Page did not respond (ZFP hook not loaded?).'});},timeoutMs||50000);
       zfpWaiting.set(id,{resolve,timer});
       window.postMessage({__zfp:'req',id,kind,args},'*');
     });

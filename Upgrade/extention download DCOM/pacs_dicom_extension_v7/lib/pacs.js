@@ -154,12 +154,12 @@ export function sequenceHint(description) {
   if (/\b(SWI|SWAN|T2 STAR|T2STAR)\b/.test(compact)) return 'SWI';
   if (/\bFLAIR\b/.test(compact)) return 'T2 FLAIR';
   if (/\b(T1|MPRAGE|BRAVO|SPGR)\b/.test(compact)) {
-    return /(POST|CE|GAD|CONTRAST|C\+|\+C|ENH)/.test(compact) ? 'T1 sau tiêm' : 'T1';
+    return /(POST|CE|GAD|CONTRAST|C\+|\+C|ENH)/.test(compact) ? 'T1 post-contrast' : 'T1';
   }
   if (/\bT2\b/.test(compact)) return 'T2';
-  if (/\b(PERF|DSC|DCE|ASL)\b/.test(compact)) return 'Tưới máu';
-  if (/\b(TOF|MRA|MRV|ANGIO)\b/.test(compact)) return 'Mạch máu';
-  return 'Khác';
+  if (/\b(PERF|DSC|DCE|ASL)\b/.test(compact)) return 'Perfusion';
+  if (/\b(TOF|MRA|MRV|ANGIO)\b/.test(compact)) return 'Angiography';
+  return 'Other';
 }
 
 function firstValue(obj, keys) {
@@ -266,10 +266,9 @@ export function seriesFolderName(series, index=0) {
 }
 
 /**
- * GE Centricity Universal Viewer (ZFP) không chuyển ảnh qua HTTP: pixel chạy
- * trong WebSocket `image-provider` kèm một khối metadata JSON riêng của GE.
- * Hàm này đổi khối đó sang DICOM+JSON để `buildPart10FromFrames()` dựng lại
- * file Part-10 — vẫn là bản dựng lại, thiếu vài tag so với file gốc máy chụp.
+ * GE Centricity Universal Viewer (ZFP) streams pixel data via WebSocket `image-provider`
+ * accompanied by private JSON metadata. This helper converts that structure to DICOM+JSON
+ * for `buildPart10FromFrames()` to reconstruct Part-10 files.
  */
 export function zfpMetaToDicomJson(meta, sopRow, group, study) {
   const out = {};
@@ -279,7 +278,7 @@ export function zfpMetaToDicomJson(meta, sopRow, group, study) {
         (Array.isArray(value) && !value.length)) return;
     out[tag] = {vr, Value: Array.isArray(value) ? value : [value]};
   };
-  // Giờ của ZFP có dấu hai chấm ("17:29:45"), VR TM thì không nhận.
+  // ZFP times include colons ("17:29:45"), which are stripped for VR TM.
   const tm = v => String(v || '').replace(/[^0-9.]/g, '').slice(0, 16);
   const da = v => String(v || '').replace(/[^0-9]/g, '').slice(0, 8);
   const num = v => (v === undefined || v === null || v === '') ? null : Number(v);
@@ -352,8 +351,7 @@ export function zfpMetaToDicomJson(meta, sopRow, group, study) {
 export function zfpSeriesChoices(groups) {
   return (groups || []).map((group, index) => {
     const sops = group.dicomSops || [];
-    // Hai series "Screen Save" trùng mô tả nhau nên phải lấy SeriesInstanceUID
-    // thật làm khóa, không thì chọn lọc series bị dính chùm.
+    // Use actual SeriesInstanceUID as key to prevent distinct series with identical names from colliding.
     return normalizeSeries({
       SeriesInstanceUID: (sops[0] || {}).seriesInstanceUid || group.groupId,
       SeriesDescription: group.description,
@@ -373,16 +371,10 @@ export function bodyLooksJson(body) {
 }
 
 /**
- * Content-Type dùng khi phát lại một request manifest đã ghi được.
- *
- * Trước đây chỉ lấy từ `headersByOrigin` — một ô dùng chung cho cả origin, ai
- * ghi sau đè lên người ghi trước. Một origin phát nhiều loại POST (ASMX JSON,
- * SignalR urlencoded...) nên ô đó rất hay lệch, và ASMX gặp sai kiểu thì trả
- * HTTP 200 kèm trang HTML chứ không báo lỗi, khiến hỏng rất lặng lẽ.
+ * Content-Type used when replaying recorded manifest requests.
  */
 export function replayContentType(state, url, requestMeta, body) {
   if (requestMeta?.contentType) return String(requestMeta.contentType);
-  // Suy từ chính body: body JSON thì Content-Type JSON, không thể sai.
   if (bodyLooksJson(body)) return 'application/json; charset=UTF-8';
   try {
     const raw = state?.headersByOrigin?.[new URL(url).origin] || {};
@@ -425,7 +417,7 @@ export function computeUrlFingerprint(url, adapterName = '') {
 
 export class RecipeStoreV2 {
   static SCHEMA_VERSION = 2;
-  static TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 ngày (7,776,000,000 ms)
+  static TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days (7,776,000,000 ms)
   static MAX_RECIPES = 200;
 
   static purgeExpired(recipes = {}, now = Date.now()) {
@@ -523,7 +515,7 @@ export class RecipeStoreV2 {
   }
 }
 
-/** Gắn/ghi đè tham số truy vấn mà giữ nguyên mọi tham số phiên đang có trên URL. */
+/** Attach/override query parameters while preserving existing session parameters. */
 export function withQueryParams(rawUrl, params = {}) {
   try {
     const u = new URL(rawUrl);
@@ -535,13 +527,9 @@ export function withQueryParams(rawUrl, params = {}) {
 }
 
 /**
- * Đọc hết một truy vấn QIDO-RS, tự phân trang bằng `offset`.
+ * Read full QIDO-RS query with automatic offset pagination.
  *
- * PS3.18 8.3.4: server ĐƯỢC PHÉP trả ít kết quả hơn `limit` client xin và bắt
- * client tự lật trang. dcm4chee/Orthanc mặc định chặn ở vài trăm dòng, nên một
- * ca CT vài nghìn ảnh mà chỉ gọi một phát là cụt — im lặng thiếu ảnh, hoặc chết
- * ở bước đối chiếu số lượng. Thuật toán lấy theo `dicomweb-client`: lặp tới khi
- * một trang trả về rỗng, KHÔNG dừng sớm chỉ vì trang ngắn hơn `limit`.
+ * PS3.18 8.3.4: Server is permitted to return fewer results than the requested limit.
  */
 export async function fetchQidoPaged(fetchJson, url, {
   accept = 'application/dicom+json, application/json',
@@ -552,7 +540,6 @@ export async function fetchQidoPaged(fetchJson, url, {
   const out = [], seen = new Set();
   for (let page = 0, offset = 0; page < maxPages; page++) {
     const batch = await fetchJson(withQueryParams(url, { limit: pageSize, offset }), accept);
-    // Vài server trả thẳng một object thay vì mảng một phần tử.
     const rows = Array.isArray(batch) ? batch : (batch && typeof batch === 'object' ? [batch] : []);
     if (!rows.length) break;
     let added = 0;
@@ -561,8 +548,6 @@ export async function fetchQidoPaged(fetchJson, url, {
       if (key) { if (seen.has(key)) continue; seen.add(key); }
       out.push(row); added++;
     }
-    // Server phớt lờ `offset` sẽ trả lại đúng trang cũ mãi mãi; thêm được 0 dòng
-    // mới là dấu hiệu dừng, nếu không vòng lặp sẽ không bao giờ kết thúc.
     if (!added) break;
     offset += rows.length;
   }

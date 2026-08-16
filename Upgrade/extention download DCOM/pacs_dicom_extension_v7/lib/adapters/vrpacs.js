@@ -42,7 +42,7 @@ export const VrpacsAdapter={
     if(!hit?.requestBody){
       hit=buildSyntheticVrpacsRequest(ctx.summary)||hit;
     }
-    if(!hit)throw new Error('Chưa thấy manifest VRPACS.');
+    if(!hit)throw new Error('VRPACS manifest not detected.');
     const payload=await ctx.fetchJson(hit.url,'application/json',hit);
     const p=parseVrpacsManifest(payload);
     const st=p.studies?.[0]||{};

@@ -1,25 +1,25 @@
 # PACS DICOM Downloader 7.0
 
-Chrome Extension độc lập để nhận diện và tải DICOM từ PACS web theo **giao thức / nội dung**, không chỉ theo danh sách bệnh viện đã biết.
+Standalone Chrome Extension for discovering and downloading DICOM data from web PACS using **protocol / content detection**, without depending on hardcoded site lists.
 
-V7 được phát triển trực tiếp từ nhánh 6.2 → 6.3.x hiện tại. Các storage key `pacs6_*` được giữ nguyên để không làm mất History, recipe và lựa chọn thư mục của người đang nâng cấp.
+V7 builds directly on branch 6.2 → 6.3.x. Storage keys `pacs6_*` are preserved so upgrading users retain history, recipes, and directory selections.
 
-## Mục tiêu v7
+## V7 Goals & Priority
 
-Thứ tự nhận diện và tải:
+Discovery and download priority order:
 
-1. **DICOMweb / WADO chuẩn** — QIDO, WADO-RS, WADO-URI, metadata + frames.
-2. **DICOM trực tiếp qua HTTP(S)** — GET/POST/PUT; xác nhận bằng bytes Part-10, không tin tên URL/MIME.
-3. **Generic Manifest Discovery** — đọc JSON bất kỳ, tìm URL theo cấu trúc, gom theo URL shape, probe mẫu và materialize cả collection khi bytes là DICOM.
-4. **MAIN-world JSON observer** — fallback nhẹ cho manifest không replay được; chỉ clone JSON nhỏ, không copy DICOM/pixel binary.
-5. **Vendor compatibility adapters** — VietMy, VRAD, VRPACS và GE ZFP giữ lại để cứu các workflow proprietary mà generic layer chưa suy ra đủ.
-6. **GE ZFP WebSocket** — hứng pixel + metadata từ `image-provider`, dựng DICOM có `provenance: reconstructed`.
+1. **Standard DICOMweb / WADO** — QIDO, WADO-RS, WADO-URI, metadata + frames.
+2. **Direct DICOM over HTTP(S)** — GET/POST/PUT; verified via Part-10 bytes, ignoring URL extensions and MIME hints.
+3. **Generic Manifest Discovery** — inspects arbitrary JSON, extracts URLs recursively, clusters by URL shape, probes samples, and materializes full collections when Part-10 DICOM bytes are confirmed.
+4. **MAIN-world JSON observer** — lightweight fallback for non-replayable manifests; clones compact JSON only, never binary DICOM/pixels.
+5. **Vendor compatibility adapters** — VietMy, VRAD, VRPACS, and GE ZFP maintained for proprietary workflows.
+6. **GE ZFP WebSocket** — captures pixel + metadata streams from `image-provider` to reconstruct valid DICOM Part-10 files.
 
-## Generic discovery mới
+## Generic Manifest Discovery
 
-V7 không còn yêu cầu URL ảnh phải chứa `dicom`, `wado`, `image`, `instance`, `.dcm`.
+V7 does not require image URLs to contain keywords like `dicom`, `wado`, `image`, `instance`, or `.dcm`.
 
-Ví dụ manifest hoàn toàn lạ:
+Example arbitrary manifest:
 
 ```json
 {
@@ -35,24 +35,24 @@ Ví dụ manifest hoàn toàn lạ:
 }
 ```
 
-Luồng:
+Pipeline:
 
 ```text
 JSON
  → recursive URL candidates
  → URL-shape clustering
- → probe 1–2 mẫu/shape
- → bytes có DICM?
- → shape đó là DICOM collection
- → giữ metadata cha (Study/Series/SOP nếu có)
+ → probe 1–2 samples per shape
+ → DICM magic bytes confirmed?
+ → shape identified as DICOM collection
+ → preserve ancestor metadata (Study/Series/SOP if present)
  → Unified Study / Series / tasks
 ```
 
-Từng file vẫn phải qua `validatePart10()` và identity guard trước khi ghi.
+Every file passes `validatePart10()` and identity verification before saving.
 
-## POST/PUT DICOM
+## POST/PUT DICOM Support
 
-V7 giữ `method + request body + Content-Type` cho từng request. Một PACS có thể dùng cùng một URL:
+V7 preserves `method + request body + Content-Type` for each request. A PACS can reuse the same URL:
 
 ```http
 POST /retrieve
@@ -62,27 +62,27 @@ POST /retrieve
 {"imageId": 1002}
 ```
 
-Hai request này là hai instance khác nhau; v7 không còn co chúng thành một URL duy nhất. `requestId` và body fingerprint được dùng để ghép response với request tương ứng trong phiên.
+These two requests are distinct instances; v7 no longer collapses them to a single URL. `requestId` and body fingerprints map responses to corresponding requests.
 
-## Generic manifest recipe v3
+## Generic Manifest Recipe V3
 
-Recipe local hiện học thêm:
+Local recipes persist:
 
-- manifest URL shape;
+- Manifest URL shape;
 - HTTP method;
-- DICOM URL shape thắng;
-- JSON path / field URL điển hình;
-- adapter thắng/thua;
-- failure class;
-- latency EWMA;
-- preferred DICOMweb retrieval route;
-- capability flags (direct DICOM, generic manifest, HTTP methods, MAIN-world JSON fallback).
+- Winning DICOM URL shape;
+- Typical JSON path / field URL;
+- Adapter success/failure outcomes;
+- Failure classification;
+- Latency EWMA;
+- Preferred DICOMweb retrieval route;
+- Capability flags (direct DICOM, generic manifest, HTTP methods, MAIN-world JSON fallback).
 
-Không lưu full token/query secret vào recipe.
+Full tokens and sensitive query parameters are never stored in recipes.
 
 ## DICOMweb
 
-Engine ưu tiên original instance:
+The engine prioritizes original instances:
 
 ```text
 WADO-URI
@@ -90,11 +90,11 @@ WADO-URI
  → metadata + frames reconstruction
 ```
 
-Route thành công được nhớ cho lần tải sau.
+Successful routes are cached for future downloads.
 
-## Lưu file
+## File Storage
 
-Đường mặc định nhanh:
+Direct storage path:
 
 ```text
 fetch
@@ -102,7 +102,7 @@ fetch
  → File System Access createWritable()
 ```
 
-Nếu dùng chế độ Downloads:
+Downloads API fallback:
 
 ```text
 fetch
@@ -111,42 +111,42 @@ fetch
  → chrome.downloads
 ```
 
-`chrome.downloads` **không bao giờ tự gọi URL PACS**.
+`chrome.downloads` **never directly fetches PACS URLs**.
 
-## Cài đặt
+## Installation
 
-1. Giải nén ZIP.
-2. Mở `chrome://extensions`.
-3. Bật **Developer mode**.
-4. Xóa/disable bản cũ nếu muốn test sạch.
-5. **Load unpacked** → chọn thư mục `pacs_dicom_extension_v7`.
+1. Extract the extension directory.
+2. Open `chrome://extensions`.
+3. Enable **Developer mode**.
+4. Remove/disable older versions if testing cleanly.
+5. Click **Load unpacked** → select `pacs_dicom_extension_v7`.
 6. Onboarding:
-   - cấp HTTP/HTTPS một lần cho môi trường nhiều PACS; hoặc
-   - cấp theo từng site.
+   - Grant HTTP/HTTPS permissions for multi-PACS environments; or
+   - Grant permissions per site as needed.
 
-Có quyền site không đồng nghĩa tự deep-track. Tracking vẫn theo từng tab.
+Site permissions do not enable automatic deep tracking. Tracking remains strictly per-tab.
 
-## Cách dùng
+## Usage
 
-1. Mở PACS/portal và viewer như bình thường.
-2. Mở Side Panel.
-3. Bấm **Theo dõi tab**.
-4. Chờ inventory Study/Series.
-5. Chọn series → **Tải DICOM**.
-6. Nếu site lạ chưa tự nhận: **Học site** vẫn còn như fallback thủ công.
+1. Open PACS/portal and viewer normally.
+2. Open the Side Panel.
+3. Click **Track tab**.
+4. Await Study/Series inventory detection.
+5. Select series → click **Download DICOM**.
+6. If an unfamiliar site is not auto-detected: **Learn site** remains available as manual fallback.
 
-## An toàn dữ liệu
+## Data Safety & Security
 
-- Không `chrome.debugger`.
-- Không cloud/telemetry.
-- Không hard-code account/password.
-- Request login/password/OTP bị loại khỏi learning.
-- Không lưu Cookie trong recipe.
-- Không tin MIME hay đuôi `.dcm`; kiểm bytes.
-- DICOM task có Study/Series/SOP đã biết phải khớp bytes thực nhận.
-- JPEG/PNG/rendered ảnh không được gắn nhãn original DICOM.
+- No `chrome.debugger`.
+- No cloud/telemetry dependencies.
+- No hardcoded credentials.
+- Login/password/OTP requests excluded from learning.
+- No cookies stored in recipes.
+- Validates magic bytes rather than MIME headers or `.dcm` extensions.
+- Identity guard verifies Study/Series/SOP against expected task.
+- Rendered JPEG/PNG images are never labeled as original DICOM.
 
-## Kiến trúc
+## Architecture
 
 ```text
 Browser tab
@@ -169,14 +169,14 @@ Retrieval planner + learned routes
           ↓
 Offscreen download engine
           ↓
-validate Part-10 + identity
+validate Part-10 + identity check
           ↓
 File System Access / validated Blob fallback
 ```
 
-## Research basis
+## Research Basis
 
-V7 học **kiến trúc**, không copy source code của các project sau:
+V7 references architectural patterns from:
 
 - OHIF Data Source module: https://docs.ohif.org/platform/extensions/modules/data-source/
 - OHIF DICOMweb data source: https://docs.ohif.org/configuration/datasources/dicom-web/
@@ -186,4 +186,5 @@ V7 học **kiến trúc**, không copy source code của các project sau:
 - dcmjs: https://github.com/dcmjs-org/dcmjs
 - dicomweb-proxy: https://github.com/knopkem/dicomweb-proxy
 
-Xem thêm `DESIGN_V7.md`.
+See `DESIGN_V7.md` for architectural details.
+

@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * AsyncSemaphore: Hàng đợi Semaphore abort-aware chống nghẽn / leak permit.
- * Đảm bảo giới hạn active đồng thời, hỗ trợ AbortSignal khi người dùng hủy.
+ * AsyncSemaphore: Abort-aware semaphore queue preventing deadlocks and permit leaks.
+ * Enforces concurrent active limit, supports AbortSignal upon user cancellation.
  */
 export class AsyncSemaphore {
   constructor(limit = 12) {
@@ -62,7 +62,7 @@ export class AsyncSemaphore {
 }
 
 /**
- * sleepAbortable: Ngủ có hỗ trợ ngắt tức thì bằng AbortSignal.
+ * sleepAbortable: Sleep with instant interruption via AbortSignal.
  */
 export function sleepAbortable(ms, signal) {
   if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
@@ -83,8 +83,8 @@ export function sleepAbortable(ms, signal) {
 }
 
 /**
- * fetchStreamWithTimeout: Đọc dữ liệu theo stream chunk, tự động gia hạn idle timeout
- * khi có byte mới; ngắt kết nối với connect timeout, idle timeout và max request cap.
+ * fetchStreamWithTimeout: Stream chunk reader with rolling idle timeout on new bytes,
+ * connection timeout, idle timeout, and max request duration cap.
  */
 export async function fetchStreamWithTimeout(url, task, accept, signal, semaphore, headersFn, {
   idleMs = 60000,
@@ -173,3 +173,4 @@ export async function fetchStreamWithTimeout(url, task, accept, signal, semaphor
     if (semaphore) semaphore.release();
   }
 }
+

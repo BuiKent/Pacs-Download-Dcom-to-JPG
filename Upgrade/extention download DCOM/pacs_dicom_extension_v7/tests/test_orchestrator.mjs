@@ -54,7 +54,7 @@ assert.equal(dicomTaskIdentityError(expectedTask, matchingMeta), '');
 assert.match(dicomTaskIdentityError(expectedTask, {...matchingMeta, studyUid: '9.9.9'}), /StudyInstanceUID/);
 assert.match(dicomTaskIdentityError(expectedTask, {...matchingMeta, seriesUid: '10.9'}), /SeriesInstanceUID/);
 assert.match(dicomTaskIdentityError(expectedTask, {...matchingMeta, sopInstanceUid: '1.2.3.9'}), /SOPInstanceUID/);
-assert.match(dicomTaskIdentityError({}, {studyUid: '1.2.3', sopInstanceUid: ''}), /thiếu SOPInstanceUID/);
+assert.match(dicomTaskIdentityError({}, {studyUid: '1.2.3', sopInstanceUid: ''}), /missing SOPInstanceUID/i);
 
 assert.deepEqual(
   cumulativeAttemptCounters(
@@ -93,16 +93,19 @@ assert.equal(allDoneTasks.length, 0);
 
 console.log('orchestrator fallback tests passed');
 
-// orderRoutes: engine phai lay duoc route da hoc, khong dò lại từ đầu mỗi lần.
+// orderRoutes: engine retrieves learned routes without re-probing every time
 {
   const candidates = [{ route: 'wadouri', url: 'u' }, { route: 'wadors', url: 'r' }];
   assert.deepEqual(orderRoutes(candidates, ['wadors']).map(c => c.route), ['wadors', 'wadouri']);
-  // Chua hoc gi thi giu nguyen thu tu mac dinh cua adapter.
+  // When no route learned yet, maintain default adapter order.
   assert.deepEqual(orderRoutes(candidates, []).map(c => c.route), ['wadouri', 'wadors']);
   assert.deepEqual(orderRoutes(candidates, undefined).map(c => c.route), ['wadouri', 'wadors']);
-  // Route la khong lam mat route con lai, chi day chung xuong sau.
-  assert.deepEqual(orderRoutes(candidates, ['frames']).map(c => c.route), ['wadouri', 'wadors']);
-  assert.equal(orderRoutes(candidates, ['wadors']).length, 2);
+  // Unknown candidate routes are placed after learned ones.
+  assert.deepEqual(orderRoutes([...candidates, { route: 'frames', url: 'f' }], ['wadors']).map(c => c.route), [
+    'wadors',
+    'wadouri',
+    'frames',
+  ]);
 }
 
-console.log('orderRoutes tests passed');
+console.log('orderRoutes learned-priority tests passed');
