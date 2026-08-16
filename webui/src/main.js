@@ -1702,6 +1702,31 @@ function initMediaEvents() {
         video.playbackRate = Number(speedSelect.value) || 1.0;
       };
     }
+
+    const metaBadge = (app || document).querySelector("#video-meta-badge");
+    const series = selectedSeries();
+    if (metaBadge && series && !series._videoInfoLoaded) {
+      getVideoSourcePath(series).then((path) => {
+        if (!path) return;
+        return api("/api/media/video/info", {
+          method: "POST",
+          body: JSON.stringify({ path }),
+        }).then((res) => {
+          const info = res?.info;
+          if (info) {
+            series._videoInfoLoaded = true;
+            const resText = info.width && info.height ? `${info.width}x${info.height}` : "";
+            const fpsText = info.fps ? `${Math.round(info.fps)}fps` : "";
+            const codecText = info.codec || "";
+            const durText = info.durationSeconds ? formatVideoTime(info.durationSeconds) : "";
+            const details = [resText, fpsText, codecText, durText].filter(Boolean).join(" · ");
+            if (details) {
+              metaBadge.textContent = `🎬 ${series.patientName || "Video Phẫu Thuật"} (${details})`;
+            }
+          }
+        });
+      }).catch(() => null);
+    }
   }
 }
 
