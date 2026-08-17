@@ -10,6 +10,9 @@ import {
   getVideoSourcePath,
   renderSurgeryVideoStudio,
   renderPhotoEditorStudio,
+  renderTextViewer,
+  renderWorkspacePane,
+  loadTextContent,
   renderViewer,
 } from "./main.js";
 
@@ -24,20 +27,40 @@ describe("Media Studio Detection & Layouts", () => {
     state._videoInfoLoaded = false;
   });
 
-  it("identifies video series correctly", () => {
+  it("routes on the media type the backend read off the files", () => {
     expect(getSeriesMediaType({ mediaType: "video" })).toBe("video");
-    expect(getSeriesMediaType({ name: "phau_thuat.mp4", description: "Video mo" })).toBe("video");
-    expect(getSeriesMediaType({ description: "Video phẫu thuật nội soi" })).toBe("video");
-  });
-
-  it("identifies photo and doc series correctly", () => {
     expect(getSeriesMediaType({ mediaType: "photo" })).toBe("photo");
-    expect(getSeriesMediaType({ name: "gpb.jpg", description: "Anh giai phau benh" })).toBe("photo");
-    expect(getSeriesMediaType({ description: "Tài liệu bệnh án scan", name: "doc.png" })).toBe("doc");
+    expect(getSeriesMediaType({ mediaType: "doc" })).toBe("doc");
+    expect(getSeriesMediaType({ mediaType: "text" })).toBe("text");
+    expect(getSeriesMediaType({ mediaType: "dicom" })).toBe("dicom");
   });
 
-  it("defaults to dicom for regular imaging series", () => {
+  it("never sends a post-operative study to the video editor", () => {
+    // These descriptions used to match a "mổ"/"phẫu thuật" substring search
+    // and open a follow-up MRI in a video trimmer. The description is prose
+    // about the patient, never a statement about the file format.
+    const postOp = [
+      "MR khớp gối sau mổ",
+      "CT bụng sau mổ ruột thừa",
+      "MRI cột sống hậu phẫu thuật",
+      "CT sọ não theo dõi sau mổ u",
+    ];
+    for (const description of postOp) {
+      expect(getSeriesMediaType({ mediaType: "dicom", description })).toBe("dicom");
+    }
+  });
+
+  it("keeps a genuine surgical video in the video studio whatever it is named", () => {
+    // The old heuristic only caught Vietnamese wording, so an English-named
+    // operative recording fell through to the diagnostic canvas.
+    expect(getSeriesMediaType({ mediaType: "video", description: "Laparoscopic cholecystectomy" }))
+      .toBe("video");
+    expect(getSeriesMediaType({ mediaType: "video", description: "Case 12" })).toBe("video");
+  });
+
+  it("falls back to the reading canvas when the type is missing or unknown", () => {
     expect(getSeriesMediaType({ description: "T1 SAG 5mm", sliceCount: 24 })).toBe("dicom");
+    expect(getSeriesMediaType({ mediaType: "spreadsheet" })).toBe("dicom");
     expect(getSeriesMediaType(null)).toBe("dicom");
   });
 
@@ -382,5 +405,77 @@ describe("Surgery Video Studio Action Handlers", () => {
 
     await action("seek-filmstrip-idx", { dataset: { idx: "2", total: "4" } });
     expect(video.currentTime).toBe(50);
+  });
+});
+
+describe("Text & JSON reading pane", () => {
+  beforeEach(() => {
+    setLanguage("vi");
+    state.textDoc = null;
+    state.archive = { root: "D:\PACS", series: [] };
+  });
+
+  it("renders a reading frame with no editing tools on it", () => {
+    const series = { id: "txt_01", name: "tuong_trinh.txt", sliceCount: 1, mediaType: "text" };
+    const html = renderTextViewer(series);
+
+    expect(html).toContain("text-viewer");
+    expect(html).toContain("text-viewer-body");
+    expect(html).toContain("tuong_trinh.txt");
+    // A report is read, not edited: none of the studio tools belong here.
+    expect(html).not.toContain("photo-tool");
+    expect(html).not.toContain("video-tool");
+  });
+
+  it("hides file navigation for a single file and shows it for several", () => {
+    const one = renderTextViewer({ id: "t1", name: "a.txt", sliceCount: 1, mediaType: "text" });
+    expect(one).not.toContain("text-viewer-nav");
+
+    state.textDoc = { seriesId: "t2", index: 0, name: "a.txt", language: "text", text: "x" };
+    const many = renderTextViewer({ id: "t2", name: "a.txt", sliceCount: 3, mediaType: "text" });
+    expect(many).toContain("text-viewer-nav");
+    expect(many).toContain("1/3");
+    // At the first file there is nothing before it.
+    expect(many).toMatch(/data-action="text-prev"[^>]*disabled/);
+  });
+
+  it("marks a JSON document and escapes the content it shows", () => {
+    state.textDoc = {
+      seriesId: "t3",
+      index: 0,
+      name: "index.json",
+      language: "json",
+      text: '{"note": "<script>alert(1)</script>"}',
+    };
+    const html = renderTextViewer({ id: "t3", name: "index.json", sliceCount: 1, mediaType: "text" });
+
+    expect(html).toContain("text-viewer-badge");
+    expect(html).toContain("JSON");
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("shows the failure in the pane when the file cannot be read", async () => {
+    const series = { id: "t4", name: "hong.txt", sliceCount: 1, mediaType: "text" };
+    global.fetch = vi.fn().mockRejectedValue(new Error("File nặng quá giới hạn"));
+
+    await loadTextContent(series, 0);
+
+    expect(state.textDoc.seriesId).toBe("t4");
+    expect(state.textDoc.text).toContain("File nặng quá giới hạn");
+  });
+
+  it("sends each media type to its own pane", () => {
+    expect(renderWorkspacePane({ id: "a", mediaType: "text", name: "a.txt", sliceCount: 1 }))
+      .toContain("text-viewer");
+    expect(renderWorkspacePane({ id: "b", mediaType: "video" })).toContain("surgery-video-studio");
+    expect(renderWorkspacePane({ id: "c", mediaType: "photo" })).toContain("photo-editor-studio");
+    expect(renderWorkspacePane({ id: "d", mediaType: "doc" })).toContain("photo-editor-studio");
+  });
+
+  it("offers exactly one open button when nothing is loaded", () => {
+    const html = renderWorkspacePane(null);
+    expect((html.match(/data-action="choose-archive"/g) || []).length).toBe(1);
+    expect(html).not.toContain("choose-file");
   });
 });

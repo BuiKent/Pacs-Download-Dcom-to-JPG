@@ -51,4 +51,5 @@ Auto_Download_DICOM/
 webui/node_modules/
 webui/dist/
 scratch/
+scratch_test_downloads/
 Upgrade/reference_projects/

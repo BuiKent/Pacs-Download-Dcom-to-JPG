@@ -43,6 +43,36 @@ const EN = {
   "Chưa rõ mã BN": "Patient ID unknown",
   "Chưa có thông tin hành chính": "No demographics recorded",
 
+  // One "open" entry point: the archive classifies whatever is in the folder
+  // rather than asking the reader to pick the right button first.
+  "Mở folder hồ sơ: phim, ảnh, video và văn bản đều được nhận diện":
+    "Open a record folder — studies, photos, video and text are all detected",
+  "Chưa mở hồ sơ nào": "No record open",
+  "Mở folder hồ sơ; app tự phân loại phim DICOM, ảnh, video và văn bản bên trong.":
+    "Open a record folder; the app sorts the DICOM studies, photos, video and text inside it.",
+  "Mở folder": "Open folder",
+
+  // Viewer tab: the patient rail and its record timeline
+  "Chưa có tên bệnh nhân": "Patient name not recorded",
+  "Bệnh viện": "Hospital",
+  "Chẩn đoán": "Diagnosis",
+  "Timeline hồ sơ": "Record timeline",
+  "Chưa có dữ liệu nào trong hồ sơ này.": "Nothing recorded for this patient yet.",
+  "Chưa rõ ngày chụp": "Date not recorded",
+  "Chưa có mô tả": "No description",
+  "{} tuổi": "{} years old",
+  "{} video": "{} videos",
+  "{} file": "{} files",
+  "Phim chụp": "Study",
+  "Văn bản": "Text",
+
+  // Text / JSON reading pane
+  "Chưa có văn bản nào": "No text file here",
+  "Đang đọc file…": "Reading file…",
+  "Chép": "Copy",
+  "Series video hoặc văn bản, không dựng MPR.":
+    "Video or text series — no MPR reconstruction.",
+
   // Study List: rows whose counts or identity the scan has not established.
   // These read as "not measured", never as a zero or a stand-in value.
   "Ca chụp chưa có mô tả": "Study has no description",
@@ -51,7 +81,6 @@ const EN = {
   "{} series": "{} series",
   "{} lát": "{} slices",
   series: "series",
-  ảnh: "images",
   video: "videos",
   trang: "pages",
 
@@ -330,7 +359,6 @@ const EN = {
   "Đã sao chép link tải vào clipboard!": "Download link copied to clipboard!",
   "Không thể sao chép liên kết": "Could not copy link",
   "Mở liên kết": "Open URL",
-  "Mã bệnh nhân": "Patient code",
   "Mã ca chụp (Accession No)": "Accession number",
   "Bệnh viện / Cơ sở": "Hospital / Facility",
   "Phương thức tải": "Download method",

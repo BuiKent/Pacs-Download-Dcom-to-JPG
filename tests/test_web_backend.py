@@ -56,6 +56,14 @@ class JobStateContractTests(unittest.TestCase):
         self.assertEqual("stopped", job.snapshot()["status"])
 
 
+def _years_since(year: int, month: int, day: int) -> int:
+    """Completed years from a birth date to today, as the backend computes it."""
+    import datetime
+
+    today = datetime.date.today()
+    return today.year - year - ((today.month, today.day) < (month, day))
+
+
 def write_local_dicom(
     path: Path,
     *,
@@ -1562,6 +1570,167 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertEqual(meta["gender"], "Nữ")
         self.assertEqual(meta["birthYear"], "1988")
         self.assertEqual(meta["hospital"], "BV Bạch Mai")
+
+    def test_archive_snapshot_carries_patient_identity_from_the_manifest(self) -> None:
+        """The viewer rail reads this block; before, it was never sent."""
+        patient = self.temp_dir / "BN-0007"
+        (patient / "VIDEO").mkdir(parents=True)
+        self._write_video(patient / "VIDEO" / "a.mp4")
+        (patient / "patient-index.json").write_text(json.dumps({
+            "format": "dcom-patient-index-v1",
+            "patientId": "2607063527",
+            "patientName": "NGUYỄN HỮU SỰ",
+            "patientBirthDate": "19620918",
+            "patientSex": "M",
+            "hospitalName": "BV Hà Tĩnh",
+            "studies": {},
+        }), encoding="utf-8")
+
+        block = ArchiveCatalog().open(patient)["patient"]
+
+        self.assertEqual(block["patientId"], "2607063527")
+        self.assertEqual(block["patientName"], "NGUYỄN HỮU SỰ")
+        self.assertEqual(block["birthYear"], "1962")
+        self.assertEqual(block["gender"], "Nam")
+        self.assertEqual(block["hospital"], "BV Hà Tĩnh")
+        # Age is derived, so it must be consistent with the birth date rather
+        # than a number carried over from anywhere else.
+        self.assertEqual(int(block["age"]), _years_since(1962, 9, 18))
+
+    def test_archive_snapshot_invents_no_identity_without_a_manifest(self) -> None:
+        """A folder name is not a patient record."""
+        patient = self.temp_dir / "BN-9999_NGUYEN VAN A - Nam - 1974"
+        (patient / "VIDEO").mkdir(parents=True)
+        self._write_video(patient / "VIDEO" / "a.mp4")
+
+        self.assertEqual(ArchiveCatalog().open(patient)["patient"], {})
+
+    def test_patient_block_leaves_age_blank_when_the_birth_date_is_unusable(self) -> None:
+        from web_backend import ArchiveCatalog as Catalog
+
+        for birth in ("", "1962", "19620000", "khong-ro"):
+            block = Catalog._patient_block({"patientId": "X", "patientBirthDate": birth})
+            self.assertEqual(block["age"], "", f"birthDate={birth!r} invented an age")
+
+    @staticmethod
+    def _write_video(path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x00\x00\x00\x20ftypisom" + b"\0" * 256)
+
+    def test_media_type_is_read_from_the_file_not_the_description(self) -> None:
+        """The classifier looks at the extension, never at wording.
+
+        The frontend used to decide this by searching the study description for
+        "mổ" and "phẫu thuật", which sent every post-operative follow-up scan
+        into the video editor.
+        """
+        from web_backend import media_type_for_file
+
+        self.assertEqual(media_type_for_file(Path("MR khop goi sau mo/IM_0001.dcm")), "dicom")
+        self.assertEqual(media_type_for_file(Path("Case 12/anything.mp4")), "video")
+        self.assertEqual(media_type_for_file(Path("bao cao/tuong_trinh.txt")), "text")
+        self.assertEqual(media_type_for_file(Path("bao cao/index.json")), "text")
+        self.assertEqual(media_type_for_file(Path("anh/gpb.jpg")), "photo")
+        self.assertEqual(media_type_for_file(Path("khac/bang_ke.xlsx")), "")
+
+    def test_a_folder_of_surgical_videos_produces_a_video_series(self) -> None:
+        """Before this, a video folder scanned to zero series.
+
+        The Video Studio was therefore only ever reachable by a DICOM series
+        that had been misclassified, never by an actual recording.
+        """
+        folder = self.temp_dir / "BN-0001" / "VIDEO-MO"
+        self._write_video(folder / "mo_noi_soi_01.mp4")
+        self._write_video(folder / "mo_noi_soi_02.mp4")
+
+        archive = ArchiveCatalog().open(self.temp_dir / "BN-0001")
+        series = archive["series"]
+
+        self.assertEqual(len(series), 1)
+        self.assertEqual(series[0]["mediaType"], "video")
+        self.assertEqual(series[0]["sliceCount"], 2)
+
+    def test_a_dicom_folder_still_surfaces_the_video_and_report_beside_it(self) -> None:
+        """A patient folder holds the scan and the operative record together."""
+        patient = self.temp_dir / "BN-0002"
+        dicom_dir = patient / "DICOM-MR"
+        dicom_dir.mkdir(parents=True)
+        series_uid = generate_uid()
+        for index in range(2):
+            write_local_dicom(
+                dicom_dir / f"slice_{index}.dcm",
+                series_uid=series_uid,
+                instance_number=index + 1,
+                position=float(index),
+            )
+        self._write_video(patient / "VIDEO-MO" / "mo.mp4")
+        (patient / "TUONG-TRINH").mkdir(parents=True)
+        (patient / "TUONG-TRINH" / "tt.txt").write_text("Tường trình", encoding="utf-8")
+
+        archive = ArchiveCatalog().open(patient)
+        kinds = sorted(item["mediaType"] for item in archive["series"])
+
+        self.assertEqual(kinds, ["dicom", "text", "video"])
+
+    def test_scanned_paperwork_is_marked_doc_but_photos_stay_photos(self) -> None:
+        from PIL import Image
+
+        patient = self.temp_dir / "BN-0003"
+        for folder, name in (("BENH_AN-SCAN", "p1.jpg"), ("ANH-GPB", "g1.jpg")):
+            (patient / folder).mkdir(parents=True)
+            Image.new("RGB", (32, 32), (128, 128, 128)).save(patient / folder / name)
+
+        archive = ArchiveCatalog().open(patient)
+        by_name = {item["name"]: item["mediaType"] for item in archive["series"]}
+
+        self.assertEqual(by_name["BENH_AN-SCAN"], "doc")
+        self.assertEqual(by_name["ANH-GPB"], "photo")
+
+    def test_open_single_video_or_text_file(self) -> None:
+        folder = self.temp_dir / "BN-0004"
+        self._write_video(folder / "mo.mp4")
+        (folder / "tt.txt").write_text("Tường trình", encoding="utf-8")
+
+        catalog = ArchiveCatalog()
+        self.assertEqual(catalog.open(folder / "mo.mp4")["series"][0]["mediaType"], "video")
+        self.assertEqual(catalog.open(folder / "tt.txt")["series"][0]["mediaType"], "text")
+
+    def test_text_endpoint_reformats_json_but_leaves_broken_json_alone(self) -> None:
+        """An unparseable .json is shown verbatim — that is why it was opened."""
+        folder = self.temp_dir / "BN-0005" / "BAO-CAO"
+        folder.mkdir(parents=True)
+        (folder / "a.json").write_text('{"patientId":"BN-5","n":[1,2]}', encoding="utf-8")
+        (folder / "b.txt").write_text("Tường trình phẫu thuật", encoding="utf-8")
+        (folder / "c.json").write_text("{khong phai json", encoding="utf-8")
+
+        catalog = ArchiveCatalog()
+        series_id = catalog.open(self.temp_dir / "BN-0005")["series"][0]["id"]
+
+        good = self.controller.get_text_content(series_id, 0, catalog=catalog)
+        self.assertEqual(good["language"], "json")
+        self.assertIn('\n  "patientId": "BN-5"', good["text"])
+
+        plain = self.controller.get_text_content(series_id, 1, catalog=catalog)
+        self.assertEqual(plain["language"], "text")
+        self.assertIn("Tường trình phẫu thuật", plain["text"])
+
+        broken = self.controller.get_text_content(series_id, 2, catalog=catalog)
+        self.assertEqual(broken["language"], "text")
+        self.assertEqual(broken["text"], "{khong phai json")
+
+    def test_text_endpoint_refuses_a_file_too_large_to_display(self) -> None:
+        import web_backend
+
+        folder = self.temp_dir / "BN-0006" / "DUMP"
+        folder.mkdir(parents=True)
+        (folder / "big.txt").write_text("x" * (web_backend.TEXT_MAX_BYTES + 1), encoding="utf-8")
+
+        catalog = ArchiveCatalog()
+        series_id = catalog.open(self.temp_dir / "BN-0006")["series"][0]["id"]
+
+        with self.assertRaises(ValueError) as caught:
+            self.controller.get_text_content(series_id, 0, catalog=catalog)
+        self.assertIn("giới hạn", str(caught.exception))
 
     def _patient_with_manifest(self, studies: dict) -> Path:
         """A patient folder whose manifest describes the given study folders."""

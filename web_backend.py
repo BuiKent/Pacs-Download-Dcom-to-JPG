@@ -8,6 +8,7 @@ from the browser.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import math
@@ -34,7 +35,55 @@ import mpr_engine
 
 APP_VERSION = "1.1.0"
 IMG_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+VIDEO_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
+TEXT_EXTENSIONS = {".txt", ".json"}
+# Largest text file the viewer will load into the page. A report or a manifest
+# is kilobytes; anything past this is a data dump that would freeze the tab.
+TEXT_MAX_BYTES = 2 * 1024 * 1024
+# Folder names that mark scanned paperwork rather than clinical photographs.
+# Matched against the folder name only — never against a study description,
+# because "sau mổ" in a study description describes a scan of a patient, not a
+# video of an operation.
+DOC_FOLDER_HINTS = {"doc", "docs", "benh_an", "benh-an", "benhan", "scan", "hoso", "ho_so"}
 ANNOTATIONS_NAME = "viewer-annotations.json"
+
+
+def media_type_for_file(path: Path) -> str:
+    """Which viewer a file belongs in, decided by the file itself.
+
+    Returns one of "dicom", "video", "photo", "text" or "" when nothing here
+    can display it.
+
+    The extension decides, never the wording of a study description. The old
+    frontend heuristic looked for "mổ" and "phẫu thuật" in the description and
+    sent anything matching to the video editor, which meant every follow-up
+    scan — "MR khớp gối sau mổ", "CT bụng sau mổ ruột thừa" — opened in a video
+    trimmer instead of the diagnostic canvas. A file's type is a property of
+    the file, so that is what gets read.
+    """
+    suffix = path.suffix.casefold()
+    if suffix in VIDEO_EXTENSIONS:
+        return "video"
+    if suffix in TEXT_EXTENSIONS:
+        return "text"
+    if suffix in IMG_EXTENSIONS:
+        return "photo"
+    if suffix in {".dcm", ".dicom", ".ima"}:
+        return "dicom"
+    return ""
+
+
+def is_document_folder(folder: Path) -> bool:
+    """Whether a folder of images holds scanned paperwork rather than photos.
+
+    Read off the folder name alone. Photographs and scanned records are both
+    JPEGs, so the only honest signal available without opening every file is
+    where the operator filed them.
+    """
+    name = folder.name.casefold().replace(" ", "_")
+    return any(hint in name for hint in DOC_FOLDER_HINTS)
+
+
 MEDIA_WORK_ROOT = Path(tempfile.gettempdir()) / "concord_media_work"
 MEDIA_WORK_ROOT.mkdir(parents=True, exist_ok=True)
 # The classic Tk app writes the same file. Sharing it means a user who switches
@@ -845,6 +894,23 @@ class SeriesRecord:
     # slice is expensive and the strip re-requests it on every re-render.
     thumbnail_bytes: Optional[bytes] = None
 
+    def resolved_media_type(self) -> str:
+        """Which viewer this series opens in.
+
+        Derived from the files the record actually holds, so a series built by
+        any of the construction paths below reports the truth without each of
+        them having to remember to set it.
+        """
+        if self.source_type == "dicom":
+            return "dicom"
+        for image in self.images:
+            kind = media_type_for_file(image)
+            if kind == "photo" and is_document_folder(self.folder):
+                return "doc"
+            if kind:
+                return kind
+        return "dicom" if self.source_type == "dicom" else "photo"
+
     def public_dict(self) -> dict:
         m = self.manifest or {}
         data = {
@@ -857,6 +923,9 @@ class SeriesRecord:
             "description": m.get("series_description", self.name),
             "modality": self.modality,
             "sourceType": self.source_type,
+            # The frontend routes on this. It is computed from the files on
+            # disk, never from the wording of a description.
+            "mediaType": self.resolved_media_type(),
             "studyGroup": self.study_group,
             "studyDate": self.study_date or m.get("study_date") or m.get("studyDate", ""),
             "studyDescription": m.get("study_description") or m.get("studyDescription", ""),
@@ -887,6 +956,10 @@ class ArchiveCatalog:
         self._lock = threading.RLock()
         self.root: Optional[Path] = None
         self._series: dict[str, SeriesRecord] = {}
+        # Identity of the patient this archive belongs to, taken from
+        # `patient-index.json`. Empty until an archive with a manifest is
+        # opened — the viewer prints "—" rather than guessing from a path.
+        self._patient: dict = {}
 
     @staticmethod
     def _image_files(folder: Path, manifest: Optional[dict]) -> list[Path]:
@@ -901,6 +974,78 @@ class ArchiveCatalog:
             ),
             key=lambda path: _natural_key(path.name),
         )
+
+    def _media_records(
+        self,
+        root: Path,
+        *,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> dict[str, SeriesRecord]:
+        """Every video or text series under `root`, keyed by series id.
+
+        Used by the DICOM branch, which would otherwise return the scan alone
+        and hide the operative video and report filed next to it.
+        """
+        found: dict[str, SeriesRecord] = {}
+        blocked = {"DICOM", "RAW_JPG"}
+        for current, dirnames, _filenames in os.walk(root):
+            if should_stop and should_stop():
+                break
+            dirnames[:] = [name for name in dirnames if name.upper() not in blocked]
+            dirnames.sort(key=_natural_key)
+            record = self._media_record(Path(current), root)
+            if record is not None:
+                found[record.series_id] = record
+        return found
+
+    def _media_record(self, folder: Path, root: Path) -> Optional[SeriesRecord]:
+        """A video or text series for a folder that holds no displayable images.
+
+        Runs only where the image scan came up empty, so a DICOM or JPG series
+        is never reinterpreted as media. Videos and operative reports sit
+        beside a study rather than inside it, which is exactly the shape this
+        catches — and which the old scanner dropped on the floor entirely.
+        """
+        for extensions, source in ((VIDEO_EXTENSIONS, "video"), (TEXT_EXTENSIONS, "text")):
+            files = self._playable_files(folder, extensions)
+            if not files:
+                continue
+            digest = hashlib.sha256(str(folder).casefold().encode("utf-8")).hexdigest()[:20]
+            study_date, folder_modality, study_desc = _study_from_folder_path(folder)
+            relative_name = str(folder.relative_to(root)) if folder != root else folder.name
+            return SeriesRecord(
+                series_id=digest,
+                name=relative_name,
+                folder=folder,
+                images=files,
+                manifest={"series_description": folder.name},
+                mpr_ready=False,
+                mpr_reason="Series video hoặc văn bản, không dựng MPR.",
+                modality=folder_modality or "UNKNOWN",
+                source_type=source,
+                study_group=study_desc or folder.name,
+                study_date=study_date,
+            )
+        return None
+
+    @staticmethod
+    def _playable_files(folder: Path, extensions: set[str]) -> list[Path]:
+        """Non-image files in `folder` the viewer can open, naturally sorted.
+
+        Kept apart from `_image_files` so the DICOM and JPG paths are untouched:
+        a folder is only ever read as video or as text once the image scan has
+        already come up empty.
+        """
+        try:
+            return sorted(
+                (
+                    path for path in folder.iterdir()
+                    if path.is_file() and path.suffix.casefold() in extensions
+                ),
+                key=lambda path: _natural_key(path.name),
+            )
+        except OSError:
+            return []
 
     @staticmethod
     def _modality(folder: Path, root: Path, manifest: Optional[dict]) -> str:
@@ -1285,6 +1430,7 @@ class ArchiveCatalog:
             _enrich_single(record)
             with self._lock:
                 self.root = parent
+                self._patient = self._patient_block(patient_manifest)
                 self._series = {digest: record}
             if log:
                 log(f"Đã mở file DICOM: {file_path.name} ({len(headers_ordered)} frame)")
@@ -1318,14 +1464,43 @@ class ArchiveCatalog:
             _enrich_single(record)
             with self._lock:
                 self.root = folder
+                self._patient = self._patient_block(patient_manifest)
                 self._series = {digest: record}
             if log:
                 log(f"Đã mở file ảnh: {file_path.name}")
             return self.snapshot()
 
+        kind = media_type_for_file(file_path)
+        if kind in {"video", "text"}:
+            folder = file_path.parent
+            digest = hashlib.sha256(str(file_path).casefold().encode("utf-8")).hexdigest()[:20]
+            study_date, folder_modality, study_desc = _study_from_folder_path(folder)
+            record = SeriesRecord(
+                series_id=digest,
+                name=file_path.name,
+                folder=folder,
+                images=[file_path],
+                manifest={"series_description": file_path.stem},
+                mpr_ready=False,
+                mpr_reason="Series video hoặc văn bản, không dựng MPR.",
+                modality=folder_modality or "UNKNOWN",
+                source_type=kind,
+                study_group=study_desc or folder.name,
+                study_date=study_date,
+            )
+            with self._lock:
+                self.root = folder
+                self._patient = self._patient_block(patient_manifest)
+                self._series = {digest: record}
+            if log:
+                label = "video" if kind == "video" else "văn bản"
+                log(f"Đã mở file {label}: {file_path.name}")
+            return self.snapshot()
+
         raise ValueError(
-            f"Không thể đọc file {file_path.name}. "
-            "Ứng dụng hỗ trợ file DICOM (.dcm, .dicom, .ima) và file ảnh (JPG, PNG, WEBP, BMP)."
+            f"Không thể đọc file {file_path.name}. Ứng dụng hỗ trợ file DICOM "
+            "(.dcm, .dicom, .ima), ảnh (JPG, PNG, WEBP, BMP), video (MP4, WEBM, "
+            "AVI, MOV, MKV) và văn bản (TXT, JSON)."
         )
 
     def open(
@@ -1365,11 +1540,19 @@ class ArchiveCatalog:
             root, log=log, should_stop=should_stop,
         )
         if dicom_records:
+            # A patient folder routinely holds the scan *and* the operative
+            # video and report beside it. Returning here with only the DICOM
+            # series would hide them, so the media folders are merged in.
+            media_records = self._media_records(root, should_stop=should_stop)
+            dicom_records.update(media_records)
             _enrich_manifest_records(dicom_records)
             if log:
-                log(f"Đã nhận diện {len(dicom_records)} series DICOM, mở trực tiếp không chuyển JPG.")
+                log(f"Đã nhận diện {len(dicom_records) - len(media_records)} series DICOM, mở trực tiếp không chuyển JPG.")
+                if media_records:
+                    log(f"Kèm theo {len(media_records)} series video hoặc văn bản.")
             with self._lock:
                 self.root = root
+                self._patient = self._patient_block(patient_manifest)
                 self._series = dicom_records
             return self.snapshot()
 
@@ -1396,6 +1579,11 @@ class ArchiveCatalog:
                     log(f"Bỏ qua thư mục không đọc được: {folder.name} ({exc})")
                 continue
             if not images:
+                # No images here, but the folder may still hold a surgical
+                # video or an operative report worth listing.
+                media_record = self._media_record(folder, root)
+                if media_record is not None:
+                    records[media_record.series_id] = media_record
                 continue
             digest = hashlib.sha256(str(folder).casefold().encode("utf-8")).hexdigest()[:20]
             ready, reason = validate_mpr_manifest(folder, manifest)
@@ -1452,13 +1640,55 @@ class ArchiveCatalog:
             )
         with self._lock:
             self.root = root
+            self._patient = self._patient_block(patient_manifest)
             self._series = records
         return self.snapshot()
+
+    @staticmethod
+    def _patient_block(manifest: Optional[dict]) -> dict:
+        """Patient identity for the viewer rail, straight from the manifest.
+
+        Every field is either recorded or blank. Age is computed only when a
+        birth date is actually on file — a viewer that shows an age it derived
+        from nothing is the same failure as one that invents a sex.
+        """
+        if not isinstance(manifest, dict):
+            return {}
+        birth_digits = re.sub(r"\D", "", str(manifest.get("patientBirthDate") or ""))
+        birth_year = birth_digits[:4] if len(birth_digits) >= 4 else ""
+        age = ""
+        if len(birth_digits) == 8:
+            try:
+                born = datetime.date(
+                    int(birth_digits[0:4]), int(birth_digits[4:6]), int(birth_digits[6:8]),
+                )
+                today = datetime.date.today()
+                years = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+                if 0 <= years < 150:
+                    age = str(years)
+            except ValueError:
+                age = ""
+        sex = str(manifest.get("patientSex") or "").strip().upper()
+        return {
+            "patientId": str(manifest.get("patientId") or "").strip(),
+            "patientName": str(manifest.get("patientName") or "").strip(),
+            "birthDate": birth_digits,
+            "birthYear": birth_year,
+            "age": age,
+            "gender": {"M": "Nam", "F": "Nữ"}.get(sex, ""),
+            "hospital": str(manifest.get("hospitalName") or "").strip(),
+            "hospitalKey": str(manifest.get("hospitalKey") or "").strip(),
+            # Not a DICOM tag and not in the manifest schema: a local archive
+            # has no RIS to read a clinical diagnosis from. Present so the UI
+            # has one place to read it once a source exists.
+            "diagnosis": str(manifest.get("diagnosis") or "").strip(),
+        }
 
     def snapshot(self) -> dict:
         with self._lock:
             return {
                 "root": str(self.root) if self.root else "",
+                "patient": dict(self._patient),
                 "series": [record.public_dict() for record in self._series.values()],
             }
 
@@ -2845,6 +3075,60 @@ class WebController:
         temporary.replace(path)
         return {"saved": True, "count": len(annotations)}
 
+    def get_text_content(
+        self,
+        series_id: str,
+        index: int = 0,
+        catalog: Optional[ArchiveCatalog] = None,
+    ) -> dict:
+        """Contents of one text or JSON file in a series, for the text viewer.
+
+        JSON is returned re-indented so a minified manifest is readable, but
+        only when it actually parses: a malformed file is shown byte-for-byte
+        rather than swallowed, because the reason someone opens it is usually
+        to find out what is wrong with it.
+        """
+        record = (catalog or self.catalog).get(series_id)
+        files = record.images
+        if not files:
+            raise ValueError("Series không có file nào.")
+        position = max(0, min(int(index or 0), len(files) - 1))
+        path = files[position]
+        if path.suffix.casefold() not in TEXT_EXTENSIONS:
+            raise ValueError(f"File {path.name} không phải văn bản.")
+        size = path.stat().st_size
+        if size > TEXT_MAX_BYTES:
+            raise ValueError(
+                f"File {path.name} nặng {_format_file_size(size)}, "
+                f"vượt giới hạn {_format_file_size(TEXT_MAX_BYTES)} của trình xem văn bản."
+            )
+        # Reports written by Vietnamese hospital systems are frequently CP1258
+        # or CP1252 rather than UTF-8; a hard decode error would show nothing
+        # at all, so the bytes are kept with replacement characters instead.
+        raw = path.read_bytes()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("utf-8", errors="replace")
+        language = "text"
+        if path.suffix.casefold() == ".json":
+            try:
+                text = json.dumps(json.loads(text), ensure_ascii=False, indent=2)
+                language = "json"
+            except ValueError:
+                # Left as-is: an unparseable .json is exactly what the reader
+                # needs to see verbatim.
+                pass
+        return {
+            "name": path.name,
+            "path": str(path),
+            "language": language,
+            "sizeBytes": size,
+            "index": position,
+            "count": len(files),
+            "text": text,
+        }
+
     def get_file_info(self, series_id: str, slice_index: int = 0, catalog: Optional[ArchiveCatalog] = None) -> dict:
         import pydicom
         from PIL import Image
@@ -3192,6 +3476,15 @@ class LocalApiServer:
                         if "index" in qs and qs["index"] and qs["index"][0].isdigit():
                             index = int(qs["index"][0])
                     return owner.controller.get_file_info(match.group(1), index, catalog=catalog)
+                match = re.fullmatch(r"/api/series/([a-f0-9]{20})/text", path)
+                if match:
+                    index = 0
+                    if query:
+                        from urllib.parse import parse_qs
+                        qs = parse_qs(query)
+                        if "index" in qs and qs["index"] and qs["index"][0].isdigit():
+                            index = int(qs["index"][0])
+                    return owner.controller.get_text_content(match.group(1), index, catalog=catalog)
                 raise KeyError("API không tồn tại.")
 
             def _api_post(self, path: str, payload: dict) -> Any:

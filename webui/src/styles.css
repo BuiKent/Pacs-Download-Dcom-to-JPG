@@ -822,19 +822,126 @@ button:disabled { opacity: .35; cursor: default; }
   cursor: text;
 }
 
+/* Column 1 is the patient rail, spanning the full height of the tab; the
+   viewer keeps the layout it had, shifted one column right. */
 .viewer-main {
   display: grid;
   grid-template-rows: auto auto 1fr 27px;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 246px 1fr auto;
   min-width: 0;
   min-height: 0;
   background: #05080c;
 }
-.viewer-main > .toolbar { grid-row: 1; grid-column: 1 / -1; }
-.viewer-main > .safety-notice { grid-row: 2; grid-column: 1 / -1; }
-.viewer-main > .workspace-grid { grid-row: 3; grid-column: 1; }
-.viewer-main > .series-strip { grid-row: 3; grid-column: 2; }
-.viewer-main > .status-bar { grid-row: 4; grid-column: 1 / -1; }
+.viewer-main > .rec-rail { grid-row: 1 / -1; grid-column: 1; }
+.viewer-main > .toolbar { grid-row: 1; grid-column: 2 / -1; }
+.viewer-main > .safety-notice { grid-row: 2; grid-column: 2 / -1; }
+.viewer-main > .workspace-grid { grid-row: 3; grid-column: 2; }
+.viewer-main > .series-strip { grid-row: 3; grid-column: 3; }
+.viewer-main > .status-bar { grid-row: 4; grid-column: 2 / -1; }
+
+/* The rail navigates the record, it never displays an image, so it belongs to
+   the app chrome and keeps the light Notion palette (CLAUDE.md §5 reserves the
+   dark surface for toolbar, thumbnails and canvas). */
+.rec-rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--panel-bg, #0b1119);
+  border-right: 1px solid var(--chrome-border, #223040);
+}
+.rec-id {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--list-border, #1c2a36);
+}
+.rec-id b {
+  display: block;
+  font-size: 14px;
+  line-height: 1.3;
+  color: var(--field-fg, #e7f1f8);
+}
+.rec-id small {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--label-muted, #7890a2);
+}
+.rec-facts {
+  margin: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--list-border, #1c2a36);
+}
+.rfact { display: flex; gap: 8px; padding: 3px 0; font-size: 11px; }
+.rfact dt { flex: 0 0 74px; color: var(--label-muted, #7890a2); }
+.rfact dd { margin: 0; flex: 1; color: var(--body-fg, #dce7f2); word-break: break-word; }
+.rec-timeline-head {
+  padding: 10px 14px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--label-fg, #8fa8bd);
+}
+.tl { padding: 0 8px 12px; }
+.tl-empty {
+  padding: 12px 6px;
+  font-size: 11px;
+  color: var(--label-muted, #7890a2);
+}
+.tl-day { margin-bottom: 10px; }
+.tl-date {
+  padding: 4px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--label-fg, #8fa8bd);
+}
+.tl-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 8px;
+  margin-bottom: 2px;
+  border: 1px solid transparent;
+  border-radius: var(--control-radius, 6px);
+  background: none;
+  color: var(--body-fg, #dce7f2);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.tl-item:hover { background: var(--list-hover, #16202b); }
+.tl-item.on {
+  border-color: var(--accent, #2383e2);
+  background: var(--list-active, #17293a);
+}
+/* The dot carries the media kind; the same four colours as the worklist chips
+   so one legend covers both screens. */
+.tl-item > i {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--m-dicom, #2383e2);
+}
+.tl-item.photo > i { background: var(--m-photo, #2e7d32); }
+.tl-item.doc > i   { background: var(--m-doc, #7f8c8d); }
+.tl-item.video > i { background: var(--m-video, #8e44ad); }
+.tl-item.text > i  { background: var(--m-text, #b7791f); }
+.tl-item .nm {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tl-item .ct {
+  flex: none;
+  font-size: 10px;
+  color: var(--label-muted, #7890a2);
+  font-variant-numeric: tabular-nums;
+}
 
 .toolbar {
   display: flex;
@@ -1825,6 +1932,72 @@ button:disabled { opacity: .35; cursor: default; }
   background: #000000;
   position: relative;
   overflow: hidden;
+}
+
+/* Text/JSON reading pane. Part of the diagnostic surface, so the colours are
+   hardcoded dark alongside the other viewer panes rather than taken from the
+   chrome tokens (CLAUDE.md §5). */
+.text-viewer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: #0b0b0b;
+  overflow: hidden;
+}
+.text-viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #141414;
+  border-bottom: 1px solid #262626;
+  color: #e6e6e6;
+  font-size: 12px;
+  flex: none;
+}
+.text-viewer-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+.text-viewer-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.text-viewer-count {
+  color: #9a9a9a;
+  font-variant-numeric: tabular-nums;
+}
+.text-viewer-badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #1d3448;
+  color: #7fc4ff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+.text-viewer-body {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 14px 16px;
+  overflow: auto;
+  background: #0b0b0b;
+  color: #d6d6d6;
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  /* Reports arrive with arbitrary line lengths; wrapping keeps them readable
+     without a horizontal scrollbar under every paragraph. */
+  white-space: pre-wrap;
+  word-break: break-word;
+  tab-size: 2;
 }
 
 .surgery-video-body,

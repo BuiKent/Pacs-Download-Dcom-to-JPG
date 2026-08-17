@@ -74,6 +74,9 @@ const state = {
   bootstrap: null,
   archive: { root: "", series: [] },
   selectedId: "",
+  // The text/JSON file currently in the reading pane: { seriesId, index, name,
+  // language, text }. Null until a text series is opened.
+  textDoc: null,
   // Series shown beside the primary one; index 0 is pane B, index 1 is pane C.
   compareIds: ["", ""],
   scrollSync: true,
@@ -129,6 +132,7 @@ let viewerRequestId = 0;
 const icons = {
   crosshair: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="22" x2="18" y1="12" y2="12"/><line x1="6" x2="2" y1="12" y2="12"/><line x1="12" x2="12" y1="6" y2="2"/><line x1="12" x2="12" y1="22" y2="18"/></svg>`,
   folder: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>`,
+  // Used by the text/JSON reading pane and by the file-info button.
   file: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>`,
   info: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`,
   copy: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`,
@@ -224,6 +228,13 @@ function seriesVisiblePanes(seriesId) {
 function updateSeriesCardHighlight() {
   for (const card of app.querySelectorAll("[data-series-id]")) {
     const panes = seriesVisiblePanes(card.dataset.seriesId);
+    // Timeline rows in the patient rail share `data-series-id` with the
+    // thumbnail cards so both follow one selection, but they mark the current
+    // row with `.on` rather than the card's `.active`.
+    if (card.classList.contains("tl-item")) {
+      card.classList.toggle("on", panes.length > 0);
+      continue;
+    }
     card.classList.toggle("active", panes.length > 0);
     if (panes.length) {
       card.dataset.pane = panes.join(",");
@@ -549,20 +560,25 @@ function renderWinbar() {
   </nav>`;
 }
 
+/** Media types the viewer knows how to open. */
+const MEDIA_TYPES = new Set(["dicom", "photo", "video", "doc", "text"]);
+
+/**
+ * Which viewer a series opens in, as decided by the backend.
+ *
+ * The catalog reads it off the files on disk and sends it as `mediaType`. This
+ * used to be guessed here instead, by looking for "mổ" and "phẫu thuật" in the
+ * study description — which routed every post-operative follow-up ("MR khớp
+ * gối sau mổ", "CT bụng sau mổ ruột thừa") into the video trimmer, and left a
+ * genuine surgical video named in English on the DICOM canvas. A file's type
+ * is a property of the file, so nothing is inferred from prose here.
+ *
+ * An unknown value falls back to the diagnostic canvas: showing a series in
+ * the reading view is always recoverable, dropping it is not.
+ */
 function getSeriesMediaType(series) {
   if (!series) return "dicom";
-  if (series.mediaType) return series.mediaType;
-  const desc = (series.description || "").toLowerCase();
-  const name = (series.name || "").toLowerCase();
-  const group = (series.studyGroup || "").toLowerCase();
-  if (desc.includes("video") || desc.includes("mổ") || desc.includes("phẫu thuật") || group.includes("video") || group.includes("mổ") || name.endsWith(".mp4") || name.endsWith(".webm") || name.endsWith(".avi") || name.endsWith(".mov")) {
-    return "video";
-  }
-  if (desc.includes("ảnh") || desc.includes("photo") || desc.includes("gpb") || desc.includes("bệnh án") || desc.includes("doc") || group.includes("ảnh") || group.includes("photo") || group.includes("bệnh án") || name.endsWith(".jpg") || name.endsWith(".png") || name.endsWith(".jpeg") || name.endsWith(".webp")) {
-    if (desc.includes("bệnh án") || desc.includes("doc") || desc.includes("scan") || group.includes("bệnh án") || group.includes("doc")) return "doc";
-    return "photo";
-  }
-  return "dicom";
+  return MEDIA_TYPES.has(series.mediaType) ? series.mediaType : "dicom";
 }
 
 function formatVideoTime(seconds) {
@@ -658,6 +674,185 @@ function renderPhotoEditorStudio(series) {
         </div>
       </div>
     </div>
+  `;
+}
+
+/**
+ * The text/JSON reading pane.
+ *
+ * Content arrives from `/api/series/<id>/text` after the pane mounts, so this
+ * renders the frame and a loading line; `loadTextContent` fills it in. Text
+ * belongs to the diagnostic side of the app — an operative report is read, not
+ * edited — so it carries no editing tools, only navigation between files.
+ */
+function renderTextViewer(series) {
+  if (!series) return `<div class="empty-state"><b>${escapeHtml(t("Chưa có văn bản nào"))}</b></div>`;
+  const doc = state.textDoc && state.textDoc.seriesId === series.id ? state.textDoc : null;
+  const total = Number(series.sliceCount) || 1;
+  const index = doc ? doc.index : 0;
+
+  return `
+    <div class="text-viewer">
+      <div class="text-viewer-bar">
+        <span class="text-viewer-name">${escapeHtml(doc?.name || series.name || "")}</span>
+        ${total > 1 ? `
+          <span class="text-viewer-nav">
+            <button class="tool-btn" data-action="text-prev" ${index <= 0 ? "disabled" : ""}>‹</button>
+            <span class="text-viewer-count">${index + 1}/${total}</span>
+            <button class="tool-btn" data-action="text-next" ${index >= total - 1 ? "disabled" : ""}>›</button>
+          </span>
+        ` : ""}
+        <span style="flex:1;"></span>
+        ${doc?.language === "json" ? `<span class="text-viewer-badge">JSON</span>` : ""}
+        <button class="tool-btn" data-action="text-copy" ${doc ? "" : "disabled"}>${escapeHtml(t("Chép"))}</button>
+      </div>
+      <pre class="text-viewer-body" id="text-viewer-body">${
+        doc ? escapeHtml(doc.text) : escapeHtml(t("Đang đọc file…"))
+      }</pre>
+    </div>
+  `;
+}
+
+/**
+ * Which pane fills the workspace for the selected series.
+ *
+ * One switch on the media type the backend reported, so adding a reader means
+ * adding a branch here rather than threading another condition through the
+ * shell markup.
+ */
+function renderWorkspacePane(series) {
+  switch (getSeriesMediaType(series)) {
+    case "video":
+      return renderSurgeryVideoStudio(series);
+    case "photo":
+    case "doc":
+      return renderPhotoEditorStudio(series);
+    case "text":
+      return renderTextViewer(series);
+    default:
+      break;
+  }
+  if (state.archive.series.length) {
+    return `<div class="viewer-loading">${state.busyViewer ? escapeHtml(t("Đang dựng khung xem…")) : ""}</div>`;
+  }
+  return `<div class="empty-state"><b>${escapeHtml(t("Chưa mở hồ sơ nào"))}</b>
+      <p>${escapeHtml(t("Mở folder hồ sơ; app tự phân loại phim DICOM, ảnh, video và văn bản bên trong."))}</p>
+      <div class="empty-actions">
+        <button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder"))}</button>
+      </div></div>`;
+}
+
+/** Labels for the media kinds a timeline entry can carry. */
+const MEDIA_KIND_LABELS = {
+  dicom: "Phim chụp",
+  photo: "Ảnh",
+  doc: "Bệnh án",
+  video: "Video",
+  text: "Văn bản",
+};
+
+/**
+ * The open archive's series grouped into days, newest first.
+ *
+ * The rail is a chronological record of one patient, so the grouping key is
+ * the study date. A series whose date was never recorded lands in a single
+ * undated bucket at the end rather than being stamped with today.
+ */
+function buildMediaTimeline(seriesList) {
+  const days = new Map();
+  for (const item of seriesList || []) {
+    const digits = String(item.studyDate || "").replace(/\D/g, "");
+    const key = digits.length >= 8 ? digits.slice(0, 8) : "";
+    if (!days.has(key)) days.set(key, []);
+    days.get(key).push(item);
+  }
+  return [...days.entries()]
+    .sort((a, b) => {
+      // The undated bucket sorts last whichever side it appears on.
+      if (!a[0]) return 1;
+      if (!b[0]) return -1;
+      return b[0].localeCompare(a[0]);
+    })
+    .map(([key, items]) => ({
+      key,
+      label: key ? `${key.slice(6, 8)}/${key.slice(4, 6)}/${key.slice(0, 4)}` : t("Chưa rõ ngày chụp"),
+      items,
+    }));
+}
+
+/** The count shown on a timeline entry, or "" when nothing counted it. */
+function timelineItemCount(series) {
+  const slices = Number(series.sliceCount);
+  if (!Number.isFinite(slices) || slices <= 0) return "";
+  switch (getSeriesMediaType(series)) {
+    case "video": return tf("{} video", slices);
+    case "text": return tf("{} file", slices);
+    case "doc": return tf("{} trang", slices);
+    case "photo": return tf("{} ảnh", slices);
+    default: return tf("{} lát", slices);
+  }
+}
+
+/**
+ * The patient rail down the left of a viewer tab: who this is, then what has
+ * been recorded for them and when.
+ *
+ * Identity comes from `patient-index.json` by way of the archive snapshot.
+ * Every field the manifest does not carry prints "—": this block sits beside
+ * the images a clinician is about to read, so a plausible-looking guess here
+ * is exactly the failure the archive rules exist to prevent.
+ */
+function renderPatientRail() {
+  const patient = state.archive?.patient || {};
+  const series = state.archive?.series || [];
+  const dash = (value) => (String(value || "").trim() || "—");
+
+  const identity = [patient.gender, patient.birthYear, patient.age ? tf("{} tuổi", patient.age) : ""]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" · ");
+
+  const timeline = buildMediaTimeline(series);
+
+  return `
+    <aside class="rec-rail">
+      <div class="rec-id">
+        <b>${escapeHtml(dash(patient.patientName) === "—"
+          ? t("Chưa có tên bệnh nhân")
+          : patient.patientName)}</b>
+        <small>${escapeHtml(dash(patient.patientId))}${identity ? ` · ${escapeHtml(identity)}` : ""}</small>
+      </div>
+
+      <dl class="rec-facts">
+        <div class="rfact"><dt>${escapeHtml(t("Bệnh viện"))}</dt><dd>${escapeHtml(dash(patient.hospital))}</dd></div>
+        <div class="rfact"><dt>${escapeHtml(t("Chẩn đoán"))}</dt><dd>${escapeHtml(dash(patient.diagnosis))}</dd></div>
+      </dl>
+
+      <div class="rec-timeline-head"><b>${escapeHtml(t("Timeline hồ sơ"))}</b></div>
+      <div class="tl">
+        ${timeline.length === 0
+          ? `<div class="tl-empty">${escapeHtml(t("Chưa có dữ liệu nào trong hồ sơ này."))}</div>`
+          : timeline.map((day) => `
+            <div class="tl-day">
+              <div class="tl-date">${escapeHtml(day.label)}</div>
+              ${day.items.map((item) => {
+                const kind = getSeriesMediaType(item);
+                const count = timelineItemCount(item);
+                const title = item.studyDescription || item.description || item.name || "";
+                return `
+                  <button class="tl-item ${kind}${item.id === state.selectedId ? " on" : ""}" type="button"
+                    data-series-id="${escapeHtml(item.id)}"
+                    title="${escapeHtml(`${t(MEDIA_KIND_LABELS[kind] || "Phim chụp")} · ${title}`)}">
+                    <i></i>
+                    <span class="nm">${escapeHtml(title || t("Chưa có mô tả"))}</span>
+                    ${count ? `<span class="ct">${escapeHtml(count)}</span>` : ""}
+                  </button>
+                `;
+              }).join("")}
+            </div>
+          `).join("")}
+      </div>
+    </aside>
   `;
 }
 
@@ -1212,8 +1407,7 @@ function render() {
       false,
       t("Tải phim"),
     )}
-          ${iconButton("choose-archive", icons.folder, t("Mở folder DICOM hoặc JPG/PNG trong viewer"))}
-          ${iconButton("choose-file", icons.file, t("Mở file DICOM hoặc JPG/PNG đơn lẻ trong viewer"))}
+          ${iconButton("choose-archive", icons.folder, t("Mở folder hồ sơ: phim, ảnh, video và văn bản đều được nhận diện"))}
           ${iconButton("refresh-archive", "⟳", t("Quét lại thư mục hiện tại"), false, !state.archive.root)}
           <button class="soft-button" data-action="toggle-language"
             title="${escapeHtml(t("Chuyển sang tiếng Anh"))}">${getLanguage() === "en" ? "VI" : "EN"}</button>
@@ -1300,6 +1494,7 @@ function render() {
 
       ${state.activeTabId === "worklist" ? renderWorklistView() : `
       <main class="viewer-main">
+        ${renderPatientRail()}
         <nav class="toolbar mode-${state.mode}">
           <div class="tool-cluster layout-tools">
             ${iconButton("mode-single", icons.single, t("Một khung ảnh"), state.mode === "single")}
@@ -1327,17 +1522,7 @@ function render() {
           <b>${escapeHtml(t("An toàn hiển thị"))}</b><span>${escapeHtml(safety ? t(safety.text) : "")}</span>
         </div>
         <section id="workspace" class="workspace-grid ${getSeriesMediaType(series) !== "dicom" ? "media-mode" : ""}">
-          ${getSeriesMediaType(series) === "video"
-            ? renderSurgeryVideoStudio(series)
-            : getSeriesMediaType(series) === "photo" || getSeriesMediaType(series) === "doc"
-              ? renderPhotoEditorStudio(series)
-              : state.archive.series.length
-                ? `<div class="viewer-loading">${state.busyViewer ? escapeHtml(t("Đang dựng khung xem…")) : ""}</div>`
-                : `<div class="empty-state"><b>${escapeHtml(t("Mở folder DICOM hoặc JPG/PNG"))}</b>
-                    <div class="empty-actions">
-                      <button class="primary" data-action="choose-archive">${escapeHtml(t("Mở folder trong viewer"))}</button>
-                      <button class="secondary" data-action="choose-file">${escapeHtml(t("Mở file..."))}</button>
-                    </div></div>`}
+          ${renderWorkspacePane(series)}
         </section>
         <footer class="status-bar ${state.isError ? "error" : ""}">
           <span class="status-dot ${state.busyViewer ? "busy" : ""}"></span>
@@ -1725,41 +1910,49 @@ function closeFileInfoModal() {
   render();
 }
 
-async function chooseSingleFile() {
+/**
+ * Fetch one text/JSON file of a series and paint it into the reading pane.
+ *
+ * Kept out of `renderViewer` so moving between files repaints the pane alone,
+ * the same way the activity panel refreshes without rebuilding the shell.
+ */
+async function loadTextContent(series, index = 0) {
+  if (!series) return;
   try {
-    if (window.pywebview?.api?.choose_file) {
-      const archive = await window.pywebview.api.choose_file();
-      if (archive) {
-        applyArchive(archive);
-        setStatus(tf("Đã mở file (1 series, {} lát).", archive.series?.[0]?.sliceCount || 1));
-      }
-      return;
-    }
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".dcm,.dicom,.ima,.jpg,.jpeg,.png,.webp,.bmp";
-    input.style.display = "none";
-    input.onchange = async (evt) => {
-      const file = evt.target?.files?.[0];
-      if (file) {
-        const path = file.path || file.name;
-        try {
-          const archive = await api("/api/archive/open", {
-            method: "POST",
-            body: JSON.stringify({ path }),
-          });
-          applyArchive(archive);
-        } catch (err) {
-          setStatus(err.message, true);
-        }
-      }
-      input.remove();
-    };
-    document.body.appendChild(input);
-    input.click();
+    const doc = await api(`/api/series/${series.id}/text?index=${Number(index) || 0}`);
+    state.textDoc = { seriesId: series.id, ...doc };
   } catch (error) {
-    setStatus(humanError(error), true);
+    state.textDoc = {
+      seriesId: series.id,
+      index: Number(index) || 0,
+      name: series.name || "",
+      language: "text",
+      text: humanError(error),
+    };
   }
+  const pane = getDomRoot()?.querySelector(".text-viewer");
+  if (!pane) return;
+  pane.outerHTML = renderTextViewer(series);
+  bindTextViewerButtons(getDomRoot());
+  setStatus(t("Sẵn sàng."));
+}
+
+/** Wire the reading pane's file navigation; repaints replace these nodes. */
+function bindTextViewerButtons(host) {
+  if (!host) return;
+  const series = selectedSeries();
+  const total = Number(series?.sliceCount) || 1;
+  const index = state.textDoc?.seriesId === series?.id ? state.textDoc.index : 0;
+
+  host.querySelector("[data-action='text-prev']")?.addEventListener("click", () => {
+    if (index > 0) loadTextContent(series, index - 1);
+  });
+  host.querySelector("[data-action='text-next']")?.addEventListener("click", () => {
+    if (index < total - 1) loadTextContent(series, index + 1);
+  });
+  host.querySelector("[data-action='text-copy']")?.addEventListener("click", () => {
+    if (state.textDoc?.text) copyTextToClipboard(state.textDoc.text);
+  });
 }
 
 // The thumbnail endpoint sits behind the same bearer token as every other
@@ -1997,6 +2190,7 @@ function bindEvents() {
     });
   });
   bindWorklistOpenButtons(app);
+  bindTextViewerButtons(app);
   app.querySelector("[data-field='worklist-search']")?.addEventListener("input", (event) => {
     state.worklistSearch = event.target.value;
     // Tree, summary tiles and tab count all read the filtered list, so they
@@ -2354,10 +2548,6 @@ async function action(name, element = null) {
         setStatus(t("Đang nhận diện DICOM hoặc JPG/PNG trong folder…"));
         startJobPolling();
       }
-      return;
-    }
-    if (name === "choose-file") {
-      await chooseSingleFile();
       return;
     }
     if (name === "file-info") {
@@ -3255,6 +3445,13 @@ function renderViewer() {
   const series = selectedSeries();
   if (!series) return viewerQueue;
   const mediaType = getSeriesMediaType(series);
+  if (mediaType === "text") {
+    clearViewer();
+    state.busyViewer = false;
+    app.querySelector(".status-dot")?.classList.remove("busy");
+    loadTextContent(series, state.textDoc?.seriesId === series.id ? state.textDoc.index : 0);
+    return Promise.resolve();
+  }
   if (mediaType === "video" || mediaType === "photo" || mediaType === "doc") {
     if (state._lastPhotoSeriesId !== series.id) {
       state._lastPhotoSeriesId = series.id;
@@ -3802,6 +3999,11 @@ export {
   getVideoSourcePath,
   renderSurgeryVideoStudio,
   renderPhotoEditorStudio,
+  renderTextViewer,
+  renderWorkspacePane,
+  renderPatientRail,
+  buildMediaTimeline,
+  loadTextContent,
   renderViewer,
   initMediaEvents,
   groupSeriesHierarchically,
