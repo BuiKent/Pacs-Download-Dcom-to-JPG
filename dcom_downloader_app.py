@@ -1,13 +1,13 @@
 """
 dcom_downloader_app.py
 ======================
-Ứng dụng 2 cột:
-  • CỘT TRÁI  — tải ảnh: dán link viewer, chọn tùy chọn, bấm "BẮT ĐẦU TẢI".
-  • CỘT PHẢI  — trình xem ảnh: sau khi tải xong tự nạp; chọn xung (series), cuộn
-                 qua từng lát theo thứ tự tên, xem phim (cine), phóng to/thu nhỏ,
-                 xoay/lật/đảo màu, chỉnh sáng–tương phản, lưu ảnh đang xem.
+Two-column desktop application:
+  • LEFT COLUMN   — image downloader: paste viewer URL, configure options, click "START DOWNLOAD".
+  • RIGHT COLUMN  — image viewer: auto-loads downloaded images; select series, scroll
+                     slices in natural order, cine playback, zoom, rotate/flip/invert,
+                     adjust brightness/contrast, export current view.
 
-Chạy: nhấp đúp run_app.bat, hoặc:  python dcom_downloader_app.py
+Run: double-click run_app.bat, or:  python dcom_downloader_app.py
 
 Superkent.bui@gmail.com
 """
@@ -34,21 +34,21 @@ from mpr_viewer import MprWorkspace
 
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff")
 
-# Lịch sử tải/xem: lưu ở thư mục người dùng để file .exe đem đi đâu cũng nhớ
+# Download/view history: stored in user home directory for portable persistence
 HIST_FILE = Path.home() / ".dcom_downloader_history.json"
 HIST_MAX = 30
 
 
 def _make_icon(kind: str, size: int = 22) -> "ImageTk.PhotoImage":
-    """Vẽ icon màu cho nút toolbar (tkinter không hiển thị được emoji màu).
-    Vẽ ở 4x rồi thu nhỏ để nét mượt. Gọi sau khi đã có cửa sổ Tk."""
+    """Draw colored toolbar icons (Tkinter does not render colored emojis).
+    Rendered at 4x then downsampled with Lanczos for smooth lines. Called after Tk window exists."""
     import math
     s = size * 4
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     if kind == "folder":
         lw = max(2, int(s * 0.02))
-        # tab + thân sau (đậm), mặt trước sáng hơn cho có chiều sâu
+        # Tab + back body (darker), front face brighter for depth
         d.rounded_rectangle([s * 0.05, s * 0.13, s * 0.45, s * 0.40],
                             radius=s * 0.06, fill="#E8A33D", outline="#C07F1F", width=lw)
         d.rounded_rectangle([s * 0.05, s * 0.24, s * 0.95, s * 0.90],
@@ -61,10 +61,10 @@ def _make_icon(kind: str, size: int = 22) -> "ImageTk.PhotoImage":
         r = s * 0.32
         d.arc([cx - r, cy - r, cx + r, cy + r], start=20, end=290,
               fill=col, width=int(s * 0.12))
-        th = math.radians(290)                      # đầu cung -> gắn mũi tên
+        th = math.radians(290)                      # Arc tip -> attach arrowhead
         ex, ey = cx + r * math.cos(th), cy + r * math.sin(th)
-        tx, ty = -math.sin(th), math.cos(th)        # hướng đi của cung
-        nx, ny = math.cos(th), math.sin(th)         # pháp tuyến
+        tx, ty = -math.sin(th), math.cos(th)        # Arc tangent direction
+        nx, ny = math.cos(th), math.sin(th)         # Normal vector
         L = s * 0.17
         d.polygon([(ex + tx * L, ey + ty * L),
                    (ex + nx * L * 0.85, ey + ny * L * 0.85),
@@ -166,11 +166,11 @@ I18N_EN = {
 }
 
 # --------------------------------------------------------------------------- #
-#  Tiện ích nạp ảnh theo series (dùng lại được, dễ kiểm thử)
+#  Utilities for series image loading (reusable, testable)
 # --------------------------------------------------------------------------- #
 
 def _natkey(name: str):
-    """Sắp xếp tự nhiên: IM_2 < IM_10."""
+    """Natural alphanumeric sorting: IM_2 < IM_10."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
 
 
@@ -181,11 +181,11 @@ def _series_sort_key(name: str):
 
 def scan_series(base: Path) -> "dict[str, list[Path]]":
     """
-    Quét thư mục thành map: tên series -> danh sách ảnh (đã sắp xếp).
-    - Nếu có thư mục con chứa ảnh (Series_...), mỗi thư mục là 1 series.
-    - Nếu có ảnh nằm thẳng trong `base`, gộp thành 1 series.
-    - Tự bỏ qua thư mục con "DICOM"/"RAW_JPG"; nếu `base` chính là thư mục tải về
-      (có thư mục con "JPG") thì tự nhảy vào "JPG".
+    Scan folder into mapping: series name -> sorted image file paths.
+    - If subdirectories containing images exist (Series_...), each is a series.
+    - If images sit directly inside `base`, group them as 1 series.
+    - Automatically ignores "DICOM"/"RAW_JPG" subfolders; if `base` is the root download
+      directory containing a "JPG" folder, enters "JPG" automatically.
     """
     base = Path(base)
     series: "dict[str, list[Path]]" = {}
@@ -193,9 +193,8 @@ def scan_series(base: Path) -> "dict[str, list[Path]]":
     def imgs_in(d: Path):
         manifest = mpr_engine.read_manifest(d)
         if manifest:
-            # Gói MPR luôn dùng thứ tự tọa độ đã ghi trong manifest, không sắp
-            # theo tên file/InstanceNumber. Đồng thời bỏ qua JPG cũ còn sót lại
-            # nếu một folder được nâng cấp từ bản trước.
+            # MPR package always follows coordinates order recorded in manifest rather than
+            # filename / InstanceNumber. Also ignores stale legacy JPGs if upgraded from previous version.
             ordered = mpr_engine.manifest_image_files(d, manifest)
             if ordered:
                 return ordered
@@ -204,14 +203,14 @@ def scan_series(base: Path) -> "dict[str, list[Path]]":
             key=lambda p: _natkey(p.name),
         )
 
-    # Ảnh nằm thẳng trong base (folder phẳng)
+    # Images directly inside base (flat folder)
     direct = imgs_in(base)
     if direct:
         series[base.name] = direct
 
-    # Mọi thư mục con (bất kỳ độ sâu) CHỨA ẢNH TRỰC TIẾP -> mỗi cái là 1 series.
-    # Nhờ vậy nhận được cả cấu trúc cũ (…/JPG/Series_*) lẫn mới
-    # (…/<ngày - tuổi - mô tả>/Series_*). Bỏ qua DICOM/RAW_JPG.
+    # Any subfolder (at any depth) containing images directly -> each forms 1 series.
+    # Handles both legacy (.../JPG/Series_*) and newer (.../<date - age - desc>/Series_*) structures.
+    # Ignores DICOM and RAW_JPG folders.
     all_dirs = [p for p in base.rglob("*") if p.is_dir()]
     for sub in sorted(all_dirs, key=lambda d: _series_sort_key(d.name)):
         rel = sub.relative_to(base).parts
@@ -225,7 +224,7 @@ def scan_series(base: Path) -> "dict[str, list[Path]]":
 
 
 # --------------------------------------------------------------------------- #
-#  BẢNG TÍCH CHỌN CA CHỤP (STUDY SELECTION DIALOG)
+#  STUDY SELECTION DIALOG
 # --------------------------------------------------------------------------- #
 
 class StudySelectionDialog(tk.Toplevel):
@@ -352,7 +351,7 @@ class StudySelectionDialog(tk.Toplevel):
 
 
 # --------------------------------------------------------------------------- #
-#  Ứng dụng
+#  Main Application
 # --------------------------------------------------------------------------- #
 
 class App:
@@ -387,17 +386,17 @@ class App:
         root.geometry(f"{initial_w}x{initial_h}")
         root.minsize(1024, 640)
 
-        # --- trạng thái tải ---
+        # --- download state ---
         self.msg_q: "queue.Queue[tuple[str, object]]" = queue.Queue()
         self.worker: "threading.Thread | None" = None
         self.stop_flag = threading.Event()
         self.last_jpg_dir: "Path | None" = None
         self.last_url: "str | None" = None
         self.last_out_base: "Path | None" = None
-        self.viewer_dir: "Path | None" = None  # thư mục ảnh đang mở ở trình xem
+        self.viewer_dir: "Path | None" = None  # Image directory currently open in viewer
         self.history: "list[dict]" = []
 
-        # --- trạng thái trình xem ---
+        # --- viewer state ---
         self.series_map: "dict[str, list[Path]]" = {}
         self.cur_files: "list[Path]" = []
         self.cur_index = 0
@@ -438,7 +437,7 @@ class App:
         return I18N_EN.get(vi_text, vi_text)
 
     def _add_tooltip(self, widget, vi_text):
-        """Chú thích nhỏ khi rê chuột lên nút dạng icon (dịch lúc hiện)."""
+        """Display tooltip on hover for icon buttons (translated at display time)."""
         tip = {"win": None}
 
         def show(_e=None):
@@ -463,7 +462,7 @@ class App:
         widget.bind("<ButtonPress>", hide)
 
     def _auto_paste_url(self, event=None):
-        """Tự động dán link mới từ bộ nhớ tạm (clipboard) vào ô link khi nhấp chuột/focus."""
+        """Automatically paste new link from clipboard into URL field on focus/click."""
         try:
             clip = self.root.clipboard_get().strip()
         except Exception:
@@ -481,11 +480,11 @@ class App:
             self._auto_paste_pid()
 
     def _is_busy(self) -> bool:
-        """Kiểm tra xem ứng dụng có đang chạy tác vụ tải hoặc chuyển đổi ảnh hay không."""
+        """Check if application is currently executing a download or conversion task."""
         return self.worker is not None and self.worker.is_alive()
 
     def _on_close(self):
-        """Hỏi xác nhận khi thoát ứng dụng nếu có tác vụ đang chạy; thoát trực tiếp nếu rảnh."""
+        """Confirm before exit if a task is running; exit directly if idle."""
         if self._is_busy():
             ans = messagebox.askyesno(
                 self._t("Xác nhận thoát"),
@@ -503,7 +502,7 @@ class App:
         self.root.destroy()
 
     def _auto_paste_pid(self, event=None):
-        """Tự động dán Mã Bệnh Nhân từ bộ nhớ tạm (clipboard) chỉ khi là dãy ký tự chữ/số không có khoảng trắng hoặc ký tự đặc biệt."""
+        """Automatically paste Patient ID from clipboard when alphanumeric without spaces/symbols."""
         try:
             clip = self.root.clipboard_get().strip()
         except Exception:
@@ -772,7 +771,7 @@ class App:
             return "break"
         return None
 
-    # -------------------------------------------------- CỘT TRÁI (tải ảnh)
+    # -------------------------------------------------- LEFT COLUMN (Download)
     def _build_left(self, frm):
         pad = dict(padx=10, pady=5)
 
@@ -782,7 +781,7 @@ class App:
         self.lang_btn.config(text="🇬🇧 EN")
         self.lang_btn.pack(side="right")
 
-        # Frame Tải tự động theo Mã Bệnh Nhân (RIS)
+        # Frame: Automated Download by Patient ID (RIS)
         ris_frame = ttk.LabelFrame(frm, text="🏥 TẢI TOÀN BỘ MRI / CT THEO MÃ BỆNH NHÂN (RIS)")
         ris_frame.pack(fill="x", padx=10, pady=(6, 4))
 
@@ -883,10 +882,9 @@ class App:
         self._log(self._t("Sẵn sàng. Dán link viewer rồi bấm 'BẮT ĐẦU TẢI'."))
         self._log(self._t("Xem lại ảnh cũ: bấm nút 📂 bên phải."))
 
-    # ------------------------------------------------ CỘT PHẢI (trình xem)
+    # ------------------------------------------------ RIGHT COLUMN (Viewer)
     def _build_right(self, frm):
-        # Thanh chung: chọn series, layout và panel tải. MPR dùng lại chính vùng
-        # workspace bên dưới, không mở thêm cửa sổ.
+        # Common bar: select series, layout, and download pane toggle. MPR reuses the same workspace below.
         tb1 = ttk.Frame(frm)
         tb1.pack(fill="x", padx=6, pady=(6, 2))
         tb1.columnconfigure(1, weight=1)
@@ -897,7 +895,7 @@ class App:
         )
         self.series_cbo.grid(row=0, column=1, sticky="ew", padx=4)
         self.series_cbo.bind("<<ComboboxSelected>>", lambda e: self._on_series_change())
-        self._icon_folder = _make_icon("folder")    # giữ tham chiếu kẻo bị GC
+        self._icon_folder = _make_icon("folder")    # Keep reference to prevent GC
         self._icon_refresh = _make_icon("refresh")
         load_btn = ttk.Button(tb1, image=self._icon_folder, command=self._load_folder_dialog)
         load_btn.grid(row=0, column=2, padx=2)
@@ -969,7 +967,7 @@ class App:
             lambda _event: self._on_compare_series_change(),
         )
 
-        # Thanh 2D: điều hướng lát cắt + phim.
+        # 2D bar: slice navigation + cine playback.
         self.tb2 = ttk.Frame(self.viewer_2d)
         self.tb2.pack(fill="x", padx=6, pady=2)
         tb2 = self.tb2
@@ -982,7 +980,7 @@ class App:
         self.idx_lbl = ttk.Label(tb2, text="—", width=20)
         self.idx_lbl.pack(side="left")
 
-        # Công cụ 2D được nhóm riêng để tránh lẫn với ROI/MPR.
+        # 2D tools grouped separately from ROI/MPR controls.
         tb3 = ttk.Frame(self.viewer_2d)
         tb3.pack(fill="x", padx=6, pady=2)
         for icon, tooltip, command in (
@@ -1028,7 +1026,7 @@ class App:
         self.contrast_scale.pack(side="left", fill="x", expand=True, padx=4)
         ttk.Button(tb4, text="Lưu ảnh...", command=self._save_current).pack(side="left", padx=4)
 
-        # Vùng ảnh 2D.
+        # 2D image canvas area.
         cv = ttk.Frame(self.viewer_2d); cv.pack(fill="both", expand=True, padx=6, pady=(2, 4))
         self.canvas = tk.Canvas(cv, bg="#0b0b0b", highlightthickness=0)
         vbar = ttk.Scrollbar(cv, orient="vertical", command=self.canvas.yview)
@@ -1051,14 +1049,14 @@ class App:
         self.viewer_2d.pack(fill="both", expand=True)
         self._sync_mode_buttons()
 
-        # Phím tắt được định tuyến theo layout hiện hành.
+        # Shortcuts routed according to active layout.
         self.root.bind("<Left>", self._viewer_prev)
         self.root.bind("<Right>", self._viewer_next)
         self.root.bind("<space>", self._viewer_space)
         self.root.bind("<Escape>", self._viewer_escape)
         self.root.bind("<Return>", self._viewer_return)
 
-    # ============================================================ TẢI ẢNH
+    # ============================================================ DOWNLOAD ACTIONS
     def _pick_folder(self):
         d = filedialog.askdirectory(title=self._t("Chọn thư mục lưu"))
         if d:
@@ -1165,7 +1163,7 @@ class App:
         self.worker.start()
 
     def _retry(self):
-        """Tải lại chính link cũ vào folder cũ, GỘP thêm ảnh (bỏ trùng)."""
+        """Retry previous URL into existing folder, merging new images (skipping duplicates)."""
         if not self.last_url or not self.last_out_base:
             messagebox.showinfo(self._t("Thử lại"), self._t("Chưa có lần tải nào để thử lại."))
             return
@@ -1175,7 +1173,7 @@ class App:
         self._launch(self.last_url, self.last_out_base, resume=True)
 
     def _new_download(self):
-        """Chuẩn bị tải link MỚI vào folder MỚI (dán link 2 rồi bấm BẮT ĐẦU TẢI)."""
+        """Prepare for new download URL into fresh folder."""
         self.url_var.set("")
         new_out = Path.cwd() / f"Tai_ve_{datetime.now():%Y%m%d_%H%M%S}"
         self.out_var.set(str(new_out))
@@ -1185,7 +1183,7 @@ class App:
 
     def _launch(self, url, out_base, resume):
         if not resume:
-            self._clear_log()  # link + folder mới -> nhật ký cũ không còn liên quan
+            self._clear_log()  # Fresh link + folder -> previous logs no longer relevant
         self.last_url = url
         self.last_out_base = Path(out_base)
         self._add_history(out_base, url)
@@ -1289,9 +1287,9 @@ class App:
             self.start_mri_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.open_btn.config(state="normal")
-        self.retry_btn.config(state="normal")   # cho phép thử lại link/folder vừa rồi
+        self.retry_btn.config(state="normal")   # Enable retry for recent link/folder
         self.new_btn.config(state="normal")
-        # tự nạp ảnh vừa tải vào trình xem
+        # Auto-load downloaded images into viewer
         if self.last_jpg_dir and self.last_jpg_dir.exists():
             self._load_dir(self.last_jpg_dir)
 
@@ -1371,7 +1369,7 @@ class App:
         self.log_text.delete("1.0", "end")
         self.log_text.config(state="disabled")
 
-    # ========================================================== LỊCH SỬ
+    # ========================================================== HISTORY
     def _load_history(self):
         try:
             import json
@@ -1386,10 +1384,10 @@ class App:
             HIST_FILE.write_text(json.dumps(self.history, ensure_ascii=False, indent=1),
                                  encoding="utf-8")
         except Exception:
-            pass  # không để lỗi ghi lịch sử làm hỏng việc chính
+            pass  # Prevent history save errors from failing primary actions
 
     def _add_history(self, folder, url=None):
-        """Thêm/đưa lên đầu 1 mục lịch sử. Cùng folder thì CẬP NHẬT link mới."""
+        """Add or promote history entry to top. Updates link if folder matches."""
         folder = str(folder)
         key = folder.lower()
         old = next((h for h in self.history
@@ -1417,7 +1415,7 @@ class App:
         folder = Path(str(h.get("folder", "")))
         url = h.get("url") or ""
         self.out_var.set(str(folder))
-        if url:  # nạp lại link cũ để có thể sửa/tải lại
+        if url:  # Reload previous link for modification/retry
             self.url_var.set(url)
             self.last_url = url
             self.last_out_base = folder
@@ -1429,12 +1427,12 @@ class App:
             messagebox.showinfo(self._t("Thư mục"),
                                 self._t("Thư mục không còn tồn tại:\n{}").format(folder))
 
-    # ========================================================== TRÌNH XEM
+    # ========================================================== VIEWER
     def _load_folder_dialog(self):
         start = str(self.last_jpg_dir or Path.cwd())
         d = filedialog.askdirectory(title=self._t("Chọn thư mục chứa ảnh (JPG/PNG)"), initialdir=start)
         if d:
-            self._add_history(d)  # nhớ cả folder chỉ mở xem, không tải
+            self._add_history(d)  # Record viewed folder in history even if not downloaded here
             self._load_dir(Path(d))
 
     def _load_dir(self, base: Path):
@@ -1463,8 +1461,8 @@ class App:
         self._on_series_change()
 
     def _reload_dir(self):
-        """Nạp lại thư mục ảnh đang mở: quét thêm series/ảnh mới xuất hiện
-        (vd đang tải dở), giữ nguyên series và lát cắt đang xem."""
+        """Reload currently open image folder: scan for newly arrived series/images
+        (e.g. while downloading in background), preserving active series and slice index."""
         base = self.viewer_dir or self.last_jpg_dir
         if not base or not Path(base).exists():
             messagebox.showinfo(self._t("Không có ảnh"),
@@ -1486,7 +1484,7 @@ class App:
         self.series_cbo.config(values=names)
         total = sum(len(v) for v in series.values())
         self._log(self._t("Đã nạp lại: {} series, {} ảnh từ {}").format(len(names), total, base))
-        if cur_name in series:  # giữ nguyên chỗ đang xem
+        if cur_name in series:  # Keep active series viewing position
             self.series_var.set(cur_name)
             self.cur_files = series[cur_name]
             n = len(self.cur_files)
@@ -1647,7 +1645,7 @@ class App:
         self._show_index(nxt)
         self.cine_job = self.root.after(90, self._cine_step)
 
-    # --- biến đổi ---
+    # --- image transformations ---
     def _zoom_in(self):
         self.fit_mode = False
         self.zoom = min(self.zoom * 1.25, 12)
@@ -1757,14 +1755,14 @@ class App:
         return viewer_layout.compose_montage(images, count=count, labels=labels)
 
     def _processed_image(self) -> "Image.Image | None":
-        """Ảnh sau khi áp mọi chỉnh (sáng, tương phản, đảo màu, lật, xoay) — CHƯA zoom."""
+        """Image after applying adjustments (brightness, contrast, invert, flip, rotate) — prior to zoom."""
         if self.base_img is None:
             return None
         return self._process_2d_image(self.base_img)
 
     def _render(self):
         if not hasattr(self, "canvas"):
-            return  # giao diện chưa dựng xong (bị gọi sớm khi khởi tạo thanh trượt)
+            return  # UI not ready (called during scale initialization)
         img = self._layout_image()
         if img is None:
             self.canvas.delete("all")

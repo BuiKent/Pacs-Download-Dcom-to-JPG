@@ -1199,7 +1199,7 @@ function recenterAtClientPoint(viewportId, clientX, clientY) {
   try {
     worldPos = viewport.canvasToWorld(canvasPos);
   } catch (_) {
-    return; // Camera chưa sẵn sàng (đang chuyển layout).
+    return; // Camera not ready (layout transition in progress).
   }
   // MPR/3D share one crosshair across the planes, so this point jumps in all three.
   const crosshairs = toolGroup?.getToolInstance?.(CrosshairsTool.toolName);

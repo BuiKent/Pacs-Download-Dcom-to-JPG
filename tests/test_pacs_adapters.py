@@ -1,7 +1,7 @@
-"""Nhận diện dòng PACS.
+"""PACS family detection tests.
 
-Trước đây logic này bị chép ở hai nơi (`download_all` và `discover_viewer_series`)
-nên rất dễ lệch. Các test dưới đây khóa hành vi nhận diện lại một chỗ.
+Previously this detection logic was duplicated in two places (`download_all` and `discover_viewer_series`),
+making divergence easy. These tests lock down detection behavior in a unified location.
 """
 
 import json
@@ -17,7 +17,7 @@ import dcom_pipeline
 
 
 def _vietmy_file(file_id: int) -> dict:
-    """Một ảnh trong manifest MSC PACS: có cả link gốc lẫn link JPEG dựng sẵn."""
+    """An image entry in MSC PACS manifest: includes both raw link and rendered JPEG link."""
     return {
         "fileId": file_id,
         "instanceNo": str(file_id),
@@ -27,7 +27,7 @@ def _vietmy_file(file_id: int) -> dict:
     }
 
 
-# ws.asmx bọc kết quả trong {"d": ...}; giữ nguyên hình dạng thật của server.
+# ws.asmx wraps results in {"d": ...}; preserve exact server response structure.
 VIETMY_MANIFEST = json.dumps({"d": {
     "studyUID": "1.2.392.200036.9123.1.1",
     "patientName": "NGUYEN THI VAN",
@@ -62,7 +62,7 @@ class FakeRequest:
 
     def all_headers(self):
         if self._explode:
-            raise RuntimeError("playwright từ chối trả header")
+            raise RuntimeError("playwright rejected header retrieval")
         return dict(self._headers)
 
     @property
@@ -71,7 +71,7 @@ class FakeRequest:
 
 
 class FakeResponse:
-    """Đủ giống response của Playwright cho phần nhận diện."""
+    """Mimics Playwright response object for adapter detection tests."""
 
     def __init__(self, url, body=b"", status=200, content_type="",
                  request_headers=None, body_raises=False):
@@ -84,7 +84,7 @@ class FakeResponse:
 
     def body(self):
         if self._body_raises:
-            raise RuntimeError("response đã bị hủy")
+            raise RuntimeError("response was cancelled")
         return self._body
 
 
@@ -94,9 +94,9 @@ class AdapterDetectionTests(unittest.TestCase):
         dcom_pipeline._observe_response(
             FakeResponse("https://pacs.test/StudyData/GetStudies", b"{}"), cap,
         )
-        # Có manifest là đủ để LIỆT KÊ series...
+        # Manifest is sufficient to LIST series...
         self.assertIsNotNone(dcom_pipeline._series_manifest_adapter(cap))
-        # ...nhưng chưa đủ để TẢI: còn thiếu khuôn URL ảnh.
+        # ...but not enough to DOWNLOAD: image URL template is still missing.
         self.assertIsNone(dcom_pipeline._ready_adapter(cap))
 
         dcom_pipeline._observe_response(
@@ -124,9 +124,9 @@ class AdapterDetectionTests(unittest.TestCase):
         self.assertEqual("VRPACS", adapter.name)
 
     def test_vietmy_is_ready_from_getlistimagefileinfo_alone(self):
-        """MSC PACS vẽ ảnh bằng WebGL — chỉ manifest này mới lần ra DICOM gốc."""
+        """MSC PACS renders via WebGL — this manifest is required to discover original DICOM."""
         cap = dcom_pipeline.ViewerCapture()
-        # Mở trang chia sẻ thôi thì chưa nhận ra gì cả: chưa có manifest.
+        # Opening share page alone gives no manifest yet.
         dcom_pipeline._observe_response(
             FakeResponse("https://vietmy.pmr.vn/Pages/ShareStudy.aspx?stoken=abc12345", b""), cap,
         )
@@ -144,10 +144,10 @@ class AdapterDetectionTests(unittest.TestCase):
         choices = adapter.series_choices(cap)
         self.assertEqual(2, len(choices))
         self.assertEqual("T2 SAG", choices[0]["description"])
-        # Đếm theo `fileList`, không tin `numberOfFrames` (lệch khi multi-frame).
+        # Count via fileList, do not trust numberOfFrames (diverges for multi-frame).
         self.assertEqual(2, choices[0]["imageCount"])
         self.assertEqual("MR", choices[0]["modality"])
-        # id phải là SeriesInstanceUID thật để chọn lọc series khớp giữa 2 lần mở.
+        # id must be true SeriesInstanceUID to match series across multiple launches.
         self.assertEqual("1.2.392.200036.9123.1.7", choices[0]["id"])
 
     def test_vietmy_download_uses_original_dicom_not_rendered_jpeg(self):
@@ -166,9 +166,9 @@ class AdapterDetectionTests(unittest.TestCase):
 
         self.assertEqual(3, len(fetched))
         self.assertTrue(all("getfile.ashx" in u for u in fetched),
-                        f"phải tải DICOM gốc qua getfile.ashx, đang lấy: {fetched}")
+                        f"must download original DICOM via getfile.ashx, got: {fetched}")
         self.assertFalse(any("getimagefile.ashx" in u for u in fetched),
-                         "getimagefile.ashx là JPEG viewer dựng sẵn, không phải bản gốc")
+                         "getimagefile.ashx is pre-rendered viewer JPEG, not original DICOM")
 
     def test_vietmy_download_honours_series_selection(self):
         captured = {"vietmy": VIETMY_MANIFEST, "cookies": []}
@@ -187,7 +187,7 @@ class AdapterDetectionTests(unittest.TestCase):
         self.assertIn("fileId=3", fetched[0])
 
     def test_dicomweb_is_ready_from_qido_series_alone(self):
-        """BV Hà Tĩnh không phát URL nào chứa chữ 'wado' — QIDO phải là đủ."""
+        """Ha Tinh hospital serves no URLs containing 'wado' — QIDO alone must suffice."""
         cap = dcom_pipeline.ViewerCapture()
         dcom_pipeline._observe_response(
             FakeResponse(
@@ -209,12 +209,12 @@ class AdapterDetectionTests(unittest.TestCase):
         url = "https://viewer.test/rs/studies/1.2.3/series"
         dcom_pipeline._observe_response(FakeResponse(url, body_raises=True), cap)
         self.assertIsNone(cap.qido_series_body)
-        # Liệt kê series sống nhờ đúng thân này, nên phải còn cơ hội thử lại.
+        # Series listing relies on this body, so retry must be supported.
         dcom_pipeline._observe_response(FakeResponse(url, b"[]"), cap)
         self.assertEqual(b"[]", cap.qido_series_body)
 
     def test_a_specific_pacs_outranks_the_generic_dicomweb_one(self):
-        """Giữ đúng thứ tự ưu tiên của chuỗi if/elif cũ."""
+        """Maintain exact precedence order of legacy if/elif chain."""
         cap = dcom_pipeline.ViewerCapture()
         for response in (
             FakeResponse("https://pacs.test/StudyData/GetStudies", b"{}"),
@@ -225,7 +225,7 @@ class AdapterDetectionTests(unittest.TestCase):
         self.assertEqual("VradViewer", dcom_pipeline._ready_adapter(cap).name)
 
     def test_a_manifest_response_is_never_saved_as_an_image(self):
-        """observe() trả True để chỗ gọi thôi đem response đó đi lưu."""
+        """observe() returns True so caller avoids treating it as an image file to save."""
         cap = dcom_pipeline.ViewerCapture()
         for url in (
             "https://pacs.test/StudyData/GetStudies",
@@ -249,7 +249,7 @@ class AdapterDetectionTests(unittest.TestCase):
             priority = 999
 
             def observe(self, response, cap):
-                raise RuntimeError("adapter hỏng")
+                raise RuntimeError("broken adapter")
 
         original = dcom_pipeline.PACS_ADAPTERS
         dcom_pipeline.PACS_ADAPTERS = (Exploding(),) + original
@@ -274,13 +274,12 @@ class AdapterDetectionTests(unittest.TestCase):
 
 class ZfpHookTests(unittest.TestCase):
     """
-    Móc WebSocket của GE ZFP.
+    GE ZFP WebSocket hook tests.
 
-    Server ZFP từ chối 100% lệnh xin ảnh gửi từ ngoài (đã đo trên ca thật: đúng
-    socket của trang, đúng payload, correlationId UUID — vẫn câm, kể cả lúc nó
-    đang bơm 600 khung của chính viewer). Nên móc phải HỨNG ảnh viewer tự nạp.
-    Test này khóa lại điều đó, và chạy luôn bộ test JS dùng chung với extension
-    để hai bản không lệch nhau.
+    ZFP server rejects 100% of external image requests (verified on real cases: same page
+    socket, valid payload, correlationId UUID — remains silent even while streaming 600 frames
+    to its own viewer). Therefore, the hook must passively CAPTURE images streamed by the viewer.
+    These tests lock down that contract and run shared JS tests with the extension.
     """
 
     def test_hook_never_asks_the_server_for_an_image(self):
@@ -304,7 +303,7 @@ class ZfpHookTests(unittest.TestCase):
             "pacs_dicom_extension_final_v6_2", "tests", "test_zfp_hook.mjs",
         )
         if not node or not os.path.exists(suite):
-            self.skipTest("cần node và bộ test của extension")
+            self.skipTest("requires node and extension test suite")
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "zfp-hook.js")
             with open(path, "w", encoding="utf-8") as fh:
@@ -314,7 +313,7 @@ class ZfpHookTests(unittest.TestCase):
 
 
 def _zfp_capture():
-    """Cấu trúc study GE ZFP: 2 series, mỗi series 2 ảnh."""
+    """GE ZFP study structure: 2 series, 2 images per series."""
     def group(gid, desc, sops):
         return {"studyInstanceUid": "st.1", "groupId": gid, "description": desc,
                 "modalities": ["MR"],
@@ -323,11 +322,11 @@ def _zfp_capture():
     return {"groups": [group("g1", "Ax T2", ["a1", "a2"]),
                        group("g2", "Screen Save", ["b1", "b2"])],
             "study": {"patientDemographics": {"patientId": "1", "patientName": {"personNameString": "X"}},
-                      "studyDateTime": "2026-05-13 17:26:52"}}
+                       "studyDateTime": "2026-05-13 17:26:52"}}
 
 
 class FakeZfpPage:
-    """Trang viewer giả: bơm ảnh theo từng đợt, mỗi lần nạp lại là một đợt mới."""
+    """Mock viewer page: streams images in batches, each reload starting a new batch."""
 
     def __init__(self, batches):
         self.batches = [list(b) for b in batches]
@@ -352,8 +351,8 @@ class FakeZfpPage:
 
 class ZfpDownloadTests(unittest.TestCase):
     """
-    Vòng tải ZFP là DUY NHẤT trong app chạy kiểu hứng: thứ tự ảnh do viewer
-    quyết, không phải mình. Ba thứ dễ vỡ nhất được khóa ở đây.
+    ZFP download loop is the ONLY one in the application that runs passively:
+    image streaming order is determined by viewer. Critical invariants are tested here.
     """
 
     def _run(self, page, selected=None):
@@ -371,7 +370,7 @@ class ZfpDownloadTests(unittest.TestCase):
         return stats, saved, logs
 
     def test_images_are_matched_by_sop_not_by_order(self):
-        # Viewer bơm ngược thứ tự và xen ảnh của series khác — vẫn phải đủ 4.
+        # Viewer streams out of order and interleaves series images — all 4 must be captured.
         page = FakeZfpPage([["b2", "a2", "b1", "a1"]])
         stats, saved, _ = self._run(page)
         self.assertEqual(4, len(saved))
@@ -387,7 +386,7 @@ class ZfpDownloadTests(unittest.TestCase):
         self.assertEqual(0, stats.failed)
 
     def test_viewer_is_reloaded_to_replay_images_that_already_streamed(self):
-        # Đợt đầu chỉ còn nửa cuối; nửa đầu đã chảy qua trước khi bấm Tải.
+        # First batch only contains second half; first half streamed before download was initiated.
         page = FakeZfpPage([["a2", "b2"], ["a1", "b1"]])
         stats, saved, _ = self._run(page)
         self.assertEqual(1, page.reloads)
@@ -398,17 +397,17 @@ class ZfpDownloadTests(unittest.TestCase):
         page = FakeZfpPage([["a1", "b1"]])
         stats, saved, logs = self._run(page)
         self.assertEqual(2, len(saved))
-        self.assertEqual(2, stats.failed)          # a2, b2 không bao giờ tới
+        self.assertEqual(2, stats.failed)          # a2, b2 never arrived
         self.assertTrue(any("không tự nạp" in line for line in logs))
         self.assertEqual(dcom_pipeline._ZFP_MAX_RELOADS, page.reloads)
 
 
 class FallbackStateMachineTests(unittest.TestCase):
-    """Kiểm tra máy trạng thái fallback và thứ tự ưu tiên của các adapter."""
+    """Test fallback state machine and adapter precedence ordering."""
 
     def test_ready_adapters_sorts_by_priority_descending(self):
         cap = dcom_pipeline.ViewerCapture()
-        # Gán dữ kiện cho cả VietMy (priority 270) và DICOMweb (priority 200)
+        # Set up state for both VietMy (priority 270) and DICOMweb (priority 200)
         cap.vietmy = b'{"d": {}}'
         cap.qido_series = "https://pacs.test/studies/1/series"
         cap.qido_series_body = b"[]"
@@ -441,7 +440,7 @@ class FallbackStateMachineTests(unittest.TestCase):
         adapters = [FailingVietmy(), SucceedingDicomweb()]
         stats = dcom_pipeline.DownloadStats()
 
-        # Mô phỏng fallback runner
+        # Simulate fallback runner
         for adapter in sorted(adapters, key=lambda a: a.priority, reverse=True):
             try:
                 adapter.download(cap, lambda _: True, stats, lambda _: None, lambda: False, None)
@@ -517,18 +516,18 @@ class FallbackStateMachineTests(unittest.TestCase):
 
 
 class StrategyStoreTests(unittest.TestCase):
-    """Kiểm tra tính an toàn (không rò rỉ token/PII) và khả năng ghi nhớ của PacsStrategyStore."""
+    """Test PacsStrategyStore security (no token/PII leakage) and persistence capabilities."""
 
     def test_compute_url_fingerprint_redacts_tokens_and_uids(self):
         url = "https://pacs.bv-test.vn/viewer/study/1.2.840.113619.2.348?token=secret123&patientId=BN001&series=2"
         fp = dcom_pipeline.compute_url_fingerprint(url, "DICOMweb")
 
-        # Khóa fingerprint CHỈ chứa origin, normalized path và tên query param keys
+        # Fingerprint key contains ONLY origin, normalized path, and query param keys
         self.assertIn("https://pacs.bv-test.vn", fp)
         self.assertIn("patientId,series,token", fp)
         self.assertIn("DICOMWEB", fp)
 
-        # Tuyệt đối KHÔNG chứa token giá trị thật hay UID/mã bệnh nhân thật
+        # Strictly MUST NOT contain actual token values, UIDs, or patient identifiers
         self.assertNotIn("secret123", fp)
         self.assertNotIn("BN001", fp)
         self.assertNotIn("1.2.840.113619.2.348", fp)
@@ -541,7 +540,7 @@ class StrategyStoreTests(unittest.TestCase):
             store = dcom_pipeline.PacsStrategyStore(store_path)
 
             fp = "https://pacs.test|/viewer/*?token|DICOMWEB"
-            # Lưu 3 lượt thành công cho DICOMweb
+            # Save 2 successful runs for DICOMweb
             store.save_recipe(fp, "DICOMweb", preferred_routes=["wadors", "wadouri"], success=True, latency_ms=120.0)
             store.save_recipe(fp, "DICOMweb", preferred_routes=["wadors", "wadouri"], success=True, latency_ms=100.0)
 
@@ -549,10 +548,11 @@ class StrategyStoreTests(unittest.TestCase):
             self.assertEqual("DICOMweb", pref_adapter)
             self.assertEqual(["wadors", "wadouri"], store.get_preferred_routes(fp))
 
-            # Kiểm tra file json đã tạo có schemaVersion=1
+            # Verify generated json file has schemaVersion=1
             self.assertTrue(store_path.is_file())
             content = json.loads(store_path.read_text(encoding="utf-8"))
             self.assertEqual(1, content["schemaVersion"])
+
     def test_strategy_store_updates_adapter_on_subsequent_success(self):
         import tempfile
         from pathlib import Path
@@ -561,14 +561,14 @@ class StrategyStoreTests(unittest.TestCase):
             store = dcom_pipeline.PacsStrategyStore(store_path)
 
             fp = "https://pacs.bv-test.vn|/viewer/*?token|*"
-            # Lượt 1: VietMy partial
+            # Pass 1: VietMy partial
             store.save_recipe(fp, "VietMy", success=False, partial=True, failure_class="partial")
             r1 = store.load().get(fp)
             self.assertEqual("VietMy", r1["adapter"])
             self.assertEqual(1, r1["partial"])
             self.assertEqual(0, r1["success"])
 
-            # Lượt 2: DICOMweb fallback success -> adapter phải đổi sang DICOMweb
+            # Pass 2: DICOMweb fallback success -> adapter must switch to DICOMweb
             store.save_recipe(fp, "DICOMweb", preferred_routes=["wadors", "wadouri"], success=True, latency_ms=80.0)
             r2 = store.load().get(fp)
             self.assertEqual("DICOMweb", r2["adapter"])
@@ -585,7 +585,7 @@ class StrategyStoreTests(unittest.TestCase):
             store_path = Path(tmp_dir) / "pacs-strategies-v1.json"
             store = dcom_pipeline.PacsStrategyStore(store_path)
 
-            # Ghi trực tiếp recipe đã hết hạn 95 ngày trước
+            # Write recipe that expired 95 days ago directly
             old_time = time.time() - (95 * 86400)
             payload = {
                 "schemaVersion": 1,
@@ -626,11 +626,11 @@ class StrategyStoreTests(unittest.TestCase):
             )
             self.assertFalse(budget.is_expired())
 
-        # Giả lập stall quá 60s
+        # Simulate stall exceeding 60s
         with unittest.mock.patch("time.monotonic", return_value=170.0):
             self.assertTrue(budget.is_expired())
 
-        # Touch khi có tiến độ mới
+        # Touch when new progress occurs
         with unittest.mock.patch("time.monotonic", return_value=170.0):
             budget.touch()
             self.assertFalse(budget.is_expired())
@@ -843,7 +843,7 @@ class StrategyStoreTests(unittest.TestCase):
 
     def test_frame_transfer_syntax_separates_unknown_from_uncompressed(self):
         f = dcom_pipeline._frame_transfer_syntax
-        # Không có thông tin nén -> "" (coi như dữ liệu thô), KHÁC với không tra ra.
+        # No compression info -> "" (treated as raw data), DISTINCT from unresolvable.
         self.assertEqual("", f("application/octet-stream"))
         self.assertEqual("", f(""))
         self.assertEqual("1.2.840.10008.1.2.4.70", f("image/jll"))
@@ -851,7 +851,7 @@ class StrategyStoreTests(unittest.TestCase):
                          f('multipart/related; type="image/jpeg"'))
         self.assertEqual("1.2.840.10008.1.2.4.90",
                          f('application/octet-stream; transfer-syntax=1.2.840.10008.1.2.4.90'))
-        # Ảnh/video đã nén mà không tra ra -> None, phải từ chối chứ không đoán.
+        # Compressed image/video that cannot be resolved -> None; reject rather than guess.
         self.assertIsNone(f("image/quaila"))
         self.assertIsNone(f("video/quaila"))
 
@@ -859,17 +859,17 @@ class StrategyStoreTests(unittest.TestCase):
         self.assertTrue(w("application/octet-stream"))
         self.assertTrue(w("image/jll"))
         self.assertFalse(w("image/quaila"))
-        # pydicom 3.0.2 chưa nhận JPEG XL -> biết trước là không ghi được.
+        # pydicom 3.0.2 does not support JPEG XL yet -> known to be unwritable.
         self.assertFalse(w("application/octet-stream; transfer-syntax=1.2.840.10008.1.2.4.140"))
 
     def _instance(self, sop_uid):
         return {"00080018": {"vr": "UI", "Value": [sop_uid]}}
 
     def test_qido_paging_reads_past_a_server_side_result_cap(self):
-        """Server chặn ở 100 dòng dù xin 500 — phải lật trang tiếp, không cụt.
+        """Server caps at 100 rows even when requesting 500 — must page through without truncating.
 
-        Đây là kiểu thiếu ảnh nguy hiểm: không có lỗi nào nổi lên, chỉ là ca chụp
-        về ít hơn thực tế.
+        This is a subtle failure mode: no error is raised, but fewer images are downloaded
+        than actually exist on PACS.
         """
         total = [self._instance(f"1.2.3.{i}") for i in range(1, 351)]
         seen_urls = []
@@ -878,12 +878,12 @@ class StrategyStoreTests(unittest.TestCase):
             seen_urls.append(url)
             query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
             offset = int(query["offset"])
-            return total[offset:offset + 100]  # server tự chặn 100 bất kể `limit`
+            return total[offset:offset + 100]  # server caps at 100 regardless of limit
 
         rows = dcom_pipeline._qido_fetch_all(get_json, "https://pacs.test/rs/instances")
         self.assertEqual(350, len(rows))
-        # 100+100+100+50 rồi thêm một lượt nữa trả rỗng để biết đã hết — trang ngắn
-        # không phải dấu hiệu kết thúc, vì server có quyền chặn dưới `limit`.
+        # 100+100+100+50 then another empty fetch to confirm end — short page
+        # is not end marker, because server may cap below limit.
         self.assertEqual(5, len(seen_urls))
         self.assertEqual(
             [str(i) for i in (0, 100, 200, 300, 350)],
@@ -891,7 +891,7 @@ class StrategyStoreTests(unittest.TestCase):
         )
 
     def test_qido_paging_stops_when_server_ignores_offset(self):
-        """Server phớt lờ `offset` trả lại đúng trang cũ — phải dừng, không lặp vô hạn."""
+        """Server ignores `offset` and returns same page — must terminate without infinite loop."""
         page = [self._instance(f"1.2.3.{i}") for i in range(1, 31)]
         calls = []
 
@@ -915,7 +915,7 @@ class StrategyStoreTests(unittest.TestCase):
         self.assertIn("limit", query)
 
     def test_qido_paging_accepts_a_lone_object_instead_of_an_array(self):
-        """Vài server trả thẳng một dataset thay vì mảng một phần tử."""
+        """Some servers return a single dataset object instead of a 1-element array."""
         replies = [self._instance("1.2.3.9"), []]
 
         rows = dcom_pipeline._qido_fetch_all(
@@ -925,11 +925,11 @@ class StrategyStoreTests(unittest.TestCase):
         self.assertEqual("1.2.3.9", dcom_pipeline._dicom_json_value(rows[0], "00080018"))
 
     def test_tracked_opener_interrupts_request_still_stuck_inside_urlopen(self):
-        """Ca treo hay gặp nhất trên mạng viện: server nhận kết nối rồi im.
+        """Most common hospital network hang: server accepts connection then stays silent.
 
-        Worker lúc đó còn kẹt trong `urlopen()` chờ dòng header đầu tiên, chưa
-        có response nào để ngắt — nếu chỉ ghi sổ ở tầng đọc body thì bấm Cancel
-        vẫn phải chờ hết `timeout`.
+        Worker is stuck inside urlopen() waiting for initial response headers before any
+        response object exists to abort — body-level tracking alone would force cancel
+        to wait for full socket timeout.
         """
         import socket
         import threading
@@ -966,7 +966,7 @@ class StrategyStoreTests(unittest.TestCase):
 
         caller = threading.Thread(target=call)
         caller.start()
-        time.sleep(0.3)  # đủ để kết nối xong và kẹt ở chỗ chờ header
+        time.sleep(0.3)  # allow connection to establish and block waiting for headers
 
         t0 = time.monotonic()
         tracker.interrupt_all()
@@ -977,16 +977,15 @@ class StrategyStoreTests(unittest.TestCase):
             try: conn.close()
             except Exception: pass
 
-        self.assertFalse(caller.is_alive(), "urlopen() không bị ngắt, vẫn chờ hết timeout")
-        self.assertLess(elapsed, 2.0, f"Ngắt urlopen() quá chậm: {elapsed}s")
+        self.assertFalse(caller.is_alive(), "urlopen() was not interrupted, waited for timeout")
+        self.assertLess(elapsed, 2.0, f"urlopen() interruption too slow: {elapsed}s")
         self.assertIn("error", outcome)
 
     def test_run_fetch_tasks_returns_at_once_even_if_a_worker_cannot_be_interrupted(self):
-        """Huỷ phải trả quyền điều khiển lại ngay, kể cả khi còn worker chưa chết.
+        """Cancel must return control immediately, even if workers are still active.
 
-        `with ThreadPoolExecutor(...)` khi thoát sẽ `shutdown(wait=True)`, nên chỉ
-        phát hiện huỷ nhanh thôi chưa đủ — hàm vẫn kẹt đúng bằng thời gian worker
-        còn chạy.
+        ThreadPoolExecutor context manager calls shutdown(wait=True) on exit, so fast cancel
+        detection alone is insufficient — function would still block until workers finish.
         """
         import threading
         import time
@@ -1001,7 +1000,7 @@ class StrategyStoreTests(unittest.TestCase):
             return False
 
         def fetch(_task):
-            time.sleep(3.0)  # worker không ngắt được bằng socket
+            time.sleep(3.0)  # worker cannot be interrupted via socket
             return True
 
         stats = dcom_pipeline.DownloadStats()
@@ -1015,8 +1014,8 @@ class StrategyStoreTests(unittest.TestCase):
         runner.join(timeout=5.0)
         elapsed = time.monotonic() - t0
 
-        self.assertFalse(runner.is_alive(), "_run_fetch_tasks không trả về")
-        self.assertLess(elapsed, 0.5, f"Huỷ vẫn bị chặn ở shutdown: {elapsed}s")
+        self.assertFalse(runner.is_alive(), "_run_fetch_tasks did not return")
+        self.assertLess(elapsed, 0.5, f"Cancellation blocked on executor shutdown: {elapsed}s")
         self.assertTrue(stats.cancelled)
 
 

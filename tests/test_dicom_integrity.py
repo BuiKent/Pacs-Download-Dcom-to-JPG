@@ -139,7 +139,7 @@ class DicomIntegrityValidationTests(unittest.TestCase):
         self.assertFalse(valid)
 
     def test_encapsulated_bot_only_no_frames_is_rejected(self):
-        # CA1: Chỉ có Basic Offset Table rỗng, mất sạch fragment ảnh
+        # CASE 1: Empty Basic Offset Table only, image fragments missing
         bot_only = b"\xfe\xff\x00\xe0\x00\x00\x00\x00"
         encaps_bytes = _make_encapsulated_dicom_bytes(transfer_syntax=JPEG2000Lossless, valid_stream=True)
         ds = pydicom.dcmread(io.BytesIO(encaps_bytes), force=True)
@@ -151,10 +151,10 @@ class DicomIntegrityValidationTests(unittest.TestCase):
         self.assertIn("basic offset table", reason.lower())
 
     def test_encapsulated_rle_truncated_is_rejected(self):
-        # CA3: RLE Lossless bị cắt cụt header hoặc offset vượt quá độ dài
+        # CASE 3: RLE Lossless truncated header or offset exceeds length
         from pydicom.uid import RLELossless
         bot_only = b"\xfe\xff\x00\xe0\x00\x00\x00\x00"
-        # RLE fragment quá ngắn (<64 bytes)
+        # RLE fragment too short (<64 bytes)
         short_rle = bot_only + b"\xfe\xff\x00\xe0\x10\x00\x00\x00" + b"\x01\x00\x00\x00" + b"\x40\x00\x00\x00" + b"\x00" * 8
         encaps_bytes = _make_encapsulated_dicom_bytes(transfer_syntax=RLELossless, valid_stream=True)
         ds = pydicom.dcmread(io.BytesIO(encaps_bytes), force=True)
@@ -168,14 +168,14 @@ class DicomIntegrityValidationTests(unittest.TestCase):
     def test_missing_transfer_syntax_in_file_meta_handled_safely(self):
         raw_bytes = _make_raw_dicom_bytes()
         ds = pydicom.dcmread(io.BytesIO(raw_bytes), force=True)
-        # Xóa TransferSyntaxUID khỏi file_meta
+        # Remove TransferSyntaxUID from file_meta
         if hasattr(ds.file_meta, "TransferSyntaxUID"):
             delattr(ds.file_meta, "TransferSyntaxUID")
         valid, reason = _is_dicom_dataset_valid_for_decode(ds)
         self.assertTrue(valid)
 
     def test_valid_encapsulated_without_bot_item_is_accepted(self):
-        # File JPEG 2000 hợp lệ chỉ có 1 fragment chứa codestream ảnh (không có item BOT riêng)
+        # Valid JPEG 2000 file with only 1 fragment containing image codestream (no separate BOT item)
         valid_j2k_stream = b"\xff\x4f\xff\x51" + b"\x41" * 400 + b"\xff\xd9"
         one_frag_only = b"\xfe\xff\x00\xe0" + struct.pack("<I", len(valid_j2k_stream)) + valid_j2k_stream
         encaps_bytes = _make_encapsulated_dicom_bytes(transfer_syntax=JPEG2000Lossless, valid_stream=True)
@@ -187,8 +187,8 @@ class DicomIntegrityValidationTests(unittest.TestCase):
         self.assertTrue(valid, f"Expected valid, got reason: {reason}")
 
     def test_valid_mpeg_video_with_empty_bot_is_accepted(self):
-        # Luồng MPEG/H.264 không kết thúc bằng \xff\xd9 và có Basic Offset Table
-        # rỗng đúng chuẩn — không được loại nhầm chỉ vì fragment đầu rỗng.
+        # MPEG/H.264 streams do not end with \xff\xd9 and legitimately have an empty Basic Offset Table —
+        # must not be rejected just because the first fragment is empty.
         from pydicom.uid import MPEG2MPML
 
         mpeg_stream = b"\x00\x00\x01\xb3" + b"\x56" * 400 + b"\x00\x00\x01\xb7"
@@ -216,7 +216,7 @@ class DownloadPipelineIntegrityTests(unittest.TestCase):
             self.assertEqual([], list(dicom_dir.rglob("*.dcm")))
 
     def test_save_body_multipart_requires_all_parts_valid(self):
-        # Multipart chứa 1 phần hợp lệ và 1 phần bị hỏng -> toàn bộ phải trả về False
+        # Multipart with 1 valid part and 1 corrupt part -> must return False overall
         valid_part = _make_raw_dicom_bytes()
         corrupt_part = valid_part[:-15]
         multipart_data = (
@@ -233,10 +233,10 @@ class DownloadPipelineIntegrityTests(unittest.TestCase):
             self.assertFalse(all_ok)
 
     def test_multipart_keeps_pixel_bytes_that_happen_to_end_with_newline(self):
-        """Byte 0x0D/0x0A nằm đầy trong pixel 16-bit, không phải dấu xuống dòng.
+        """Bytes 0x0D/0x0A are common in 16-bit pixels, not newlines.
 
-        Cắt sạch chúng ở cuối mỗi part là ăn mất pixel thật: file vẫn "hợp lệ"
-        nhưng thiếu dữ liệu, đúng kiểu hỏng không ai nhìn ra.
+        Trimming them at the end of every part truncates real pixels: the file
+        might look valid but loses data silently.
         """
         payload = bytes([1, 2, 3, 0x0D, 0x0A, 0x0A])
         body = (
@@ -257,10 +257,10 @@ class DownloadPipelineIntegrityTests(unittest.TestCase):
         )
 
     def test_frames_of_unknown_compressed_media_type_are_refused(self):
-        """Không tra ra Transfer Syntax thì phải bỏ, không được đoán là chưa nén.
+        """If Transfer Syntax cannot be resolved, reject rather than assuming uncompressed.
 
-        Ghi thẳng byte JPEG-Lossless/RLE vào PixelData sẽ ra file mở được nhưng
-        ảnh sai hoàn toàn.
+        Writing raw JPEG-Lossless/RLE bytes directly to PixelData yields a readable file
+        with completely corrupt image data.
         """
         meta = {
             "00080016": {"vr": "UI", "Value": ["1.2.840.10008.5.1.4.1.1.7"]},
@@ -271,17 +271,16 @@ class DownloadPipelineIntegrityTests(unittest.TestCase):
         }
         frames = [bytes(range(32))]
         self.assertIsNone(dcom_pipeline._dicom_from_meta_frames(meta, frames, "image/quaila"))
-        # ...nhưng kiểu nén đã biết thì vẫn dựng được, không chặn nhầm.
-        # (image/jxl cố tình không có trong danh sách này: pydicom 3.0.2 chưa nhận
-        # 1.2.840.10008.1.2.4.140 nên vẫn hỏng đóng — đúng hướng an toàn.)
+        # ...but known compression formats can still be assembled without false rejections.
+        # (image/jxl is intentionally excluded: pydicom 3.0.2 does not support 1.2.840.10008.1.2.4.140 yet.)
         for media_type in ("image/jll", "image/jpx", "image/x-dicom-rle", "image/jphc"):
             self.assertIsNotNone(
                 dcom_pipeline._dicom_from_meta_frames(meta, frames, media_type),
-                f"{media_type} phải dựng được",
+                f"{media_type} should be constructible",
             )
 
     def test_multipart_with_non_image_part_and_valid_dicom_is_accepted(self):
-        # Multipart chứa 1 part JSON cảnh báo/thông tin và 1 part DICOM lành -> phải chấp nhận và lưu thành công
+        # Multipart with 1 JSON info/warning part and 1 valid DICOM part -> must accept and save successfully
         valid_part = _make_raw_dicom_bytes()
         non_image_part = b'{"status": "ok", "metadata": "sample"}'
         multipart_data = (
@@ -325,13 +324,13 @@ class DownloadPipelineIntegrityTests(unittest.TestCase):
             self.assertFalse(corrupt_file.exists())
             self.assertTrue(valid_file.exists())
             self.assertEqual(stats.dicom, 1)
-            # File có sẵn không rõ nguồn gốc nên không được khai là DICOM gốc.
+            # Pre-existing files of unknown origin must not be claimed as original DICOM.
             self.assertEqual(stats.original_dicom, 0)
             self.assertEqual(stats.reconstructed_dicom, 0)
 
 
 class FidelityReportTests(unittest.TestCase):
-    """Một file .dcm không mặc nhiên là bản gốc của máy chụp."""
+    """A .dcm file is not assumed to be the original scanner file by default."""
 
     def test_report_stays_silent_when_every_file_is_original(self):
         stats = dcom_pipeline.DownloadStats(dicom=436, original_dicom=436)

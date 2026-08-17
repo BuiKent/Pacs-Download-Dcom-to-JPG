@@ -26,12 +26,12 @@ def main():
         for i, s in enumerate(studies):
             print(f"Ca {i+1}: {s}")
             
-        # Thử download list
+        # Test downloading study list
         out_root = Path("test_ris_downloads")
         out_root.mkdir(exist_ok=True)
         
         download_studies_list(
-            studies=[studies[3]], # Chỉ tải Ca 4
+            studies=[studies[3]], # Download Study 4 only
             out_base=out_root,
             patient_id=patient_id,
             patient_name=patient_name,

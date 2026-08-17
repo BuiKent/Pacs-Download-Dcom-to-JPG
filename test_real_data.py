@@ -24,7 +24,7 @@ def main():
         out_base.mkdir(parents=True, exist_ok=True)
         
         def log_fn(msg):
-            # Lọc bớt log progress để đỡ spam console
+            # Filter progress logs to reduce console noise
             if "Đã tải" not in str(msg) and "Convert slice" not in str(msg):
                 print(f"  {msg}")
                 

@@ -110,7 +110,7 @@ class RisSessionTests(unittest.TestCase):
         self.assertTrue(any("cổng PACS công cộng" in line for line in fallback_logs))
         self.assertFalse(any("ngoài mạng viện?" in line for line in fallback_logs))
 
-        # Viện chỉ có một đường thì không tốn một lượt dò nào.
+        # If hospital has only one endpoint, no probing is needed.
         with patch("dcom_pipeline._endpoint_is_reachable") as never:
             self.assertEqual(
                 "https://rad.vduh.org",
@@ -131,7 +131,7 @@ class RisSessionTests(unittest.TestCase):
         )
 
     def test_sessions_are_kept_per_endpoint_not_per_hospital(self):
-        """Cookie của đường LAN không dùng được cho đường công cộng."""
+        """LAN endpoint cookies cannot be used for the public endpoint."""
         dcom_pipeline._store_ris_session_state(
             "dhy", {"cookies": [{"name": "sid", "value": "LAN"}]}, "http://192.168.50.105",
         )
@@ -151,10 +151,10 @@ class RisSessionTests(unittest.TestCase):
         self.assertIsNone(dcom_pipeline._get_ris_session_state("dhy", "https://dhy.cdhaviet.vn"))
 
     def test_sessions_are_kept_per_account(self):
-        """Tài khoản tự nhập và tài khoản mặc định giữ phiên riêng.
+        """Manually entered and default accounts maintain separate sessions.
 
-        Nhờ vậy đổi tài khoản là tự trượt cache, không phải xóa phiên bằng tay —
-        và tải N ca liên tiếp vẫn dùng chung một lần đăng nhập.
+        Changing account automatically invalidates cache without manual clearing,
+        and downloading N consecutive studies shares the same login session.
         """
         info = {"username_enc": "", "password_enc": ""}
         _u1, _p1, default_account = dcom_pipeline._ris_credentials(info)
@@ -179,7 +179,7 @@ class RisSessionTests(unittest.TestCase):
             dcom_pipeline._get_ris_session_state("dhy", base, custom_account)["cookies"][0]["value"],
         )
 
-        # Xóa phiên của một tài khoản không được đụng vào tài khoản kia.
+        # Clearing session for one account must not affect the other.
         dcom_pipeline.clear_ris_session_cache("dhy", custom_account)
         self.assertIsNone(dcom_pipeline._get_ris_session_state("dhy", base, custom_account))
         self.assertIsNotNone(dcom_pipeline._get_ris_session_state("dhy", base, default_account))
@@ -245,7 +245,7 @@ class RisSessionTests(unittest.TestCase):
             patch("dcom_pipeline._perform_ris_login", return_value=True) as login,
             patch("dcom_pipeline._page_is_ris_login", return_value=False),
             patch("dcom_pipeline._query_ris_studies", return_value=api_result),
-            # Không đụng mạng thật trong test: coi như đang ở ngoài viện.
+            # Do not hit real network in tests: simulate being outside LAN.
             patch("dcom_pipeline._endpoint_is_reachable", return_value=False),
         ):
             first = dcom_pipeline.search_patient_studies(

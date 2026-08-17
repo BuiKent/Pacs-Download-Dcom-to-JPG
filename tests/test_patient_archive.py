@@ -609,7 +609,7 @@ class PatientDemographicsTests(unittest.TestCase):
         )
 
     def test_birth_year_mismatch_is_still_an_identity_conflict(self):
-        """Nới lỏng cho ngày sinh ước lượng KHÔNG được nới sang cả năm sinh."""
+        """Relaxation for placeholder birth date MUST NOT extend across birth years."""
         metadata = {
             "PatientID": "2606033997",
             "PatientName": "NGUYEN THI CAM TU",
@@ -624,7 +624,7 @@ class PatientDemographicsTests(unittest.TestCase):
             )
 
     def test_two_exact_birth_dates_in_one_year_are_still_a_conflict(self):
-        """Cùng năm nhưng cả hai đều là ngày chính xác thì vẫn là hai người."""
+        """Same birth year with two distinct exact dates still represents different individuals."""
         metadata = {
             "PatientID": "2606033997",
             "PatientName": "NGUYEN THI CAM TU",
@@ -647,9 +647,9 @@ class PatientDemographicsTests(unittest.TestCase):
 
     def test_manifest_never_rewrites_the_birth_year(self):
         for current, incoming in (
-            ("2003-01-01", "1985-07-03"),   # placeholder vs năm khác
-            ("2003-01-01", "1985-01-01"),   # hai placeholder khác năm
-            ("2003-04-02", "2003-11-22"),   # ngày chính xác đã có sẵn
+            ("2003-01-01", "1985-07-03"),   # placeholder vs different year
+            ("2003-01-01", "1985-01-01"),   # two placeholders in different years
+            ("2003-04-02", "2003-11-22"),   # exact date already present
         ):
             with self.subTest(current=current, incoming=incoming):
                 manifest = {"patientBirthDate": current}
@@ -941,11 +941,11 @@ class PatientDemographicsTests(unittest.TestCase):
 
 
 class FakeOpener:
-    """Đứng thay opener có ghi sổ socket của pipeline.
+    """Mock replacement for pipeline socket-tracked opener.
 
-    Pipeline không gọi thẳng `urllib.request.urlopen` nữa: nó mở qua một opener
-    riêng để socket được ghi sổ ngay từ lúc kết nối, nhờ đó bấm Cancel là cắt
-    được cả những worker còn đang kẹt trong `urlopen()`.
+    Pipeline does not invoke `urllib.request.urlopen` directly: it routes through
+    a custom opener so sockets are tracked immediately upon connection, ensuring
+    Cancel promptly interrupts workers blocking inside `urlopen()`.
     """
 
     def __init__(self, handler):
@@ -1250,8 +1250,8 @@ class SeriesSelectionTests(unittest.TestCase):
                 return b"dicom"
 
         def fake_urlopen(request, **_kwargs):
-            # Đường manifest giờ gửi `Request` để mang theo giấy thông hành đúng
-            # origin, thay vì đưa thẳng chuỗi URL.
+            # Manifest path sends `Request` with scoped passport for the correct
+            # origin, rather than passing raw URL string.
             requested.append(request.full_url)
             return Response()
 
@@ -1277,7 +1277,7 @@ class SeriesSelectionTests(unittest.TestCase):
 
 
 class ViewerLinkFreshnessTests(unittest.TestCase):
-    """Ba lỗi làm mất ảnh khi tải theo mã BN — mỗi lỗi một test."""
+    """Three causes of missing images during patient ID download — one test each."""
 
     @staticmethod
     def _kwargs(root: Path, items: list[dict], logs: list[str]) -> dict:
@@ -1293,7 +1293,7 @@ class ViewerLinkFreshnessTests(unittest.TestCase):
         )
 
     def test_search_does_not_hand_out_perishable_links(self):
-        """Tìm kiếm không được cấp sẵn link viewer — link phải xin lúc tải."""
+        """Search must not pre-mint perishable viewer links — links must be acquired at download time."""
         source = Path("dcom_pipeline.py").read_text(encoding="utf-8")
         block = source.split("def search_patient_studies(")[1].split("\ndef ")[0]
         self.assertNotIn("iframes[0]", block)
@@ -1337,7 +1337,7 @@ class ViewerLinkFreshnessTests(unittest.TestCase):
             )
 
     def test_study_is_skipped_when_no_viewer_link_can_be_minted(self):
-        """Không xin được link thì KHÔNG được tải bằng link wrapper vô dụng."""
+        """If viewer link cannot be minted, MUST NOT download with useless wrapper link."""
         with tempfile.TemporaryDirectory() as tmp, patch(
             "dcom_pipeline.resolve_study_viewer_url",
             side_effect=RuntimeError("RIS không trả về khung viewer"),
@@ -1354,7 +1354,7 @@ class ViewerLinkFreshnessTests(unittest.TestCase):
             self.assertTrue(any("BỎ QUA CA 1" in line for line in logs), logs)
 
     def test_partial_download_is_never_reported_as_complete(self):
-        """Tải 4/348 ảnh phải là CHƯA ĐỦ, không phải 'đã tải xong'."""
+        """Downloading 4/348 images must be reported as partial/incomplete, not complete."""
 
         def fake_run_pipeline(**kwargs):
             Path(kwargs["out_base"], "DICOM").mkdir(parents=True, exist_ok=True)
@@ -1379,14 +1379,14 @@ class ViewerLinkFreshnessTests(unittest.TestCase):
 
     def test_wrapper_url_is_rejected_instead_of_downloaded(self):
         item = study("1.2.3.40")
-        item["hospital_key"] = ""  # không đủ thông tin để xin link mới
+        item["hospital_key"] = ""  # insufficient info to mint new link
         item["direct_url"] = "https://rad.vduh.org/ris/vrViewer?studyUID=1.2.3.40&viewType=VIEWERV2"
         with self.assertRaises(RuntimeError) as ctx:
             dcom_pipeline._viewer_url_for_study(item, "", lambda _m: None, True)
         self.assertIn("wrapper", str(ctx.exception).lower())
 
     def test_ris_shell_pages_are_not_mistaken_for_the_viewer(self):
-        """Sau khi đăng nhập lại, page.url hay đứng ở trang RIS — không phải khung ảnh."""
+        """After re-login, page.url often remains on RIS shell pages rather than viewer frame."""
         for bad in (
             "https://dhy.cdhaviet.vn/ris/account/login",
             "https://dhy.cdhaviet.vn/ris/study/reading",
@@ -1410,7 +1410,7 @@ class ViewerLinkFreshnessTests(unittest.TestCase):
         self.assertIsNotNone(outage)
         self.assertIn("KHÔNG KẾT NỐI ĐƯỢC", outage)
         self.assertIn("KHÔNG phải lỗi mã bệnh nhân", outage)
-        # Lỗi khác thì để nguyên, không được nuốt thành "lỗi mạng".
+        # Other errors are preserved as-is, not swallowed into network error.
         self.assertIsNone(
             dcom_pipeline._server_unreachable_message(
                 ValueError("RIS không xác nhận đăng nhập thành công."), "X", "https://x",
@@ -1418,41 +1418,41 @@ class ViewerLinkFreshnessTests(unittest.TestCase):
         )
 
     def test_non_image_objects_do_not_count_as_missing_images(self):
-        """Dose SR không có điểm ảnh — tính nó vào tổng sẽ gắn 'thiếu ảnh' vĩnh viễn."""
+        """Dose SR objects lack pixels — including them in totals would permanently flag incomplete."""
         for modality in ("SR", "sr", " PR ", "KO", "SEG", "RTSTRUCT"):
             self.assertTrue(dcom_pipeline._is_non_image_modality(modality), modality)
         for modality in ("CT", "MR", "CR", "US", "XA", "NM", "PT", "", None):
             self.assertFalse(dcom_pipeline._is_non_image_modality(modality), modality)
 
     def test_stats_completeness_rules(self):
-        # 1. Có manifest biết tổng (expected > 0):
+        # 1. Known total manifest (expected > 0):
         self.assertFalse(dcom_pipeline.DownloadStats(dicom=4, expected=348).is_complete())
         self.assertEqual("partial", dcom_pipeline.DownloadStats(dicom=4, expected=348).status)
 
         self.assertTrue(dcom_pipeline.DownloadStats(dicom=348, expected=348).is_complete())
         self.assertEqual("complete", dcom_pipeline.DownloadStats(dicom=348, expected=348).status)
 
-        # Có lỗi (failed > 0) -> không được báo complete
+        # Errors present (failed > 0) -> must not report complete
         self.assertFalse(dcom_pipeline.DownloadStats(dicom=348, expected=348, failed=1).is_complete())
         self.assertEqual("partial", dcom_pipeline.DownloadStats(dicom=348, expected=348, failed=1).status)
 
-        # Chỉ có ảnh render JPG/PNG -> không được coi là hoàn tất DICOM
+        # Rendered JPG/PNG only -> must not count as complete DICOM
         self.assertFalse(dcom_pipeline.DownloadStats(dicom=0, jpg=348, expected=348).is_complete())
         self.assertEqual("rendered_only", dcom_pipeline.DownloadStats(dicom=0, jpg=348, expected=348).status)
 
-        # 2. Không biết manifest (expected <= 0):
-        # Không bao giờ được báo complete (vì không có bằng chứng đã đủ), chỉ được báo partial_unknown
+        # 2. Unknown total manifest (expected <= 0):
+        # Never report complete (no proof of total), report partial_unknown
         self.assertFalse(dcom_pipeline.DownloadStats(dicom=1, expected=0).is_complete())
         self.assertEqual("partial_unknown", dcom_pipeline.DownloadStats(dicom=1, expected=0).status)
 
-        # 3. Trạng thái hủy & rỗng:
+        # 3. Cancelled & empty states:
         self.assertFalse(dcom_pipeline.DownloadStats(cancelled=True).is_complete())
         self.assertEqual("cancelled", dcom_pipeline.DownloadStats(cancelled=True).status)
         self.assertFalse(dcom_pipeline.DownloadStats().is_complete())
         self.assertEqual("unknown", dcom_pipeline.DownloadStats().status)
 
     def test_manifest_records_download_and_viewer_provenance(self):
-        """Manifest ghi nhận đầy đủ downloadUrl, viewerUrl, patientCode, accessionNumber, hospital."""
+        """Manifest records full downloadUrl, viewerUrl, patientCode, accessionNumber, hospital."""
         root = Path(tempfile.mkdtemp())
         patient_folder, manifest, _ = dcom_pipeline.ensure_patient_archive(
             root,
@@ -1516,11 +1516,11 @@ class ViewerLinkFreshnessTests(unittest.TestCase):
 
 
 class DicomWebReadyContractTests(unittest.TestCase):
-    """`is_ready()` chỉ được hứa đúng cái `_download_via_dicomweb()` làm được.
+    """`is_ready()` must only promise what `_download_via_dicomweb()` can fulfill.
 
-    Trước đây adapter nhận mọi URL kết thúc "/series", còn phần tải lại đòi tách
-    cho được ".../studies/<uid>/series". Dạng QIDO top-level lọt qua cửa adapter
-    rồi chết ở phần tải — đốt mất một lượt thử mà không lấy được ảnh nào.
+    Previously the adapter accepted any URL ending in "/series", while the download phase
+    strictly required ".../studies/<uid>/series". Top-level QIDO passed adapter check
+    then failed at download — wasting a retry attempt without fetching any images.
     """
 
     def test_hierarchical_qido_yields_study_uid(self):
@@ -1540,12 +1540,12 @@ class DicomWebReadyContractTests(unittest.TestCase):
         self.assertEqual(dcom_pipeline._dicomweb_study_from_qido(url), "1.2.3.4")
 
     def test_top_level_qido_is_not_claimed_as_ready(self):
-        # Hợp chuẩn PS3.18 nhưng phần tải chưa dựng được rs_base từ dạng này.
+        # Compliant with PS3.18 but download phase cannot construct rs_base from this format yet.
         url = "https://pacs.example.org/rs/series?StudyInstanceUID=1.2.3.4"
         cap = dcom_pipeline.ViewerCapture(qido_series=url)
         self.assertEqual(dcom_pipeline._dicomweb_study_from_qido(url), "")
         self.assertFalse(dcom_pipeline.DicomWebAdapter().is_ready(cap))
-        # Và phải nói rõ lý do thay vì im lặng.
+        # And must state specific reason instead of staying silent.
         self.assertIn("/studies/<uid>/", dcom_pipeline.DicomWebAdapter().why_not_ready(cap))
 
     def test_empty_study_segment_is_rejected(self):
@@ -1557,7 +1557,7 @@ class DicomWebReadyContractTests(unittest.TestCase):
 
 
 class DiscoveryFailureReportTests(unittest.TestCase):
-    """Link lạ phải để lại đủ dấu vết để biết viết adapter nào tiếp theo."""
+    """Unknown links must leave sufficient traces to guide subsequent adapter implementations."""
 
     def test_report_names_every_adapter_and_the_endpoints_seen(self):
         cap = dcom_pipeline.ViewerCapture()
@@ -1570,10 +1570,10 @@ class DiscoveryFailureReportTests(unittest.TestCase):
 
         for adapter in dcom_pipeline.PACS_ADAPTERS:
             self.assertIn(adapter.name, report)
-        # Endpoint API giữ lại, tài nguyên tĩnh của giao diện thì không.
+        # Retain API endpoints, exclude static UI assets.
         self.assertIn("/api/v3/GetStudyTree", report)
         self.assertNotIn("app.js", report)
-        # Tên tham số giữ lại để chẩn đoán, GIÁ TRỊ token thì tuyệt đối không.
+        # Retain parameter names for diagnostics, strictly EXCLUDE token values.
         self.assertIn("<id,token>", report)
         self.assertNotIn("SECRET", report)
 
@@ -1599,7 +1599,7 @@ class DiscoveryFailureReportTests(unittest.TestCase):
 
 
 class DicomWebProfileTests(unittest.TestCase):
-    """Search có hai dạng hợp chuẩn, Retrieve thì chỉ có một."""
+    """Search has two standard formats; Retrieve has only one."""
 
     def test_hierarchical_search_urls(self):
         p = dcom_pipeline.DicomWebProfile(rs_base="https://h/rs", study_uid="1.2.3")
@@ -1629,8 +1629,8 @@ class DicomWebProfileTests(unittest.TestCase):
         )
 
     def test_retrieve_stays_hierarchical_in_both_styles(self):
-        # PS3.18: Retrieve Transaction chỉ có dạng phân cấp. Nếu chỗ này đi theo
-        # `query_style` thì mọi PACS top-level sẽ tải hỏng.
+        # PS3.18: Retrieve Transaction only supports hierarchical format. If this followed
+        # `query_style`, top-level PACS downloads would fail.
         for style in ("hierarchical", "toplevel"):
             p = dcom_pipeline.DicomWebProfile(
                 rs_base="https://h/rs", study_uid="1.2.3", query_style=style,
@@ -1672,7 +1672,7 @@ class FakeFrame:
 
 
 class FakePage:
-    """Trang giả: chỉ cần `.frames`, `.url`, `.evaluate` như discovery dùng."""
+    """Mock page object: provides `.frames`, `.url`, `.evaluate` as used by discovery."""
 
     def __init__(self, url, frames=None, config_entries=None, probe_result=None):
         self.url = url
@@ -1719,14 +1719,13 @@ class DicomWebDiscoveryTests(unittest.TestCase):
     def _roots(candidates):
         return [c.root for c in candidates]
 
-    # --- suy ra StudyInstanceUID -------------------------------------------
+    # --- deduce StudyInstanceUID -------------------------------------------
 
     def test_study_uid_read_from_query_of_the_qido_url_itself(self):
-        """Link viewer mờ + QIDO top-level: chính là ca cần discovery nhất.
+        """Opaque viewer link + top-level QIDO: the exact case needing discovery most.
 
-        Trước đây chỉ soi query của link viewer và `page.url`, còn UID thì chỉ
-        moi từ path `/studies/<uid>/` — nên dạng này luôn ra rỗng và không bao
-        giờ discovery được.
+        Previously only viewer query and page.url were inspected, and UID was only extracted
+        from `/studies/<uid>/` path — thus this case always returned empty and failed discovery.
         """
         cap = dcom_pipeline.ViewerCapture(
             qido_series="https://pacs/rs/series?StudyInstanceUID=1.2.3")
@@ -1751,7 +1750,7 @@ class DicomWebDiscoveryTests(unittest.TestCase):
                 dcom_pipeline._study_uid_candidates(cap, f"https://p/v?studyUID={bad}"),
                 [], bad)
 
-    # --- xếp bậc ứng viên ---------------------------------------------------
+    # --- rank candidate tiers ---------------------------------------------------
 
     def test_learned_root_sits_in_the_first_tier_alone(self):
         self.store.save_recipe(
@@ -1762,7 +1761,7 @@ class DicomWebDiscoveryTests(unittest.TestCase):
             FakePage("https://p/viewer"), cap, "https://p/viewer", lambda _m: None)
         self.assertEqual(candidates[0].root, "https://p/learned")
         self.assertEqual(candidates[0].tier, dcom_pipeline._TIER_LEARNED)
-        # Style đã học phải được dùng, không phải đọc ra rồi bỏ đi.
+        # Learned style must be utilized, not discarded.
         self.assertEqual(candidates[0].style_hint, "toplevel")
         self.assertEqual(
             [c for c in candidates if c.tier == dcom_pipeline._TIER_LEARNED],
@@ -1791,8 +1790,8 @@ class DicomWebDiscoveryTests(unittest.TestCase):
         ])
         roots = self._roots(dcom_pipeline._dicomweb_root_candidates(
             page, dcom_pipeline.ViewerCapture(), "https://p/viewer", lambda _m: None))
-        self.assertIn("https://p/dicom-web", roots)   # tương đối -> tuyệt đối
-        self.assertIn("https://other/rs", roots)      # bỏ "/" cuối
+        self.assertIn("https://p/dicom-web", roots)   # relative -> absolute
+        self.assertIn("https://other/rs", roots)      # strip trailing "/"
         self.assertLess(roots.index("https://p/dicom-web"), roots.index("https://p/rs"))
 
     def test_root_candidates_trim_study_path_and_dedupe(self):
@@ -1805,7 +1804,7 @@ class DicomWebDiscoveryTests(unittest.TestCase):
         self.assertEqual(roots.count("https://p/rs"), 1)
 
     def test_candidate_is_probed_from_the_frame_sharing_its_origin(self):
-        """Đọc root trong iframe nhưng bắn dò từ trang cha là rơi vào CORS."""
+        """Reading root in iframe but probing from parent window violates CORS."""
         inner = FakeFrame("https://pacs.other/app/",
                           [{"root": "https://pacs.other/dicom-web", "preferred": True}])
         page = FakePage("https://wrapper.vn/viewer",
@@ -1816,13 +1815,13 @@ class DicomWebDiscoveryTests(unittest.TestCase):
         self.assertEqual(len(picked), 1)
         self.assertIs(picked[0].frame, inner)
 
-    # --- chạy dò theo bậc ---------------------------------------------------
+    # --- execute tiered probing ---------------------------------------------------
 
     def test_tiers_run_in_order_so_a_guess_cannot_beat_the_learned_root(self):
-        """Bậc trước phải xong mới sang bậc sau.
+        """Earlier tiers must finish before subsequent tiers run.
 
-        Gộp hết vào một `Promise.any` thì root đoán mò trả lời nhanh hơn có thể
-        giành mất root đã học — learning coi như không giảm được gì.
+        Combining everything into a single `Promise.any` allows faster guessed roots
+        to beat learned roots — defeating the benefit of strategy learning.
         """
         self.store.save_recipe(
             fingerprint="FP", adapter="DICOMweb", success=True,
@@ -1834,7 +1833,7 @@ class DicomWebDiscoveryTests(unittest.TestCase):
             page, cap, "https://p/v?studyUID=1.2.3", lambda _m: None, lambda: False)
         self.assertIsNotNone(profile)
         self.assertEqual(profile.rs_base, "https://p/learned")
-        # Thắng ngay bậc đầu thì không được bắn thêm ứng viên nào của bậc sau.
+        # Winning in the first tier must prevent firing candidate probes for later tiers.
         self.assertEqual(page.probed, ["https://p/learned/studies/1.2.3/series"])
 
     def test_resolved_profile_and_verified_body_are_written_back_to_cap(self):
@@ -1850,8 +1849,8 @@ class DicomWebDiscoveryTests(unittest.TestCase):
         self.assertEqual(profile.query_style, "toplevel")
         self.assertEqual(profile.source, "probe")
         self.assertIs(cap.dicomweb_profile, profile)
-        # Thân đã xác minh phải ghi thẳng vào cap: phần liệt kê series không được
-        # phụ thuộc vào việc event `on_response` có kịp lưu hay không.
+        # Verified body must be written directly to cap: series listing must not
+        # depend on whether `on_response` event has fired or completed.
         self.assertEqual(cap.qido_series_body, body.encode("utf-8"))
         self.assertEqual(cap.qido_series, "https://p/dicom-web/series?StudyInstanceUID=1.2.3")
 
@@ -1893,7 +1892,7 @@ class DicomWebDiscoveryTests(unittest.TestCase):
             rs_base="https://p/rs", study_uid="1.2.3", query_style="toplevel")
         self.assertTrue(dcom_pipeline.DicomWebAdapter().is_ready(cap))
 
-    # --- không rò token sang origin lạ --------------------------------------
+    # --- prevent token leakage to unknown origins --------------------------------------
 
     @staticmethod
     def _observe(cap, url, headers):
@@ -1915,21 +1914,21 @@ class DicomWebDiscoveryTests(unittest.TestCase):
         self.assertEqual(
             dcom_pipeline._probe_headers_for(cap, "https://pacs.a.vn/dicom-web"),
             {"Authorization": "Bearer SECRET", "X-Tenant": "bv-a"})
-        # Bắn token của viện A sang origin đoán mò khác là làm lộ token.
+        # Sending Hospital A's token to an untrusted/guessed origin leaks credentials.
         self.assertEqual(
             dcom_pipeline._probe_headers_for(cap, "https://pacs.b.vn/dicom-web"), {})
 
     def test_session_headers_are_grabbed_from_any_dicomweb_request(self):
         cap = dcom_pipeline.ViewerCapture()
-        # Viewer hay xin metadata/frames trước (hoặc thay vì) gọi QIDO; chỉ soi
-        # mỗi "/series" thì nhiều viện không bao giờ nhặt được token.
+        # Viewers often request metadata/frames before (or instead of) calling QIDO;
+        # inspecting only "/series" causes many hospitals to never capture tokens.
         self._observe(cap, "https://pacs.a.vn/dicom-web/studies/1.2/series/9/metadata",
                       {"Authorization": "Bearer T", "User-Agent": "khong-phai-giay-thong-hanh"})
         self.assertEqual(cap.session_headers,
                          {"https://pacs.a.vn": {"Authorization": "Bearer T"}})
 
     def test_a_header_set_without_credentials_does_not_block_a_later_bearer(self):
-        """Request chỉ có `Accept` mà chiếm chỗ thì cả ca mất quyền."""
+        """A header set with only `Accept` occupying the slot must not block later Authorization."""
         cap = dcom_pipeline.ViewerCapture()
         self._observe(cap, "https://p.vn/rs/studies/1.2/metadata",
                       {"Accept": "application/dicom+json"})
@@ -1957,11 +1956,11 @@ class DicomWebDiscoveryTests(unittest.TestCase):
 
 
 class SessionPassportScopingTests(unittest.TestCase):
-    """Đường TẢI THẬT không được mang giấy thông hành sang origin khác.
+    """PRODUCTION DOWNLOAD path must not carry passports to mismatched origins.
 
-    Probe khoá theo origin là chưa đủ: sau discovery, `rs_base` có thể ở origin
-    khác hẳn nơi bắt được token, và trước đây downloader dựng một bộ header dùng
-    chung ở đầu hàm nên vẫn gửi token đi.
+    Scoping probes by origin is insufficient: after discovery, `rs_base` may reside
+    on a completely different origin than where token was captured. Previously downloader
+    built a global header set at function entry and leaked tokens.
     """
 
     def test_downloader_sends_the_passport_only_to_its_own_origin(self):
@@ -1987,7 +1986,7 @@ class SessionPassportScopingTests(unittest.TestCase):
             return Response()
 
         captured = {
-            # Token bắt ở viện A, nhưng discovery lại chốt root ở viện B.
+            # Token captured on hospital A, but discovery resolved root on hospital B.
             "session_headers": {"https://pacs.a.vn": {"Authorization": "Bearer SECRET"}},
             "cookies": [{"name": "sid", "value": "A-SESSION",
                          "domain": "pacs.a.vn", "path": "/"}],
@@ -2052,23 +2051,23 @@ class SessionPassportScopingTests(unittest.TestCase):
         ]}
         got = dcom_pipeline._cookie_header_for(captured, "https://pacs.a.vn/rs/studies")
         self.assertIn("host=1", got)
-        self.assertIn("wild=2", got)      # cookie domain khớp hậu tố
-        self.assertIn("deep=4", got)      # path khớp tiền tố
-        self.assertIn("tls=5", got)       # đang là https
-        self.assertNotIn("other=3", got)  # domain khác hẳn
+        self.assertIn("wild=2", got)      # cookie domain suffix match
+        self.assertIn("deep=4", got)      # path prefix match
+        self.assertIn("tls=5", got)       # currently https
+        self.assertNotIn("other=3", got)  # completely different domain
 
         shallow = dcom_pipeline._cookie_header_for(captured, "https://pacs.a.vn/khac")
         self.assertNotIn("deep=4", shallow)
         plain = dcom_pipeline._cookie_header_for(captured, "http://pacs.a.vn/rs")
-        self.assertNotIn("tls=5", plain)   # cookie secure không đi qua http
+        self.assertNotIn("tls=5", plain)   # secure cookie not sent over plaintext http
 
 
 class VendorDownloaderPassportTests(unittest.TestCase):
-    """Dòng PACS độc quyền cũng phải khoá theo origin.
+    """Proprietary PACS adapters must also lock credentials by origin.
 
-    Manifest của chúng được phép chứa URL TUYỆT ĐỐI — `to_url()` trả thẳng chuỗi
-    khi nó bắt đầu bằng "http", còn VietMy dùng nguyên `filePath/wanFilePath` —
-    nên ảnh hoàn toàn có thể nằm ở CDN khác origin.
+    Their manifests may contain ABSOLUTE URLs — `to_url()` returns string directly
+    when starting with "http", and VietMy uses `filePath/wanFilePath` verbatim —
+    meaning images could be hosted on a CDN on a different origin.
     """
 
     class _Resp:
@@ -2107,7 +2106,7 @@ class VendorDownloaderPassportTests(unittest.TestCase):
         captured = dict(self._passport())
         captured["vrpacs"] = json.dumps({"data": {"studyList": [{"seriesList": [{
             "seriesInstanceUid": "s1",
-            # `to_url()` trả thẳng chuỗi này vì nó bắt đầu bằng "http".
+            # to_url() returns this string directly because it starts with "http".
             "imageIds": ["wadouri:https://cdn.other.vn/a.dcm",
                          "wadouri:/vrpacs-scu/study-get-public?file=b.dcm"],
         }]}]}}).encode()
@@ -2139,7 +2138,7 @@ class VendorDownloaderPassportTests(unittest.TestCase):
 
 class MultiProfileFallbackTests(unittest.TestCase):
     def test_download_all_walks_several_dicomweb_profiles_before_giving_up(self):
-        """Profile A hỏng → style còn lại → root khác, chứ không dừng sau một lượt."""
+        """Profile A fails -> alternate query style -> next candidate root, without halting after one attempt."""
         frame = FakeFrame("https://p/v?studyUID=1.2.3", [
             {"root": "https://p/first", "preferred": True},
             {"root": "https://p/second", "preferred": False},
@@ -2228,14 +2227,14 @@ class MultiProfileFallbackTests(unittest.TestCase):
             if profile is None:
                 break
             key = (profile.rs_base, profile.query_style)
-            self.assertNotIn(key, spent)   # không bao giờ trả lại cái đã hỏng
+            self.assertNotIn(key, spent)   # never yield an already-failed candidate profile
             seen.append(key)
             spent.add(key)
         self.assertGreaterEqual(len(seen), 2, seen)
 
 
 class CookieMatchingTests(unittest.TestCase):
-    """RFC 6265 §5.1.3 / §5.1.4 — khớp gần đúng là gửi cookie sai chỗ."""
+    """RFC 6265 §5.1.3 / §5.1.4 — loose cookie matching causes security leaks."""
 
     @staticmethod
     def _cookies():
@@ -2246,8 +2245,8 @@ class CookieMatchingTests(unittest.TestCase):
         ]}
 
     def test_host_only_cookie_never_reaches_a_subdomain(self):
-        # "pacs.a.vn" (không dấu chấm đầu) là host-only; chỉ ".a.vn" mới được
-        # xuống subdomain. Gộp hai loại là đẩy cookie sang host không được phép.
+        # "pacs.a.vn" (no leading dot) is host-only; only ".a.vn" extends
+        # to subdomains. Merging them leaks cookies to unauthorized hosts.
         got = dcom_pipeline._cookie_header_for(self._cookies(), "https://evil.pacs.a.vn/x")
         self.assertNotIn("host_only", got)
         self.assertIn("domain_wide=D", got)
@@ -2258,7 +2257,7 @@ class CookieMatchingTests(unittest.TestCase):
         self.assertIn("domain_wide=D", got)
 
     def test_path_match_stops_at_a_slash_boundary(self):
-        # "/rs" không được khớp "/rs-evil": ranh giới phải rơi đúng vào dấu "/".
+        # "/rs" must not match "/rs-evil": boundaries must fall on "/" delimiter.
         self.assertNotIn(
             "path_bound",
             dcom_pipeline._cookie_header_for(self._cookies(), "https://pacs.a.vn/rs-evil"))
@@ -2269,10 +2268,10 @@ class CookieMatchingTests(unittest.TestCase):
 
 
 class RedirectPassportTests(unittest.TestCase):
-    """30x không được mang giấy thông hành sang chặng khác.
+    """30x redirects must not leak passports across origins.
 
-    `urllib` tự đi theo redirect và bê nguyên header sang URL đích, nên lọc theo
-    origin ở request ĐẦU là chưa đủ — chỉ cần một 302 là token đi theo.
+    `urllib` follows redirects and forwards headers to destination URLs by default,
+    so filtering origin on the INITIAL request alone is insufficient.
     """
 
     def setUp(self):
@@ -2309,8 +2308,8 @@ class RedirectPassportTests(unittest.TestCase):
         for server in (self.target, self.hop):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
-            # `shutdown()` mới chỉ dừng vòng phục vụ; không `server_close()` thì
-            # socket còn treo và cả suite chạy kèm ResourceWarning.
+            # `shutdown()` only stops the serve loop; without `server_close()`,
+            # socket hangs and suite emits ResourceWarning.
             self.addCleanup(server.server_close)
             self.addCleanup(server.shutdown)
 
@@ -2358,7 +2357,7 @@ class DiscoveryDeadlineAndRetryTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_total_deadline_is_absolute_across_every_tier_and_frame(self):
-        """Hạn phải là của CẢ lượt, không phải mỗi bậc × mỗi frame một hạn."""
+        """Deadline must apply to the WHOLE discovery phase, not reset per tier/frame."""
         elapsed = {"t": 0.0}
         budgets: list[int] = []
 
@@ -2367,7 +2366,7 @@ class DiscoveryDeadlineAndRetryTests(unittest.TestCase):
                 if "window.config" in js:
                     return self._config
                 budgets.append(args[2])
-                elapsed["t"] += args[2] / 1000.0   # coi như dùng hết hạn được cấp
+                elapsed["t"] += args[2] / 1000.0   # simulate consuming allocated budget
                 return probe_lose()
 
         frames = [SlowFrame("https://p/v", [{"root": f"https://p/r{i}", "preferred": False}])
@@ -2380,11 +2379,11 @@ class DiscoveryDeadlineAndRetryTests(unittest.TestCase):
 
         self.assertTrue(budgets)
         self.assertLessEqual(sum(budgets) / 1000.0, 10.0 + 0.001)
-        # Và hạn cấp cho lượt sau phải teo dần theo thời gian đã tiêu.
+        # Subsequent budgets must shrink proportionally to elapsed time.
         self.assertLess(budgets[-1], budgets[0])
 
     def test_a_wrong_learned_style_still_lets_the_other_style_run(self):
-        """Recipe cũ ghi sai style thì không được loại luôn root hợp lệ."""
+        """Stale recipe with incorrect style must not permanently disqualify a valid root."""
         self.store.save_recipe(
             fingerprint="FP", adapter="DICOMweb", success=True,
             dicomweb_base="https://p/rs", dicomweb_query_style="toplevel")
@@ -2410,7 +2409,7 @@ class DiscoveryDeadlineAndRetryTests(unittest.TestCase):
 
         self.assertIsNotNone(profile)
         self.assertEqual(profile.query_style, "hierarchical")
-        # Style đã học vẫn phải được thử TRƯỚC.
+        # Learned style must still be attempted FIRST.
         self.assertEqual(tried[0], "https://p/rs/series?StudyInstanceUID=1.2.3")
 
     def test_a_failed_profile_is_excluded_so_another_root_gets_a_turn(self):
@@ -2446,18 +2445,18 @@ class DiscoveryDeadlineAndRetryTests(unittest.TestCase):
             ["1.2.3"])
 
     def test_series_listing_carries_a_fingerprint_so_learning_applies(self):
-        # Không có fingerprint thì `get_dicomweb_hint()` luôn tra khoá rỗng và
-        # đường chọn series không hưởng được gì từ cái đã học.
+        # Without fingerprint, `get_dicomweb_hint()` always looks up empty key
+        # and series selection fails to benefit from learned recipes.
         source = inspect.getsource(dcom_pipeline.discover_viewer_series)
         self.assertIn("strategy_fingerprint=compute_url_fingerprint(url)", source)
 
 
 class RealBrowserDiscoveryJsTests(unittest.TestCase):
-    """Chạy THẬT `_OHIF_CONFIG_JS` và `_DICOMWEB_PROBE_JS` trong Chromium.
+    """Run ACTUAL `_OHIF_CONFIG_JS` and `_DICOMWEB_PROBE_JS` in Chromium.
 
-    Các test trên đều giả lập `evaluate()`, nên chúng không hề thực thi hai đoạn
-    JavaScript — mà đó lại là chỗ ở lỗi xác minh StudyUID và lỗi config dạng
-    function. Lớp này bịt đúng khoảng trống đó.
+    Tests above mock `evaluate()`, so they do not execute either JavaScript snippet —
+    which was where StudyUID validation and function-style config bugs resided.
+    This suite closes that testing gap.
     """
 
     @classmethod
@@ -2465,13 +2464,13 @@ class RealBrowserDiscoveryJsTests(unittest.TestCase):
         try:
             from playwright.sync_api import sync_playwright
         except Exception as exc:  # pragma: no cover
-            raise unittest.SkipTest(f"Không có Playwright: {exc}")
+            raise unittest.SkipTest(f"Playwright unavailable: {exc}")
         cls._pw = sync_playwright().start()
         try:
             cls._browser = cls._pw.chromium.launch(headless=True)
         except Exception as exc:  # pragma: no cover
             cls._pw.stop()
-            raise unittest.SkipTest(f"Không mở được Chromium: {exc}")
+            raise unittest.SkipTest(f"Could not launch Chromium: {exc}")
 
     @classmethod
     def tearDownClass(cls):
@@ -2496,12 +2495,12 @@ class RealBrowserDiscoveryJsTests(unittest.TestCase):
             3000, 5000,
         ])
 
-    # --- xác minh StudyUID ---------------------------------------------------
+    # --- verify StudyUID ---------------------------------------------------
 
     def test_toplevel_rejects_a_response_that_omits_the_study_uid(self):
-        """Server phớt lờ filter và trả cả kho thì KHÔNG được nhận.
+        """Server ignores filter and returns entire archive — MUST NOT accept.
 
-        Đây là lỗi an toàn bệnh nhân: nhận nhầm ở đây là tải ảnh của người khác.
+        This is a patient safety invariant: false acceptance would download another patient's images.
         """
         page = self._page([{"0020000E": {"Value": ["series-cua-ca-khac"]}}])
         result = self._probe(page, "https://pacs.test/rs/series?StudyInstanceUID=1.2.3")
@@ -2517,7 +2516,7 @@ class RealBrowserDiscoveryJsTests(unittest.TestCase):
         self.assertIsNotNone(result["winner"])
 
     def test_a_single_foreign_series_rejects_the_whole_response(self):
-        # Chỉ soi phần tử đầu là lọt ca lạ nằm ở cuối danh sách.
+        # Inspecting only the first element allows mismatched studies at the end of the list through.
         page = self._page([
             {"0020000E": {"Value": ["9.9"]}, "0020000D": {"Value": ["1.2.3"]}},
             {"0020000E": {"Value": ["8.8"]}, "0020000D": {"Value": ["9.9.9"]}},
@@ -2549,7 +2548,7 @@ class RealBrowserDiscoveryJsTests(unittest.TestCase):
         result = self._probe(page, "https://pacs.test/rs/series?StudyInstanceUID=1.2.3")
         self.assertEqual(json.loads(result["winner"]["body"]), payload)
 
-    # --- đọc config OHIF -----------------------------------------------------
+    # --- parse OHIF config -----------------------------------------------------
 
     def _config_roots(self, script):
         page = self._browser.new_page()
@@ -2575,10 +2574,10 @@ class RealBrowserDiscoveryJsTests(unittest.TestCase):
         self.assertIn({"root": "https://p/other", "preferred": False}, roots)
 
     def test_function_config_that_needs_services_manager(self):
-        """Config dạng function của OHIF nhận `{ servicesManager }`.
+        """OHIF function-style config accepts `{ servicesManager }`.
 
-        Gọi bằng `{}` thì nó ném lỗi và ta trả rỗng — đúng những triển khai
-        dùng dạng này sẽ không bao giờ đọc được root.
+        Calling with `{}` throws an exception and returns empty — real deployments
+        using this pattern would fail to resolve roots.
         """
         roots = self._config_roots("""
             window.config = ({ servicesManager }) => {
@@ -2622,8 +2621,8 @@ class DicomWebStoreHintTests(unittest.TestCase):
             self.store.get_dicomweb_hint("FP"), ("https://p/dicom-web", "toplevel"))
 
     def test_study_uid_is_never_persisted(self):
-        # rs_base dùng lại được cho mọi ca cùng nơi; studyUID là dữ liệu bệnh
-        # nhân và chỉ đúng một ca — không được nằm trong file nhớ chiến lược.
+        # rs_base is reusable across cases at the same facility; studyUID is patient
+        # data specific to one case — must never be stored in strategy persistence file.
         self.store.save_recipe(
             fingerprint="FP", adapter="DICOMweb", success=True,
             dicomweb_base="https://p/dicom-web", dicomweb_query_style="hierarchical")
@@ -2644,10 +2643,10 @@ class DicomWebStoreHintTests(unittest.TestCase):
 
 
 class TopLevelQidoDownloadTests(unittest.TestCase):
-    """Bước tải phải nói đúng phương ngữ QIDO của server.
+    """Download step must speak server's specific QIDO dialect.
 
-    Server chỉ hiểu truy vấn top-level mà bị hỏi theo dạng phân cấp thì trả rỗng
-    — ca sẽ im lặng ra 0 ảnh chứ không báo lỗi, nên cần chốt bằng test.
+    If a server only understands top-level queries and receives hierarchical queries,
+    it returns empty — resulting in silent 0-image downloads.
     """
 
     @staticmethod
@@ -2687,7 +2686,7 @@ class TopLevelQidoDownloadTests(unittest.TestCase):
                 return Response(series)
             if url.startswith("https://p/rs/instances?StudyInstanceUID=1.2.3"):
                 return Response(instances)
-            # Retrieve: trả một file DICOM tối thiểu để bước tải coi là xong.
+            # Retrieve: return minimal DICOM file to complete download step successfully.
             return Response(b"\x00" * 128 + b"DICM", "application/dicom")
 
         captured = {
@@ -2707,10 +2706,10 @@ class TopLevelQidoDownloadTests(unittest.TestCase):
         self.assertTrue(any(
             u.startswith("https://p/rs/instances?StudyInstanceUID=1.2.3&SeriesInstanceUID=9.9")
             for u in requested), requested)
-        # Không được hỏi theo dạng phân cấp khi server là top-level.
+        # Must not query hierarchically when server is top-level.
         self.assertFalse(any("/studies/1.2.3/series?" in u for u in requested), requested)
         self.assertFalse(any(u.endswith("/studies/1.2.3/series") for u in requested), requested)
-        # Nhưng Retrieve thì vẫn phải phân cấp.
+        # But Retrieve MUST remain hierarchical.
         self.assertTrue(any(
             "/studies/1.2.3/series/9.9/instances/7.7" in u for u in requested), requested)
 
