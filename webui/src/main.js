@@ -742,6 +742,17 @@ function renderWorkspacePane(series) {
       </div></div>`;
 }
 
+/**
+ * Whether the download column is on screen.
+ *
+ * Downloading belongs to the worklist: that tab is where a record is found,
+ * fetched and kept up to date. A viewer tab gives the same column to the
+ * patient rail instead, so the two never compete for the left edge.
+ */
+function downloadPanelVisible() {
+  return state.activeTabId === "worklist" && state.downloadOpen;
+}
+
 /** Labels for the media kinds a timeline entry can carry. */
 const MEDIA_KIND_LABELS = {
   dicom: "Phim chụp",
@@ -825,7 +836,11 @@ function renderPatientRail() {
 
       <dl class="rec-facts">
         <div class="rfact"><dt>${escapeHtml(t("Bệnh viện"))}</dt><dd>${escapeHtml(dash(patient.hospital))}</dd></div>
-        <div class="rfact"><dt>${escapeHtml(t("Chẩn đoán"))}</dt><dd>${escapeHtml(dash(patient.diagnosis))}</dd></div>
+        <div class="rfact">
+          <dt>${escapeHtml(t("Chẩn đoán"))}</dt>
+          <dd><button class="rfact-edit" type="button" data-action="edit-diagnosis"
+            title="${escapeHtml(t("Ghi chẩn đoán cho hồ sơ này"))}">${escapeHtml(dash(patient.diagnosis))}</button></dd>
+        </div>
       </dl>
 
       <div class="rec-timeline-head"><b>${escapeHtml(t("Timeline hồ sơ"))}</b></div>
@@ -1387,7 +1402,7 @@ function render() {
   if (!app && typeof document !== "undefined") app = document.querySelector("#app");
   if (!app) return;
   app.innerHTML = `
-    <div class="app-shell ${state.downloadOpen ? "" : "download-collapsed"}">
+    <div class="app-shell ${downloadPanelVisible() ? "" : "download-collapsed"}">
       <header class="app-header">
         <div class="brand">
           <span class="brand-mark">D</span>
@@ -1399,14 +1414,14 @@ function render() {
           </label>
         </div>
         <div class="header-actions">
-          ${iconButton(
+          ${state.activeTabId === "worklist" ? iconButton(
       "toggle-download",
       state.downloadOpen ? "⇤" : "⇥",
       t(state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim"),
       state.downloadOpen,
       false,
       t("Tải phim"),
-    )}
+    ) : ""}
           ${iconButton("choose-archive", icons.folder, t("Mở folder hồ sơ: phim, ảnh, video và văn bản đều được nhận diện"))}
           ${iconButton("refresh-archive", "⟳", t("Quét lại thư mục hiện tại"), false, !state.archive.root)}
           <button class="soft-button" data-action="toggle-language"
@@ -1416,6 +1431,7 @@ function render() {
 
       ${renderWinbar()}
 
+      ${downloadPanelVisible() ? `
       <aside class="download-panel">
         <div class="panel-title"><b>${escapeHtml(t("TẢI MRI / CT"))}</b>
           <button data-action="toggle-download" title="${escapeHtml(t("Thu gọn khu tải phim"))}">×</button></div>
@@ -1491,6 +1507,7 @@ function render() {
         <pre class="job-log">${escapeHtml((state.bootstrap?.job?.logs || []).slice(-80).map(translateLog).join("\n"))}</pre>
         <div class="panel-credit">Superkent.bui@gmail.com</div>
       </aside>
+      ` : ""}
 
       ${state.activeTabId === "worklist" ? renderWorklistView() : `
       <main class="viewer-main">
@@ -2548,6 +2565,21 @@ async function action(name, element = null) {
         setStatus(t("Đang nhận diện DICOM hoặc JPG/PNG trong folder…"));
         startJobPolling();
       }
+      return;
+    }
+    if (name === "edit-diagnosis") {
+      // Typed by the reader because nothing else in a local archive knows it:
+      // no RIS, and StudyDescription is the exam type, not a finding.
+      const current = state.archive?.patient?.diagnosis || "";
+      const next = window.prompt(t("Chẩn đoán của hồ sơ này:"), current);
+      if (next === null || next.trim() === current.trim()) return;
+      const result = await api("/api/patient/diagnosis", {
+        method: "POST",
+        body: JSON.stringify({ diagnosis: next }),
+      });
+      state.archive.patient = result.patient || state.archive.patient;
+      render();
+      setStatus(t("Đã lưu chẩn đoán vào hồ sơ bệnh nhân."));
       return;
     }
     if (name === "file-info") {
@@ -4003,6 +4035,7 @@ export {
   renderWorkspacePane,
   renderPatientRail,
   buildMediaTimeline,
+  downloadPanelVisible,
   loadTextContent,
   renderViewer,
   initMediaEvents,

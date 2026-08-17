@@ -65,6 +65,9 @@ const EN = {
   "{} file": "{} files",
   "Phim chụp": "Study",
   "Văn bản": "Text",
+  "Ghi chẩn đoán cho hồ sơ này": "Record a diagnosis for this patient",
+  "Chẩn đoán của hồ sơ này:": "Diagnosis for this patient:",
+  "Đã lưu chẩn đoán vào hồ sơ bệnh nhân.": "Diagnosis saved to the patient record.",
 
   // Text / JSON reading pane
   "Chưa có văn bản nào": "No text file here",

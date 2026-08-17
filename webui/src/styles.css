@@ -874,6 +874,23 @@ button:disabled { opacity: .35; cursor: default; }
 .rfact { display: flex; gap: 8px; padding: 3px 0; font-size: 11px; }
 .rfact dt { flex: 0 0 74px; color: var(--label-muted, #7890a2); }
 .rfact dd { margin: 0; flex: 1; color: var(--body-fg, #dce7f2); word-break: break-word; }
+/* Reads as text until hovered: the diagnosis is a note the reader writes, not
+   a control competing for attention beside the images. */
+.rfact-edit {
+  padding: 1px 4px;
+  margin: -1px -4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+}
+.rfact-edit:hover {
+  border-color: var(--list-border, #1c2a36);
+  background: var(--list-hover, #16202b);
+}
 .rec-timeline-head {
   padding: 10px 14px 6px;
   font-size: 10px;

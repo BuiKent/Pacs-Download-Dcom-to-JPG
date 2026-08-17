@@ -2,7 +2,7 @@
 
 import { describe, expect, it, beforeEach } from "vitest";
 import { setLanguage } from "./i18n.js";
-import { state, renderPatientRail, buildMediaTimeline } from "./main.js";
+import { state, renderPatientRail, buildMediaTimeline, downloadPanelVisible } from "./main.js";
 
 const PATIENT = {
   patientId: "2607063527",
@@ -49,8 +49,10 @@ describe("Viewer tab: patient rail", () => {
   });
 
   it("prints a dash for every field the manifest does not carry", () => {
-    // A diagnosis has no source in a local archive: no RIS, no DICOM tag.
-    expect(renderPatientRail()).toContain("<dd>—</dd>");
+    // A diagnosis has no source in a local archive — no RIS, no DICOM tag —
+    // so it stays a dash until a clinician types one.
+    const html = renderPatientRail();
+    expect(html).toMatch(/data-action="edit-diagnosis"[^>]*>—</);
 
     state.archive.patient = {};
     const blank = renderPatientRail();
@@ -92,5 +94,29 @@ describe("Viewer tab: patient rail", () => {
   it("says so plainly when the record is empty", () => {
     state.archive.series = [];
     expect(renderPatientRail()).toContain("Chưa có dữ liệu nào trong hồ sơ này.");
+  });
+});
+
+describe("Download column belongs to the worklist tab", () => {
+  beforeEach(() => {
+    setLanguage("vi");
+    state.downloadOpen = true;
+    state.archive = { root: "", patient: {}, series: [] };
+  });
+
+  it("shows the download column on the worklist and hides it in a viewer tab", () => {
+    state.activeTabId = "worklist";
+    expect(downloadPanelVisible()).toBe(true);
+
+    // A viewer tab gives that same column to the patient rail, so the two
+    // never compete for the left edge.
+    state.activeTabId = "tab-1";
+    expect(downloadPanelVisible()).toBe(false);
+  });
+
+  it("still respects the collapse toggle while on the worklist", () => {
+    state.activeTabId = "worklist";
+    state.downloadOpen = false;
+    expect(downloadPanelVisible()).toBe(false);
   });
 });

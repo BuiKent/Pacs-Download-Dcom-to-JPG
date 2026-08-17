@@ -1605,6 +1605,48 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
 
         self.assertEqual(ArchiveCatalog().open(patient)["patient"], {})
 
+    def test_diagnosis_is_stored_as_an_extra_manifest_key(self) -> None:
+        """Only a key is added; the schema and format version stay put.
+
+        A local archive has no RIS, so the diagnosis is the clinician's own
+        note rather than anything read off a tag.
+        """
+        patient = self.temp_dir / "BN-0008"
+        (patient / "VIDEO").mkdir(parents=True)
+        self._write_video(patient / "VIDEO" / "a.mp4")
+        (patient / "patient-index.json").write_text(json.dumps({
+            "format": "dcom-patient-index-v1",
+            "patientId": "BN-0008",
+            "patientName": "LÊ VĂN MẪU",
+            "hospitalName": "BV B",
+            "studies": {"1.2.3": {"studyUid": "1.2.3", "folder": "VIDEO", "status": "complete"}},
+        }), encoding="utf-8")
+
+        catalog = ArchiveCatalog()
+        catalog.open(patient)
+        result = self.controller.set_patient_diagnosis("Theo dõi u thực quản", catalog=catalog)
+
+        self.assertEqual(result["patient"]["diagnosis"], "Theo dõi u thực quản")
+        self.assertEqual(catalog.snapshot()["patient"]["diagnosis"], "Theo dõi u thực quản")
+
+        saved = json.loads((patient / "patient-index.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["diagnosis"], "Theo dõi u thực quản")
+        self.assertEqual(saved["format"], "dcom-patient-index-v1")
+        self.assertEqual(saved["patientName"], "LÊ VĂN MẪU")
+        self.assertEqual(saved["studies"]["1.2.3"]["status"], "complete")
+
+    def test_diagnosis_refuses_a_folder_with_no_manifest(self) -> None:
+        """Nowhere to record it means saying so, not writing a new file."""
+        patient = self.temp_dir / "BN-0010"
+        (patient / "VIDEO").mkdir(parents=True)
+        self._write_video(patient / "VIDEO" / "a.mp4")
+
+        catalog = ArchiveCatalog()
+        catalog.open(patient)
+        with self.assertRaises(ValueError):
+            self.controller.set_patient_diagnosis("Ghi thử", catalog=catalog)
+        self.assertFalse((patient / "patient-index.json").exists())
+
     def test_patient_block_leaves_age_blank_when_the_birth_date_is_unusable(self) -> None:
         from web_backend import ArchiveCatalog as Catalog
 

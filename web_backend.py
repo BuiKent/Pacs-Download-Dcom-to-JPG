@@ -2687,6 +2687,44 @@ class WebController:
         self._write_settings()
         return {"outputRoot": str(root)}
 
+    def set_patient_diagnosis(
+        self,
+        text: str,
+        catalog: Optional[ArchiveCatalog] = None,
+    ) -> dict:
+        """Record the clinician's own diagnosis note on the open patient folder.
+
+        A local archive has no RIS behind it, and neither DICOM nor the manifest
+        schema carries a clinical diagnosis — `StudyDescription` is the exam
+        type, not a finding. So the note is typed by whoever is reading, and
+        stored as an extra `diagnosis` key on `patient-index.json`. Only a new
+        key is added; the manifest structure and format version are untouched.
+        """
+        target = catalog or self.catalog
+        root = target.root
+        if not root:
+            raise ValueError("Chưa mở hồ sơ nào để ghi chẩn đoán.")
+        folder = next(
+            (
+                candidate for candidate in (Path(root), *Path(root).parents)
+                if (candidate / "patient-index.json").is_file()
+            ),
+            None,
+        )
+        if folder is None:
+            raise ValueError(
+                "Hồ sơ này chưa có patient-index.json nên chưa ghi được chẩn đoán."
+            )
+        manifest = dcom_pipeline._read_patient_manifest(folder)
+        if manifest is None:
+            raise ValueError("Không đọc được patient-index.json của hồ sơ này.")
+        manifest["diagnosis"] = str(text or "").strip()
+        dcom_pipeline._write_patient_manifest(folder, manifest)
+        with target._lock:
+            target._patient = target._patient_block(manifest)
+            patient = dict(target._patient)
+        return {"patient": patient}
+
     def start_search(self, payload: dict) -> dict:
         hospital = str(payload.get("hospital") or "dhy")
         patient_id = str(payload.get("patientId") or "").strip()
@@ -3518,6 +3556,10 @@ class LocalApiServer:
                     return owner.controller.stop()
                 if path == "/api/history/open":
                     return owner.controller.start_history_open(str(payload.get("folder") or ""))
+                if path == "/api/patient/diagnosis":
+                    return owner.controller.set_patient_diagnosis(
+                        str(payload.get("diagnosis") or ""), catalog=catalog,
+                    )
                 if path == "/api/worklist/reveal-folder":
                     return owner.controller.reveal_folder(str(payload.get("folder") or ""))
                 if path == "/api/settings/language":
