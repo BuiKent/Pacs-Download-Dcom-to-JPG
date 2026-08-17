@@ -37,6 +37,15 @@ APP_VERSION = "1.1.0"
 IMG_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
 TEXT_EXTENSIONS = {".txt", ".json"}
+# Bookkeeping the app writes for itself. They are .json sitting in the archive,
+# so the text scanner would otherwise offer `patient-index.json` to a clinician
+# as though it were a report.
+APP_METADATA_NAMES = {
+    "patient-index.json",
+    "viewer-annotations.json",
+    ".direct-download.json",
+    "manifest.json",
+}
 # Largest text file the viewer will load into the page. A report or a manifest
 # is kilobytes; anything past this is a data dump that would freeze the tab.
 TEXT_MAX_BYTES = 2 * 1024 * 1024
@@ -65,7 +74,7 @@ def media_type_for_file(path: Path) -> str:
     if suffix in VIDEO_EXTENSIONS:
         return "video"
     if suffix in TEXT_EXTENSIONS:
-        return "text"
+        return "" if path.name.casefold() in APP_METADATA_NAMES else "text"
     if suffix in IMG_EXTENSIONS:
         return "photo"
     if suffix in {".dcm", ".dicom", ".ima"}:
@@ -771,6 +780,19 @@ def _dicom_thumbnail_image(path: Path, frame: int) -> Any:
     return Image.fromarray(scaled, mode="L").convert("RGB")
 
 
+def _placeholder_thumbnail(kind: str) -> bytes:
+    """A flat dark tile for a series that has no frame to preview.
+
+    Video and text series carry no decodable image, so asking Pillow to open
+    one raised and the strip logged a 500 per card. They still need a tile the
+    same size as the others or the strip's rows jump.
+    """
+    from PIL import Image
+
+    tint = {"video": (48, 30, 60), "text": (54, 46, 28)}.get(kind, (24, 28, 34))
+    return _encode_thumbnail(Image.new("RGB", THUMBNAIL_BOX, tint))
+
+
 def build_series_thumbnail(record: "SeriesRecord") -> bytes:
     """Encode a JPEG preview of the series' middle slice.
 
@@ -785,6 +807,9 @@ def build_series_thumbnail(record: "SeriesRecord") -> bytes:
     if record.source_type == "dicom":
         frame = record.frame_indices[middle] if record.frame_indices else 0
         return _encode_thumbnail(_dicom_thumbnail_image(path, frame))
+    kind = record.resolved_media_type()
+    if kind in {"video", "text"}:
+        return _placeholder_thumbnail(kind)
     with Image.open(path) as handle:
         return _encode_thumbnail(handle.convert("RGB"))
 
@@ -1040,7 +1065,9 @@ class ArchiveCatalog:
             return sorted(
                 (
                     path for path in folder.iterdir()
-                    if path.is_file() and path.suffix.casefold() in extensions
+                    if path.is_file()
+                    and path.suffix.casefold() in extensions
+                    and path.name.casefold() not in APP_METADATA_NAMES
                 ),
                 key=lambda path: _natural_key(path.name),
             )
@@ -1959,6 +1986,23 @@ _STUDY_FOLDER_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s*-\s*([^-]+?)\s*-\s*(.+)$"
 _LEADING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|\d{8})")
 
 
+def _is_real_date(digits: str) -> bool:
+    """Whether 8 digits are an actual calendar date.
+
+    A bare `\\d{8}` match is not enough: a patient code like `2607063527`
+    begins with `26070635`, which the viewer then displayed as a study taken on
+    35/06/2607. Anything that is not a date a person could have been scanned on
+    is rejected so the field stays empty instead of showing nonsense.
+    """
+    if len(digits) != 8 or not digits.isdigit():
+        return False
+    try:
+        parsed = datetime.date(int(digits[0:4]), int(digits[4:6]), int(digits[6:8]))
+    except ValueError:
+        return False
+    return 1900 <= parsed.year <= datetime.date.today().year + 1
+
+
 def _study_from_folder_path(start: Path) -> tuple[str, str, str]:
     """Recover (date, modality, description) from an enclosing study folder.
 
@@ -1976,7 +2020,7 @@ def _study_from_folder_path(start: Path) -> tuple[str, str, str]:
             return match.group(1), match.group(2).strip().upper(), match.group(3).strip()
         if not date:
             leading = _LEADING_DATE_RE.match(folder.name)
-            if leading:
+            if leading and _is_real_date(re.sub(r"\D", "", leading.group(1))):
                 date = leading.group(1)
         folder = folder.parent
     return date, "", ""
@@ -2156,7 +2200,7 @@ class WorklistScanner:
         apart, so a plausible-looking wrong one is worse than a blank.
         """
         digits = re.sub(r"\D", "", str(raw or ""))
-        if len(digits) == 8:
+        if _is_real_date(digits):
             return f"{digits[6:8]}/{digits[4:6]}/{digits[0:4]}"
         return ""
 
@@ -2261,11 +2305,13 @@ class WorklistScanner:
         if not study_date:
             date_match = re.search(r"(\d{4})[-_](\d{2})[-_](\d{2})|(\d{8})", study_dir.name)
             if date_match:
-                if date_match.group(1):
-                    study_date = f"{date_match.group(3)}/{date_match.group(2)}/{date_match.group(1)}"
-                else:
-                    raw_d = date_match.group(4)
-                    study_date = f"{raw_d[6:8]}/{raw_d[4:6]}/{raw_d[0:4]}"
+                digits = (
+                    f"{date_match.group(1)}{date_match.group(2)}{date_match.group(3)}"
+                    if date_match.group(1) else date_match.group(4)
+                )
+                # A folder named after a patient code can start with 8 digits
+                # that are not a date, so the same validation applies here.
+                study_date = self._format_study_date(digits)
 
         study_name = str(record.get("description") or "").strip()
         if not study_name:

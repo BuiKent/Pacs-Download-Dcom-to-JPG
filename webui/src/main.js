@@ -1397,7 +1397,12 @@ function render() {
   if (!availableWindowPresets(series).some((item) => item.id === state.windowPreset)) {
     state.windowPreset = defaultWindowPreset(series);
   }
-  const safety = seriesSafetyNotice(series);
+  // Window/level, MPR, mm measurement and the grey-scale safety banner all
+  // describe a diagnostic image. On a video, a photo or an operative report
+  // they measure nothing, and a banner saying "do not quantify grey levels"
+  // over a JSON file is noise the reader has to learn to ignore.
+  const isDiagnosticSeries = getSeriesMediaType(series) === "dicom";
+  const safety = isDiagnosticSeries ? seriesSafetyNotice(series) : null;
   const mprDisabled = !series?.mprReady;
   if (!app && typeof document !== "undefined") app = document.querySelector("#app");
   if (!app) return;
@@ -1512,6 +1517,7 @@ function render() {
       ${state.activeTabId === "worklist" ? renderWorklistView() : `
       <main class="viewer-main">
         ${renderPatientRail()}
+        ${isDiagnosticSeries ? `
         <nav class="toolbar mode-${state.mode}">
           <div class="tool-cluster layout-tools">
             ${iconButton("mode-single", icons.single, t("Một khung ảnh"), state.mode === "single")}
@@ -1530,6 +1536,7 @@ function render() {
           <span class="toolbar-divider"></span>
           ${renderToolbarGroups(series)}
         </nav>
+        ` : ""}
 
         <div class="series-strip">
           ${renderSeriesStripContent(state.archive.series)}

@@ -822,6 +822,14 @@ button:disabled { opacity: .35; cursor: default; }
   cursor: text;
 }
 
+/* The download column only renders on the worklist tab, so neither main panel
+   may rely on auto-placement landing it after that aside: without an explicit
+   column both drop into the collapsed 0px track and the viewer renders 4px
+   wide. */
+.download-panel { grid-column: 1; }
+.viewer-main,
+.worklist-view { grid-column: 2; }
+
 /* Column 1 is the patient rail, spanning the full height of the tab; the
    viewer keeps the layout it had, shifted one column right. */
 .viewer-main {
@@ -2352,7 +2360,7 @@ button:disabled { opacity: .35; cursor: default; }
 }
 
 .prow {
-  grid-template-columns: 20px minmax(200px, 1.4fr) 96px 160px 96px 132px;
+  grid-template-columns: 20px minmax(200px, 1.4fr) 96px 160px 116px minmax(224px, auto);
   cursor: pointer;
   background: var(--shell-bg, #ffffff);
   transition: background 120ms ease;
@@ -2445,10 +2453,13 @@ button:disabled { opacity: .35; cursor: default; }
 }
 
 .rowacts .btn, .rowacts .soft-button {
+  flex: none;
   font-size: 11px;
   height: 26px;
   padding: 0 9px;
   border-radius: 6px;
+  /* Never let a label wrap onto a second line inside a 26px button. */
+  white-space: nowrap;
 }
 
 .studies {
@@ -2462,7 +2473,10 @@ button:disabled { opacity: .35; cursor: default; }
 }
 
 .srow {
-  grid-template-columns: 20px minmax(200px, 1.4fr) 96px 160px 96px 132px;
+  /* The last two tracks hold the status badge and up to three buttons — a
+     resumable study adds "Tải tiếp" beside "Mở viewer" and "Thư mục". At the
+     old 96px/132px they overlapped and clipped their own labels. */
+  grid-template-columns: 20px minmax(200px, 1.4fr) 96px 160px 116px minmax(224px, auto);
   padding-left: 14px;
   border-bottom: 1px solid var(--chrome-border, #f1f1ef);
   background: transparent;

@@ -1571,6 +1571,62 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertEqual(meta["birthYear"], "1988")
         self.assertEqual(meta["hospital"], "BV Bạch Mai")
 
+    def test_a_patient_code_is_not_read_as_a_study_date(self) -> None:
+        """Found by running the app: `2607063527_...` displayed as 35/06/2607.
+
+        A bare 8-digit match is not a date. The folder below starts with
+        `26070635`, which is not a day anyone was scanned on, so the field has
+        to stay empty rather than show an impossible one.
+        """
+        from web_backend import WorklistScanner, _is_real_date, _study_from_folder_path
+
+        self.assertFalse(_is_real_date("26070635"))
+        self.assertFalse(_is_real_date("20261301"))
+        self.assertFalse(_is_real_date("20260230"))
+        self.assertTrue(_is_real_date("20260806"))
+
+        patient = self.temp_dir / "2607063527_NGUYEN HUU SU"
+        (patient / "VIDEO").mkdir(parents=True)
+        self._write_video(patient / "VIDEO" / "a.mp4")
+        self.assertEqual(_study_from_folder_path(patient / "VIDEO")[0], "")
+        self.assertEqual(WorklistScanner._format_study_date("26070635"), "")
+
+    def test_app_metadata_is_not_offered_as_a_readable_document(self) -> None:
+        """patient-index.json is bookkeeping, not a report for a clinician."""
+        from web_backend import media_type_for_file
+
+        self.assertEqual(media_type_for_file(Path("BN/patient-index.json")), "")
+        self.assertEqual(media_type_for_file(Path("BN/viewer-annotations.json")), "")
+        self.assertEqual(media_type_for_file(Path("BN/ket_qua.json")), "text")
+
+        patient = self.temp_dir / "BN-0011"
+        patient.mkdir(parents=True)
+        (patient / "patient-index.json").write_text(json.dumps({
+            "format": "dcom-patient-index-v1", "patientId": "BN-0011", "studies": {},
+        }), encoding="utf-8")
+        report = patient / "BAO-CAO"
+        report.mkdir()
+        (report / "tuong_trinh.txt").write_text("Tường trình", encoding="utf-8")
+
+        names = {item["name"] for item in ArchiveCatalog().open(patient)["series"]}
+        self.assertEqual(names, {"BAO-CAO"})
+
+    def test_thumbnail_falls_back_to_a_tile_for_video_and_text(self) -> None:
+        """Found by running the app: the strip logged a 500 per media card."""
+        from web_backend import build_series_thumbnail
+
+        patient = self.temp_dir / "BN-0012"
+        (patient / "VIDEO").mkdir(parents=True)
+        self._write_video(patient / "VIDEO" / "a.mp4")
+        (patient / "BAO-CAO").mkdir(parents=True)
+        (patient / "BAO-CAO" / "a.txt").write_text("x", encoding="utf-8")
+
+        catalog = ArchiveCatalog()
+        catalog.open(patient)
+        for record in catalog._series.values():
+            data = build_series_thumbnail(record)
+            self.assertTrue(data.startswith(b"\xff\xd8"), f"{record.name} not a JPEG")
+
     def test_archive_snapshot_carries_patient_identity_from_the_manifest(self) -> None:
         """The viewer rail reads this block; before, it was never sent."""
         patient = self.temp_dir / "BN-0007"
