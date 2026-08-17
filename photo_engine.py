@@ -1,17 +1,17 @@
 """
-photo_engine.py — lõi xử lý ảnh/bệnh án scan, độc lập framework web.
+photo_engine.py — clinical photo and scanned-document processing, framework free.
 
-Dùng Pillow (PIL): đủ nhanh và chuẩn cho ảnh scan y tế (A4 300dpi ~2480x3508,
-ảnh chụp lâm sàng/mổ vài MB) — không cần GPU. Với redaction, ghi đè pixel thật
-(paste màu đặc + flatten) chứ không chỉ vẽ hộp che ở tầng hiển thị, để đúng
-yêu cầu "dữ liệu gốc không còn khôi phục được" khi xuất bản đã che.
+Built on Pillow: fast and accurate enough for medical scans (A4 at 300 dpi is
+~2480x3508) and for clinical or intra-operative photos of a few MB, with no GPU
+needed. Redaction overwrites the real pixels (opaque paste plus flatten) rather
+than drawing a cover box at display time, so the original data genuinely cannot
+be recovered from an exported redacted copy.
 
-Quy ước:
-  - Hàm nhận đường dẫn nguồn, luôn ghi ra đường dẫn output mới — không sửa
-    file gốc tại chỗ, khớp yêu cầu "bản gốc bất khả xâm phạm".
-  - Toạ độ vùng chọn (crop/redact/annotate) tính theo pixel ảnh gốc, không
-    theo pixel hiển thị trên màn hình — client phải quy đổi trước khi gửi
-    lên (xem client/photo_api.js: toImageSpaceRect()).
+Conventions:
+  - Every function takes a source path and always writes to a new output path.
+    The original file is never modified in place.
+  - Region coordinates (crop/redact/annotate) are in source-image pixels, not
+    screen pixels; the client converts before sending them.
 """
 
 from __future__ import annotations
@@ -30,15 +30,15 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 logger = logging.getLogger("photo_engine")
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-_MAX_DIMENSION = 8000  # chặn ảnh bất thường/độc hại chiếm hết bộ nhớ khi mở
+_MAX_DIMENSION = 8000  # refuse absurd/hostile images before they exhaust memory
 
 # ---------------------------------------------------------------------------
-# Giới hạn đồng thời
+# Concurrency limits
 # ---------------------------------------------------------------------------
 
 
 class ServerBusyError(Exception):
-    """Hàng đợi xử lý ảnh đã đầy quá lâu — khác về bản chất với lỗi ảnh/tham số."""
+    """The image queue stayed full too long — not the same as a bad image or bad argument."""
 
 
 class _ConcurrencyGate:
@@ -91,7 +91,7 @@ _heavy_gate = _ConcurrencyGate(_HEAVY_LIMIT_DEFAULT, wait_timeout_s=30, name="ph
 
 
 def configure_concurrency(limit: int | None = None, wait_timeout_s: float | None = None) -> None:
-    """Gọi lúc khởi động app nếu muốn ghi đè giới hạn mặc định."""
+    """Call at startup to override the default limits."""
     if limit is not None:
         _heavy_gate.reconfigure(limit, wait_timeout_s)
     elif wait_timeout_s is not None:
@@ -103,7 +103,7 @@ def concurrency_stats() -> dict:
 
 
 class PhotoEngineError(Exception):
-    """Lỗi nghiệp vụ, an toàn hiển thị nguyên văn cho người dùng."""
+    """A business-rule failure whose message is safe to show the user verbatim."""
 
 
 class UnsupportedFormatError(PhotoEngineError):
@@ -216,7 +216,7 @@ def crop(src: str | Path, out_path: str | Path, rect: Rect, quality: int = 92) -
 
 
 def rotate(src: str | Path, out_path: str | Path, degrees: int, quality: int = 92) -> Path:
-    """degrees dương = theo chiều kim đồng hồ."""
+    """A positive `degrees` turns clockwise."""
     if degrees % 90 != 0:
         raise PhotoEngineError("Chỉ hỗ trợ xoay theo bội số 90° (chất lượng không mất mát).")
     img = _open_safely(src)
@@ -351,7 +351,7 @@ def _draw_arrowhead(draw: ImageDraw.ImageDraw, arrow: ArrowAnnotation, size: int
 
 
 # ---------------------------------------------------------------------------
-# Xuất PDF
+# PDF export
 # ---------------------------------------------------------------------------
 
 

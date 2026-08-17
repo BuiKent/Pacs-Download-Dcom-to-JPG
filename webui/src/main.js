@@ -726,10 +726,8 @@ function filteredPatientList() {
 }
 
 /**
- * Inner HTML of `.worklist-tree`, rendering the multi-level patient study tree.
- */
-/**
- * "Tên · Giới · Năm sinh", skipping whatever the archive does not actually know.
+ * The "name · sex · birth year" line, dropping whatever the archive does not
+ * actually know.
  *
  * Never substitutes a default: a made-up sex or birth year sitting next to a
  * patient's images is exactly the kind of detail a clinician trusts to confirm
@@ -742,6 +740,9 @@ function patientIdentityLine(patient) {
   return parts.length ? parts.join(" · ") : t("Chưa có thông tin hành chính");
 }
 
+/**
+ * Inner HTML of `.worklist-tree`, rendering the multi-level patient study tree.
+ */
 function renderWorklistTreeInner() {
   const patients = filteredPatientList();
   if (patients.length === 0) {
@@ -1677,8 +1678,9 @@ function bindManualInfoEvents() {
   });
 }
 
-// NOTE: Tự động tick lại "Bổ sung thông tin bệnh nhân" khi dán/nhập link viewer
-// là hành vi MONG MUỐN (DESIRED BEHAVIOR) để sẵn sàng nhận diện/bổ sung thông tin BN.
+// Re-ticking "Bổ sung thông tin bệnh nhân" when a viewer link is pasted is
+// DESIRED behaviour, not a bug: the form has to be ready to capture or correct
+// the patient details that come back with the link.
 function syncManualInfoVisibility(urlValue) {
   const hasUrl = Boolean(String(urlValue || "").trim());
   if (state.showManualInfo !== hasUrl) {

@@ -1536,9 +1536,9 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         scanner = WorklistScanner(self.controller)
         for folder in ("BN-9999", "TEST-0007_TRAN THI B", "20260816_CT_BUNG"):
             meta = scanner._parse_patient_meta(folder)
-            self.assertEqual(meta["gender"], "", f"{folder} bịa giới tính")
-            self.assertEqual(meta["birthYear"], "", f"{folder} bịa năm sinh")
-            self.assertEqual(meta["hospital"], "", f"{folder} bịa bệnh viện")
+            self.assertEqual(meta["gender"], "", f"{folder} invented a sex")
+            self.assertEqual(meta["birthYear"], "", f"{folder} invented a birth year")
+            self.assertEqual(meta["hospital"], "", f"{folder} invented a hospital")
 
     def test_worklist_prefers_patient_index_over_folder_name(self) -> None:
         """patient-index.json records the real DICOM tags, so it wins."""

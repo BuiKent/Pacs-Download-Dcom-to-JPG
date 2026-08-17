@@ -1,13 +1,13 @@
 /* ============================================================
-   Bảng màu Notion — nền trắng ấm, phẳng, bo góc nhỏ, font Inter.
-   Đây là giao diện DUY NHẤT của app; không còn cơ chế đổi theme.
+   Notion palette — warm white, flat, small radii, Inter.
+   This is the app's ONLY skin; the theme switcher is gone.
 
-   Chỉ phần CHROME (header, winbar, worklist, khu tải phim, badge,
-   alert, log, status bar) dùng bảng màu này. Vùng đọc phim —
-   toolbar viewer, series thumbnail và canvas ảnh — cố tình giữ
-   nền tối bằng mã màu hardcode riêng bên dưới, đúng cách trạm đọc
-   lâm sàng luôn để vùng chẩn đoán tối bất kể vỏ app sáng hay tối,
-   để không sai lệch cảm nhận thang xám (Window/Level, HU).
+   Only the CHROME (header, winbar, worklist, download panel,
+   badges, alerts, log, status bar) uses these tokens. The reading
+   area — viewer toolbar, series thumbnails, image canvas — keeps a
+   dark background from hardcoded values further down, the way a
+   clinical workstation stays dark regardless of the shell, so the
+   grey scale (Window/Level, HU) is not misread.
    ============================================================ */
 :root {
   font-family: var(--app-font);
@@ -2161,7 +2161,7 @@ button:disabled { opacity: .35; cursor: default; }
   border-radius: 4px;
 }
 
-/* ================= Cây Study List Đa Cấp ================= */
+/* ================= Multi-level Study List tree ================= */
 .plist {
   min-height: 0;
   overflow-y: auto;

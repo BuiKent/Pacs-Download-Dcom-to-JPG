@@ -1,14 +1,15 @@
 """
-video_engine.py — lõi xử lý video, độc lập framework web.
+video_engine.py — surgical video processing, framework free.
 
-Thiết kế:
-  - Không tự viết codec. FFmpeg (libx264/libx265/NVENC/QSV) đã là chuẩn công
-    nghiệp cho decode/encode; "viết engine" ở tầng ứng dụng nghĩa là điều
-    khiển FFmpeg đúng cách (probe an toàn, timeout, tiến trình, dọn file tạm),
-    không phải viết lại H.264.
-  - Mọi hàm ở đây là sync + subprocess, chạy trong threadpool khi gọi từ backend.
-  - Không ghi đè file gốc. Ghi output ra đường dẫn mới do caller chỉ định,
-    khớp yêu cầu "bản gốc bất khả xâm phạm" trong thiết kế PACS.
+Design:
+  - No codec is written here. FFmpeg (libx264/libx265/NVENC/QSV) is already the
+    industry standard for decode and encode; the "engine" at this layer means
+    driving FFmpeg correctly — safe probing, timeouts, progress, temp-file
+    cleanup — not reimplementing H.264.
+  - Every function is synchronous and subprocess-based, meant to run on a
+    threadpool when called from the backend.
+  - The source file is never overwritten. Output goes to a new path chosen by
+    the caller, matching the "original is inviolable" rule of the PACS design.
 """
 
 from __future__ import annotations
@@ -27,16 +28,16 @@ from pathlib import Path
 logger = logging.getLogger("video_engine")
 
 # ---------------------------------------------------------------------------
-# Giới hạn đồng thời
+# Concurrency limits
 # ---------------------------------------------------------------------------
 
 
 class ServerBusyError(Exception):
-    """Hàng đợi xử lý đã đầy quá lâu — client nên báo người dùng thử lại sau."""
+    """The work queue stayed full too long; the client should ask the user to retry."""
 
 
 class _ConcurrencyGate:
-    """Semaphore có giới hạn thời gian chờ + đếm số tác vụ đang chạy/đang chờ."""
+    """A semaphore with a wait timeout that also counts running and waiting tasks."""
 
     def __init__(self, limit: int, wait_timeout_s: float, name: str):
         self._sem = threading.Semaphore(limit)
@@ -98,7 +99,7 @@ def configure_concurrency(
     heavy_wait_timeout_s: float | None = None,
     light_wait_timeout_s: float | None = None,
 ) -> None:
-    """Ghi đè giới hạn mặc định."""
+    """Override the default limits."""
     if heavy_limit is not None:
         _heavy_gate.reconfigure(heavy_limit, heavy_wait_timeout_s)
     elif heavy_wait_timeout_s is not None:
@@ -110,12 +111,12 @@ def configure_concurrency(
 
 
 def concurrency_stats() -> dict:
-    """Cho endpoint health-check hoặc UI hiển thị thống kê tải."""
+    """Feeds the health-check endpoint and the UI load indicator."""
     return {"heavy": _heavy_gate.stats(), "light": _light_gate.stats()}
 
 
 # ---------------------------------------------------------------------------
-# Định vị binary FFmpeg: ưu tiên bản đóng gói kèm app trong tools/bin
+# Locate the FFmpeg binaries, preferring the copy bundled in tools/bin
 # ---------------------------------------------------------------------------
 
 _FFMPEG_BIN: str | None = None
@@ -123,11 +124,11 @@ _FFPROBE_BIN: str | None = None
 
 
 def configure_binaries(ffmpeg_dir: Path | None = None) -> None:
-    """Định vị ffmpeg và ffprobe."""
+    """Locate ffmpeg and ffprobe."""
     global _FFMPEG_BIN, _FFPROBE_BIN
     exe_suffix = ".exe" if _is_windows() else ""
 
-    # 1. Nếu caller chỉ định thư mục cụ thể, chỉ kiểm tra thư mục đó
+    # 1. An explicit directory from the caller is checked on its own
     if ffmpeg_dir is not None:
         cand_dir = Path(ffmpeg_dir)
         cand_ff = cand_dir / f"ffmpeg{exe_suffix}"
@@ -137,7 +138,8 @@ def configure_binaries(ffmpeg_dir: Path | None = None) -> None:
             _FFPROBE_BIN = str(cand_probe)
             logger.info("Dùng FFmpeg từ thư mục chỉ định: %s", cand_dir)
             return
-        # Nếu thư mục chỉ định thiếu binary, rơi trực tiếp về PATH hệ thống cho cả 2
+        # An incomplete bundle falls straight through to PATH for both binaries,
+        # never mixing one from the bundle with one from PATH
         _FFMPEG_BIN = shutil.which("ffmpeg")
         _FFPROBE_BIN = shutil.which("ffprobe")
         if not _FFMPEG_BIN or not _FFPROBE_BIN:
@@ -150,7 +152,7 @@ def configure_binaries(ffmpeg_dir: Path | None = None) -> None:
         logger.info("Dùng FFmpeg từ PATH hệ thống (fallback từ thư mục chỉ định): %s", _FFMPEG_BIN)
         return
 
-    # 2. ffmpeg_dir is None: Tự động tìm trong các thư mục đóng gói mặc định
+    # 2. ffmpeg_dir is None: search the default bundle locations
     search_dirs = []
     if getattr(sys, "frozen", False):
         if hasattr(sys, "_MEIPASS"):
@@ -173,7 +175,7 @@ def configure_binaries(ffmpeg_dir: Path | None = None) -> None:
             logger.info("Dùng FFmpeg đóng gói kèm app: %s", candidate_dir)
             return
 
-    # 3. Rơi về PATH hệ thống
+    # 3. Fall back to the system PATH
     _FFMPEG_BIN = shutil.which("ffmpeg")
     _FFPROBE_BIN = shutil.which("ffprobe")
     if not _FFMPEG_BIN or not _FFPROBE_BIN:
@@ -204,12 +206,12 @@ def _ffprobe() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Lỗi có cấu trúc
+# Structured errors
 # ---------------------------------------------------------------------------
 
 
 class VideoEngineError(Exception):
-    """Lỗi nghiệp vụ an toàn để hiển thị cho người dùng."""
+    """A business-rule failure whose message is safe to show the user."""
 
 
 class UnsupportedFormatError(VideoEngineError):
@@ -258,7 +260,7 @@ def _stderr_tail(proc: subprocess.CompletedProcess, lines: int = 12) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Probe: đọc metadata an toàn
+# Probe: read metadata safely
 # ---------------------------------------------------------------------------
 
 

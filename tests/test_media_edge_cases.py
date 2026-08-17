@@ -1,5 +1,5 @@
-"""pytest edge-case toàn diện — file giả mạo đuôi, rỗng, quá lớn,
-decompression bomb, ký tự đặc biệt/injection trong tên file.
+"""Edge-case suite: files lying about their extension, empty files, oversized
+files, decompression bombs, and special or injection characters in filenames.
 """
 
 import subprocess
@@ -14,17 +14,17 @@ import video_engine as ve
 
 
 # ===========================================================================
-# Video: file giả mạo, rỗng, hỏng giữa chừng
+# Video: forged, empty, and truncated files
 # ===========================================================================
 
 class TestVideoMalformedInput:
     def test_text_file_renamed_to_mp4_fails_fast(self, tmp_path):
         fake = tmp_path / "fake.mp4"
-        fake.write_text("đây không phải video, chỉ là văn bản thường")
+        fake.write_text("not a video, just plain text")
         t0 = time.time()
         with pytest.raises(ve.ProbeFailedError):
             ve.probe(fake)
-        assert time.time() - t0 < 5, "probe file giả mạo phải fail nhanh, không được treo lâu"
+        assert time.time() - t0 < 5, "probing a forged file must fail fast, not hang"
 
     def test_empty_file_with_video_extension_rejected(self, tmp_path):
         empty = tmp_path / "empty.mp4"
@@ -65,7 +65,7 @@ class TestVideoMalformedInput:
 
 
 # ===========================================================================
-# Video: tên file/đường dẫn nguy hiểm
+# Video: hostile filenames and paths
 # ===========================================================================
 
 class TestVideoDangerousFilenames:
@@ -89,7 +89,7 @@ class TestVideoDangerousFilenames:
                 "-c:v", "libx264", "-preset", "ultrafast", str(video_path),
             ], check=True, capture_output=True)
         except (subprocess.CalledProcessError, OSError):
-            pytest.skip(f"Filesystem không hỗ trợ tên file: {dangerous_part}")
+            pytest.skip(f"Filesystem rejects this name: {dangerous_part}")
 
         info = ve.probe(video_path)
         assert info.width == 64
@@ -165,13 +165,13 @@ class TestPhotoDecompressionBomb:
 
 
 # ===========================================================================
-# Photo: file giả mạo, rỗng, hỏng
+# Photo: forged, empty, and corrupt files
 # ===========================================================================
 
 class TestPhotoMalformedInput:
     def test_text_file_renamed_to_jpg_rejected(self, tmp_path):
         fake = tmp_path / "fake.jpg"
-        fake.write_text("đây không phải ảnh")
+        fake.write_text("not an image")
         with pytest.raises(pe.PhotoEngineError):
             pe.probe(fake)
 
@@ -204,7 +204,7 @@ class TestPhotoMalformedInput:
 
 
 # ===========================================================================
-# Photo: tên file nguy hiểm
+# Photo: hostile filenames
 # ===========================================================================
 
 class TestPhotoDangerousFilenames:
@@ -220,7 +220,7 @@ class TestPhotoDangerousFilenames:
         try:
             Image.new("RGB", (200, 200), "green").save(img_path)
         except OSError:
-            pytest.skip(f"Filesystem không hỗ trợ tên file: {dangerous_part}")
+            pytest.skip(f"Filesystem rejects this name: {dangerous_part}")
 
         out = tmp_path / "cropped.jpg"
         result = pe.crop(img_path, out, pe.Rect(x=0, y=0, width=50, height=50))

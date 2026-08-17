@@ -1,5 +1,6 @@
-"""pytest cho hệ thống giới hạn đồng thời trong photo_engine.py — cùng cấu
-trúc với test_concurrency.py (video), nhưng target module ảnh."""
+"""pytest for the concurrency limiter in photo_engine.py.
+
+Same shape as the video concurrency suite, aimed at the image module."""
 
 import threading
 import time
@@ -24,8 +25,8 @@ class TestPhotoConcurrencyGate:
         assert pe.concurrency_stats()["photo"]["limit"] == 5
 
     def test_third_open_waits_when_limit_is_one(self, tmp_path):
-        """limit=1: mở ảnh thứ 2 phải chờ ảnh 1 xử lý xong, không chạy song
-        song — chứng minh gate thật sự nằm trên đường đi _open_safely()."""
+        """With limit=1 the second open must wait for the first, not run beside it,
+        proving the gate really sits on the _open_safely() path."""
         pe.configure_concurrency(limit=1, wait_timeout_s=10)
         img_path = tmp_path / "sample.jpg"
         Image.new("RGB", (200, 200), "white").save(img_path)
@@ -50,7 +51,7 @@ class TestPhotoConcurrencyGate:
         elapsed = time.time() - start
 
         assert len(timeline) == n * 2
-        assert elapsed < 10, "6 lần probe ảnh nhỏ không nên mất quá 10s dù bị tuần tự hoá"
+        assert elapsed < 10, "six small probes should stay under 10s even when serialised"
 
     def test_raises_server_busy_when_saturated_and_timeout_short(self, tmp_path):
         pe.configure_concurrency(limit=1, wait_timeout_s=0.05)
@@ -76,8 +77,8 @@ class TestPhotoConcurrencyGate:
         holder.join(timeout=3)
 
     def test_exception_during_open_still_releases_slot(self, tmp_path):
-        """File hỏng ném PhotoEngineError bên trong gate — slot vẫn phải
-        được trả lại, không rò rỉ."""
+        """A corrupt file raises PhotoEngineError inside the gate; the slot must
+        still be released rather than leaked."""
         pe.configure_concurrency(limit=1, wait_timeout_s=3)
         broken = tmp_path / "broken.jpg"
         broken.write_bytes(b"not a real jpeg")
@@ -92,10 +93,11 @@ class TestPhotoConcurrencyGate:
 
 
 class TestPhotoAndVideoGatesAreFullyIndependent:
-    """Xác nhận 2 module (video_engine, photo_engine) có gate hoàn toàn tách
-    biệt — bão hoà gate ảnh không được ảnh hưởng gì tới gate video và ngược
-    lại, vì đây là 2 tài nguyên khác nhau (RAM cho ảnh, CPU tiến trình con
-    cho video) không nên chia sẻ hạn mức."""
+    """video_engine and photo_engine must hold entirely separate gates.
+
+    Saturating the image gate must not touch the video gate or the reverse:
+    they guard different resources — RAM for images, subprocess CPU for video —
+    and should not share a budget."""
 
     def teardown_method(self):
         pe.configure_concurrency(limit=pe._HEAVY_LIMIT_DEFAULT, wait_timeout_s=30)

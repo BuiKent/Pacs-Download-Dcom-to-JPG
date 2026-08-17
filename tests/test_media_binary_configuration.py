@@ -1,5 +1,5 @@
-"""pytest cho video_engine.configure_binaries() — logic dò và cấu hình
-đường dẫn ffmpeg/ffprobe.
+"""pytest for video_engine.configure_binaries(): how the ffmpeg/ffprobe paths
+are discovered and configured.
 """
 
 import shutil
@@ -47,13 +47,13 @@ class TestConfigureBinariesWithBundledDir:
 
         system_ffmpeg = shutil.which("ffmpeg")
         if not system_ffmpeg:
-            pytest.skip("Máy test không có ffmpeg trong PATH để xác nhận fallback")
+            pytest.skip("No ffmpeg on PATH here, so the fallback cannot be confirmed")
 
         ve.configure_binaries(bundle_dir)
 
         assert ve._FFMPEG_BIN == system_ffmpeg
         assert ve._FFPROBE_BIN != str(fake_ffprobe), \
-            "không được trộn ffprobe từ bundle với ffmpeg từ PATH"
+            "must not mix a bundled ffprobe with an ffmpeg from PATH"
 
     def test_falls_back_to_system_path_when_bundle_dir_empty(self, tmp_path):
         empty_dir = tmp_path / "bin" / "ffmpeg"
@@ -61,7 +61,7 @@ class TestConfigureBinariesWithBundledDir:
 
         system_ffmpeg = shutil.which("ffmpeg")
         if not system_ffmpeg:
-            pytest.skip("Máy test không có ffmpeg trong PATH để xác nhận fallback")
+            pytest.skip("No ffmpeg on PATH here, so the fallback cannot be confirmed")
 
         ve.configure_binaries(empty_dir)
         assert ve._FFMPEG_BIN == system_ffmpeg
@@ -71,7 +71,7 @@ class TestConfigureBinariesWithBundledDir:
 
         system_ffmpeg = shutil.which("ffmpeg")
         if not system_ffmpeg:
-            pytest.skip("Máy test không có ffmpeg trong PATH để xác nhận fallback")
+            pytest.skip("No ffmpeg on PATH here, so the fallback cannot be confirmed")
 
         ve.configure_binaries(nonexistent)
         assert ve._FFMPEG_BIN == system_ffmpeg
@@ -86,7 +86,7 @@ class TestConfigureBinariesWithoutBundledDir:
     def test_none_argument_falls_back_to_system_when_bundled_missing(self, monkeypatch, tmp_path):
         system_ffmpeg = shutil.which("ffmpeg")
         if not system_ffmpeg:
-            pytest.skip("Máy test không có ffmpeg trong PATH")
+            pytest.skip("No ffmpeg on PATH on this machine")
         fake_app_root = tmp_path / "empty_app"
         fake_app_root.mkdir()
         monkeypatch.setattr(ve, "__file__", str(fake_app_root / "video_engine.py"))
@@ -109,7 +109,7 @@ class TestLazyAutoConfiguration:
         result = ve._ffmpeg()
         assert result is not None
         assert Path(result).exists()
-        assert ve._FFMPEG_BIN is not None, "gọi _ffmpeg() phải tự set biến toàn cục sau đó"
+        assert ve._FFMPEG_BIN is not None, "calling _ffmpeg() must set the module global as a side effect"
 
     def test_ffprobe_helper_lazily_configures_if_unset(self):
         ve._FFMPEG_BIN = None
@@ -126,7 +126,7 @@ class TestLazyAutoConfiguration:
         ve.configure_binaries(bundle_dir)
 
         expected = str(fake_ffmpeg)
-        assert ve._ffmpeg() == expected, "đã cấu hình tường minh thì không được bị ghi đè"
+        assert ve._ffmpeg() == expected, "an explicit configuration must not be overwritten"
 
 
 class TestIsWindowsHelper:

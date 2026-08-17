@@ -1201,13 +1201,14 @@ function recenterAtClientPoint(viewportId, clientX, clientY) {
   } catch (_) {
     return; // Camera chưa sẵn sàng (đang chuyển layout).
   }
-  // MPR/3D: có crosshair dùng chung giữa các mặt phẳng — nhảy điểm này ở cả 3.
+  // MPR/3D share one crosshair across the planes, so this point jumps in all three.
   const crosshairs = toolGroup?.getToolInstance?.(CrosshairsTool.toolName);
   if (crosshairs?.setToolCenter) {
     crosshairs.setToolCenter(worldPos, true);
     renderingEngine?.render();
   } else {
-    // Không có crosshair (compare/montage). Đồng bộ vị trí click sang các khung StackViewport khác.
+    // No crosshair here (compare/montage): mirror the clicked position into the
+    // other StackViewport panes instead.
     const allViewports = renderingEngine?.getViewports() || [];
     let synced = false;
     for (const vp of allViewports) {

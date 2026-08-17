@@ -1,4 +1,4 @@
-"""pytest cho photo_engine.py — chạy Pillow thật trên ảnh mẫu tự sinh."""
+"""pytest for photo_engine.py, running real Pillow on a generated sample image."""
 
 from pathlib import Path
 
@@ -10,7 +10,7 @@ import photo_engine as pe
 
 @pytest.fixture(scope="module")
 def sample_scan(tmp_path_factory):
-    """Ảnh mô phỏng scan bệnh án, có 1 dòng text 'nhạy cảm' để test redact."""
+    """A mock scanned chart carrying one line of "sensitive" text to redact."""
     out_dir = tmp_path_factory.mktemp("photo_fixtures")
     path = out_dir / "scan.jpg"
     img = Image.new("RGB", (800, 1000), "white")
@@ -93,28 +93,30 @@ class TestRotate:
 
 class TestRedact:
     def test_pixels_are_actually_overwritten_not_overlaid(self, sample_scan, tmp_path):
-        """Xác nhận redact xoá pixel thật: vùng bị che phải toàn màu fill,
-        không còn dấu vết nội dung gốc — khác với overlay hiển thị có thể
-        gỡ bỏ được ở tầng UI."""
+        """Redaction must destroy pixels, not cover them.
+
+        The masked region has to be solid fill with no trace of the original
+        content, unlike a display overlay that the UI could simply remove.
+        """
         out = tmp_path / "redacted.jpg"
         region = pe.Rect(x=70, y=70, width=400, height=40)
         pe.redact(sample_scan, out, [region], fill=(0, 0, 0))
         with Image.open(out) as redacted:
             redacted = redacted.convert("RGB")
-            # lấy mẫu nhiều điểm trong vùng che; JPEG nén mất mát nên cho
-            # dung sai nhỏ quanh đen tuyệt đối thay vì đòi (0,0,0) chính xác
+            # Sample several points inside the mask. JPEG is lossy, so allow a
+            # small tolerance around pure black instead of demanding (0,0,0).
             for dx in (10, 100, 200, 300, 390):
                 for dy in (5, 15, 25, 35):
                     pixel = redacted.getpixel((region.x + dx, region.y + dy))
                     assert all(c <= 8 for c in pixel), \
-                        f"pixel tại ({dx},{dy}) trong vùng che phải gần đen tuyệt đối, thấy {pixel}"
+                        f"pixel at ({dx},{dy}) inside the mask should be near-black, got {pixel}"
 
     def test_area_outside_region_untouched(self, sample_scan, tmp_path):
         out = tmp_path / "redacted2.jpg"
         pe.redact(sample_scan, out, [pe.Rect(x=70, y=70, width=100, height=20)], fill=(0, 0, 0))
         with Image.open(out) as redacted, Image.open(sample_scan) as original:
             redacted, original = redacted.convert("RGB"), original.convert("RGB")
-            # điểm ngoài vùng che (góc dưới ảnh, nền trắng) phải giữ nguyên
+            # A point outside the mask (lower area, white background) must survive
             assert redacted.getpixel((400, 950)) == original.getpixel((400, 950))
 
     def test_empty_region_list_rejected(self, sample_scan, tmp_path):
@@ -127,7 +129,7 @@ class TestRedact:
         pe.redact(sample_scan, out, [region], fill=(255, 0, 0))
         with Image.open(out) as redacted:
             pixel = redacted.convert("RGB").getpixel((region.x + 25, region.y + 25))
-            # JPEG có nén mất mát nhẹ — cho phép sai lệch nhỏ quanh giá trị đỏ thuần
+            # JPEG is mildly lossy, so allow a small drift around pure red
             assert pixel[0] > 200 and pixel[1] < 60 and pixel[2] < 60
 
 
@@ -180,7 +182,7 @@ class TestEditSession:
         out = tmp_path / "session_result.jpg"
         result = session.render(out)
         with Image.open(result) as img:
-            # sau rotate 90, kích thước đảo chiều so với ảnh gốc 800x1000
+            # after a 90 degree rotation the 800x1000 source swaps dimensions
             assert img.width == 1000
             assert img.height == 800
 
@@ -213,7 +215,7 @@ class TestEditSession:
         session.render(out)
         tmp_dir = out.parent / ".tmp_session"
         leftover = list(tmp_dir.glob("step_*.png")) if tmp_dir.exists() else []
-        assert not leftover, "file trung gian phải được dọn sau khi render xong"
+        assert not leftover, "intermediate files must be cleaned up once the render finishes"
 
     def test_original_file_never_modified_across_session(self, sample_scan, tmp_path):
         original_bytes = sample_scan.read_bytes()

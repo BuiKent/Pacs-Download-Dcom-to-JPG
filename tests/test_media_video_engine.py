@@ -1,8 +1,9 @@
-"""pytest cho video_engine.py — chạy FFmpeg thật trên video mẫu tự sinh,
-không mock subprocess. Mock sẽ không bắt được lỗi filtergraph/tham số CLI sai
-như bug path-traversal đã bắt được ở lớp API — chạy thật là bắt buộc ở đây.
+"""pytest for video_engine.py, running real FFmpeg on a generated sample clip.
 
-Chạy: pytest tests/test_media_video_engine.py -v
+subprocess is deliberately not mocked: a mock cannot catch a broken filtergraph
+or a wrong CLI flag, which is exactly the class of bug this suite exists for.
+
+Run: pytest tests/test_media_video_engine.py -v
 """
 
 import subprocess
@@ -16,7 +17,7 @@ import video_engine as ve
 
 @pytest.fixture(scope="module")
 def sample_video(tmp_path_factory):
-    """5 giây, 640x360 — đủ nhỏ để suite chạy nhanh nhưng vẫn là file thật."""
+    """5 seconds at 640x360: small enough to stay fast, still a real file."""
     out_dir = tmp_path_factory.mktemp("video_fixtures")
     path = out_dir / "sample.mp4"
     subprocess.run([
@@ -85,18 +86,18 @@ class TestTrim:
         ve.trim(sample_video, out, 1.0, 3.0, reencode=False)
         elapsed = time.time() - t0
         info = ve.probe(out)
-        # stream-copy trượt tới khung-key gần nhất trước điểm cắt — với video
-        # test dùng preset ultrafast (khung-key thưa), độ trượt lớn hơn video
-        # thật (preset chuẩn ~2s/keyframe). Đây là đặc tính đã biết của stream
-        # copy, không phải lỗi: assert khoảng rộng, không assert giá trị đúng 2s.
+        # Stream copy snaps to the nearest keyframe before the cut point. The
+        # fixture uses the ultrafast preset, whose keyframes are sparser than a
+        # normal encode (~2s apart), so the drift is larger here. That is a known
+        # property of stream copy, not a bug: assert a wide range, not exactly 2s.
         assert 1.5 < info.duration_s < 3.5
-        assert elapsed < 3.0, "stream-copy trim phải nhanh (giây), không phải phút"
+        assert elapsed < 3.0, "a stream-copy trim must take seconds, not minutes"
 
     def test_reencode_gives_frame_accurate_duration(self, sample_video, tmp_path):
         out = tmp_path / "trimmed_reenc.mp4"
         ve.trim(sample_video, out, 1.0, 3.0, reencode=True)
         info = ve.probe(out)
-        assert 1.9 < info.duration_s < 2.1  # re-encode phải chính xác hơn nhiều
+        assert 1.9 < info.duration_s < 2.1  # a re-encode should land far closer to the mark
 
     def test_end_before_start_rejected(self, sample_video, tmp_path):
         with pytest.raises(ve.VideoEngineError):
@@ -117,8 +118,8 @@ class TestBurnText:
         assert result.exists()
 
     def test_colon_in_text_does_not_break_drawtext(self, sample_video, tmp_path):
-        # Dấu ':' là ký tự điều khiển trong cú pháp drawtext; nếu escape sai,
-        # lệnh ffmpeg lỗi filtergraph và ném EncodeFailedError.
+        # ':' is a control character in drawtext syntax; escaped wrongly, the
+        # ffmpeg call fails the filtergraph and raises EncodeFailedError.
         out = tmp_path / "burned_colon.mp4"
         result = ve.burn_text(sample_video, out, [
             ve.TextOverlay(text="Thời gian: 12:30:05"),
@@ -136,7 +137,7 @@ class TestConcat:
         result = ve.concat([sample_video, sample_video_no_audio], out, target_height=360)
         info = ve.probe(result)
         assert info.height == 360
-        # tổng ~5s + ~3s, cho phép dung sai nhỏ từ chuẩn hoá fps
+        # ~5s + ~3s, with a small tolerance for the fps normalisation
         assert 7.0 < info.duration_s < 9.0
 
     def test_single_clip_rejected(self, sample_video, tmp_path):
@@ -169,5 +170,5 @@ class TestTranscode:
         progress_values = []
         ve.transcode(sample_video, out, use_hw=False, crf=28,
                       progress_cb=lambda pct, elapsed: progress_values.append(pct))
-        assert progress_values, "progress_cb phải được gọi ít nhất 1 lần"
-        assert max(progress_values) > 0.9, "tiến trình phải tiệm cận 100% khi xong"
+        assert progress_values, "progress_cb must be called at least once"
+        assert max(progress_values) > 0.9, "progress must approach 100% on completion"

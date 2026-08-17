@@ -1,10 +1,10 @@
-"""pytest cho hệ thống giới hạn đồng thời trong video_engine.py.
+"""pytest for the concurrency limiter in video_engine.py.
 
-Dùng threading thật (không mock semaphore) để chứng minh hành vi thật:
-- Giới hạn heavy/light có tác dụng chặn số tác vụ chạy song song
-- Tác vụ vượt giới hạn phải CHỜ (không bị từ chối ngay) cho tới khi có chỗ
-- Chờ quá timeout thì ném ServerBusyError đúng loại
-- concurrency_stats() phản ánh đúng số đang chạy/đang chờ tại một thời điểm
+Uses real threads rather than a mocked semaphore, to prove actual behaviour:
+- the heavy/light limits really do cap how many tasks run in parallel
+- a task over the limit WAITS for a slot instead of being rejected outright
+- waiting past the timeout raises ServerBusyError, not some other error
+- concurrency_stats() reports the running/waiting counts truthfully
 """
 
 import threading
@@ -17,8 +17,8 @@ from video_engine import ServerBusyError, _ConcurrencyGate
 
 
 class TestConcurrencyGateUnit:
-    """Test trực tiếp _ConcurrencyGate — nhanh, không cần FFmpeg, kiểm tra
-    đúng cơ chế semaphore + hàng đợi + timeout ở mức đơn vị nhỏ nhất."""
+    """_ConcurrencyGate on its own: fast, no FFmpeg, exercising the semaphore,
+    the queue and the timeout at the smallest possible unit."""
 
     def test_allows_up_to_limit_simultaneously(self):
         gate = _ConcurrencyGate(limit=2, wait_timeout_s=5, name="test")
@@ -37,11 +37,11 @@ class TestConcurrencyGateUnit:
         for t in threads:
             t.join(timeout=5)
 
-        assert set(entered) == {0, 1}, "cả 2 tác vụ trong giới hạn phải chạy được đồng thời"
+        assert set(entered) == {0, 1}, "both tasks within the limit must run at the same time"
 
     def test_third_task_waits_until_slot_frees(self):
-        """Giới hạn 1: tác vụ thứ 2 phải CHỜ tới khi tác vụ 1 xong, không bị
-        từ chối ngay và không chạy chồng lên nhau."""
+        """With limit 1 the second task must WAIT for the first to finish, neither
+        rejected outright nor overlapping it."""
         gate = _ConcurrencyGate(limit=1, wait_timeout_s=5, name="test")
         timeline = []
         lock = threading.Lock()
@@ -64,11 +64,11 @@ class TestConcurrencyGateUnit:
 
         starts_ends = {(kind, idx): ts for kind, idx, ts in timeline}
         assert starts_ends[("end", 1)] <= starts_ends[("start", 2)] + 0.01, \
-            f"task 2 không được bắt đầu trước khi task 1 kết thúc: {timeline}"
+            f"task 2 must not start before task 1 ends: {timeline}"
 
     def test_raises_server_busy_when_wait_timeout_exceeded(self):
-        """Giới hạn 1, wait_timeout rất ngắn: tác vụ thứ 2 phải nhận
-        ServerBusyError thay vì treo vô hạn."""
+        """With limit 1 and a very short wait_timeout, the second task must get
+        ServerBusyError rather than hang forever."""
         gate = _ConcurrencyGate(limit=1, wait_timeout_s=0.1, name="test")
         release_event = threading.Event()
 
@@ -138,22 +138,22 @@ class TestConcurrencyGateUnit:
         for t in threads:
             t.join(timeout=5)
 
-        assert len(entered) == 3, "sau reconfigure(limit=3), cả 3 tác vụ phải vào được đồng thời"
+        assert len(entered) == 3, "after reconfigure(limit=3) all three tasks must enter together"
 
     def test_exception_inside_with_block_still_releases_slot(self):
         gate = _ConcurrencyGate(limit=1, wait_timeout_s=2, name="test")
 
         with pytest.raises(ValueError):
             with gate:
-                raise ValueError("lỗi giả lập bên trong tác vụ")
+                raise ValueError("simulated failure inside the task")
 
         with gate:
             pass
 
 
 class TestModuleLevelGates:
-    """Test các gate module-level thật (_heavy_gate/_light_gate) mà mọi hàm
-    nghiệp vụ (trim/concat/transcode/probe...) đi qua."""
+    """The real module-level gates (_heavy_gate/_light_gate) that every business
+    function — trim, concat, transcode, probe — actually passes through."""
 
     def teardown_method(self):
         ve.configure_concurrency(
@@ -196,7 +196,7 @@ class TestModuleLevelGates:
         assert light_stats_during["running"] == 0
 
         acquired = ve._light_gate._sem.acquire(timeout=1)
-        assert acquired, "light gate phải chiếm được ngay dù heavy gate đang đầy"
+        assert acquired, "the light gate must be acquired immediately even with the heavy gate full"
         ve._light_gate._sem.release()
 
         release_event.set()
@@ -249,7 +249,7 @@ class TestTranscodeUsesGateForReal:
         events = {(kind, idx): ts for kind, idx, ts in timeline}
         assert ("done", 1) in events and ("done", 2) in events
         assert events[("done", 1)] < events[("done", 2)], \
-            f"kỳ vọng task 1 hoàn thành trước task 2 khi heavy_limit=1: {timeline}"
+            f"task 1 should finish before task 2 when heavy_limit=1: {timeline}"
 
     def test_probe_still_works_while_heavy_gate_saturated(self, sample_video, tmp_path):
         ve.configure_concurrency(heavy_limit=1, heavy_wait_timeout_s=30)
@@ -268,7 +268,7 @@ class TestTranscodeUsesGateForReal:
             info = ve.probe(sample_video)
             elapsed = time.time() - start
             assert info.width == 320
-            assert elapsed < 4.0, "probe (light) không được bị heavy gate chặn (chờ 5s)"
+            assert elapsed < 4.0, "probe (light) must not be blocked by the heavy gate"
         finally:
             release_event.set()
             holder.join(timeout=5)
