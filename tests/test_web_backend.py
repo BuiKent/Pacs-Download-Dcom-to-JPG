@@ -1563,6 +1563,116 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertEqual(meta["birthYear"], "1988")
         self.assertEqual(meta["hospital"], "BV Bạch Mai")
 
+    def _patient_with_manifest(self, studies: dict) -> Path:
+        """A patient folder whose manifest describes the given study folders."""
+        patient_dir = self.temp_dir / "BN-7777"
+        patient_dir.mkdir(parents=True, exist_ok=True)
+        (patient_dir / "patient-index.json").write_text(json.dumps({
+            "format": "dcom-patient-index-v1",
+            "patientId": "TEST-7777",
+            "patientName": "LÊ VĂN MẪU",
+            "patientBirthDate": "19550101",
+            "patientSex": "M",
+            "hospitalName": "BV B",
+            "studies": studies,
+        }), encoding="utf-8")
+        self.controller.output_root = self.temp_dir
+        return patient_dir
+
+    def test_worklist_reads_study_date_and_modality_from_the_manifest(self) -> None:
+        """The manifest holds the DICOM tags; the folder name is only a guess.
+
+        The folder here is deliberately named so the old heuristics would read
+        it as an MR taken on 02/07/2026, while the manifest records the CT of
+        06/08/2026 the tags actually carry.
+        """
+        from web_backend import WorklistScanner
+
+        patient_dir = self._patient_with_manifest({
+            "1.2.3": {
+                "studyUid": "1.2.3",
+                "date": "20260806",
+                "modality": "CT",
+                "description": "CT ổ bụng có tiêm",
+                "folder": "2026-07-02 - MR - COT SONG",
+                "status": "complete",
+            },
+        })
+        study_dir = patient_dir / "2026-07-02 - MR - COT SONG"
+        study_dir.mkdir(parents=True, exist_ok=True)
+        (study_dir / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+
+        patients = WorklistScanner(self.controller).scan()
+        patient = next(p for p in patients if p["patientId"] == "TEST-7777")
+        study = patient["studies"][0]
+
+        self.assertEqual(study["studyDate"], "06/08/2026")
+        self.assertEqual(study["modality"], "CT")
+        self.assertEqual(study["studyName"], "CT ổ bụng có tiêm")
+        self.assertEqual(study["status"], "done")
+
+    def test_worklist_surfaces_an_unfinished_download_as_part(self) -> None:
+        """`incomplete` in the manifest is what the "Tải tiếp" badge reads."""
+        from web_backend import WorklistScanner
+
+        patient_dir = self._patient_with_manifest({
+            "1.2.4": {
+                "studyUid": "1.2.4",
+                "date": "20260519",
+                "modality": "CT",
+                "description": "CT ngực",
+                "folder": "CT-NGUC",
+                "status": "incomplete",
+                "viewerUrl": "http://viewer/unfinished",
+            },
+        })
+        study_dir = patient_dir / "CT-NGUC"
+        study_dir.mkdir(parents=True, exist_ok=True)
+        (study_dir / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+
+        patients = WorklistScanner(self.controller).scan()
+        study = next(p for p in patients if p["patientId"] == "TEST-7777")["studies"][0]
+
+        self.assertEqual(study["status"], "part")
+        self.assertEqual(study["statusLabel"], "Chưa hoàn tất")
+        self.assertEqual(study["viewerUrl"], "http://viewer/unfinished")
+
+    def test_worklist_leaves_an_unknown_study_date_blank(self) -> None:
+        """An undated study must not be stamped with today's date.
+
+        A worklist row that shows today for every folder it cannot date makes
+        two scans of one patient look like they were taken on the same day.
+        """
+        from web_backend import WorklistScanner
+
+        patient_dir = self.temp_dir / "BN-8888"
+        patient_dir.mkdir(parents=True, exist_ok=True)
+        study_dir = patient_dir / "phim cu khong ro ngay"
+        study_dir.mkdir(parents=True, exist_ok=True)
+        (study_dir / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+        self.controller.output_root = self.temp_dir
+
+        patients = WorklistScanner(self.controller).scan()
+        study = next(p for p in patients if p["patientId"] == "BN-8888")["studies"][0]
+
+        self.assertEqual(study["studyDate"], "")
+        self.assertNotEqual(study["studyDate"], time.strftime("%d/%m/%Y"))
+
+    def test_worklist_reports_zero_series_for_an_empty_folder(self) -> None:
+        """An empty folder holds no series, so it must not claim one."""
+        from web_backend import WorklistScanner
+
+        patient_dir = self.temp_dir / "BN-6666"
+        (patient_dir / "ca-rong").mkdir(parents=True, exist_ok=True)
+        self.controller.output_root = self.temp_dir
+
+        patients = WorklistScanner(self.controller).scan()
+        study = next(p for p in patients if p["patientId"] == "BN-6666")["studies"][0]
+
+        self.assertEqual(study["seriesCount"], 0)
+        self.assertEqual(study["sliceCount"], 0)
+        self.assertEqual(study["modality"], "")
+
     def test_reveal_folder_rejects_paths_outside_the_archive(self) -> None:
         self.controller.output_root = self.temp_dir
         outside = Path(tempfile.mkdtemp())

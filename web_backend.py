@@ -1875,6 +1875,61 @@ class WorklistScanner:
             "hospital": str(data.get("hospitalName") or "").strip(),
         }
 
+    def _manifest_studies_for(self, patient_dir: Path) -> dict[str, dict]:
+        """Manifest study records keyed by the folder they live in.
+
+        `patient-index.json` stores `studies` as a dict of studyUid -> record,
+        and each record's `folder` is relative to the patient folder. The
+        worklist walks the disk, so it needs the reverse lookup: given a study
+        directory, which record describes it. Keys are casefolded absolute
+        paths because that is what `_scan_study` has in hand.
+        """
+        try:
+            raw = (patient_dir / "patient-index.json").read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except Exception:
+            return {}
+        studies = data.get("studies") if isinstance(data, dict) else None
+        if not isinstance(studies, dict):
+            return {}
+        by_folder: dict[str, dict] = {}
+        for record in studies.values():
+            if not isinstance(record, dict):
+                continue
+            relative = str(record.get("folder") or "").strip()
+            if not relative:
+                continue
+            try:
+                resolved = (patient_dir / relative).resolve()
+            except OSError:
+                continue
+            by_folder[str(resolved).casefold()] = record
+        return by_folder
+
+    @staticmethod
+    def _lookup_record(records: dict[str, dict], study_dir: Path) -> Optional[dict]:
+        """The manifest record describing `study_dir`, if the manifest has one."""
+        if not records:
+            return None
+        try:
+            key = str(study_dir.resolve()).casefold()
+        except OSError:
+            key = str(study_dir).casefold()
+        return records.get(key)
+
+    @staticmethod
+    def _format_study_date(raw: str) -> str:
+        """DICOM DA (or an ISO-ish variant) as dd/mm/yyyy; "" when unusable.
+
+        An unparseable date returns empty rather than today's date: the study
+        date is a field a clinician reads to tell two scans of the same patient
+        apart, so a plausible-looking wrong one is worse than a blank.
+        """
+        digits = re.sub(r"\D", "", str(raw or ""))
+        if len(digits) == 8:
+            return f"{digits[6:8]}/{digits[4:6]}/{digits[0:4]}"
+        return ""
+
     def _patient_meta_for(self, patient_dir: Path) -> dict:
         """Manifest identity when the folder has one, folder-name guess otherwise.
 
@@ -1943,40 +1998,51 @@ class WorklistScanner:
             "hospital": hospital,
         }
 
-    def _scan_study(self, study_dir: Path, patient_meta: dict) -> dict:
+    def _scan_study(
+        self,
+        study_dir: Path,
+        patient_meta: dict,
+        manifest_study: Optional[dict] = None,
+    ) -> dict:
         folder_str = str(study_dir)
+        record = manifest_study if isinstance(manifest_study, dict) else {}
         exists = study_dir.is_dir()
         if not exists:
             return {
                 "id": hashlib.sha256(folder_str.encode("utf-8")).hexdigest()[:16],
-                "studyDate": time.strftime("%d/%m/%Y"),
-                "studyName": study_dir.name,
-                "modality": "DICOM",
+                # A folder that is gone has nothing left to read; the manifest
+                # is the only surviving record of when the study was taken.
+                "studyDate": self._format_study_date(record.get("date", "")),
+                "studyName": str(record.get("description") or "").strip() or study_dir.name,
+                "modality": str(record.get("modality") or "").strip().upper(),
                 "seriesCount": 0,
                 "sliceCount": 0,
                 "folder": folder_str,
                 "status": "miss",
                 "statusLabel": "Thiếu folder",
                 "mediaCounts": {"dicom": 0, "photo": 0, "video": 0, "doc": 0},
-                "primaryMediaType": "dicom",
+                "primaryMediaType": str(record.get("mediaType") or "dicom").strip().lower(),
                 "sizeBytes": 0,
             }
 
-        date_match = re.search(r"(\d{4})[-_](\d{2})[-_](\d{2})|(\d{8})", study_dir.name)
-        if date_match:
-            if date_match.group(1):
-                study_date = f"{date_match.group(3)}/{date_match.group(2)}/{date_match.group(1)}"
-            else:
-                raw_d = date_match.group(4)
-                study_date = f"{raw_d[6:8]}/{raw_d[4:6]}/{raw_d[0:4]}"
-        else:
-            study_date = time.strftime("%d/%m/%Y")
+        # The manifest carries the StudyDate the pipeline read off the DICOM
+        # tags, so it wins over anything the folder name happens to contain.
+        study_date = self._format_study_date(record.get("date", ""))
+        if not study_date:
+            date_match = re.search(r"(\d{4})[-_](\d{2})[-_](\d{2})|(\d{8})", study_dir.name)
+            if date_match:
+                if date_match.group(1):
+                    study_date = f"{date_match.group(3)}/{date_match.group(2)}/{date_match.group(1)}"
+                else:
+                    raw_d = date_match.group(4)
+                    study_date = f"{raw_d[6:8]}/{raw_d[4:6]}/{raw_d[0:4]}"
 
-        study_name = study_dir.name
-        clean_study_name = re.sub(r"^\d{4}[-_]\d{2}[-_]\d{2}[\s_-]*|^\d{8}[\s_-]*", "", study_name).strip()
-        if clean_study_name.startswith("-"):
-            clean_study_name = clean_study_name.lstrip("- ").strip()
-        study_name = clean_study_name or study_dir.name
+        study_name = str(record.get("description") or "").strip()
+        if not study_name:
+            clean_study_name = re.sub(r"^\d{4}[-_]\d{2}[-_]\d{2}[\s_-]*|^\d{8}[\s_-]*", "", study_dir.name).strip()
+            if clean_study_name.startswith("-"):
+                clean_study_name = clean_study_name.lstrip("- ").strip()
+            study_name = clean_study_name or study_dir.name
 
         dicom_count = 0
         photo_count = 0
@@ -2013,9 +2079,13 @@ class WorklistScanner:
         except Exception:
             pass
 
-        modality = "DICOM"
+        # A modality recorded from the DICOM tag beats every guess below, which
+        # only reads the folder name and the file extensions on disk.
+        modality = str(record.get("modality") or "").strip().upper()
         lower_name = study_dir.name.casefold()
-        if "mr" in lower_name or "mri" in lower_name:
+        if modality:
+            pass
+        elif "mr" in lower_name or "mri" in lower_name:
             modality = "MR"
         elif "ct" in lower_name:
             modality = "CT"
@@ -2027,6 +2097,8 @@ class WorklistScanner:
             modality = "Bệnh án"
         elif photo_count > 0 and photo_count >= dicom_count:
             modality = "Ảnh"
+        elif dicom_count:
+            modality = "DICOM"
 
         primary_media = "dicom"
         if modality == "Video" or (video_count > 0 and dicom_count == 0):
@@ -2036,11 +2108,21 @@ class WorklistScanner:
         elif modality == "Ảnh" or (photo_count > 0 and dicom_count == 0):
             primary_media = "photo"
 
-        series_count = max(1, len(series_folders)) if (dicom_count or photo_count) else 1
+        series_count = max(1, len(series_folders)) if (dicom_count or photo_count) else 0
         slice_count = dicom_count if dicom_count else (photo_count + doc_count if (photo_count or doc_count) else video_count)
 
-        status = "done"
-        status_label = "Đã tải"
+        # `patient-index.json` records how far the download actually got:
+        # "complete" everything, "selected" only the series the doctor picked,
+        # "incomplete" a run that stopped early. A folder with no manifest entry
+        # says nothing about completeness, so it stays a plain "Đã tải".
+        manifest_status = str(record.get("status") or "").strip().lower()
+        if manifest_status == "selected":
+            status, status_label = "part", "Đã tải series đã chọn"
+        elif manifest_status == "incomplete":
+            status, status_label = "part", "Chưa hoàn tất"
+        else:
+            status, status_label = "done", "Đã tải"
+
         job_snap = self.controller.job.snapshot()
         if job_snap.get("status") == "running" and str(study_dir).casefold() in str(job_snap.get("message", "")).casefold():
             status = "busy"
@@ -2064,6 +2146,12 @@ class WorklistScanner:
             },
             "primaryMediaType": primary_media,
             "sizeBytes": size_bytes,
+            # Lets the UI offer "Tải tiếp" on a study that stopped early: the
+            # retry path needs the viewer link the first run came from.
+            "viewerUrl": str(record.get("viewerUrl") or record.get("downloadUrl") or ""),
+            # Only the pipeline probes video length, so this stays None for a
+            # folder that was merely copied in — the UI hides the stat then.
+            "durationSeconds": record.get("durationSeconds"),
         }
 
     def scan(self) -> list[dict]:
@@ -2090,14 +2178,15 @@ class WorklistScanner:
                                 "exists": True,
                                 "studies": [],
                             }
+                        records = self._manifest_studies_for(child)
                         subdirs = [s for s in child.iterdir() if s.is_dir() and not s.name.startswith(".")]
                         study_subdirs = [s for s in subdirs if not s.name.upper() in {"DICOM", "JPG", "VIDEO", "PHOTO"}]
                         if study_subdirs:
                             for sdir in study_subdirs:
-                                st = self._scan_study(sdir, meta)
+                                st = self._scan_study(sdir, meta, self._lookup_record(records, sdir))
                                 patient_map[pid]["studies"].append(st)
                         else:
-                            st = self._scan_study(child, meta)
+                            st = self._scan_study(child, meta, self._lookup_record(records, child))
                             patient_map[pid]["studies"].append(st)
             except Exception:
                 pass
@@ -2116,7 +2205,8 @@ class WorklistScanner:
                 }
             existing_folders = {s["folder"].casefold() for s in patient_map[pid]["studies"]}
             if str(hpath).casefold() not in existing_folders:
-                st = self._scan_study(hpath, meta)
+                records = self._manifest_studies_for(patient_dir)
+                st = self._scan_study(hpath, meta, self._lookup_record(records, hpath))
                 patient_map[pid]["studies"].append(st)
 
         patients = []

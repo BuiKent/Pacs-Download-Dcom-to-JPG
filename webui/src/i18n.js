@@ -42,6 +42,45 @@ const EN = {
   "Đóng tab": "Close tab",
   "Chưa rõ mã BN": "Patient ID unknown",
   "Chưa có thông tin hành chính": "No demographics recorded",
+
+  // Study List: rows whose counts or identity the scan has not established.
+  // These read as "not measured", never as a zero or a stand-in value.
+  "Ca chụp chưa có mô tả": "Study has no description",
+  "Chưa đếm": "Not counted yet",
+  "Chưa quét": "Not scanned yet",
+  "{} series": "{} series",
+  "{} lát": "{} slices",
+  series: "series",
+  ảnh: "images",
+  video: "videos",
+  trang: "pages",
+
+  // Study List summary tiles
+  "bệnh nhân": "patients",
+  "hồ sơ": "studies",
+  "ảnh & lát": "images & slices",
+  "phút video": "video length",
+  "trên đĩa": "on disk",
+  "cần xử lý": "need attention",
+
+  // Resuming a study the pipeline left unfinished
+  "Tải tiếp": "Resume download",
+  "Ca chụp này không lưu link viewer để tải tiếp.":
+    "This study has no stored viewer link to resume from.",
+  "Đã nạp link của ca chụp. Quét series rồi bấm Thử lại để tải tiếp.":
+    "Study link loaded. Scan the series, then press Retry to resume.",
+  "Đã tải series đã chọn": "Selected series downloaded",
+  "Chưa hoàn tất": "Incomplete",
+
+  // Status and modality labels the backend scanner emits. DICOM modality codes
+  // (MR, CT) are international and stay as they are; only the words the
+  // scanner writes in Vietnamese are listed here.
+  "Thiếu folder": "Folder missing",
+  "Đang tải": "Downloading",
+  "X-Quang": "X-ray",
+  "Bệnh án": "Records",
+  Ảnh: "Photos",
+
   // Worklist tabs: Study List / Activity & Queue
   "Hồ sơ gần đây": "Recent records",
   "Series trong kho": "Series in archive",

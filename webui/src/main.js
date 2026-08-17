@@ -670,43 +670,89 @@ function filteredHistoryEntries() {
   });
 }
 
-/** Returns patients from state or fallback constructed from history. */
+/**
+ * The scanned patient tree, or bare history rows until the scan lands.
+ *
+ * `state.worklistPatients` comes from `/api/worklist`, the only code that has
+ * actually walked the disk and read `patient-index.json`. The fallback exists
+ * so a folder opened seconds ago is still reachable before that answers — it
+ * carries only what a history row really holds, a path and the time it was
+ * opened, and leaves every count null so the tree prints "—" instead of
+ * claiming a series or a slice nobody counted.
+ */
 function getEffectiveWorklistPatients() {
   if (Array.isArray(state.worklistPatients) && state.worklistPatients.length > 0) {
     return state.worklistPatients;
   }
   const history = state.history || [];
   return history.map((entry, idx) => {
-    const folderName = entry.folder ? entry.folder.split(/[\\/]/).pop() : "Folder";
+    const folderName = entry.folder ? entry.folder.split(/[\\/]/).pop() : "";
     return {
       id: `p_hist_${idx}`,
+      // The folder name is the only identifier on hand. It is a real string off
+      // the disk, but it is not a patient name: sex, birth year and hospital
+      // stay blank rather than being guessed out of it.
       patientId: folderName,
-      patientName: folderName,
-      // A history row carries only a path — sex, birth year and hospital are
-      // genuinely unknown here, so they stay blank instead of being invented.
+      patientName: "",
       gender: "",
       birthYear: "",
       hospital: "",
       folder: entry.folder,
       totalSizeFormatted: "",
-      mediaSummary: { dicom: 1, photo: 0, video: 0, doc: 0 },
+      mediaSummary: null,
       studies: [
         {
           id: `s_hist_${idx}`,
-          studyDate: entry.time || "",
+          // `entry.time` is when the folder was opened, not when the scan was
+          // taken — printing it as a study date would misdate the images.
+          studyDate: "",
           studyName: folderName,
-          modality: "DICOM",
-          seriesCount: 1,
-          sliceCount: 1,
+          modality: "",
+          seriesCount: null,
+          sliceCount: null,
           folder: entry.folder,
-          status: entry.exists === false ? "miss" : "done",
-          statusLabel: entry.exists === false ? t("Thiếu folder") : t("Đã tải"),
-          mediaCounts: { dicom: 1, photo: 0, video: 0, doc: 0 },
-          primaryMediaType: "dicom",
+          status: entry.exists === false ? "miss" : "new",
+          statusLabel: entry.exists === false ? t("Thiếu folder") : t("Chưa quét"),
+          mediaCounts: null,
+          primaryMediaType: "",
         },
       ],
     };
   });
+}
+
+/**
+ * Pull the patient tree the backend built from disk and `patient-index.json`.
+ *
+ * Kept separate from `refreshHistory` because the scan walks every study
+ * folder: it runs when something on disk may have changed, not on every poll.
+ */
+async function refreshWorklist({ repaint = true } = {}) {
+  try {
+    const result = await api("/api/worklist");
+    state.worklistPatients = Array.isArray(result?.patients) ? result.patients : [];
+  } catch (_) {
+    // A failed scan leaves the previous list in place; blanking the tree the
+    // doctor is reading would be worse than showing a slightly stale one.
+    return;
+  }
+  if (repaint) refreshStudyListPanel();
+}
+
+/** Repaint the Study List tree, its summary strip and the tab count in place. */
+function refreshStudyListPanel() {
+  if (state.activeTabId !== "worklist" || state.worklistTab === "activity") return;
+  const root = getDomRoot();
+  const tree = root?.querySelector(".worklist-tree");
+  if (!tree) return;
+  tree.innerHTML = renderWorklistTreeInner();
+  bindWorklistOpenButtons(tree);
+
+  const summary = root.querySelector(".worklist-summary");
+  if (summary) summary.innerHTML = renderWorklistSummaryInner();
+
+  const count = root.querySelector(".worklist-tab[data-worklist-tab='studies'] .worklist-tab-count");
+  if (count) count.textContent = String(filteredPatientList().length);
 }
 
 /** Patients matching the search box. */
@@ -741,6 +787,46 @@ function patientIdentityLine(patient) {
 }
 
 /**
+ * The "date · description" heading of a study row.
+ *
+ * A study whose date was never recorded shows the description alone rather
+ * than a dangling separator; neither half is ever filled with a placeholder
+ * date, because two scans of one patient are told apart by exactly this line.
+ */
+function studyHeadingLine(study) {
+  const parts = [study.studyDate, study.studyName]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return parts.length ? parts.join(" · ") : t("Ca chụp chưa có mô tả");
+}
+
+/**
+ * The "N series · N lát" sub-line, listing only the halves that were counted.
+ *
+ * `seriesCount` and `sliceCount` are null on a folder nothing has scanned yet.
+ * That is not the same as zero, so an uncounted study says so instead of
+ * printing a number the app made up.
+ */
+function studyCountLine(study) {
+  const parts = [];
+  if (Number.isFinite(study.seriesCount)) parts.push(tf("{} series", study.seriesCount));
+  if (Number.isFinite(study.sliceCount)) parts.push(tf("{} lát", study.sliceCount));
+  return parts.length ? parts.join(" · ") : t("Chưa đếm");
+}
+
+/** Media count chips, skipping every type the scan did not actually find. */
+function mediaTags(counts, labels = {}) {
+  if (!counts) return "";
+  return ["dicom", "photo", "video", "doc"]
+    .filter((kind) => Number(counts[kind]) > 0)
+    .map((kind) => {
+      const suffix = labels[kind] ? ` ${escapeHtml(labels[kind])}` : "";
+      return `<span class="mtag ${kind}"><i></i>${Number(counts[kind])}${suffix}</span>`;
+    })
+    .join("");
+}
+
+/**
  * Inner HTML of `.worklist-tree`, rendering the multi-level patient study tree.
  */
 function renderWorklistTreeInner() {
@@ -762,7 +848,6 @@ function renderWorklistTreeInner() {
     <div class="plist">
       ${patients.map((p) => {
         const isExpanded = state.expandedPatients[p.id] !== false;
-        const media = p.mediaSummary || { dicom: 0, photo: 0, video: 0, doc: 0 };
         return `
           <div class="prow" role="button" tabindex="0" aria-expanded="${isExpanded}" data-toggle-patient="${escapeHtml(p.id)}">
             <span class="twist">▶</span>
@@ -772,12 +857,11 @@ function renderWorklistTreeInner() {
             </span>
             <span class="meta">${escapeHtml(p.hospital || "—")}</span>
             <span class="media">
-              ${media.dicom ? `<span class="mtag dicom"><i></i>${media.dicom} series</span>` : ""}
-              ${media.photo ? `<span class="mtag photo"><i></i>${media.photo} ảnh</span>` : ""}
-              ${media.video ? `<span class="mtag video"><i></i>${media.video} video</span>` : ""}
-              ${media.doc ? `<span class="mtag doc"><i></i>${media.doc} trang</span>` : ""}
+              ${mediaTags(p.mediaSummary, {
+                dicom: t("series"), photo: t("ảnh"), video: t("video"), doc: t("trang"),
+              })}
             </span>
-            <span class="meta">${escapeHtml(p.totalSizeFormatted || "")}</span>
+            <span class="meta">${escapeHtml(p.totalSizeFormatted || "—")}</span>
             <span class="rowacts">
               <button class="soft-button" type="button" data-action="open-patient-record" data-patient-id="${escapeHtml(p.id)}">
                 ${escapeHtml(t("Mở hồ sơ"))}
@@ -786,34 +870,31 @@ function renderWorklistTreeInner() {
           </div>
 
           <div class="studies${isExpanded ? " on" : ""}" data-studies="${escapeHtml(p.id)}">
-            ${(p.studies || []).map((s) => {
-              const sm = s.mediaCounts || { dicom: 0, photo: 0, video: 0, doc: 0 };
-              return `
+            ${(p.studies || []).map((s) => `
                 <div class="srow">
                   <span class="rail"></span>
                   <span class="who">
-                    <b>${escapeHtml(s.studyDate || "")} · ${escapeHtml(s.studyName || "")}</b>
-                    <small>${s.seriesCount || 1} series · ${s.sliceCount || 0} lát</small>
+                    <b>${escapeHtml(studyHeadingLine(s))}</b>
+                    <small>${escapeHtml(studyCountLine(s))}</small>
                   </span>
-                  <span class="meta">${escapeHtml(s.modality || "DICOM")}</span>
-                  <span class="media">
-                    ${sm.dicom ? `<span class="mtag dicom"><i></i>${sm.dicom}</span>` : ""}
-                    ${sm.photo ? `<span class="mtag photo"><i></i>${sm.photo}</span>` : ""}
-                    ${sm.video ? `<span class="mtag video"><i></i>${sm.video}</span>` : ""}
-                    ${sm.doc ? `<span class="mtag doc"><i></i>${sm.doc}</span>` : ""}
-                  </span>
-                  <span class="badge ${s.status || "done"}">${escapeHtml(s.statusLabel || t("Đã tải"))}</span>
+                  <span class="meta">${escapeHtml(s.modality ? t(s.modality) : "—")}</span>
+                  <span class="media">${mediaTags(s.mediaCounts)}</span>
+                  <span class="badge ${s.status || "done"}">${escapeHtml(t(s.statusLabel || "Đã tải"))}</span>
                   <span class="rowacts">
+                    ${s.status === "part" && s.viewerUrl ? `
+                      <button class="soft-button" type="button" data-action="resume-study-download" data-url="${escapeHtml(s.viewerUrl)}">
+                        ${escapeHtml(t("Tải tiếp"))}
+                      </button>
+                    ` : ""}
                     <button class="soft-button primary" type="button" data-action="open-study-viewer" data-folder="${escapeHtml(s.folder || "")}" ${s.status === "miss" ? "disabled" : ""}>
                       ${escapeHtml(t("Mở viewer"))}
                     </button>
-                    <button class="soft-button" type="button" data-action="reveal-study-folder" data-folder="${escapeHtml(s.folder || "")}">
+                    <button class="soft-button" type="button" data-action="reveal-study-folder" data-folder="${escapeHtml(s.folder || "")}" ${s.status === "miss" ? "disabled" : ""}>
                       ${escapeHtml(t("Thư mục"))}
                     </button>
                   </span>
                 </div>
-              `;
-            }).join("")}
+              `).join("")}
           </div>
         `;
       }).join("")}
@@ -881,6 +962,91 @@ function bindWorklistOpenButtons(host) {
       if (folder) openHistoryEntry({ folder });
     });
   });
+
+  host.querySelectorAll("[data-action='resume-study-download']").forEach((button) => {
+    button.addEventListener("click", (e) => {
+      e.stopPropagation();
+      resumeStudyDownload(button.dataset.url || "");
+    });
+  });
+}
+
+/**
+ * Load a half-finished study's viewer link back into the download panel.
+ *
+ * The manifest kept the link the first run came from, and the download panel
+ * already knows how to resume: "Thử lại" merges into the folder that run
+ * created and skips slices on disk. So this hands the link to that flow rather
+ * than opening a second, parallel download path.
+ */
+function resumeStudyDownload(url) {
+  if (!url) {
+    setStatus(t("Ca chụp này không lưu link viewer để tải tiếp."), true);
+    return;
+  }
+  state.lastDirectUrl = url;
+  state.showManualInfo = true;
+  state.downloadOpen = true;
+  render();
+  const field = getDomRoot()?.querySelector("#direct-url");
+  if (field) {
+    field.value = url;
+    field.focus();
+  }
+  setStatus(t("Đã nạp link của ca chụp. Quét series rồi bấm Thử lại để tải tiếp."));
+}
+
+/** Human-readable byte size, matching what the backend formats per patient. */
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const power = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  const scaled = value / Math.pow(1024, power);
+  return `${scaled.toFixed(power === 0 ? 0 : 1)} ${units[power]}`;
+}
+
+/**
+ * Inner HTML of the summary strip above the tree.
+ *
+ * Every tile is a sum over the rows actually on screen — nothing here is a
+ * target, an estimate or a carried-over mockup number. A tile whose input was
+ * never measured (video length on folders the pipeline did not download) is
+ * dropped rather than shown as zero.
+ */
+function renderWorklistSummaryInner() {
+  const patients = filteredPatientList();
+  const studies = patients.flatMap((p) => p.studies || []);
+  const sliceTotal = studies.reduce(
+    (sum, s) => sum + (Number.isFinite(s.sliceCount) ? s.sliceCount : 0), 0,
+  );
+  const sizeTotal = patients.reduce((sum, p) => sum + (Number(p.totalSizeBytes) || 0), 0);
+  const durationTotal = studies.reduce(
+    (sum, s) => sum + (Number.isFinite(s.durationSeconds) ? s.durationSeconds : 0), 0,
+  );
+  const needsAttention = studies.filter((s) => s.status === "part" || s.status === "miss").length;
+
+  const tiles = [
+    { value: patients.length, label: t("bệnh nhân") },
+    { value: studies.length, label: t("hồ sơ") },
+    { value: sliceTotal.toLocaleString("vi-VN"), label: t("ảnh & lát") },
+  ];
+  if (durationTotal > 0) {
+    const minutes = String(Math.floor(durationTotal / 60)).padStart(2, "0");
+    const seconds = String(Math.round(durationTotal % 60)).padStart(2, "0");
+    tiles.push({ value: `${minutes}:${seconds}`, label: t("phút video") });
+  }
+  if (sizeTotal > 0) tiles.push({ value: formatBytes(sizeTotal), label: t("trên đĩa") });
+  if (needsAttention > 0) {
+    tiles.push({ value: needsAttention, label: t("cần xử lý"), alert: true });
+  }
+
+  return tiles.map((tile) => `
+    <div class="activity-stat${tile.alert ? " alert" : ""}">
+      <b>${escapeHtml(String(tile.value))}</b>
+      <small>${escapeHtml(tile.label)}</small>
+    </div>
+  `).join("");
 }
 
 function renderStudyListPanel() {
@@ -888,6 +1054,8 @@ function renderStudyListPanel() {
     <div class="worklist-filter-bar filters">
       <input type="search" data-field="worklist-search" placeholder="${escapeHtml(t("Tìm theo tên hoặc mã bệnh nhân, đợt khám…"))}" value="${escapeHtml(state.worklistSearch || "")}">
     </div>
+
+    <div class="worklist-summary activity-summary">${renderWorklistSummaryInner()}</div>
 
     <div class="worklist-tree">${renderWorklistTreeInner()}</div>
   `;
@@ -1831,13 +1999,9 @@ function bindEvents() {
   bindWorklistOpenButtons(app);
   app.querySelector("[data-field='worklist-search']")?.addEventListener("input", (event) => {
     state.worklistSearch = event.target.value;
-    const tree = app.querySelector(".worklist-tree");
-    if (!tree) return;
-    tree.innerHTML = renderWorklistTreeInner();
-    bindWorklistOpenButtons(tree);
-    // The Study List tab shows the match count, so it has to follow the box.
-    const count = app.querySelector(".worklist-tab[data-worklist-tab='studies'] .worklist-tab-count");
-    if (count) count.textContent = String(filteredPatientList().length);
+    // Tree, summary tiles and tab count all read the filtered list, so they
+    // are repainted together rather than drifting apart.
+    refreshStudyListPanel();
   });
   app.querySelectorAll("[data-series-id]").forEach((element) => {
     element.addEventListener("click", async () => {
@@ -2171,8 +2335,15 @@ async function action(name, element = null) {
       return;
     }
     if (name === "worklist-tab") {
-      state.worklistTab = element?.dataset?.worklistTab || "studies";
+      const next = element?.dataset?.worklistTab === "activity" ? "activity" : "studies";
+      // Clicking the tab that is already open must not rebuild the shell: a
+      // full render tears down and re-creates the viewer canvas below it.
+      if (next === state.worklistTab) return;
+      state.worklistTab = next;
       render();
+      // Coming back to the Study List is the moment a stale count shows, so
+      // the scan is re-run instead of trusting whatever was cached.
+      if (next === "studies") refreshWorklist();
       return;
     }
     if (name === "choose-archive") {
@@ -2349,13 +2520,6 @@ async function action(name, element = null) {
     }
     if (name === "stop-job") {
       await api("/api/job/stop", { method: "POST", body: "{}" });
-      return;
-    }
-    if (name === "worklist-tab") {
-      const next = element?.dataset.worklistTab === "activity" ? "activity" : "studies";
-      if (next === state.worklistTab) return;
-      state.worklistTab = next;
-      render();
       return;
     }
     if (name?.startsWith("mode-")) {
@@ -3404,8 +3568,10 @@ async function pollJob() {
       return;
     }
     
-    // Any finished job may have added a folder worth remembering.
+    // Any finished job may have added a folder worth remembering — and may
+    // have changed what is on disk, so the scanned tree is re-read too.
     refreshHistory();
+    refreshWorklist();
   }
 }
 
@@ -3600,6 +3766,9 @@ async function boot() {
   state.status = t("Sẵn sàng. Nhấn ⌨ trên thanh công cụ để xem phím tắt.");
   render();
   autoPasteFromClipboard();
+  // The scan walks every study folder, so it is not awaited: the shell paints
+  // from history first and the tree swaps to real counts when they land.
+  refreshWorklist();
   await renderViewer();
 }
 
@@ -3624,6 +3793,10 @@ export {
   filteredPatientList,
   getEffectiveWorklistPatients,
   renderWorklistTreeInner,
+  renderWorklistSummaryInner,
+  refreshWorklist,
+  studyHeadingLine,
+  studyCountLine,
   getSeriesMediaType,
   getPhotoSourcePath,
   getVideoSourcePath,

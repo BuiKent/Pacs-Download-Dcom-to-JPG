@@ -251,30 +251,8 @@ button { cursor: pointer; }
   font-weight: 700;
   color: var(--panel-title-fg, #8fd3ff);
 }
-.worklist-stats {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.worklist-stat-card {
-  display: flex;
-  flex-direction: column;
-  padding: 8px 14px;
-  border-radius: var(--control-radius, 6px);
-  border: 1px solid var(--list-border, #1c2a36);
-  background: var(--panel-bg, #0b1119);
-  min-width: 100px;
-}
-.worklist-stat-card .stat-num {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--field-fg, #e7f1f8);
-}
-.worklist-stat-card .stat-label {
-  font-size: 10px;
-  color: var(--label-muted, #7890a2);
-  text-transform: uppercase;
-}
+/* Stat tiles live under `.activity-summary` / `.activity-stat`, shared by both
+   worklist tabs so the two strips read as one thing. */
 .worklist-filter-bar {
   display: flex;
   gap: 10px;
@@ -404,6 +382,13 @@ button { cursor: pointer; }
   border-radius: var(--control-radius);
   background: var(--panel-bg);
 }
+/* A study that stopped early or lost its folder needs a human, so its tile is
+   the one thing on the strip allowed to pull the eye. */
+.activity-stat.alert {
+  border-color: var(--warn-fg, #d9730d);
+  background: var(--warn-bg, #fadec9);
+}
+.activity-stat.alert b { color: var(--warn-fg, #d9730d); }
 .activity-stat b { font-size: 19px; color: var(--field-fg); }
 .activity-stat small {
   color: var(--label-muted);
