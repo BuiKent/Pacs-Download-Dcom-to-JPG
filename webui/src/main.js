@@ -678,6 +678,20 @@ function renderPhotoEditorStudio(series) {
 }
 
 /**
+ * The loaded text document, but only when it belongs to `series`.
+ *
+ * Both halves must be checked explicitly. Comparing `state.textDoc?.seriesId`
+ * against `series?.id` looks equivalent and is not: with no archive open and
+ * nothing loaded, both sides are `undefined`, the comparison passes, and the
+ * caller dereferences a null document. That is what made the app fail to boot
+ * with an empty archive.
+ */
+function currentTextDoc(series) {
+  if (!series || !state.textDoc) return null;
+  return state.textDoc.seriesId === series.id ? state.textDoc : null;
+}
+
+/**
  * The text/JSON reading pane.
  *
  * Content arrives from `/api/series/<id>/text` after the pane mounts, so this
@@ -687,7 +701,7 @@ function renderPhotoEditorStudio(series) {
  */
 function renderTextViewer(series) {
   if (!series) return `<div class="empty-state"><b>${escapeHtml(t("Chưa có văn bản nào"))}</b></div>`;
-  const doc = state.textDoc && state.textDoc.seriesId === series.id ? state.textDoc : null;
+  const doc = currentTextDoc(series);
   const total = Number(series.sliceCount) || 1;
   const index = doc ? doc.index : 0;
 
@@ -1965,8 +1979,9 @@ async function loadTextContent(series, index = 0) {
 function bindTextViewerButtons(host) {
   if (!host) return;
   const series = selectedSeries();
-  const total = Number(series?.sliceCount) || 1;
-  const index = state.textDoc?.seriesId === series?.id ? state.textDoc.index : 0;
+  if (!series) return;
+  const total = Number(series.sliceCount) || 1;
+  const index = currentTextDoc(series)?.index || 0;
 
   host.querySelector("[data-action='text-prev']")?.addEventListener("click", () => {
     if (index > 0) loadTextContent(series, index - 1);
@@ -3488,7 +3503,7 @@ function renderViewer() {
     clearViewer();
     state.busyViewer = false;
     app.querySelector(".status-dot")?.classList.remove("busy");
-    loadTextContent(series, state.textDoc?.seriesId === series.id ? state.textDoc.index : 0);
+    loadTextContent(series, currentTextDoc(series)?.index || 0);
     return Promise.resolve();
   }
   if (mediaType === "video" || mediaType === "photo" || mediaType === "doc") {
@@ -4044,6 +4059,7 @@ export {
   buildMediaTimeline,
   downloadPanelVisible,
   loadTextContent,
+  bindTextViewerButtons,
   renderViewer,
   initMediaEvents,
   groupSeriesHierarchically,

@@ -2,7 +2,13 @@
 
 import { describe, expect, it, beforeEach } from "vitest";
 import { setLanguage } from "./i18n.js";
-import { state, renderPatientRail, buildMediaTimeline, downloadPanelVisible } from "./main.js";
+import {
+  state,
+  renderPatientRail,
+  buildMediaTimeline,
+  downloadPanelVisible,
+  bindTextViewerButtons,
+} from "./main.js";
 
 const PATIENT = {
   patientId: "2607063527",
@@ -118,5 +124,28 @@ describe("Download column belongs to the worklist tab", () => {
     state.activeTabId = "worklist";
     state.downloadOpen = false;
     expect(downloadPanelVisible()).toBe(false);
+  });
+});
+
+describe("Boot with an empty archive", () => {
+  beforeEach(() => {
+    setLanguage("vi");
+    state.activeTabId = "worklist";
+    state.textDoc = null;
+    state.selectedId = "";
+    state.archive = { root: "", patient: {}, series: [] };
+  });
+
+  it("wires the text pane without a loaded document or a selected series", () => {
+    // `state.textDoc?.seriesId === series?.id` compares undefined to undefined
+    // and passes, so the old code dereferenced a null document here and the
+    // app died on startup with "Cannot read properties of null".
+    document.body.innerHTML = `<div id="app"></div>`;
+    expect(() => bindTextViewerButtons(document.querySelector("#app"))).not.toThrow();
+  });
+
+  it("renders the rail and an empty timeline instead of throwing", () => {
+    expect(() => renderPatientRail()).not.toThrow();
+    expect(renderPatientRail()).toContain("Chưa có dữ liệu nào trong hồ sơ này.");
   });
 });
