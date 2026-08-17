@@ -228,7 +228,7 @@ def _maybe_base64_decode(body: bytes) -> bytes:
     if not stripped or len(stripped) < 100:
         return body
     if _guess_ext(stripped) is not None:
-        return body  # đã là nhị phân nhận diện được
+        return body  # Already a recognized binary format
     if re.fullmatch(rb"[A-Za-z0-9+/=\r\n]+", stripped):
         try:
             decoded = base64.b64decode(stripped + b"=" * (-len(stripped) % 4))
@@ -262,7 +262,7 @@ def _multipart_parts(body: bytes, content_type: str = "") -> "list[tuple[str, by
     parts = []
     for chunk in body.split(sep)[1:]:
         if chunk[:2] == b"--":
-            break  # dấu kết thúc multipart
+            break  # End of multipart marker
         head, brk, payload = chunk.partition(b"\r\n\r\n")
         if not brk:
             continue
@@ -319,11 +319,11 @@ _FRAME_ACCEPT_LADDER = (
 
 
 def _frame_transfer_syntax(frame_ct: str) -> Optional[str]:
-    """Transfer Syntax của một frame WADO-RS, suy từ Content-Type.
+    """Transfer Syntax of a WADO-RS frame inferred from Content-Type.
 
-    Trả UID khi tra ra; `""` khi không có thông tin nén (coi như dữ liệu thô);
-    `None` khi là ảnh/video đã nén mà KHÔNG tra ra được — lúc đó phải từ chối
-    dựng file, vì đoán bừa thành "chưa nén" sẽ cho ra ảnh sai.
+    Returns UID when mapped; `""` when no compression info is present (treated as raw uncompressed);
+    `None` when it is compressed media that CANNOT be mapped — must refuse file reconstruction,
+    since blindly guessing "uncompressed" produces corrupt/misrepresented images.
     """
     ct = (frame_ct or "").lower()
     m = re.search(r'transfer-syntax="?([0-9][0-9.]+)"?', ct)
@@ -338,10 +338,10 @@ def _frame_transfer_syntax(frame_ct: str) -> Optional[str]:
 
 
 def _frame_ts_is_writable(frame_ct: str) -> bool:
-    """Dựng được file từ frame kiểu này không?
+    """Check if a DICOM file can be reconstructed from frames of this type.
 
-    Hỏi ngay sau frame đầu tiên để khỏi kéo hết cả stack vài trăm ảnh rồi mới
-    phát hiện không dùng được.
+    Queried immediately after the first frame to avoid downloading a multi-hundred-slice
+    stack only to discover it cannot be written.
     """
     ts = _frame_transfer_syntax(frame_ct)
     if ts is None:
@@ -358,10 +358,9 @@ def _frame_ts_is_writable(frame_ct: str) -> bool:
 def _dicom_from_meta_frames(meta: dict, frames: "list[bytes]",
                             frame_ct: str) -> Optional[bytes]:
     """
-    Dựng lại file DICOM Part-10 hoàn chỉnh từ metadata (DICOM+JSON của WADO-RS
-    /metadata) + dữ liệu điểm ảnh lấy từ /frames/N. Cần cho viewer chỉ phát ảnh
-    theo frame (vd PACS OHIF của BV Đa khoa Hà Tĩnh) — không có endpoint nào
-    trả file DICOM trọn vẹn.
+    Reconstruct a complete Part-10 DICOM file from metadata (WADO-RS /metadata DICOM+JSON)
+    and pixel data fetched from /frames/N. Required for viewers that only serve images
+    frame-by-frame (e.g. OHIF PACS at Ha Tinh General Hospital) with no direct WADO-RS instance endpoint.
     """
     try:
         import io
@@ -404,7 +403,7 @@ def _dicom_from_meta_frames(meta: dict, frames: "list[bytes]",
                                          or generate_uid())
         fm.TransferSyntaxUID = ts_uid
         ds.file_meta = fm
-        try:  # pydicom 2.x cần 2 cờ này; pydicom 3 tự suy từ file_meta
+        try:  # pydicom 2.x requires these two flags; pydicom 3 infers them from file_meta
             ds.is_little_endian = ts_uid.is_little_endian
             ds.is_implicit_VR = ts_uid.is_implicit_VR
         except Exception:
@@ -422,16 +421,16 @@ def _dicom_from_meta_frames(meta: dict, frames: "list[bytes]",
 
 def ensure_browser(log: LogFn = _default_log) -> None:
     """
-    Tự tải nhân Chromium nếu máy chưa có (~150MB, chỉ 1 lần).
-    Rất hữu ích khi đóng gói .exe và đem sang máy mới: lần bấm Tải đầu tiên sẽ tự
-    tải ngầm Chromium, các lần sau chạy ngay.
+    Auto-download Chromium binaries if not present locally (~150MB, one-time).
+    Useful when packaged as a standalone .exe on a fresh workstation: the first download
+    fetches Chromium in the background, and subsequent runs start immediately.
     """
     import os
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             if os.path.exists(p.chromium.executable_path):
-                return  # đã có sẵn
+                return  # Already installed
     except Exception:
         pass
 
@@ -472,7 +471,7 @@ def _log_browser_notice_once(log: LogFn, browser_name: str) -> None:
 
 
 def _installed_chrome_paths() -> list[Path]:
-    """Các vị trí Chrome có thể bị Playwright bỏ sót trên một số máy Windows."""
+    """System Chrome installation paths that Playwright might miss on Windows."""
     roots = [
         os.environ.get("PROGRAMFILES"),
         os.environ.get("PROGRAMFILES(X86)"),
@@ -494,11 +493,11 @@ def _short_browser_error(exc: Exception) -> str:
 
 def _launch_chromium(p, headless: bool, log: LogFn):
     """
-    Tự động ưu tiên trình duyệt theo thứ tự:
-    1. Google Chrome (nếu máy có sẵn)
-    2. Safari / WebKit (nếu chạy trên macOS)
-    3. Microsoft Edge (nếu máy có sẵn mặc định trên Windows)
-    4. Tải ngầm Chromium của Playwright (~150MB, phương án dự phòng cuối cùng)
+    Launch browser with prioritized fallback order:
+    1. Google Chrome (if installed on system)
+    2. Safari / WebKit (if running on macOS)
+    3. Microsoft Edge (default on Windows)
+    4. Bundled Playwright Chromium (~150MB, final fallback)
     """
     global _CHROME_UNAVAILABLE
     with _BROWSER_STATE_LOCK:
@@ -1065,7 +1064,7 @@ def _redact_url(url: Any) -> str:
         return "<url không đọc được>"
 
 
-# Tài nguyên tĩnh của giao diện — ghi lại chỉ làm loãng báo cáo chẩn đoán.
+# Static UI assets — logging these would only clutter diagnostic reports.
 _STATIC_URL_SUFFIXES = (
     ".js", ".mjs", ".css", ".map", ".ico", ".png", ".jpg", ".jpeg", ".gif",
     ".svg", ".webp", ".woff", ".woff2", ".ttf", ".eot", ".html", ".htm",
@@ -1074,7 +1073,7 @@ _SEEN_URL_LIMIT = 40
 
 
 def _note_seen_url(cap: ViewerCapture, url: str) -> None:
-    """Ghi lại endpoint viewer đã gọi, để báo cáo khi không adapter nào nhận ra link."""
+    """Record endpoints invoked by viewer to aid diagnosis when no adapter matches."""
     if len(cap.seen_urls) >= _SEEN_URL_LIMIT:
         return
     if url.split("?")[0].casefold().endswith(_STATIC_URL_SUFFIXES):
@@ -1085,13 +1084,12 @@ def _note_seen_url(cap: ViewerCapture, url: str) -> None:
 
 
 def _dicomweb_study_from_qido(qido_series_url: Any) -> str:
-    """StudyInstanceUID tách được từ URL QIDO series, "" nếu không tách được.
+    """StudyInstanceUID extracted from QIDO series URL, or empty string if not found.
 
-    `DicomWebAdapter.is_ready()` và `_download_via_dicomweb()` PHẢI hỏi chung
-    hàm này. Trước đây adapter chỉ cần URL kết thúc "/series" là báo sẵn sàng,
-    còn phần tải lại đòi tách cho được ".../studies/<uid>/series" — dạng
-    top-level "/series?StudyInstanceUID=..." (cũng hợp chuẩn PS3.18) lọt qua
-    cửa adapter rồi chết ở phần tải, đốt mất một lượt thử mà không tải được gì.
+    `DicomWebAdapter.is_ready()` and `_download_via_dicomweb()` MUST share this exact same
+    function. Previously the adapter checked for URL ending in "/series" while the downloader
+    demanded ".../studies/<uid>/series" — top-level queries like "/series?StudyInstanceUID=..."
+    (valid per PS3.18) passed adapter checks but failed in the downloader, wasting a retry attempt.
     """
     from urllib.parse import urlparse
 
@@ -1720,9 +1718,9 @@ PACS_ADAPTERS: tuple[PacsAdapter, ...] = (
 
 
 def _observe_response(response, cap: ViewerCapture) -> bool:
-    """Cho mọi adapter soi một response. True = đây là manifest của một dòng PACS.
+    """Allow all adapters to inspect a response. True = recognized as a PACS manifest.
 
-    Một adapter hỏng không được phép làm hỏng cả phiên tải.
+    A failure in one adapter must never abort the entire download session.
     """
     for adapter in PACS_ADAPTERS:
         try:
@@ -1735,14 +1733,14 @@ def _observe_response(response, cap: ViewerCapture) -> bool:
 
 def compute_url_fingerprint(url: str, adapter_name: str = "") -> str:
     """
-    Tính fingerprint trung lập bảo mật từ URL viewer:
-    origin + normalized path family + query parameter names (KHÔNG lưu query values, token hay secret).
+    Compute privacy-safe structural fingerprint from viewer URL:
+    origin + normalized path family + query parameter names (NO query values, tokens, or secrets stored).
     """
     from urllib.parse import urlparse, parse_qs
     try:
         pu = urlparse(url)
         origin = f"{pu.scheme}://{pu.netloc}".lower() if pu.netloc else "generic"
-        # Chuẩn hóa path: thay DICOM UIDs chấm, UUIDs, hex dài và số ID thành placeholder '*'
+        # Normalize path: replace dotted DICOM UIDs, UUIDs, long hex tokens, and numeric IDs with '*'
         path = re.sub(r"\b\d+(\.\d+)+\b", "*", pu.path)
         path = re.sub(r"[0-9a-fA-F\-]{8,}", "*", path)
         path = re.sub(r"/\d+(?=/|$)", "/*", path)
@@ -2753,19 +2751,19 @@ def download_all(
 
     def on_response(response) -> None:
         try:
-            # Session/share bị server từ chối (vd PACS BV Hà Tĩnh trả 400 khi
-            # link hết hạn: /ws/rest/v1/session/<uuid>)
+            # Session/share rejected by server (e.g. Ha Tinh Hospital PACS returns 400 on
+            # expired links: /ws/rest/v1/session/<uuid>)
             if (cap.session_error is None and response.status >= 400
                     and re.search(r"/(session|share)s?/[0-9a-fA-F\-]{8,}", response.url)):
                 cap.session_error = str(response.status)
             _note_seen_url(cap, response.url)
-            # Manifest thì để adapter giữ, và KHÔNG đem đi lưu như ảnh.
+            # Manifests are retained by the adapter and are NOT saved as image files.
             if _observe_response(response, cap):
                 return
             if _want_capture(response) and capture_bodies:
-                save_body(response.body())  # bắt thụ động (bonus + an toàn cho fallback)
+                save_body(response.body())  # Passive sniffing (bonus + safety fallback)
         except Exception:
-            pass  # không để lỗi 1 response làm hỏng cả phiên
+            pass  # Prevent a single response error from failing the entire session
 
     def _have_manifest() -> bool:
         return _ready_adapter(cap) is not None
@@ -2774,7 +2772,7 @@ def download_all(
     with sync_playwright() as p:
         browser = _launch_chromium(p, headless, log)
         try:
-            # ignore_https_errors: chấp nhận chứng chỉ tự ký của PACS (HTTPS cổng lạ).
+            # ignore_https_errors: accept self-signed certificates on hospital PACS (HTTPS on non-standard ports).
             context = browser.new_context(viewport={"width": 1600, "height": 1000},
                                           ignore_https_errors=True)
             context.add_init_script(_ZFP_HOOK)
@@ -3248,7 +3246,7 @@ def _read_response_chunks(response, budget: Optional[DownloadBudget] = None,
 
 def _report_download_result(stats: DownloadStats, expected: int, log: LogFn,
                             stop: Callable[[], bool]) -> None:
-    """Kết luận đủ/thiếu. Thiếu thì phải nói THẲNG là thiếu."""
+    """Conclude study completeness. If incomplete, report clearly as incomplete."""
     expected = int(expected or 0)
     stats.expected = max(stats.expected, expected)
     if stop():
