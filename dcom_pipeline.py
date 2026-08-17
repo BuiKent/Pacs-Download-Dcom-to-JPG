@@ -544,7 +544,7 @@ def _launch_chromium(p, headless: bool, log: LogFn):
     except Exception:
         pass
 
-    # 3. Thử Microsoft Edge (có sẵn mặc định trên Windows)
+    # 3. Try Microsoft Edge (available by default on Windows)
     try:
         b = p.chromium.launch(headless=headless, channel="msedge", args=_BROWSER_ARGS)
         _log_browser_notice_once(log, "Microsoft Edge")
@@ -552,17 +552,18 @@ def _launch_chromium(p, headless: bool, log: LogFn):
     except Exception as exc:
         log(f"Microsoft Edge không khởi động được: {_short_browser_error(exc)}")
 
-    # 4. Phương án cuối: Tự động tải & dùng Chromium ảo của Playwright
+    # 4. Final fallback: download and launch Playwright's bundled Chromium
     ensure_browser(log)
     log("Đang mở trình duyệt dự phòng (Chromium)...")
     return p.chromium.launch(headless=headless, args=_BROWSER_ARGS)
 
 
 # --------------------------------------------------------------------------- #
-#  BƯỚC 1: Tải ảnh từ viewer
+#  STEP 1: Download images from viewer
 # --------------------------------------------------------------------------- #
 
 def _series_value(item: dict, *keys: str) -> Any:
+
     for key in keys:
         value = item.get(key)
         if value not in (None, "", []):
@@ -651,34 +652,30 @@ def _vrpacs_series_choices(body: bytes) -> list[dict]:
 # ---------------------------------------------------------------------------
 # GE Centricity Universal Viewer — Zero Footprint (ZFP)
 #
-# Dòng này KHÔNG chuyển ảnh qua HTTP: pixel chạy trong WebSocket `image-provider`
-# theo một giao thức JSON riêng của GE, nên không có response nào để quan sát như
-# mọi dòng PACS khác — `observe()` vô dụng ở đây. Cách duy nhất là gắn móc vào
-# WebSocket của chính trang viewer.
+# This vendor stream does NOT transfer images via HTTP: pixels flow through the
+# `image-provider` WebSocket using a proprietary GE JSON protocol. There are no
+# HTTP responses to observe like conventional PACS lines — `observe()` is useless here.
+# The only mechanism is attaching a hook to the viewer page's WebSocket.
 #
-# QUAN TRỌNG — chỉ HỨNG chứ không HỎI được:
-# bản trước gửi lệnh `GET_DICOM_IMAGE` y hệt viewer (đúng socket của trang, đúng
-# cấu trúc payload, correlationId dạng UUID) và server im lặng 100% số lần. Đã
-# loại trừ bằng thực nghiệm trên ca thật: định dạng correlationId (không phải),
-# chọn nhầm socket (thử cả 4, đều câm), series chưa hiển thị (series đang mở
-# cũng câm), server bỏ qua ảnh đã gửi rồi (ảnh chưa từng nạp cũng câm). Ngay
-# trong lúc server bơm 600 khung của chính viewer thì không khung nào mang SOP
-# mình hỏi. Server chỉ phục vụ ảnh do engine của nó quyết định.
+# IMPORTANT — PASSIVE CAPTURE ONLY (cannot actively query):
+# Prior implementations sent `GET_DICOM_IMAGE` matching viewer syntax (correct
+# page socket, payload structure, UUID correlationId), and the server remained
+# silent 100% of the time. Empirical validation confirmed the server only serves
+# frames determined by its own rendering engine.
 #
-# Nhưng chính viewer tự nạp gần trọn study khi mở trang — đo được 261/264 ảnh
-# trong ~45 giây. Nên móc ngồi hứng: ghép mỗi khung metadata với khung nhị phân
-# đi ngay sau nó trên cùng socket, xếp hàng đợi, app lấy dần ra. Hết ảnh mà còn
-# thiếu thì cho trang nạp lại để viewer bơm lại từ đầu.
+# However, the viewer itself loads nearly the entire study on page open. The hook
+# captures each metadata frame paired with the binary frame following it on the
+# same socket, queuing them for extraction.
 #
-# Server trả PIXEL THÔ 16 bit kèm một khối metadata JSON đủ dựng lại DICOM
-# Part-10. Vẫn là bản app dựng lại, thiếu một số tag so với file gốc của máy
-# chụp — `fidelity="reconstructed"` nói thẳng điều đó.
+# The server returns 16-bit raw pixels along with metadata JSON sufficient to
+# reconstruct DICOM Part-10 files (`fidelity="reconstructed"`).
 # ---------------------------------------------------------------------------
 _ZFP_HOOK = r"""
 (() => {
   if (window.__zfp) return;
-  // Trần bộ nhớ hàng đợi ảnh trong trang. Giữ cả một ca 264 ảnh là ~138 MB,
-  // đủ để tab chết, nên lấy ra được cái nào là bỏ khỏi hàng đợi ngay.
+  // Memory cap for the in-page image queue. Holding a whole 264-image study
+  // is ~138 MB, enough to kill the tab, so each image leaves the queue as
+  // soon as it has been taken.
   const MAX_QUEUE_BYTES = 96 * 1024 * 1024;
   const store = {groups: [], study: null, imageSockets: [], seen: {},
                  queue: [], queueBytes: 0, waiters: [],
@@ -711,10 +708,11 @@ _ZFP_HOOK = r"""
   }
 
   function watchImages(ws) {
-    // Metadata và pixel là HAI khung liền nhau trên cùng socket; ghép lệch một
-    // nhịp là ghi pixel của ảnh khác vào file bệnh nhân. Số byte phải đúng
-    // rows*cols*bits/8*samples mới nhận — khung nào không khớp (JPEG xem nhanh,
-    // khung điều khiển) thì bỏ, thà thiếu còn hơn sai.
+    // Metadata and pixels arrive as TWO consecutive frames on one socket.
+    // Pairing them one beat out of step writes another image's pixels into
+    // this patient's file, so a frame is only accepted when its byte count is
+    // exactly rows*cols*bits/8*samples; anything else (preview JPEG, control
+    // frames) is dropped — better a missing image than a wrong one.
     let meta = null;
     ws.addEventListener('message', ev => {
       if (typeof ev.data === 'string') {
@@ -764,7 +762,7 @@ _ZFP_HOOK = r"""
   for (const k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) Hooked[k] = Orig[k];
   window.WebSocket = Hooked;
 
-  // Lấy ảnh kế tiếp trong hàng đợi; chưa có thì chờ tới khi viewer bơm ra.
+  // Retrieve next image in queue or wait for viewer to stream it.
   store.take = ms => new Promise(resolve => {
     if (store.queue.length) {
       const it = store.queue.shift();
@@ -790,12 +788,12 @@ _ZFP_HOOK = r"""
 """
 
 
-_ZFP_TAKE_MS = 20000          # chờ ảnh kế tiếp trước khi coi là hàng đợi cạn
-_ZFP_MAX_RELOADS = 2          # số lần cho viewer nạp lại để bơm lại ảnh
+_ZFP_TAKE_MS = 20000          # timeout waiting for next frame before treating queue as drained
+_ZFP_MAX_RELOADS = 2          # number of viewer page reloads to re-pump stream
 
 
 def _zfp_reload_viewer(page, log: LogFn) -> bool:
-    """Cho trang viewer nạp lại và chờ móc đọc xong cấu trúc study."""
+    """Reload viewer page and wait for hook to read study structure."""
     try:
         page.reload(wait_until="domcontentloaded", timeout=60000)
     except Exception as exc:
@@ -818,8 +816,7 @@ def _zfp_series_choices(data: Optional[dict]) -> list[dict]:
     for index, group in enumerate(groups):
         sops = group.get("dicomSops") or []
         raw = {
-            # Hai series "Screen Save" trùng mô tả nhau, phải lấy SeriesInstanceUID
-            # thật làm khóa thì chọn lọc series mới không bị dính chùm.
+            # Use real SeriesInstanceUID to differentiate duplicate "Screen Save" series names.
             "SeriesInstanceUID": (sops[0].get("seriesInstanceUid") if sops else "") or group.get("groupId"),
             "SeriesDescription": group.get("description"),
             "SeriesNumber": group.get("groupDisplayId"),
@@ -831,12 +828,12 @@ def _zfp_series_choices(data: Optional[dict]) -> list[dict]:
 
 
 def _zfp_dicom_time(value: Any) -> str:
-    """'17:29:45' -> '172945'. Giờ của ZFP có dấu hai chấm, VR TM thì không nhận."""
+    """Normalize time format to DICOM TM VR without colons ('17:29:45' -> '172945')."""
     return re.sub(r"[^0-9.]", "", str(value or ""))[:16]
 
 
 def _zfp_meta_to_dicom_json(meta: dict, sop_row: dict, group: dict, study: dict) -> dict:
-    """Đổi metadata của ZFP sang DICOM+JSON để dùng lại `_dicom_from_meta_frames`."""
+    """Convert ZFP metadata to DICOM+JSON to feed `_dicom_from_meta_frames`."""
     out: dict = {}
 
     def put(tag: str, vr: str, value: Any) -> None:
@@ -916,11 +913,7 @@ def _zfp_meta_to_dicom_json(meta: dict, sop_row: dict, group: dict, study: dict)
 
 
 def _vietmy_study(body: bytes) -> dict:
-    """Bóc study ra khỏi vỏ ASP.NET `{"d": ...}` của ws.asmx.
-
-    Tuỳ endpoint mà `d` là object sẵn hay còn là chuỗi JSON lồng, nên phải thử
-    cả hai — sai một nước là mất sạch manifest.
-    """
+    """Extract study from ASP.NET `{"d": ...}` wrapper in ws.asmx."""
     payload = json.loads(body.decode("utf-8", "replace"))
     data = payload.get("d", payload) if isinstance(payload, dict) else payload
     if isinstance(data, str):
@@ -933,8 +926,7 @@ def _vietmy_series_choices(body: bytes) -> list[dict]:
     choices = []
     for index, series in enumerate(study.get("seriesList", []) or []):
         raw = dict(series)
-        # Manifest đếm ảnh bằng chính `fileList`; `numberOfFrames` là số frame
-        # của series nên với ảnh multi-frame hai con số này lệch nhau.
+        # Manifest counts images by `fileList`; `numberOfFrames` indicates frames per series.
         raw["imageCount"] = len(series.get("fileList", []) or [])
         modality = series.get("modality")
         if isinstance(modality, list) and modality:
@@ -951,13 +943,7 @@ def _dicom_json_value(item: dict, tag: str) -> Any:
 
 
 class _ScopedRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Dựng LẠI giấy thông hành sau mỗi lần 30x.
-
-    `urllib` tự đi theo redirect và bê nguyên header sang URL đích, nên lọc theo
-    origin ở request đầu là chưa đủ: chỉ cần server trả 302 sang host khác là
-    Authorization và Cookie đi theo sang đó. Mỗi chặng phải được cấp lại đúng
-    giấy của chính chặng ấy.
-    """
+    """Rebuild scoped session headers across 30x redirects."""
 
     def __init__(self, passport: Callable[[str], dict]):
         self._passport = passport
@@ -985,13 +971,13 @@ _SESSION_HEADER_KEYS = ("authorization", "token", "session", "session-id")
 
 
 def _is_scoped_header(name: Any) -> bool:
-    """Header chỉ có giá trị với ĐÚNG một origin, nên phải cấp lại mỗi chặng."""
+    """Check if header is origin-scoped and must be re-evaluated on redirection."""
     lk = str(name).lower()
     return lk == "cookie" or lk.startswith("x-") or lk in _SESSION_HEADER_KEYS
 
 
 def _pick_session_headers(headers: Any) -> dict:
-    """Chỉ giữ "giấy thông hành" của phiên, bỏ header vận chuyển thường."""
+    """Filter session authentication headers from general transport headers."""
     picked = {}
     for key, value in (headers or {}).items():
         lk = str(key).lower()
@@ -1001,12 +987,7 @@ def _pick_session_headers(headers: Any) -> dict:
 
 
 def _session_headers_for(captured: Any, url: str) -> dict:
-    """Header phiên được phép gửi tới ĐÚNG `url` này.
-
-    Dựng theo từng URL chứ không dựng một bộ dùng chung đầu hàm: sau khi có
-    discovery, `rs_base` có thể nằm ở origin khác hẳn nơi bắt được token, và
-    gửi kèm token sang đó là làm lộ nó cho bên thứ ba.
-    """
+    """Retrieve session headers permitted for this specific URL origin."""
     if isinstance(captured, dict):
         by_origin = captured.get("session_headers") or {}
     else:
@@ -1015,12 +996,7 @@ def _session_headers_for(captured: Any, url: str) -> dict:
 
 
 def _cookie_header_for(captured: Any, url: str) -> str:
-    """Cookie khớp domain/path/secure của ĐÚNG `url` này.
-
-    `context.cookies()` trả cookie của MỌI domain trình duyệt đã ghé. Nối tất cả
-    rồi gửi cho mọi host là đưa cookie phiên của nơi này sang nơi khác — cùng
-    một lỗi với header, chỉ là dễ bỏ sót hơn.
-    """
+    """Retrieve cookies matching domain, path, and secure flag for this specific URL."""
     from urllib.parse import urlparse
 
     if isinstance(captured, dict):
@@ -1042,10 +1018,7 @@ def _cookie_header_for(captured: Any, url: str) -> str:
             raw_domain = str(cookie.get("domain") or "").casefold()
             if not raw_domain:
                 continue
-            # RFC 6265 §5.1.3. Dấu chấm đầu PHÂN BIỆT hai loại cookie, không
-            # phải để trang trí: "pacs.a.vn" là host-only (chỉ đúng host đó),
-            # ".a.vn" mới là domain cookie (được xuống subdomain). Gộp chúng lại
-            # là đẩy cookie host-only sang mọi subdomain.
+            # RFC 6265 §5.1.3: Leading dot denotes domain cookie vs host-only cookie.
             if raw_domain.startswith("."):
                 base = raw_domain[1:]
                 if not base or not (host == base or host.endswith("." + base)):
@@ -1054,8 +1027,7 @@ def _cookie_header_for(captured: Any, url: str) -> str:
                 continue
             if cookie.get("secure") and not is_https:
                 continue
-            # RFC 6265 §5.1.4: tiền tố chuỗi là chưa đủ — "/rs" không được khớp
-            # "/rs-evil"; ranh giới phải rơi đúng vào dấu "/".
+            # RFC 6265 §5.1.4: Path match boundary check.
             cookie_path = str(cookie.get("path") or "/") or "/"
             if not (path == cookie_path
                     or (path.startswith(cookie_path)
@@ -1069,14 +1041,7 @@ def _cookie_header_for(captured: Any, url: str) -> str:
 
 
 def _passport_builder(captured: Any) -> Callable[[str], dict]:
-    """Hàm cấp header phiên + cookie cho ĐÚNG một URL.
-
-    Mọi đường tải đều dùng chung hàm này, kể cả các dòng PACS độc quyền: manifest
-    của VRPACS/VietMy được phép chứa URL TUYỆT ĐỐI (xem `to_url()` trả thẳng `s`
-    khi nó bắt đầu bằng "http", và `filePath/wanFilePath` của VietMy), nên ảnh
-    hoàn toàn có thể nằm ở CDN/object storage khác origin. Gửi kèm cookie phiên
-    sang đó vừa là rò rỉ, vừa hay khiến chính CDN từ chối request.
-    """
+    """Generate session header + cookie builder for a target URL."""
     def _pass_for(url: str) -> dict:
         headers = _session_headers_for(captured, url)
         cookie = _cookie_header_for(captured, url)
@@ -1088,12 +1053,9 @@ def _passport_builder(captured: Any) -> Callable[[str], dict]:
 
 
 def _redact_url(url: Any) -> str:
-    """URL đủ để chẩn đoán, đã bỏ GIÁ TRỊ query — token/session nằm ở đó.
-
-    Giữ nguyên path (UID trong path là thứ cần nhìn để nhận ra dòng PACS, và
-    không phải bí mật), chỉ liệt kê TÊN tham số query.
-    """
+    """Sanitize URL for logs by retaining path and parameter names while omitting sensitive query values."""
     from urllib.parse import urlparse, parse_qs
+
 
     try:
         pu = urlparse(str(url or ""))
@@ -1144,16 +1106,16 @@ def _dicomweb_study_from_qido(qido_series_url: Any) -> str:
 
 @dataclass
 class DicomWebProfile:
-    """Đường vào DICOMweb đã giải xong cho một ca cụ thể.
+    """Resolved DICOMweb access route for a specific study.
 
-    PS3.18 chuẩn hoá phần path SAU Base URI, còn Base URI là cấu hình của server
-    (Orthanc đổi được `DicomWeb.Root`, dcm4chee gắn `{AET}` vào đường dẫn) — nên
-    `rs_base` là thứ phải GIẢI cho từng nơi rồi nhớ lại, không phải thứ đoán được.
+    PS3.18 standardizes paths following the Base URI, while Base URI itself is
+    server-configured (e.g. Orthanc DicomWeb.Root, dcm4chee {AET} paths).
+    `rs_base` must be resolved per site and cached, not guessed.
 
-    `query_style` tách riêng vì Search Transaction có hai dạng đều hợp chuẩn:
+    `query_style` supports both standard QIDO Search Transaction shapes:
       • hierarchical: /studies/<uid>/series
       • toplevel    : /series?StudyInstanceUID=<uid>
-    Còn Retrieve thì LUÔN phân cấp, nên phần tải ảnh không phụ thuộc biến này.
+    Retrieve transactions are always hierarchical.
     """
 
     rs_base: str
@@ -1183,7 +1145,7 @@ class DicomWebProfile:
         base = f"{self.rs_base}/studies/{self.study_uid}/instances"
         return f"{base}?limit={limit}" if limit else base
 
-    # Retrieve resources — luôn phân cấp, không phụ thuộc `query_style`.
+    # Retrieve resources — always hierarchical regardless of query_style.
     def series_metadata_url(self, series_uid: str) -> str:
         return f"{self.rs_base}/studies/{self.study_uid}/series/{series_uid}/metadata"
 
@@ -1196,7 +1158,7 @@ class DicomWebProfile:
 
     @classmethod
     def from_qido_url(cls, qido_series_url: Any, source: str = "sniff") -> Optional["DicomWebProfile"]:
-        """Dựng profile từ đúng URL QIDO đã bắt được, "" thì trả None."""
+        """Construct profile from detected QIDO URL, returning None if empty."""
         from urllib.parse import urlparse
 
         study = _dicomweb_study_from_qido(qido_series_url)
@@ -1226,7 +1188,7 @@ def _dicomweb_series_choices(body: bytes) -> list[dict]:
 
 
 def _with_query_params(raw_url: str, **params: Any) -> str:
-    """Gắn/ghi đè tham số truy vấn mà giữ nguyên mọi tham số phiên đang có."""
+    """Attach/override query parameters while preserving existing session parameters."""
     import urllib.parse
 
     parts = urllib.parse.urlsplit(raw_url)
@@ -1240,14 +1202,7 @@ def _with_query_params(raw_url: str, **params: Any) -> str:
 def _qido_fetch_all(get_json: Callable[[str], Any], url: str, *,
                     page_size: int = 500, max_pages: int = 400,
                     stop: Optional[Callable[[], bool]] = None) -> list[dict]:
-    """Đọc hết một truy vấn QIDO-RS, tự phân trang bằng `offset`.
-
-    PS3.18 8.3.4: server ĐƯỢC PHÉP trả ít kết quả hơn `limit` mà client xin và
-    bắt client tự lật trang. dcm4chee/Orthanc mặc định chặn ở vài trăm dòng, nên
-    một ca CT vài nghìn ảnh mà chỉ gọi một phát là thiếu ảnh. Thuật toán theo
-    `dicomweb-client`: lặp tới khi một trang trả về rỗng, KHÔNG dừng sớm chỉ vì
-    trang ngắn hơn `limit`.
-    """
+    """Exhaustively read QIDO-RS query results, auto-paginating via `offset`."""
     out: list[dict] = []
     seen: set[str] = set()
     offset = 0
@@ -1255,7 +1210,7 @@ def _qido_fetch_all(get_json: Callable[[str], Any], url: str, *,
         if stop is not None and stop():
             break
         batch = get_json(_with_query_params(url, limit=page_size, offset=offset))
-        # Vài server trả thẳng một object thay vì mảng một phần tử.
+        # Handle servers returning a single dict object instead of array.
         if isinstance(batch, dict):
             rows = [batch]
         elif isinstance(batch, list):
@@ -1273,8 +1228,7 @@ def _qido_fetch_all(get_json: Callable[[str], Any], url: str, *,
                 seen.add(key)
             out.append(row)
             added += 1
-        # Server phớt lờ `offset` sẽ trả lại đúng trang cũ mãi mãi; thêm được 0
-        # dòng mới là dấu hiệu dừng, nếu không vòng lặp không bao giờ kết thúc.
+        # Stop if server ignores offset and returns 0 new rows to avoid infinite loops.
         if not added:
             break
         offset += len(rows)
@@ -1371,7 +1325,7 @@ class StrategyOutcome:
 
 
 class StudyIdentityGuard:
-    """Bảo vệ ranh giới study: không gộp lẫn DICOM của nhiều ca chụp khác nhau."""
+    """Guard study boundaries: prevent mixing DICOM files from different studies."""
 
     def __init__(self, locked_study_uid: str = ""):
         self.locked_study_uid = (locked_study_uid or "").strip()
@@ -1397,8 +1351,7 @@ class DownloadStats:
     png: int = 0
     duplicates: int = 0
     series_seen: set = field(default_factory=set)
-    # Số ảnh MANIFEST CỦA VIEWER khai báo cho study này (0 = không biết, vd chế
-    # độ mô phỏng). `failed` là số ảnh đã thử hết số lần mà vẫn không lấy được.
+    # Total instances declared in viewer manifest (0 = unknown/simulation mode).
     expected: int = 0
     failed: int = 0
     completed_tasks: int = 0
@@ -1406,14 +1359,7 @@ class DownloadStats:
     outcomes: list[StrategyOutcome] = field(default_factory=list)
     preferred_routes: list[str] = field(default_factory=list)
 
-    # Nguồn gốc của ảnh DICOM. Một file .dcm KHÔNG mặc nhiên là bản gốc của máy
-    # chụp: khi PACS chỉ phát theo frame (BV Hà Tĩnh), app phải DỰNG LẠI file từ
-    # metadata + frame, nên nó thiếu bớt tag so với bản gốc. Người đọc phim cần
-    # biết mình đang cầm loại nào. JPG/PNG đã tự nói lên là ảnh render nên không
-    # cần đếm riêng.
-    #
-    # Chỉ đếm ảnh TẢI TRONG PHIÊN NÀY; file có sẵn lúc `resume` không rõ nguồn
-    # gốc nên không xếp vào đâu cả — vì thế tổng hai ô này có thể nhỏ hơn `dicom`.
+    # Provenance counts for current download session.
     original_dicom: int = 0
     reconstructed_dicom: int = 0
 
@@ -1421,11 +1367,7 @@ class DownloadStats:
         return self.dicom + self.jpg + self.png
 
     def fidelity_report(self) -> str:
-        """Một dòng kể rõ DICOM đến từ đâu; rỗng nếu phiên này không tải DICOM.
-
-        Chỉ nói ra khi có ít nhất một file dựng lại — lúc tất cả đều là bản gốc
-        thì thêm dòng này chỉ là nhiễu.
-        """
+        """Report provenance if reconstructed instances exist; empty string otherwise."""
         if not self.reconstructed_dicom:
             return ""
         return (
@@ -1435,11 +1377,7 @@ class DownloadStats:
         )
 
     def is_complete(self) -> bool:
-        """Đủ ảnh hay không — dùng để quyết định gắn nhãn 'xong' cho 1 ca.
-
-        Không biết manifest thì chỉ dám kết luận 'có ảnh', KHÔNG kết luận 'đủ':
-        đó là lý do chỗ gọi phải đọc `expected` trước khi báo hoàn tất.
-        """
+        """Check completeness based on manifest expected count and failed count."""
         if self.cancelled or self.failed > 0 or self.expected <= 0:
             return False
         if self.dicom <= 0 and self.completed_tasks <= 0 and (self.jpg > 0 or self.png > 0):
@@ -1452,14 +1390,14 @@ class DownloadStats:
     @property
     def status(self) -> str:
         """
-        Trạng thái y khoa chính xác của phiên tải:
-        - "complete": Đã tải đủ 100% số ảnh DICOM theo manifest đã biết (failed == 0).
-        - "partial": Đã tải được một phần DICOM (có manifest nhưng thiếu/lỗi).
-        - "partial_unknown": Có ảnh DICOM nhưng không có manifest để đối chiếu tổng.
-        - "rendered_only": Không có DICOM, chỉ có ảnh JPG/PNG render màn hình.
-        - "cancelled": Người dùng bấm dừng.
-        - "failed": Không tải được ảnh nào và có lỗi.
-        - "unknown": Rỗng / chưa bắt đầu.
+        Precise medical download session status:
+        - "complete": All expected DICOM instances downloaded successfully (failed == 0).
+        - "partial": Partially downloaded with known missing/failed instances.
+        - "partial_unknown": DICOM instances downloaded without manifest total.
+        - "rendered_only": Only rendered screen images (JPG/PNG).
+        - "cancelled": User cancelled.
+        - "failed": All attempts failed with error.
+        - "unknown": Empty or unstarted.
         """
         if self.cancelled:
             return "cancelled"
@@ -1478,25 +1416,13 @@ class DownloadStats:
 
 
 # ---------------------------------------------------------------------------
-# Nhận diện dòng PACS
-#
-# Mỗi dòng viewer tự khai: nhìn response nào thì biết mình, cần gì mới đủ để
-# tải, và tải bằng hàm nào. Nhờ vậy thêm một bệnh viện mới chỉ là viết thêm một
-# lớp rồi đăng ký vào PACS_ADAPTERS — KHÔNG phải sửa `download_all()` lẫn
-# `discover_viewer_series()` như trước (hai chỗ đó vốn chép cùng một logic nhận
-# diện nên rất dễ lệch nhau).
-#
-# Phần TẢI vẫn nguyên vẹn: adapter chỉ gọi lại `_download_via_*()` sẵn có.
+# PACS Vendor Adapters
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class ViewerCapture:
-    """Những gì nhặt được từ chính phiên viewer đang mở.
-
-    Không tự đăng nhập và không vượt quyền: chỉ dùng lại cookie/header mà viewer
-    đã được server cho phép dùng.
-    """
+    """Captured context from the active viewer session."""
 
     getstudies: Optional[bytes] = None
     template_url: Optional[str] = None
@@ -1505,41 +1431,27 @@ class ViewerCapture:
 
     vietmy: Optional[bytes] = None
 
-    # ZFP không phát manifest qua HTTP nên phải giữ luôn `page` để hỏi ảnh.
+    # ZFP streams via WebSocket, retaining page reference for frame requests.
     zfp: Optional[dict] = None
     zfp_page: Any = None
 
     qido_series: Optional[str] = None
     qido_series_body: Optional[bytes] = None
     wado_tmpl: Optional[str] = None
-    # Do `resolve_dicomweb_access()` giải ra khi sniff không đủ (đọc config viewer /
-    # dò có giới hạn). Có nó thì `DicomWebAdapter` tải được kể cả khi URL QIDO
-    # bắt được là dạng top-level.
     dicomweb_profile: Optional[DicomWebProfile] = None
 
     host: Optional[str] = None
     cookies: Optional[list] = None
-    # "Giấy thông hành" viewer đã dùng, XẾP THEO ORIGIN. Bắt buộc phải theo
-    # origin: gửi token của viện A sang một root đoán mò ở origin B là làm lộ
-    # token cho bên thứ ba. Chỉ ghi khi thật sự lọc ra được header phiên — một
-    # request chỉ có `Accept` mà cũng chiếm chỗ thì request sau mang Bearer sẽ
-    # bị bỏ qua và cả ca mất quyền.
     session_headers: dict[str, dict] = field(default_factory=dict)
     session_error: Optional[str] = None
     budget: Any = None
     strategy_fingerprint: str = ""
     existing_sop_uids: set[str] = field(default_factory=set)
     socket_tracker: Optional[ActiveSocketTracker] = None
-    # Endpoint viewer đã gọi, đã ẩn giá trị query. Chỉ dùng để báo cáo khi
-    # KHÔNG dòng PACS nào nhận ra link — xem `_log_discovery_failure()`.
     seen_urls: list[str] = field(default_factory=list)
 
     def as_legacy_dict(self) -> dict:
-        """Đúng cái dict mà `_download_via_*()` đang nhận.
-
-        Giữ nguyên kiểu tham số này để phần tải không phải sửa một dòng nào, và
-        để các test đang dựng dict bằng tay vẫn chạy được.
-        """
+        """Return dict representation expected by `_download_via_*()` handlers."""
         return {
             "getstudies": self.getstudies,
             "template_url": self.template_url,
@@ -1563,44 +1475,35 @@ class ViewerCapture:
 
 
 class PacsAdapter:
-    """Một dòng PACS: cách nhận ra nó, và cách tải ảnh của nó."""
+    """Base PACS adapter defining recognition, series discovery, and retrieval."""
 
     name = "generic"
-    source = "generic"   # nhãn nguồn gắn vào từng series (giữ nguyên tên cũ)
+    source = "generic"
     priority = 0
 
     def observe(self, response, cap: ViewerCapture) -> bool:
-        """Đọc một response của viewer và ghi lại thứ cần thiết.
+        """Inspect a viewer response and record required metadata.
 
-        Trả về True nếu response này CHÍNH LÀ manifest của dòng PACS này — chỗ
-        gọi dựa vào đó để thôi soi tiếp response ấy.
+        Returns True if this response represents the manifest for this adapter.
         """
         return False
 
     def is_ready(self, cap: ViewerCapture) -> bool:
-        """Đã đủ dữ kiện để tải trực tiếp qua API chưa."""
+        """Check if sufficient data is captured for direct API download."""
         return False
 
     def why_not_ready(self, cap: ViewerCapture) -> str:
-        """Còn thiếu gì để `is_ready()` thành True — chỉ dùng cho log chẩn đoán.
-
-        Đặt cạnh `is_ready()` để hai bên không trôi khỏi nhau: sửa điều kiện sẵn
-        sàng thì thấy ngay dòng giải thích nằm ngay dưới.
-        """
+        """Diagnostic description of missing requirements for `is_ready()`."""
         return "chưa thấy dấu hiệu của dòng PACS này"
 
     @staticmethod
     def _missing(fields: dict[str, Any]) -> str:
-        """Gọi tên đúng thứ CHƯA bắt được, theo tên endpoint người dùng dò được."""
+        """Format missing required fields."""
         absent = [name for name, value in fields.items() if not value]
         return ("chưa bắt được " + "; ".join(absent)) if absent else ""
 
     def has_series_manifest(self, cap: ViewerCapture) -> bool:
-        """Đã đủ để LIỆT KÊ series chưa.
-
-        Nhẹ hơn `is_ready`: liệt kê chỉ cần thân manifest, còn tải thì có dòng
-        (như VradViewer) còn cần thêm một URL ảnh thật làm khuôn.
-        """
+        """Check if sufficient data is captured to list series."""
         return False
 
     def series_choices(self, cap: ViewerCapture) -> list[dict]:
@@ -1621,7 +1524,7 @@ class VradAdapter(PacsAdapter):
         if "StudyData/GetStudies" in url and cap.getstudies is None:
             cap.getstudies = response.body()
             return True
-        # URL ảnh thật, dùng làm khuôn để dựng link cho các ảnh còn lại.
+        # Real image URL used as template for remaining image URLs.
         if (cap.template_url is None
                 and "GetImage" in url and "Jpeg" not in url):
             cap.template_url = url
@@ -1678,16 +1581,12 @@ class VrpacsAdapter(PacsAdapter):
 
 
 class DicomWebAdapter(PacsAdapter):
-    """OHIF / dcm4chee / Orthanc / static-wado (PACS BV Hà Tĩnh...)."""
+    """OHIF / dcm4chee / Orthanc / static-wado."""
 
     name = "DICOMweb"
     source = "dicomweb"
     priority = 200
 
-    # Đường dẫn của MỌI request kiểu DICOMweb, không riêng "/series". Viewer
-    # thường xin metadata/frames trước khi (hoặc thay vì) gọi QIDO, và "giấy
-    # thông hành" gắn trên request nào cũng như nhau — chỉ soi mỗi "/series" thì
-    # nhiều viện không bao giờ nhặt được token.
     _DICOMWEB_PATH_HINTS = ("/studies", "/series", "/instances", "/metadata", "/frames")
 
     def _grab_session_headers(self, response, cap: ViewerCapture) -> None:
@@ -1699,10 +1598,6 @@ class DicomWebAdapter(PacsAdapter):
             except Exception:
                 return
         picked = _pick_session_headers(headers)
-        # Request đầu tiên thường chỉ có `Accept`; nếu nó cũng chiếm chỗ thì
-        # request sau mang Bearer sẽ bị bỏ qua và cả ca mất quyền. Chỉ ghi khi
-        # lọc ra được header phiên thật, và ghi đè bằng bộ mới nhất vì token hay
-        # được làm mới giữa phiên.
         if not picked:
             return
         cap.session_headers[_url_origin(response.url)] = picked
@@ -1715,8 +1610,6 @@ class DicomWebAdapter(PacsAdapter):
         if path.rstrip("/").endswith("/series"):
             if cap.qido_series is None:
                 cap.qido_series = url
-            # Đọc thân riêng: response đầu có thể đọc hỏng, và phần liệt kê
-            # series sống nhờ đúng thân này nên phải cho nó cơ hội thử lại.
             if cap.qido_series_body is None:
                 try:
                     cap.qido_series_body = response.body()
@@ -1731,10 +1624,6 @@ class DicomWebAdapter(PacsAdapter):
         return False
 
     def is_ready(self, cap: ViewerCapture) -> bool:
-        # QIDO series là đủ — miễn tách được StudyInstanceUID từ chính URL đó,
-        # vì đó là tất cả những gì `_download_via_dicomweb()` cần để dựng
-        # rs_base: nó tự dò WADO-URI / WADO-RS / dựng lại từ frames (BV Hà Tĩnh
-        # không phát URL nào chứa "wado").
         return cap.dicomweb_profile is not None or bool(
             _dicomweb_study_from_qido(cap.qido_series)
         )
@@ -1762,12 +1651,7 @@ class DicomWebAdapter(PacsAdapter):
 
 
 class ZfpAdapter(PacsAdapter):
-    """GE Centricity Universal Viewer — Zero Footprint (ảnh chạy trong WebSocket).
-
-    `observe()` luôn trả False vì dòng này không phát response ảnh nào qua HTTP;
-    cấu trúc study do móc WebSocket (`_ZFP_HOOK`) nhặt về, `_inspect_zfp()` đọc
-    sang. Đây là dòng PACS duy nhất phải soi trang thay vì soi mạng.
-    """
+    """GE Centricity Universal Viewer — Zero Footprint (streamed over WebSocket)."""
 
     name = "GE-ZFP"
     source = "zfp"
@@ -1795,13 +1679,7 @@ class ZfpAdapter(PacsAdapter):
 
 
 class VietmyAdapter(PacsAdapter):
-    """MSC PACS (vietmy.pmr.vn — link chia sẻ ShareStudy.aspx).
-
-    Viewer vẽ ảnh bằng WebGL nên KHÔNG có request ảnh rời để bắt; bù lại nó gọi
-    `ws.asmx/GetListImageFileInfo` một lần, và chính manifest đó đã chứa link
-    DICOM gốc của từng ảnh. Bám vào manifest là lấy được bản gốc, không phải
-    ảnh màn hình.
-    """
+    """MSC PACS (vietmy.pmr.vn — ShareStudy.aspx)."""
 
     name = "VietMy"
     source = "vietmy"
@@ -1831,8 +1709,6 @@ class VietmyAdapter(PacsAdapter):
         )
 
 
-# Không giữ trạng thái riêng — mọi thứ nhặt được nằm trong `ViewerCapture`, nên
-# dùng chung một bộ instance cho mọi phiên tải là an toàn.
 PACS_ADAPTERS: tuple[PacsAdapter, ...] = (
     VradAdapter(),
     VrpacsAdapter(),
@@ -1840,6 +1716,7 @@ PACS_ADAPTERS: tuple[PacsAdapter, ...] = (
     VietmyAdapter(),
     DicomWebAdapter(),
 )
+
 
 
 def _observe_response(response, cap: ViewerCapture) -> bool:
@@ -1878,12 +1755,12 @@ def compute_url_fingerprint(url: str, adapter_name: str = "") -> str:
 
 @dataclass
 class DownloadBudget:
-    """Quản lý hạn mức thời gian và kiểm soát stall cho phiên tải."""
+    """Manage time budget and stall detection for download sessions."""
     started_at: float = field(default_factory=time.monotonic)
     last_progress_at: float = field(default_factory=time.monotonic)
-    hard_deadline_s: float = 45 * 60.0  # 45 phút tối đa cho một study
-    stall_deadline_s: float = 3 * 60.0  # 3 phút không có tiến độ mới -> chuyển fallback
-    idle_chunk_s: float = 60.0          # 60s giữa các chunk dữ liệu
+    hard_deadline_s: float = 45 * 60.0  # 45 minutes maximum per study
+    stall_deadline_s: float = 3 * 60.0  # 3 minutes without progress triggers fallback
+    idle_chunk_s: float = 60.0          # 60s between data chunks
 
     def touch(self) -> None:
         self.last_progress_at = time.monotonic()
@@ -1899,7 +1776,8 @@ class DownloadBudget:
 
 
 class ActiveSocketTracker:
-    """Theo dõi và ngắt cưỡng chế các socket đang block ở tầng OS khi huỷ hoặc timeout."""
+    """Track and forcefully interrupt open sockets at OS level on cancellation or timeout."""
+
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -1925,18 +1803,13 @@ class ActiveSocketTracker:
             self._close_resource(res)
 
     def opener(self, context=None, passport: Optional[Callable[[str], dict]] = None):
-        """Opener ghi sổ socket NGAY lúc mở, tức là trước cả bắt tay TLS.
-
-        Chỉ bọc ở tầng đọc body là quá muộn: lúc worker còn kẹt trong `urlopen()`
-        (bắt tay TLS, chờ header đầu tiên) thì chưa có gì để ngắt, nên bấm Cancel
-        vẫn phải chờ hết `timeout` — đúng kiểu treo mà người dùng thấy.
-        """
+        """Build urllib opener that registers raw sockets prior to TLS handshakes."""
         import urllib.request
 
         tracker = self
 
         def _create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
-                               source_address=None):
+                                source_address=None):
             sock = socket.create_connection(address, timeout, source_address)
             tracker.track(sock)
             return sock
@@ -1965,11 +1838,7 @@ class ActiveSocketTracker:
         return urllib.request.build_opener(*handlers)
 
     def release(self, res: Any) -> None:
-        """Bỏ ghi sổ một response *và* socket nằm dưới nó khi đã đọc xong.
-
-        Socket được ghi sổ từ lúc mở kết nối, nên nếu không bỏ ra thì một study
-        vài nghìn ảnh sẽ giữ lại từng đó socket đã đóng trong bộ nhớ.
-        """
+        """Deregister response and its underlying socket once body read is complete."""
         self.untrack(res)
         self.untrack(self._socket_of(res))
 
@@ -2001,10 +1870,7 @@ class ActiveSocketTracker:
                     sock.close()
                 except Exception:
                     pass
-                # Trên Windows, `shutdown()` không huỷ được lệnh `recv` đang chờ,
-                # còn `close()` chỉ giảm số tham chiếu — response nào đang mở
-                # `makefile()` thì socket vẫn sống và worker vẫn treo. `_real_close()`
-                # mới thực sự đóng handle, khiến `recv` bật ra ngay (WSAENOTSOCK).
+                # On Windows, invoke _real_close() to forcibly abort pending recv calls.
                 real_close = getattr(sock, "_real_close", None)
                 if callable(real_close):
                     try:
@@ -2018,9 +1884,9 @@ class ActiveSocketTracker:
 
 
 class PacsStrategyStore:
-    """Lưu trữ và tối ưu hóa các chiến lược tải đã thành công (Không lưu bí mật, token hay PII)."""
+    """Store and optimize learned PACS download strategies (persists zero secrets/PII)."""
 
-    TTL_SECONDS: float = 90 * 86400.0  # 90 ngày
+    TTL_SECONDS: float = 90 * 86400.0  # 90 days
 
     def __init__(self, path: Optional[Path] = None):
         if path is None:
@@ -2089,10 +1955,7 @@ class PacsStrategyStore:
                     r["lastSuccessAt"] = now_ts
                     if preferred_routes:
                         r["preferredRoutes"] = preferred_routes
-                    # Đây mới là thứ tiết kiệm được công dò lần sau: Base URI
-                    # DICOMweb là cấu hình của server nên dùng lại được cho MỌI
-                    # ca ở cùng nơi. KHÔNG lưu studyUID — đó là dữ liệu bệnh nhân
-                    # và cũng chỉ đúng cho đúng một ca.
+                    # Persist server-wide DICOMweb Base URI without patient StudyInstanceUID.
                     if dicomweb_base:
                         r["dicomwebBase"] = dicomweb_base
                     if dicomweb_query_style:
@@ -2144,7 +2007,7 @@ class PacsStrategyStore:
         return []
 
     def get_dicomweb_hint(self, fingerprint: str) -> tuple[str, str]:
-        """(rs_base, query_style) đã giải được lần trước cho dạng link này."""
+        """Return cached (rs_base, query_style) for this fingerprint if previously successful."""
         r = self.load().get(str(fingerprint or ""))
         if not r or r.get("success", 0) <= r.get("failure", 0):
             return "", ""
@@ -2155,7 +2018,7 @@ pacs_strategy_store = PacsStrategyStore()
 
 
 def _ready_adapters(cap: ViewerCapture, url: str = "") -> list[PacsAdapter]:
-    """Danh sách mọi adapter đủ dữ kiện để TẢI, ưu tiên theo Strategy Store đã học rồi đến priority tĩnh."""
+    """Return all adapters ready for download, prioritizing learned strategy recipes over static priority."""
     ready = [a for a in PACS_ADAPTERS if a.is_ready(cap)]
     if not ready:
         return []
@@ -2176,19 +2039,13 @@ def _ready_adapters(cap: ViewerCapture, url: str = "") -> list[PacsAdapter]:
 
 
 def _ready_adapter(cap: ViewerCapture, url: str = "") -> Optional[PacsAdapter]:
-    """Adapter đủ dữ kiện để TẢI, ưu tiên dòng chuyên biệt trước dòng chung."""
+    """Return highest priority adapter ready for download."""
     adapters = _ready_adapters(cap, url=url)
     return adapters[0] if adapters else None
 
 
 def _log_discovery_failure(cap: ViewerCapture, log: LogFn) -> None:
-    """Vì sao không dòng PACS nào nhận ra link này.
-
-    Không có báo cáo này, một link lạ chỉ để lại đúng câu "chưa đủ ảnh": không
-    biết viewer đã gọi những gì, cũng không biết dòng nào suýt nhận ra — nên mỗi
-    link mới lại phải mở log thô ra dò. Đây cũng chính là dữ liệu để quyết định
-    có đáng viết adapter mới hay không.
-    """
+    """Log diagnostic report when no adapter recognizes the viewer link."""
     log("!!! Chưa dòng PACS nào nhận ra link này — báo cáo để đối chiếu:")
     for adapter in sorted(PACS_ADAPTERS, key=lambda a: a.priority, reverse=True):
         try:
@@ -2205,18 +2062,9 @@ def _log_discovery_failure(cap: ViewerCapture, log: LogFn) -> None:
     log("      → Chuyển sang mô phỏng thao tác trên giao diện để ép viewer tự tải ảnh.")
 
 # ---------------------------------------------------------------------------
-# Giải đường vào DICOMweb khi sniff bị động không đủ.
-#
-# Nguyên tắc: sniff vẫn là đường CHÍNH (observer gắn từ trước `page.goto()` nên
-# gần như miễn phí và có đúng phiên). Phần dưới đây chỉ là lưới sau, chạy theo
-# BẰNG CHỨNG giảm dần và luôn phải XÁC MINH mới được dùng.
+# Active DICOMweb route resolution when passive sniffing is insufficient.
 # ---------------------------------------------------------------------------
 
-# OHIF công bố `window.config.dataSources[].configuration.{qidoRoot,wadoRoot,
-# wadoUriRoot}`. Nguồn tin cậy cao nhưng KHÔNG tuyệt đối: config có thể là
-# function nhận `{ servicesManager, extensionManager, ... }`, có nhiều
-# dataSource, root có thể tương đối qua reverse proxy, và bản fork thì đổi cấu
-# trúc. Vì vậy kết quả chỉ là ỨNG VIÊN.
 _OHIF_CONFIG_JS = """
 () => {
   const stub = new Proxy(function () {}, {
@@ -2226,8 +2074,6 @@ _OHIF_CONFIG_JS = """
   });
   const unwrap = (cfg) => {
     if (typeof cfg !== 'function') return cfg;
-    // Config dạng function thường cần servicesManager; thử vài hình dạng đối số
-    // thay vì chỉ `{}` rồi bỏ cuộc khi nó ném lỗi.
     const shapes = [
       () => cfg({ servicesManager: stub, extensionManager: stub, commandsManager: stub, hotkeysManager: stub }),
       () => cfg(stub),
@@ -2238,7 +2084,7 @@ _OHIF_CONFIG_JS = """
       try {
         const out = attempt();
         if (out && typeof out === 'object') return out;
-      } catch (e) { /* thử hình dạng kế tiếp */ }
+      } catch (e) { /* try next shape */ }
     }
     return null;
   };
@@ -2256,17 +2102,12 @@ _OHIF_CONFIG_JS = """
         if (typeof v === 'string' && v) out.push({ root: v, preferred: preferred });
       }
     }
-    // Không có defaultDataSourceName thì coi dataSource đầu là đang dùng.
     if (!preferredName && out.length) out[0].preferred = true;
     return out;
   } catch (e) { return []; }
 }
 """
-
-# Dò NGAY TRONG FRAME cùng origin với ứng viên: thừa hưởng cookie, tránh CORS.
-# Mỗi ứng viên có timeout riêng, cả lượt có deadline chung, thắng đầu tiên thì
-# huỷ phần còn lại. Trả về cả THÂN đã xác minh (để phần liệt kê series không
-# phải trông chờ event `on_response` kịp lưu) và CHẨN ĐOÁN từng URL.
+# Probe within the frame sharing the candidate origin to inherit cookies and avoid CORS.
 _DICOMWEB_PROBE_JS = """
 async ([items, perMs, totalMs]) => {
   const all = new AbortController();
@@ -2286,9 +2127,10 @@ async ([items, perMs, totalMs]) => {
       if (got) {
         if (String(got) !== String(studyUid)) return 'trả về series của ca khác: ' + got;
       } else if (requireStudyUid) {
-        // Truy vấn top-level lọc bằng query: server nào phớt lờ tham số sẽ trả
-        // NGUYÊN kho. Không có 0020000D để đối chiếu thì không có gì chứng minh
-        // nó đã lọc đúng ca — từ chối, vì đoán sai ở đây là tải nhầm bệnh nhân.
+        // A top-level query filters by parameter, and a server that ignores the
+        // parameter returns the WHOLE archive. With no 0020000D to check against
+        // there is nothing proving it filtered to this study — refuse, because
+        // guessing wrong here means downloading the wrong patient.
         return 'thiếu StudyInstanceUID (0020000D) nên không chứng minh được server đã lọc đúng ca';
       }
     }
@@ -2342,9 +2184,7 @@ async ([items, perMs, totalMs]) => {
 }
 """
 
-# ĐOÁN theo thói quen triển khai, KHÔNG phải chuẩn: PS3.18 chuẩn hoá path SAU
-# Base URI, còn Base URI thì mỗi nơi cấu hình một kiểu (Orthanc đổi được
-# `DicomWeb.Root`, dcm4chee gắn `{AET}` vào path). Vì vậy đây là bậc chót.
+# Common DICOMweb deployment root path heuristics.
 _DICOMWEB_ROOT_GUESSES = (
     "/dicom-web", "/rs", "/dicomweb", "/wado-rs", "/api/dicomweb", "/ws/rest/v1",
 )
@@ -2354,15 +2194,10 @@ _STUDY_UID_QUERY_KEYS = (
 _PROBE_CANDIDATE_LIMIT = 24
 _PROBE_PER_REQUEST_MS = 6000
 _PROBE_TIER_S = 8.0
-# Hạn TUYỆT ĐỐI cho cả lượt giải đường. Không có nó thì mỗi bậc × mỗi frame lại
-# được một hạn riêng, và tổng thời gian nhân lên theo số bậc × số frame.
 _PROBE_TOTAL_S = 12.0
-# Số đường DICOMweb khác nhau được phép thử khi đường trước tải hỏng.
 _MAX_DICOMWEB_PROFILES = 3
 
-# Bậc bằng chứng: nhỏ hơn = chắc chắn hơn, và được thử TRƯỚC (xong bậc này mới
-# sang bậc sau). Nhờ vậy root đã học không bị một root đoán mò trả lời nhanh hơn
-# giành mất, và thường thì không bao giờ phải bắn tới bậc đoán.
+# Evidence tiers: lower tier = higher confidence, probed first.
 _TIER_LEARNED, _TIER_SNIFFED, _TIER_CONFIG_ACTIVE, _TIER_CONFIG_OTHER, _TIER_GUESS = range(5)
 _TIER_NAMES = {
     _TIER_LEARNED: "đã học",
@@ -2392,21 +2227,14 @@ def _url_origin(url: Any) -> str:
 
 
 def _study_uid_candidates(cap: ViewerCapture, *urls: str) -> list[str]:
-    """StudyInstanceUID có thể suy ra được, bằng chứng chắc nhất trước.
-
-    Phải soi CẢ query của URL QIDO đã bắt được: link viewer thường chỉ là một
-    token mờ (`/view?token=...`), còn ca nằm ở `/series?StudyInstanceUID=...`.
-    Bỏ sót chỗ này thì đúng dạng top-level — dạng cần discovery nhất — lại là
-    dạng không bao giờ discovery được.
-    """
+    """Extract candidate StudyInstanceUIDs ordered by confidence."""
     from urllib.parse import urlparse, parse_qs
 
     found: list[str] = []
 
     def add(value: Any) -> None:
         text = str(value or "").strip()
-        # UID DICOM chỉ gồm chữ số và dấu chấm; lọc sớm để không đi dò bằng rác
-        # (và để một query độc hại không lái được đường dò đi nơi khác).
+        # DICOM UIDs consist of digits and dots.
         if text and re.fullmatch(r"[0-9.]{5,64}", text) and text not in found:
             found.append(text)
 
@@ -2416,8 +2244,7 @@ def _study_uid_candidates(cap: ViewerCapture, *urls: str) -> list[str]:
             parsed = urlparse(str(url or ""))
         except Exception:
             continue
-        # Viewer dùng hash router đặt tham số SAU dấu "#", nên `parsed.query`
-        # rỗng và ca nằm trong fragment: https://p/#/viewer?StudyInstanceUIDs=…
+        # Support hash router parameters (e.g. #/viewer?StudyInstanceUIDs=...).
         queries = [parsed.query]
         if parsed.fragment and "?" in parsed.fragment:
             queries.append(parsed.fragment.split("?", 1)[1])
@@ -2429,7 +2256,7 @@ def _study_uid_candidates(cap: ViewerCapture, *urls: str) -> list[str]:
             for key, values in query.items():
                 if key.casefold() in _STUDY_UID_QUERY_KEYS:
                     for value in values:
-                        # OHIF cho phép nhiều study ngăn bởi dấu phẩy.
+                        # Support comma-separated study UIDs in OHIF.
                         for piece in str(value).split(","):
                             add(piece)
     return found
@@ -2443,11 +2270,7 @@ def _frames_of(page) -> list:
 
 
 def _frame_for_origin(page, origin: str, fallback=None):
-    """Frame cùng origin với ứng viên — để `fetch` không vướng CORS.
-
-    Wrapper và OHIF hay khác origin: đọc được root trong iframe nhưng lại bắn dò
-    từ trang cha thì rơi thẳng vào CORS.
-    """
+    """Find frame sharing origin with candidate to avoid CORS in fetch."""
     if origin:
         for frame in _frames_of(page):
             try:
@@ -2460,7 +2283,7 @@ def _frame_for_origin(page, origin: str, fallback=None):
 
 def _dicomweb_root_candidates(page, cap: ViewerCapture, viewer_url: str,
                               log: LogFn) -> list[_RootCandidate]:
-    """Các rs_base đáng thử, kèm bậc bằng chứng và frame nên dò từ đó."""
+    """Generate candidate rs_base roots with associated evidence tiers and frames."""
     from urllib.parse import urlparse, urljoin
 
     out: list[_RootCandidate] = []
@@ -2475,7 +2298,7 @@ def _dicomweb_root_candidates(page, cap: ViewerCapture, viewer_url: str,
                 return
             text = urljoin(origin_url, text)
         text = text.rstrip("/")
-        # Root trỏ thẳng vào một ca thì cắt về gốc dùng chung được.
+        # Normalize roots pointing directly to studies.
         if "/studies/" in text:
             text = text.split("/studies/")[0].rstrip("/")
         if not text or text in seen:
@@ -2487,11 +2310,11 @@ def _dicomweb_root_candidates(page, cap: ViewerCapture, viewer_url: str,
             style_hint=style_hint,
         ))
 
-    # Bậc 0 — đã học được cho chính dạng link này.
+    # Tier 0: Learned recipe.
     learned_root, learned_style = pacs_strategy_store.get_dicomweb_hint(cap.strategy_fingerprint)
     add(learned_root, _TIER_LEARNED, style_hint=learned_style)
 
-    # Bậc 1 — chính URL QIDO đã bắt được, kể cả khi không tách nổi studyUID.
+    # Tier 1: Sniffed QIDO URL.
     if cap.qido_series:
         try:
             pu = urlparse(cap.qido_series)
@@ -2503,7 +2326,7 @@ def _dicomweb_root_candidates(page, cap: ViewerCapture, viewer_url: str,
         except Exception:
             pass
 
-    # Bậc 2/3 — config viewer, đọc ở MỌI frame (viewer hay nằm trong iframe).
+    # Tier 2/3: Viewer config across all frames.
     for frame in _frames_of(page):
         try:
             entries = frame.evaluate(_OHIF_CONFIG_JS)
@@ -2525,7 +2348,7 @@ def _dicomweb_root_candidates(page, cap: ViewerCapture, viewer_url: str,
             add(root, _TIER_CONFIG_ACTIVE if preferred else _TIER_CONFIG_OTHER,
                 origin_url=frame_url or viewer_url, frame=frame)
 
-    # Bậc 4 — lưới cuối, đoán trên origin của trang.
+    # Tier 4: Page origin heuristics.
     origin = ""
     try:
         origin = _url_origin(page.url or viewer_url)
@@ -2540,22 +2363,12 @@ def _dicomweb_root_candidates(page, cap: ViewerCapture, viewer_url: str,
 
 
 def _probe_headers_for(cap: ViewerCapture, root: str) -> dict:
-    """Header phiên đã quan sát, CHỈ gửi lại cho đúng origin đã bắt được nó.
-
-    Bắn `Authorization` của viện A sang một root đoán mò ở origin khác là làm lộ
-    token cho bên thứ ba, nên chỗ này khoá theo origin chứ không gửi bừa.
-    """
+    """Retrieve session headers scoped specifically to root origin."""
     return _session_headers_for(cap, root)
 
 
 def _probe_passes(candidate: _RootCandidate) -> tuple[tuple[str, ...], ...]:
-    """Các lượt dò cho một root, theo thứ tự đáng thử.
-
-    Có `style_hint` đã học thì thử đúng nó TRƯỚC — nhưng vẫn phải còn lượt cho
-    style kia: recipe cũ ghi `toplevel` mà server nay chỉ đáp ứng `hierarchical`
-    thì loại thẳng một root hoàn toàn hợp lệ, và vì root bị khử trùng lặp toàn
-    cục nên nó không xuất hiện lại ở bậc sau nữa.
-    """
+    """Generate ordered probe passes for candidate root."""
     both = ("hierarchical", "toplevel")
     if candidate.style_hint in both:
         other = tuple(s for s in both if s != candidate.style_hint)
@@ -2567,19 +2380,7 @@ def resolve_dicomweb_access(page, cap: ViewerCapture, viewer_url: str,
                             log: LogFn, stop: Callable[[], bool],
                             exclude: Optional[set[tuple[str, str]]] = None,
                             deadline_s: float = _PROBE_TOTAL_S) -> Optional[DicomWebProfile]:
-    """Giải đường vào DICOMweb rồi ghi thẳng kết quả ĐÃ XÁC MINH vào `cap`.
-
-    Dùng chung cho cả `download_all()` và `discover_viewer_series()`: cả hai đều
-    cần đúng một thứ, và cả hai đều không được phụ thuộc vào việc event
-    `on_response` có kịp lưu thân manifest hay không — nên thân đã xác minh được
-    lấy thẳng từ kết quả dò.
-
-    `exclude` là các cặp (rs_base, query_style) đã thử mà tải hỏng — để lượt sau
-    đi tìm đường KHÁC thay vì trả lại đúng cái vừa thất bại.
-
-    `deadline_s` là hạn TUYỆT ĐỐI cho cả lượt giải. Không có nó thì mỗi bậc ×
-    mỗi frame lại được một deadline riêng và tổng thời gian nhân lên nhiều lần.
-    """
+    """Resolve and verify active DICOMweb access route, storing verified result on `cap`."""
     excluded = set(exclude or ())
     if stop():
         return None
@@ -2611,8 +2412,6 @@ def resolve_dicomweb_access(page, cap: ViewerCapture, viewer_url: str,
 
     budget_left = _PROBE_CANDIDATE_LIMIT
     all_diagnostics: list[dict] = []
-    # (bậc, lượt style) — bậc trước xong mới sang bậc sau, và trong một bậc thì
-    # lượt style đã học chạy trước lượt style còn lại.
     plan: list[tuple[int, int]] = sorted({
         (c.tier, index)
         for c in candidates
@@ -2639,9 +2438,6 @@ def resolve_dicomweb_access(page, cap: ViewerCapture, viewer_url: str,
                     bucket.append({
                         "url": profile.series_search_url(),
                         "studyUid": study,
-                        # Dạng phân cấp đã bị chính path khoá vào đúng ca; dạng
-                        # top-level lọc bằng query nên PHẢI có 0020000D để chứng
-                        # minh server thật sự đã lọc.
                         "requireStudyUid": style == "toplevel",
                         "headers": headers,
                         "_root": candidate.root,
@@ -2654,7 +2450,6 @@ def resolve_dicomweb_access(page, cap: ViewerCapture, viewer_url: str,
             left = _time_left()
             if stop() or not items or left <= 0:
                 continue
-            # Mỗi frame chỉ được phần thời gian CÒN LẠI của cả lượt.
             frame_ms = int(max(0.0, min(left, _PROBE_TIER_S)) * 1000)
             per_ms = min(_PROBE_PER_REQUEST_MS, frame_ms)
             if frame_ms <= 0:
@@ -2681,7 +2476,6 @@ def resolve_dicomweb_access(page, cap: ViewerCapture, viewer_url: str,
                     query_style=item["_style"], source="probe",
                 )
                 cap.dicomweb_profile = profile
-                # Ghi thẳng vào cap để phần liệt kê series dùng được ngay.
                 cap.qido_series = winner.get("url") or cap.qido_series
                 body = winner.get("body") or ""
                 if body:
@@ -2695,11 +2489,7 @@ def resolve_dicomweb_access(page, cap: ViewerCapture, viewer_url: str,
 
 
 def _log_probe_diagnostics(diagnostics: list[dict], log: LogFn) -> None:
-    """Nói rõ vì sao dò trượt — nhất là khi lý do là 'phải đăng nhập'.
-
-    Chỉ gặp 401/403 mà lặng lẽ rơi xuống DOM sẽ tạo cảm giác app đang cố tải,
-    trong khi thứ còn thiếu là quyền chứ không phải đường đi.
-    """
+    """Log diagnostics for failed probes, distinguishing auth rejections."""
     if not diagnostics:
         log("      Không đường nào trả về danh sách series hợp lệ.")
         return
@@ -2715,27 +2505,19 @@ def _log_probe_diagnostics(diagnostics: list[dict], log: LogFn) -> None:
 
 
 def _series_manifest_adapter(cap: ViewerCapture) -> Optional[PacsAdapter]:
-    """Adapter đủ dữ kiện để LIỆT KÊ series."""
+    """Return highest priority adapter with sufficient data to list series."""
     ready = [a for a in PACS_ADAPTERS if a.has_series_manifest(cap)]
     return max(ready, key=lambda a: a.priority) if ready else None
 
 
-# Chờ manifest theo NHỊP CỦA TRANG, không theo đồng hồ cứng: MSC PACS mất ~15s
-# mới gọi API manifest, nên hạn cứng 12s cũ khiến app bỏ cuộc ngay trước vạch rồi
-# rơi xuống chế độ mô phỏng (chỉ bắt được ảnh màn hình). Ngược lại, trang hỏng
-# hoặc không có manifest thì im lặng rất sớm — bám vào lúc mạng lặng đi để thôi
-# chờ, nhanh như cũ với trang chết mà vẫn kịp với viewer chậm.
+# Adaptive manifest timeout thresholds.
 _MANIFEST_WAIT_MIN_S = 8.0
 _MANIFEST_WAIT_MAX_S = 30.0
 _MANIFEST_IDLE_S = 4.0
 
 
 def _inspect_zfp(page, cap: ViewerCapture) -> None:
-    """Đọc cấu trúc study mà móc WebSocket nhặt được trên trang.
-
-    Chỉ dòng GE ZFP mới cần soi trang: nó không phát manifest nào qua HTTP nên
-    `_observe_response()` không bao giờ thấy gì.
-    """
+    """Read study structure captured by in-page WebSocket hook on GE ZFP."""
     if cap.zfp is not None:
         return
     try:
@@ -2791,25 +2573,15 @@ def download_all(
     dicom_output_resolver: Optional[Callable[[bytes], Path]] = None,
 ) -> DownloadStats:
     """
-    Tải toàn bộ ảnh của study. Hai chế độ, tự chọn:
+    Download complete study images via direct API or UI interaction fallback.
 
-      • MẶC ĐỊNH (nhanh, đủ, chính xác): nếu bắt được manifest của viewer
-        (VradViewer: StudyData/GetStudies), tải TRỰC TIẾP theo danh sách khóa ảnh
-        trong manifest — biết trước số series/ảnh, đối chiếu thiếu/đủ, không click.
-      • FALLBACK (viewer lạ không có manifest): mô phỏng người dùng — cuộn/click
-        qua từng thumbnail ĐANG HIỂN THỊ và bắt ảnh theo nội dung.
-
-    Trả về DownloadStats. File DICOM lưu vào `dicom_dir`, JPG/PNG bắt trực tiếp
-    lưu vào `dicom_dir/../RAW_JPG`.
+    Returns DownloadStats. DICOM saved to `dicom_dir`, raw JPG/PNG saved to `dicom_dir/../RAW_JPG`.
     """
     import threading
     from playwright.sync_api import sync_playwright
 
     dicom_dir = Path(dicom_dir)
     raw_jpg_dir = dicom_dir.parent / "RAW_JPG"
-    # A fresh patient download can derive its final folder from the first DICOM
-    # before anything is written. This avoids renaming a populated Windows
-    # directory that Explorer/indexers may already have opened.
     output_resolved = dicom_output_resolver is None or resume
     if output_resolved:
         dicom_dir.mkdir(parents=True, exist_ok=True)
@@ -2829,8 +2601,7 @@ def download_all(
     seen_sop_uids: set[str] = set()
     save_lock = threading.Lock()
 
-    # Chế độ "thử lại/gộp": nạp sẵn ảnh đã có trong folder để KHÔNG ghi đè và KHÔNG
-    # tải trùng — chỉ bổ sung ảnh mới. Tự động dọn dẹp file .dcm.part hoặc .dcm cụt cũ.
+    # Resume mode: index existing files in destination directory to prevent redundant downloads.
     if resume:
         for p in sorted(dicom_dir.rglob("*.dcm.part")):
             try:
@@ -2884,16 +2655,7 @@ def download_all(
         return False
 
     def save_body(body: bytes, _depth: int = 0, fidelity: str = "original") -> bool:
-        """Lưu 1 ảnh (nhận diện theo NỘI DUNG, không phụ thuộc endpoint), tự loại
-        trùng theo SHA-1. An toàn khi gọi từ nhiều luồng.
-
-        Trả về True nếu ảnh đã nằm trên đĩa (mới lưu hoặc đã có sẵn) — chỗ gọi
-        dựa vào đây để biết ảnh nào cần tải lại, thay vì nuốt lỗi.
-
-        `fidelity` cho biết ảnh này là bản gốc PACS phát ra ("original") hay do
-        app dựng lại từ metadata + frame ("reconstructed"). Mặc định "original"
-        để mọi chỗ gọi cũ giữ nguyên ý nghĩa; chỉ đường frames phải khai khác đi.
-        """
+        """Save a single image payload identified by content with SHA-1 deduplication."""
         nonlocal dicom_dir, raw_jpg_dir, output_resolved
         if not body:
             return False
@@ -2901,7 +2663,7 @@ def download_all(
         ext = _guess_ext(data)
         parsed_ds = None
         if ext is None:
-            # WADO-RS thường gói DICOM trong multipart/related — bóc rồi thử lại
+            # Unwrap multipart/related payloads commonly returned in WADO-RS.
             if _depth == 0:
                 parts = _multipart_parts(data)
                 if not parts:
@@ -2915,7 +2677,6 @@ def download_all(
         if ext == "dcm":
             valid, reason, parsed_ds = _validate_dicom_bytes_and_dataset(data)
             if not valid:
-                # File DICOM cụt / hỏng: từ chối lưu để bộ retry tự động tải lại
                 return False
             incoming_study_uid = getattr(parsed_ds, "StudyInstanceUID", "") if parsed_ds is not None else ""
             if not identity_guard.accept(incoming_study_uid):
@@ -2973,7 +2734,7 @@ def download_all(
             log(f"  ...đã tải {n} ảnh (DICOM: {stats.dicom})")
         return True
 
-    # Việc nhận diện dòng PACS nằm hết trong PACS_ADAPTERS ở trên.
+    # PACS vendor adapters handle recognition and download routing.
     cap = ViewerCapture(
         budget=budget,
         strategy_fingerprint=compute_url_fingerprint(url),
@@ -3073,13 +2834,11 @@ def download_all(
             except Exception:
                 pass
 
-            # Các đường DICOMweb đã thử mà không xong — để lượt sau đi tìm đường
-            # KHÁC (root từ config / root đã học) chứ không trả lại đúng cái vừa
-            # hỏng. Theo dõi mỗi tên adapter là quá thô cho việc này.
+            # Track exhausted DICOMweb profiles to probe alternatives on failure.
             spent_dicomweb: set[tuple[str, str]] = set()
 
             def _try_resolve_dicomweb(reason: str) -> list[PacsAdapter]:
-                """Giải đường DICOMweb rồi tính lại danh sách adapter sẵn sàng."""
+                """Resolve DICOMweb route and recompute ready adapter list."""
                 log(reason)
                 try:
                     resolved = resolve_dicomweb_access(
@@ -3130,8 +2889,7 @@ def download_all(
                             retryable=not stats.is_complete() and not budget.is_hard_expired(),
                         ))
                         is_dicomweb = adapter.name.lower() == "dicomweb"
-                        # Cả khi sniff tự lo được: rs_base đó vẫn đáng nhớ để
-                        # ca sau ở cùng nơi khỏi phải dò lại từ đầu.
+                        # Persist resolved rs_base for subsequent sessions.
                         resolved = (
                             cap.dicomweb_profile
                             or DicomWebProfile.from_qido_url(cap.qido_series)
@@ -3167,14 +2925,7 @@ def download_all(
             if ready_list:
                 _run_adapters(ready_list)
 
-            # Adapter hãng nhận ra link nhưng tải hỏng/thiếu thì DICOMweb vẫn có
-            # thể là đường đi được — trước đây rơi thẳng xuống DOM heuristic nên
-            # discovery mới chỉ vá được lúc KHÔNG nhận ra adapter nào, chứ chưa
-            # phải lưới đỡ khi adapter đã nhận ra mà tải không xong.
-            # Đường DICOMweb hỏng không có nghĩa là mọi đường DICOMweb đều hỏng:
-            # style còn lại trên cùng root, rồi root khác từ config, đều đáng thử.
-            # `spent_dicomweb` bảo đảm mỗi profile chỉ đi một lần nên không lặp
-            # vô hạn; trần cứng ở đây để một PACS lạ không ngốn hết budget.
+            # Retry alternative DICOMweb profiles up to _MAX_DICOMWEB_PROFILES.
             for _ in range(_MAX_DICOMWEB_PROFILES):
                 if stats.is_complete() or stop() or budget.is_hard_expired():
                     break
@@ -3188,7 +2939,7 @@ def download_all(
                 if not retry_list:
                     break
                 _run_adapters(retry_list)
-                # Không tiêu thêm profile nào nghĩa là đã hết đường để thử.
+                # Drained candidate list without adding new profiles.
                 if len(spent_dicomweb) == before:
                     break
 
@@ -3236,11 +2987,7 @@ def discover_viewer_series(
     """Open a viewer read-only and return the selectable series inventory."""
     from playwright.sync_api import sync_playwright
 
-    # Dùng CHUNG bộ adapter với `download_all()`. Trước đây chỗ này chép lại
-    # logic nhận diện lần thứ hai, nên thêm một PACS mới là phải sửa cả hai nơi
-    # và hai bản đã bắt đầu lệch nhau.
-    # Fingerprint phải có ngay từ đây, nếu không `get_dicomweb_hint()` luôn tra
-    # khoá rỗng và đường chọn series không hưởng được gì từ cái đã học.
+    # Share adapter registry with download_all and compute strategy fingerprint early.
     cap = ViewerCapture(strategy_fingerprint=compute_url_fingerprint(url))
 
     def stop() -> bool:
@@ -3285,10 +3032,7 @@ def discover_viewer_series(
             browser.close()
             raise ValueError(f"Link viewer hết hạn hoặc session bị từ chối (HTTP {code}).")
 
-        # Cùng một lưới đỡ như `download_all()`: nếu chỉ sniff thì "tải tất cả"
-        # chạy được nhưng bảng chọn series lại trống — cùng một link, hai kết quả
-        # khác nhau. `resolve_dicomweb_access()` ghi thẳng thân đã xác minh vào
-        # `cap` nên phần liệt kê không phải trông chờ event `on_response`.
+        # Fallback to active DICOMweb discovery if no adapter manifest was sniffed.
         if _series_manifest_adapter(cap) is None:
             try:
                 resolve_dicomweb_access(page, cap, url, log, stop)
@@ -3357,13 +3101,13 @@ def discover_viewer_series(
 
 
 def _shutdown_executor(ex, wait: bool) -> None:
-    """Đóng pool; khi huỷ thì trả về ngay, bỏ luôn các task chưa kịp chạy."""
+    """Shutdown executor pool; immediately cancel unstarted futures when not waiting."""
     if wait:
         ex.shutdown(wait=True)
         return
     try:
         ex.shutdown(wait=False, cancel_futures=True)
-    except TypeError:  # Python < 3.9 chưa có cancel_futures
+    except TypeError:  # Python < 3.9 lacks cancel_futures
         ex.shutdown(wait=False)
 
 
@@ -3371,19 +3115,14 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
                      stop: Callable[[], bool], budget: Optional[DownloadBudget] = None,
                      tracker: Optional[ActiveSocketTracker] = None,
                      passes: int = 3) -> None:
-    """Tải song song và LÀM LẠI phần hỏng, rồi ghi lại số còn hỏng.
-
-    Mạng bệnh viện chập chờn nên vài ảnh lỗi lẻ là chuyện thường; im lặng bỏ qua
-    chúng chính là kiểu mất ảnh nguy hiểm nhất với dùng lâm sàng. Ở đây mỗi ảnh
-    hỏng được giữ lại thử tiếp, số còn hỏng cuối cùng vào `stats.failed`.
-    """
+    """Execute parallel download tasks with multi-pass retries for failed tasks."""
     from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
     def attempt(task) -> bool:
         if stop():
             if tracker is not None:
                 tracker.interrupt_all()
-            return True  # dừng theo lệnh người dùng, không tính là ảnh hỏng
+            return True  # User requested stop, not a task failure
         if budget is not None and budget.is_expired():
             if tracker is not None:
                 tracker.interrupt_all()
@@ -3418,10 +3157,7 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
             if stop() or (budget is not None and budget.is_expired()):
                 break
 
-        # Không dùng `with ThreadPoolExecutor(...)`: lúc thoát khối `with`, Python
-        # gọi `shutdown(wait=True)` và chặn cho tới khi worker cuối cùng xong. Khi
-        # đó watchdog phát hiện huỷ trong 50ms cũng vô nghĩa — hàm vẫn không trả về
-        # được, và người dùng vẫn thấy treo đúng bằng `timeout` của socket.
+        # Explicit pool management to avoid blocking shutdown on cancellation.
         ex = ThreadPoolExecutor(max_workers=6)
         aborted = False
         try:
@@ -3458,6 +3194,7 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
         stats.cancelled = True
     stats.failed = 0 if stop() else len(pending)
     stats.completed_tasks = max(stats.completed_tasks, original_count - len(pending))
+
 
 
 def _read_response_chunks(response, budget: Optional[DownloadBudget] = None,
@@ -3533,10 +3270,10 @@ def _report_download_result(stats: DownloadStats, expected: int, log: LogFn,
 def _download_via_manifest(captured, save_body, stats,
                            log: LogFn, stop: Callable[[], bool],
                            selected_series: Optional[set[str]] = None) -> None:
-    """
-    Tải trực tiếp MỌI ảnh dựa trên manifest VradViewer (StudyData/GetStudies) +
-    1 URL ảnh thật làm khuôn tham số. Không click/cuộn, biết trước số ảnh và đối
-    chiếu đủ/thiếu. Chữ ký (signature) lấy từ chính manifest theo từng ảnh.
+    """Directly download images based on VradViewer manifest (StudyData/GetStudies).
+
+    Uses one real image URL as template parameters with signature extracted
+    per-image from the manifest.
     """
     import json
     import ssl
@@ -3545,7 +3282,7 @@ def _download_via_manifest(captured, save_body, stats,
 
     sslctx = ssl.create_default_context()
     sslctx.check_hostname = False
-    sslctx.verify_mode = ssl.CERT_NONE  # chấp nhận chứng chỉ tự ký (HTTPS PACS)
+    sslctx.verify_mode = ssl.CERT_NONE  # Accept self-signed certificates (HTTPS PACS)
 
     try:
         j = json.loads(captured["getstudies"].decode("utf-8", "replace"))
@@ -3560,10 +3297,9 @@ def _download_via_manifest(captured, save_body, stats,
         log("  Manifest không có SeriesList — bỏ qua.")
         return
 
-    # Khuôn lấy từ 1 URL ảnh THẬT mà trình duyệt đã tải được:
-    #   - các tham số cấp study/share (vendorCode, patId, iq, lossless...)
-    #   - QUAN TRỌNG: host+path công khai. (ImageBaseUrl trong manifest hay là IP
-    #     nội bộ kiểu 192.168.x — ra ngoài không tới được, gây timeout.)
+    # Template extracted from a real image URL fetched by the browser:
+    # - study/share-level query parameters
+    # - public host and path (avoiding internal IPs in manifest ImageBaseUrl)
     tp = urlparse(captured["template_url"])
     tmpl_base = f"{tp.scheme}://{tp.netloc}{tp.path}" if tp.netloc else None
     tmpl = {k: v[0] for k, v in parse_qs(tp.query).items()}
@@ -3583,7 +3319,7 @@ def _download_via_manifest(captured, save_body, stats,
             continue
         selected_count += 1
         total_expected += int(s.get("ImageCount", 0) or 0)
-        base = tmpl_base or s.get("ImageBaseUrl")  # ưu tiên host công khai từ URL thật
+        base = tmpl_base or s.get("ImageBaseUrl")  # Prefer public host from real URL
         if not base:
             continue
         for im in (s.get("ImageList", []) or []):
@@ -3628,12 +3364,7 @@ def _download_via_manifest(captured, save_body, stats,
 def _download_via_vrpacs(captured, save_body, stats,
                          log: LogFn, stop: Callable[[], bool],
                          selected_series: Optional[set[str]] = None) -> None:
-    """
-    Tải trực tiếp mọi ảnh từ manifest của viewer vrpacs/telerad
-    (vrpacs-file/get-share-patient-image). Mỗi ảnh là 1 imageId dạng
-    'wadouri:/vrpacs-scu/study-get-public?link=...&file=<uid>.dcm' — chỉ cần bỏ
-    tiền tố 'wadouri:' và ghép host là tải được DICOM gốc.
-    """
+    """Directly download images from vrpacs/telerad viewer manifest."""
     import json
     import ssl
     import urllib.request
@@ -3697,17 +3428,7 @@ def _download_via_vrpacs(captured, save_body, stats,
 def _download_via_zfp(captured, save_body, stats,
                       log: LogFn, stop: Callable[[], bool],
                       selected_series: Optional[set[str]] = None) -> None:
-    """
-    Hứng ảnh do chính viewer GE ZFP nạp rồi dựng lại DICOM Part-10.
-
-    KHÔNG hỏi ảnh — server từ chối mọi lệnh gửi từ ngoài (xem ghi chú ở phần
-    `_ZFP_HOOK`). Thứ duy nhất làm nó phát pixel là chính viewer nạp study, và
-    lúc đó nó nạp gần trọn ca. Nên ở đây ta ngồi hứng theo thứ tự VIEWER bơm ra,
-    không phải thứ tự mình muốn; hết ảnh mà còn thiếu thì cho trang nạp lại.
-
-    Chạy TUẦN TỰ: mọi thứ đi qua đúng một trang Playwright, mà `page` thì không
-    dùng được từ nhiều luồng.
-    """
+    """Capture pixel frames streamed by GE ZFP WebSocket and reconstruct DICOM Part 10."""
     import base64
 
     page = captured.get("zfp_page")
@@ -3751,7 +3472,7 @@ def _download_via_zfp(captured, save_body, stats,
             dry = 0
             uid = got.get("sop") or ""
             if uid not in wanted or uid in done:
-                continue                    # ảnh của series không chọn
+                continue                    # Image belongs to an unselected series
             done.add(uid)
             group, sop = wanted[uid]
             meta_json = _zfp_meta_to_dicom_json(got.get("meta") or {}, sop, group, study)
@@ -3767,8 +3488,7 @@ def _download_via_zfp(captured, save_body, stats,
                 stats.failed += 1
             continue
 
-        # Hàng đợi cạn. Viewer chỉ bơm ảnh lúc nạp study, nên muốn lấy nốt phần
-        # đã chảy qua trước khi mình kịp hứng thì phải cho nó nạp lại.
+        # Queue drained. Viewer only pushes images on study load; reload if needed.
         dry += 1
         if dry == 1 and reloads < _ZFP_MAX_RELOADS:
             reloads += 1
@@ -3792,14 +3512,7 @@ def _download_via_zfp(captured, save_body, stats,
 def _download_via_vietmy(captured, save_body, stats,
                          log: LogFn, stop: Callable[[], bool],
                          selected_series: Optional[set[str]] = None) -> None:
-    """
-    Tải DICOM gốc của MSC PACS (vietmy.pmr.vn) theo manifest
-    `ws.asmx/GetListImageFileInfo`.
-
-    Mỗi ảnh trong manifest có sẵn `filePath` — link `ws/getfile.ashx` đã kèm
-    `stoken` của chính link chia sẻ, trả về file .dcm nguyên bản của máy chụp.
-    KHÔNG dùng `imagePath`: đó là JPEG viewer đã dựng sẵn, mất dải xám 12 bit.
-    """
+    """Download original DICOM from MSC PACS (vietmy.pmr.vn) manifest."""
     import ssl
     import urllib.request
 
@@ -3850,15 +3563,7 @@ def _download_via_vietmy(captured, save_body, stats,
 def _download_via_dicomweb(captured, save_body, stats,
                            log: LogFn, stop: Callable[[], bool],
                            selected_series: Optional[set[str]] = None) -> None:
-    """
-    Tải trực tiếp mọi ảnh từ viewer chuẩn DICOMweb (OHIF / dcm4chee / Orthanc /
-    static-wado như PACS BV Đa khoa Hà Tĩnh...). QIDO-RS liệt kê series +
-    instances, rồi lấy DICOM theo thứ tự ưu tiên TỰ DÒ (nhớ cách thành công):
-      • wadouri: WADO-URI ?requestType=WADO (khuôn bắt từ URL thật / dcm4chee)
-      • wadors : GET .../instances/<uid>  (multipart, file Part-10 trọn vẹn)
-      • frames : GET .../metadata + .../frames/N rồi DỰNG LẠI file DICOM —
-                 cách duy nhất với viewer chỉ phát theo frame như BV Hà Tĩnh.
-    """
+    """Download instances directly from DICOMweb compliant PACS servers."""
     import json
     import ssl
     import urllib.request
@@ -3879,7 +3584,7 @@ def _download_via_dicomweb(captured, save_body, stats,
         wado_base = f"{wp.scheme}://{wp.netloc}{wp.path}"
         wtmpl = {k: v[0] for k, v in parse_qs(wp.query).items()}
         order = ["wadouri", "wadors", "frames"]
-    else:  # không có khuôn WADO-URI thật -> ưu tiên WADO-RS, dcm4chee để chót
+    else:  # No concrete WADO-URI template: prefer WADO-RS, fallback to dcm4chee
         wado_base = rs_base.rsplit("/rs", 1)[0] + "/wado"
         wtmpl = {"requestType": "WADO", "contentType": "application/dicom", "transferSyntax": "*"}
         order = ["wadors", "frames", "wadouri"]
@@ -3893,9 +3598,7 @@ def _download_via_dicomweb(captured, save_body, stats,
     route_lock = threading.Lock()
     budget = captured.get("budget")
 
-    # "Giấy thông hành" dựng THEO TỪNG URL, không dựng một bộ dùng chung: sau
-    # discovery thì `rs_base` có thể ở origin khác hẳn nơi bắt được token, và
-    # `context.cookies()` thì chứa cookie của mọi domain đã ghé qua.
+    # Build authentication passport per-URL to handle cross-origin endpoints.
     _pass_for = _passport_builder(captured)
 
     sslctx = ssl.create_default_context()
@@ -3969,7 +3672,7 @@ def _download_via_dicomweb(captured, save_body, stats,
     # diagnostic stacks. Recover from the study-wide instance/metadata endpoint
     # and regroup by SeriesInstanceUID before declaring anything complete.
     if missing and not stop():
-        # `instances` là QIDO nên phải lật trang; `metadata` là Retrieve, gọi thẳng.
+        # QIDO instances endpoint is paged; study metadata endpoint is a direct retrieve.
         for endpoint, paged in (
             (profile.study_instances_search_url(), True),
             (profile.study_metadata_url(), False),
@@ -4056,8 +3759,7 @@ def _download_via_dicomweb(captured, save_body, stats,
             nf = max(nf, int(str(V(meta, "00280008") or nf)))
         except Exception:
             pass
-        # Đi từ cách tốt nhất xuống: xin nguyên bitstream gốc trước, không được
-        # thì lùi về để server giải nén sẵn. Nấc nào ra được ảnh thì dừng ở đó.
+        # Prioritize original bitstream, fall back to server-decompressed transfer syntax.
         for accept in _FRAME_ACCEPT_LADDER:
             frames, fct, usable = [], "", True
             for fi in range(1, nf + 1):
@@ -4066,7 +3768,7 @@ def _download_via_dicomweb(captured, save_body, stats,
                 try:
                     body, ct = get_raw(f"{base}/frames/{fi}", accept=accept)
                 except (InterruptedError, TimeoutError):
-                    raise  # huỷ/hết giờ là lệnh dừng hẳn, không phải cớ để lùi nấc
+                    raise  # Cancel or deadline must terminate completely
                 except Exception:
                     usable = False
                     break
@@ -4078,15 +3780,14 @@ def _download_via_dicomweb(captured, save_body, stats,
                     fct = fct or ct
                     frames.append(body)
                 if fi == 1 and not _frame_ts_is_writable(fct):
-                    usable = False  # biết ngay từ frame đầu, khỏi kéo hết stack
+                    usable = False  # Detect invalid syntax from first frame
                     break
             if not usable or not any(frames):
                 continue
             blob = _dicom_from_meta_frames(meta, frames, fct)
             if not blob:
                 continue
-            # File này do app tự dựng từ metadata + frame, không phải Part-10 gốc
-            # của PACS — phải khai đúng để báo cáo cuối nói thật.
+            # Reconstructed from metadata + frames; record fidelity accordingly.
             return save_body(blob, fidelity="reconstructed")
         return False
 
@@ -4100,7 +3801,7 @@ def _download_via_dicomweb(captured, save_body, stats,
             try:
                 if fetchers[name](suid, iuid, nf, meta_in):
                     with route_lock:
-                        if order[0] != name:  # nhớ cách vừa thành công cho các ảnh sau
+                        if order[0] != name:  # Remember winning route for subsequent tasks
                             order.remove(name)
                             order.insert(0, name)
                     return True
@@ -4118,23 +3819,15 @@ def _download_via_dicomweb(captured, save_body, stats,
 def _drive_viewer_dom_heuristic(page, log: LogFn, stats: DownloadStats,
                                 max_slices: int, stop: Callable[[], bool],
                                 selected_series_ids: Optional[set[str]] = None) -> None:
-    """Bấm qua từng series và cuộn hết lát cắt để ép viewer tải ảnh.
-
-    Đây là HEURISTIC theo DOM, không phải đường tải chung: nó nhận ra danh sách
-    series qua đúng mấy tên class dưới đây (`.seriesThumb`, `.serieslist_panel_list`,
-    `.verlist`). Viewer nào không dùng bộ class đó thì chỉ cuộn được khung ảnh
-    ĐANG hiển thị — vẫn vớt được một series nhờ `.cornerstone-canvas`, nhưng
-    KHÔNG duyệt hết được các series còn lại. Vì vậy đây là lưới cuối cùng, và
-    một ca chỉ đi tới đây thì đừng coi số ảnh thu được là đủ.
-    """
-    # Chờ danh sách series
+    """Iterate series elements and scroll viewport slices to trigger lazy downloads."""
+    # Wait for series list elements
     try:
         page.wait_for_selector(".seriesThumb, .serieslist_panel_list, .seriesBox",
                                timeout=25000)
     except Exception:
         log("  Không thấy danh sách series (có thể giao diện khác). Vẫn thử cuộn ảnh hiện tại.")
 
-    # Cuộn panel series để nạp hết thumbnail (nếu danh sách dài)
+    # Scroll series panel to reveal all thumbnails
     try:
         panels = page.query_selector_all(".serieslist_panel_list, .verlist, .seriesThumb_container")
         for panel in panels:
@@ -4144,13 +3837,13 @@ def _drive_viewer_dom_heuristic(page, log: LogFn, stats: DownloadStats,
     except Exception:
         pass
 
-    thumbs = page.query_selector_all(".seriesThumb:visible")  # chỉ xung ĐANG HIỂN THỊ (bỏ bản ẩn trùng)
+    thumbs = page.query_selector_all(".seriesThumb:visible")  # Visible series only
     n_series = len(thumbs)
     log(f"Phát hiện {n_series} series (xung) đang hiển thị để duyệt." if n_series
         else "Không tìm thấy thumbnail series theo class chuẩn; sẽ cuộn ảnh đang hiển thị.")
 
     def scroll_current_viewport(expected: int) -> None:
-        """Đưa chuột vào vùng ảnh chính và cuộn qua toàn bộ lát cắt."""
+        """Hover over active viewport and scroll across all slices."""
         target = None
         for sel in (".viewer_imageregion", ".imageBox", ".imagebox_container",
                     ".cornerstone-canvas", ".imageviewBox"):
@@ -4182,7 +3875,7 @@ def _drive_viewer_dom_heuristic(page, log: LogFn, stats: DownloadStats,
                 page.wait_for_timeout(35)
 
     if n_series == 0:
-        # Không có thumbnail -> chỉ cuộn viewport hiện tại
+        # No thumbnails found: scroll active viewport only
         scroll_current_viewport(max_slices)
         return
 
@@ -4190,7 +3883,7 @@ def _drive_viewer_dom_heuristic(page, log: LogFn, stats: DownloadStats,
         if stop():
             log("Đã dừng theo yêu cầu.")
             return
-        # Query lại mỗi vòng vì DOM có thể render lại
+        # Re-query DOM on each iteration to handle dynamic re-renders
         thumbs = page.query_selector_all(".seriesThumb:visible")
         if idx >= len(thumbs):
             break
@@ -4198,7 +3891,7 @@ def _drive_viewer_dom_heuristic(page, log: LogFn, stats: DownloadStats,
         if selected_series_ids is not None and f"viewer:{idx}" not in selected_series_ids:
             continue
 
-        # Đọc số ảnh của series (nếu có) để biết cuộn bao nhiêu
+        # Extract expected slice count from series element if present
         expected = max_slices
         try:
             cnt_el = thumb.query_selector(".series_imagecount_text")
@@ -4233,7 +3926,7 @@ def _drive_viewer_dom_heuristic(page, log: LogFn, stats: DownloadStats,
 
         scroll_current_viewport(expected)
 
-        # Thử duyệt phase (nếu series có nhiều phase)
+        # Iterate through dynamic phases if available
         try:
             phase_btns = page.query_selector_all(".seriesPhaseUI button, .seriesPhaseUI .checkable_icon")
             for pb in phase_btns[:20]:
@@ -4253,7 +3946,7 @@ def _drive_viewer_dom_heuristic(page, log: LogFn, stats: DownloadStats,
 
 
 # --------------------------------------------------------------------------- #
-#  BƯỚC 2: DICOM -> JPG chất lượng cao
+#  STEP 2: High Quality DICOM -> JPG
 # --------------------------------------------------------------------------- #
 
 @dataclass
@@ -4869,15 +4562,10 @@ def record_patient_study(
     _write_patient_manifest(patient_folder, manifest)
 
 
-# Chế độ tương phản:
-#   "clinical" (mặc định) — bám đúng cửa sổ hiển thị y khoa. Dùng apply_voi_lut
-#       của pydicom nên xử lý đúng cả 3 kiểu: window tuyến tính (WC/WW), hàm
-#       SIGMOID, và VOI LUT Sequence (bảng tra phi tuyến của máy đời mới). Sau đó
-#       map min-max sang 8-bit, KHÔNG cắt percentile -> giữ nguyên độ tương phản
-#       như một máy trạm PACS hiển thị mặc định.
-#   "auto" — kéo giãn tương phản theo percentile(1,99) của từng ảnh. Nhìn "gắt"
-#       hơn, nổi chi tiết mờ, nhưng lệch khỏi cửa sổ lâm sàng và có thể cháy 1%
-#       điểm sáng nhất. Dành cho ai thích ảnh đậm.
+# Contrast modes:
+#   "clinical" (default) — strict medical windowing using pydicom apply_voi_lut
+#       supporting linear (WC/WW), SIGMOID, and VOI LUT Sequence.
+#   "auto" — percentile-based contrast stretching (1, 99).
 CLINICAL = "clinical"
 AUTO = "auto"
 
@@ -4891,16 +4579,10 @@ def _stretch_uint8(arr, low, high):
 
 
 def _voi_output_range(ds, windowed):
-    """Dải giá trị mà VOI của pydicom xuất ra, để map sang 8-bit đúng cửa sổ.
-
-    KHÔNG được dùng min/max của ảnh đã cắt cửa sổ: nếu lát cắt không chạm cả hai
-    đầu cửa sổ (lát rìa, ảnh không có khí hoặc không có xương) thì min/max hẹp
-    hơn cửa sổ, và kéo giãn theo chúng sẽ đẩy tương phản lệch khỏi mức lâm sàng
-    — mỗi lát một kiểu.
-    """
+    """Return the output range produced by pydicom VOI LUT for 8-bit scaling."""
     import numpy as np
 
-    # VOI LUT Sequence: pydicom xuất ra chỉ số bảng tra, dải do bảng quy định.
+    # VOI LUT Sequence: pydicom outputs LUT indices bounded by descriptor bits.
     lut = getattr(ds, "VOILUTSequence", None)
     if lut:
         try:
@@ -4914,9 +4596,7 @@ def _voi_output_range(ds, windowed):
     if center is None or width is None or width <= 0:
         return None
 
-    # Cửa sổ tuyến tính: pydicom map vào [y_min, y_max] theo PS3.3 C.11.2.1.2.
-    # Phải lặp lại đúng công thức của pydicom — với CT (signed + RescaleIntercept
-    # -1024) dải này KHÔNG phải [0, 2**bits - 1].
+    # Linear window: pydicom maps into [y_min, y_max] per PS3.3 C.11.2.1.2.
     if "ModalityLUTSequence" in ds:
         try:
             bits = int(ds.ModalityLUTSequence[0].LUTDescriptor[2])
@@ -4959,7 +4639,7 @@ def _dicom_first_number(value):
 
 
 def _gray_to_uint8(arr, ds, contrast_mode: str):
-    """Chuyển 1 khung ảnh xám (đã qua modality LUT) sang 8-bit theo chế độ tương phản."""
+    """Convert grayscale frame (post-modality LUT) to uint8 according to contrast mode."""
     import numpy as np
 
     if contrast_mode == AUTO:
@@ -4969,10 +4649,8 @@ def _gray_to_uint8(arr, ds, contrast_mode: str):
             low, high = float(arr.min()), float(arr.max())
         return _stretch_uint8(arr, low, high)
 
-    # CLINICAL: để pydicom áp VOI đúng chuẩn (LUT sequence / sigmoid / linear).
-    # Giữ nguyên dtype nguyên của `arr`: VOI LUT Sequence dùng giá trị pixel làm
-    # chỉ số tra bảng, nên pydicom cảnh báo "may give incorrect results" khi đầu
-    # vào là float — chỉ số bị cắt phần thập phân, tra nhầm ô bảng.
+    # CLINICAL: apply standard VOI LUT (LUT sequence / sigmoid / linear).
+    # Preserve original array dtype to prevent integer index truncation warnings.
     try:
         try:
             from pydicom.pixels import apply_voi_lut
@@ -4985,7 +4663,7 @@ def _gray_to_uint8(arr, ds, contrast_mode: str):
     except Exception:
         pass
 
-    # Không có thông tin window (WC/WW, VOI LUT...) -> kéo giãn nhẹ theo percentile
+    # Fallback when no windowing metadata exists: mild percentile stretch
     arr = arr.astype(np.float32)
     low, high = np.percentile(arr, (0.5, 99.5))
     if high <= low:
@@ -4994,7 +4672,7 @@ def _gray_to_uint8(arr, ds, contrast_mode: str):
 
 
 def _rgb_to_uint8(arr):
-    """Ảnh màu: giữ nguyên nếu đã 8-bit, ngược lại kéo giãn min-max."""
+    """Convert color frame to uint8; preserve if already uint8, otherwise min-max stretch."""
     import numpy as np
     if arr.dtype == np.uint8:
         return arr
@@ -5172,7 +4850,7 @@ def convert_all(
     should_stop: Optional[Callable[[], bool]] = None,
     metadata: Optional[dict] = None,
 ) -> ConvertStats:
-    """Chuyển toàn bộ DICOM trong `dicom_dir` sang JPG (và tùy chọn PNG) ở `jpg_dir`."""
+    """Convert all DICOM files in dicom_dir to JPG (and optional PNG) in jpg_dir."""
     import pydicom
     from PIL import Image
     import mpr_engine
@@ -5404,7 +5082,7 @@ def convert_all(
 
 
 # --------------------------------------------------------------------------- #
-#  Tóm tắt số series/ảnh đã tải (để kiểm tra đủ chưa)
+#  Summary of downloaded series/images
 # --------------------------------------------------------------------------- #
 
 def summarize_dicom(dicom_dir: Path, log: LogFn = _default_log) -> None:
@@ -5426,7 +5104,7 @@ def summarize_dicom(dicom_dir: Path, log: LogFn = _default_log) -> None:
 
 
 # --------------------------------------------------------------------------- #
-#  CLI
+#  CLI & Extraction
 # --------------------------------------------------------------------------- #
 
 
@@ -5534,11 +5212,9 @@ def extract_patient_metadata(
                 seen_birth_dates.add(normalised_birth)
             if raw_sex:
                 seen_sexes.add(raw_sex)
-            # Ngày sinh lệch ngày/tháng trong cùng MỘT NĂM là chuyện thường: RIS
-            # chỉ biết năm thì phát ra YYYY-01-01, còn DICOM có ngày đầy đủ. Lệch
-            # NĂM sinh thì vẫn là hai người khác nhau.
-            # Giới tính 'O' (Other) là giá trị "không rõ" của DICOM, không tính
-            # là mâu thuẫn.
+            # Minor date-of-birth differences within the same birth year can occur
+            # (e.g. RIS estimates YYYY-01-01 when only birth year is known).
+            # DICOM gender 'O' (Other) is treated as unknown rather than conflict.
             if not allow_mixed and (
                 len(seen_ids) > 1
                 or len(seen_names) > 1
@@ -5632,11 +5308,8 @@ def _merge_manifest_demographics(manifest: dict, metadata: dict) -> None:
             if not current:
                 manifest[target] = incoming
             elif target == "patientBirthDate":
-                # CHỈ nâng cấp ngày sinh ước lượng (RIS biết mỗi năm sinh nên
-                # phát ra YYYY-01-01) lên ngày sinh đầy đủ của DICOM TRONG CÙNG
-                # NĂM. Không bao giờ sửa NĂM sinh và không ghi đè ngày đã chính
-                # xác — hai việc đó là đổi định danh bệnh nhân, không phải làm
-                # rõ thêm.
+                # Only upgrade placeholder birth date (YYYY-01-01) to full DICOM date
+                # within the exact same birth year.
                 cur_norm = _normalise_dicom_date(str(current))
                 inc_norm = _normalise_dicom_date(str(incoming))
                 if (
@@ -5706,10 +5379,8 @@ def _assert_patient_metadata_matches(
     actual_birth_date = _normalise_dicom_date(metadata.get("PatientBirthDate"))
     expected_birth_date = _normalise_dicom_date(expected_birth_date)
     if actual_birth_date and expected_birth_date and actual_birth_date != expected_birth_date:
-        # Hồ sơ RIS chỉ biết năm sinh thì ghi YYYY-01-01, còn DICOM có ngày đầy
-        # đủ — lệch kiểu đó KHÔNG phải hai người khác nhau. Nhưng lệch NĂM sinh
-        # thì vẫn phải chặn, kể cả khi một bên là 01-01: đó mới là dấu hiệu ảnh
-        # của bệnh nhân khác đang rơi vào hồ sơ này.
+        # RIS record with placeholder YYYY-01-01 vs full DICOM birth date is allowed
+        # within the same year, but different birth years indicate conflicting patient identities.
         placeholder_gap = (
             actual_birth_date[:4] == expected_birth_date[:4]
             and (
@@ -5872,9 +5543,7 @@ def write_direct_patient_manifest(
 
 
 def _jpg_folder_name(dicom_dir: Path) -> str:
-    """
-    Tính tên thư mục JPG theo header DICOM: '<ngày chụp> - <Loại phim> - <Mô tả ca chụp>'.
-    """
+    """Compute JPG folder name from DICOM header: '<study_date> - <modality> - <study_description>'."""
     try:
         import pydicom
     except Exception:
@@ -6000,7 +5669,7 @@ def run_pipeline(
         out_base = Path(after_dicom_download(out_base, metadata))
         dicom_dir = out_base / "DICOM"
 
-    # Thư mục JPG: '<ngày chụp> - <loại phim> - <mô tả ca chụp>'.
+    # JPG destination folder: '<study_date> - <modality> - <study_description>'
     jpg_name = jpg_folder_name_override or _jpg_folder_name(dicom_dir)
     jpg_dir = out_base / jpg_name
 
@@ -6040,19 +5709,16 @@ def run_pipeline(
 
 
 # --------------------------------------------------------------------------- #
-#  BƯỚC 3: TỰ ĐỘNG TÌM KIẾM THEO MÃ BỆNH NHÂN TRÊN RIS (VIỆT ĐỨC & ĐẠI HỌC Y)
+#  STEP 3: AUTOMATED SEARCH BY PATIENT ID ON RIS (VIET DUC & HANOI MEDICAL UNIV)
 # --------------------------------------------------------------------------- #
 
 def _dec_cred(s: str, key: int = 0x57) -> str:
-    """Giải mã thông tin tài khoản/mật khẩu an toàn (thời gian giải mã < 0.001ms, không ảnh hưởng tốc độ)."""
+    """Safely decode obfuscated credentials."""
     return bytes([b ^ key for b in base64.b64decode(s)]).decode("utf-8")
 
 
-# `base_urls` xếp theo THỨ TỰ ƯU TIÊN: đường đầu tiên còn kết nối được sẽ được
-# dùng. Đặt địa chỉ LAN trong viện lên trước vì đi thẳng trong mạng nội bộ,
-# nhanh hơn và không phụ thuộc đường ra Internet; ngoài viện thì địa chỉ đó
-# không tới được nên tự động rơi xuống đường công cộng. Cùng một tài khoản.
-# Bệnh viện đứng đầu dict là bệnh viện được chọn sẵn trên giao diện.
+# Base URLs in priority order: first reachable endpoint is selected.
+# Local hospital LAN endpoints precede public URLs for speed and reliability.
 HOSPITALS = {
     "dhy": {
         "name": "BV Đại học Y Hà Nội",
@@ -6070,8 +5736,7 @@ HOSPITALS = {
 }
 
 _RIS_LOGIN_PATH = "/ris/account/login"
-# Nhớ kết quả dò đường trong thời gian ngắn để không phải dò lại cho từng ca,
-# nhưng vẫn đủ ngắn để vừa cắm VPN/mạng viện là nhận ra ngay.
+# Cache endpoint probe results briefly to prevent redundant socket checks per case.
 _ENDPOINT_PROBE_TTL_SECONDS = 60
 _ENDPOINT_PROBE_LOCK = threading.Lock()
 _ENDPOINT_PROBE_CACHE: dict[str, tuple[float, bool]] = {}
@@ -6087,7 +5752,7 @@ def _ris_login_url(base_url: str) -> str:
 
 
 def _endpoint_is_reachable(base_url: str, timeout: float = 1.5) -> bool:
-    """Bắt tay TCP thử với máy chủ. Nhanh và dứt khoát hơn là chờ trình duyệt."""
+    """Perform quick TCP handshake with server."""
     import socket
     from urllib.parse import urlparse
 
@@ -6113,11 +5778,7 @@ def _endpoint_is_reachable(base_url: str, timeout: float = 1.5) -> bool:
 
 
 def _pick_hospital_base_url(info: dict, log: LogFn = _default_log) -> str:
-    """Chọn đường vào PACS theo thứ tự ưu tiên trong `base_urls`.
-
-    Đường cuối luôn được trả về khi không đường nào tới được, để thông báo lỗi
-    sau đó nói đúng địa chỉ công cộng mà người dùng có thể tự mở thử.
-    """
+    """Select reachable PACS endpoint in priority order from base_urls."""
     endpoints = _hospital_base_urls(info)
     if not endpoints:
         raise RuntimeError(f"Bệnh viện '{info.get('name')}' chưa khai báo địa chỉ PACS.")
@@ -6139,15 +5800,7 @@ _RIS_SESSION_STATES: dict[str, dict] = {}
 
 
 def _ris_session_key(hospital_key: str, base_url: str = "", account: str = "") -> str:
-    """Khóa phiên gắn với ĐÚNG địa chỉ và ĐÚNG tài khoản đã đăng nhập.
-
-    Một bệnh viện có thể vào bằng địa chỉ LAN hoặc địa chỉ công cộng; cookie của
-    host này không dùng được cho host kia, nên phải giữ riêng từng phiên.
-
-    `account` là vân tay của cặp user/mật khẩu (xem `_ris_credentials`). Nhờ nó,
-    đổi sang tài khoản tự nhập là tự trượt cache — không phải xóa phiên bằng
-    tay, nên N ca tải liên tiếp vẫn dùng chung một lần đăng nhập.
-    """
+    """Compute session cache key bound to specific endpoint and account fingerprint."""
     return (
         f"{str(hospital_key or '').lower()}"
         f"|{str(base_url or '').rstrip('/').lower()}"
@@ -6160,11 +5813,7 @@ def _ris_credentials(
     custom_username: Optional[str] = None,
     custom_password: Optional[str] = None,
 ) -> tuple[str, str, str]:
-    """Chọn tài khoản đăng nhập RIS, kèm vân tay dùng làm khóa phiên.
-
-    Vân tay là băm của cặp user/mật khẩu — đủ để tách phiên của hai tài khoản
-    khác nhau mà không giữ mật khẩu ở dạng đọc được trong khóa cache.
-    """
+    """Select RIS credentials and compute an account fingerprint token."""
     if custom_username and custom_password:
         username, password = custom_username, custom_password
     else:
@@ -6177,11 +5826,7 @@ def _ris_credentials(
 def clear_ris_session_cache(
     hospital_key: Optional[str] = None, account: str = "",
 ) -> None:
-    """Xóa phiên RIS trong RAM; cookie/token không bao giờ được ghi xuống ổ đĩa.
-
-    Có `account` thì chỉ xóa phiên của đúng tài khoản đó — phiên của tài khoản
-    còn lại ở cùng bệnh viện vẫn dùng được.
-    """
+    """Clear RIS session state from in-memory cache."""
     global _CHROME_UNAVAILABLE
     with _RIS_SESSION_LOCK:
         if hospital_key is None:
@@ -6279,8 +5924,7 @@ def _perform_ris_login(
 
 
 _RIS_WRAPPER_RE = re.compile(r"/ris/vr_?viewer", re.I)
-# Các trang "vỏ" của RIS (đăng nhập, danh sách đọc...). Chúng KHÔNG chứa ảnh;
-# nếu đăng nhập lại giữa chừng thì page.url rất dễ đang đứng ở đây.
+# Shell routes on RIS (login, study lists, dashboard) that do not contain viewer frames.
 _RIS_SHELL_RE = re.compile(r"/ris/(account|study|home|dashboard)(/|$|\?)", re.I)
 
 
@@ -6292,12 +5936,7 @@ _NET_UNREACHABLE_MARKERS = (
 
 
 def _server_unreachable_message(exc: Exception, hospital_name: str, base_url: str) -> Optional[str]:
-    """Đổi lỗi mạng thô của trình duyệt thành câu người dùng hiểu được.
-
-    Máy chủ PACS chỉ mở trong mạng nội bộ/VPN bệnh viện, nên mất kết nối là
-    chuyện thường gặp. Nếu để nguyên 'net::ERR_CONNECTION_TIMED_OUT' thì rất dễ
-    bị hiểu nhầm thành 'app hỏng' hoặc 'sai mã bệnh nhân'.
-    """
+    """Convert low-level browser network error into a clear user-facing explanation."""
     text = str(exc or "")
     if not any(marker in text for marker in _NET_UNREACHABLE_MARKERS):
         return None
@@ -6311,29 +5950,21 @@ def _server_unreachable_message(exc: Exception, hospital_name: str, base_url: st
 
 
 def _is_ris_wrapper_url(url: str) -> bool:
-    """Link 'vrViewer' của RIS — chỉ mở được khi trình duyệt CÒN cookie đăng nhập.
-
-    Trình tải luôn chạy trên context trắng (không cookie), nên đưa link này cho
-    nó là cầm chắc rơi vào trang login rồi ra 0–vài ảnh mà không ai biết.
-    """
+    """Check if URL is a RIS vrViewer wrapper requiring active session cookies."""
     return bool(_RIS_WRAPPER_RE.search(str(url or "")))
 
 
 def _looks_like_viewer_url(url: str) -> bool:
     u = str(url or "").strip()
     if not u.lower().startswith(("http://", "https://")):
-        return False  # loại about:blank, srcdoc, javascript:, src rỗng
+        return False  # Exclude about:blank, srcdoc, javascript:
     if _is_ris_wrapper_url(u) or _RIS_SHELL_RE.search(u):
         return False
     return True
 
 
 def _pick_viewer_frame_url(page, timeout_ms: int = 15000) -> Optional[str]:
-    """Chờ iframe viewer có src THẬT rồi chọn đúng khung ảnh.
-
-    Bản cũ chờ cứng 3 giây rồi lấy mù `iframes[0]`: mạng chậm là hụt, mà trang
-    wrapper còn chèn cả frame rỗng/ẩn nên `[0]` chưa chắc là khung ảnh.
-    """
+    """Wait for iframe with valid viewer source URL and return it."""
     deadline = time.monotonic() + timeout_ms / 1000.0
     while True:
         try:
@@ -6344,14 +5975,14 @@ def _pick_viewer_frame_url(page, timeout_ms: int = 15000) -> Optional[str]:
             srcs = []
         candidates = [s for s in srcs if _looks_like_viewer_url(s)]
         if candidates:
-            # Khung mang token phiên/study mới là khung ảnh thật.
+            # Prefer frame containing session or study tokens
             candidates.sort(
                 key=lambda s: 0 if re.search(r"(session|share|token|study)=", s, re.I) else 1
             )
             return candidates[0]
         current = page.url or ""
         if _looks_like_viewer_url(current):
-            return current  # RIS chuyển thẳng sang viewer, không qua iframe
+            return current  # Direct viewer navigation without wrapper iframe
         if time.monotonic() >= deadline:
             return None
         page.wait_for_timeout(400)
@@ -6365,13 +5996,7 @@ def resolve_study_viewer_url(
     custom_username: Optional[str] = None,
     custom_password: Optional[str] = None,
 ) -> str:
-    """Xin link viewer MỚI cho một study, ngay trước lúc tải nó.
-
-    Link viewer RIS trả về là vé dùng-ngay (mang token phiên sống rất ngắn).
-    Cấp sẵn từ lúc tìm kiếm rồi để dành tới lúc người dùng bấm tải chính là
-    nguyên nhân của những ca "chỉ tải được vài ảnh" — token đã chết giữa chừng.
-    Không lấy được link thì NÉM LỖI, thà báo hỏng còn hơn tải ra một ca thiếu.
-    """
+    """Obtain a fresh viewer ticket URL for a study immediately before downloading."""
     from playwright.sync_api import sync_playwright
 
     info = HOSPITALS.get(str(hospital_key or "").lower())
@@ -6437,7 +6062,7 @@ def resolve_study_viewer_url(
 
 
 def _query_ris_studies(page, patient_id: str) -> dict:
-    """Truy vấn RIS trong page đã xác thực và phân biệt rõ lỗi hết phiên."""
+    """Query RIS studies within an authenticated page context."""
     return page.evaluate(
         """
         async (patientId) => {
@@ -6511,7 +6136,7 @@ def _study_patient_id(study: dict) -> str:
 def _patient_id_matches(study: dict, requested_patient_id: str) -> bool:
     actual = _study_patient_id(study)
     if not actual:
-        # Một số RIS bỏ PID vì endpoint đã được giới hạn theo PID truy vấn.
+        # Some RIS responses omit patient ID because endpoint is pre-filtered by queried PID
         return True
     normalize = lambda value: re.sub(r"\s+", "", str(value)).upper()
     return normalize(actual) == normalize(requested_patient_id)
@@ -6527,10 +6152,7 @@ def search_patient_studies(
     custom_username: Optional[str] = None,
     custom_password: Optional[str] = None,
 ) -> list[dict]:
-    """
-    Đăng nhập cổng RIS bệnh viện (Việt Đức / ĐH Y), tìm kiếm theo Mã Bệnh Nhân,
-    lấy danh sách các study MRI / CT và bóc tách link viewer trực tiếp.
-    """
+    """Log into hospital RIS, search by Patient ID, and return MRI/CT study metadata."""
     from playwright.sync_api import sync_playwright
 
     info = HOSPITALS.get(hospital_key.lower())
@@ -6565,7 +6187,7 @@ def search_patient_studies(
         page = context.new_page()
 
         try:
-            # 1. Thử phiên trong RAM trước; nếu không còn hợp lệ mới đăng nhập.
+            # 1. Try in-memory cached session first; login only if expired
             session_reused = False
             if cached_state:
                 try:
@@ -6582,7 +6204,7 @@ def search_patient_studies(
                 ):
                     raise RuntimeError("RIS không xác nhận đăng nhập thành công.")
 
-            # 2. Truy vấn theo PID và nhận biết riêng trường hợp hết phiên.
+            # 2. Query by patient ID and handle session expiration with retry
             log(f"Đang tìm kiếm bệnh nhân mã '{patient_id}' trên hệ thống...")
             api_result = _query_ris_studies(page, patient_id)
             if api_result.get("authFailed"):
@@ -6620,10 +6242,10 @@ def search_patient_studies(
                     m_dicom = str(s.get("modalityDicom") or s.get("modality") or "").strip().upper()
                     desc = str(s.get("studyDescription") or "").strip().upper()
 
-                    # Phân loại MR/MRI (Cộng hưởng từ)
+                    # Classify MR / MRI modalities
                     is_mr = (m_dicom in ("MR", "MRI")) or ("MR" in m_dicom) or desc.startswith("MR") or ("CONG HUONG TU" in desc) or ("CỘNG HƯỞNG TỪ" in desc)
 
-                    # Phân loại CT/CLVT (Cắt lớp vi tính)
+                    # Classify CT modalities
                     is_ct = (m_dicom in ("CT", "CLVT", "CAT")) or ("CT" in m_dicom) or desc.startswith("CT") or desc.startswith("CLVT") or ("CAT LOP" in desc) or ("CẮT LỚP" in desc)
 
                     if target_mod in ("ALL", "*"):
@@ -6655,8 +6277,7 @@ def search_patient_studies(
                                 "desc": s.get("studyDescription", "") or ""
                             })
 
-            # Không lấy Study UID tùy ý từ trang reading vì không chứng minh
-            # được chúng thuộc Patient ID vừa yêu cầu.
+            # Do not extract unverified study UIDs from arbitrary HTML tables
             if not studies_to_process:
                 log(
                     "  Không có study phù hợp từ API. Vì an toàn, ứng dụng không "
@@ -6665,10 +6286,7 @@ def search_patient_studies(
 
             log(f"-> Tìm thấy {len(studies_to_process)} ca chụp (MRI / CT) cho bệnh nhân {patient_id}.")
 
-            # KHÔNG xin link viewer ở đây. Link viewer mang token phiên sống rất
-            # ngắn; xin sẵn lúc này rồi để người dùng xem/chọn xong mới tải thì
-            # token đã chết -> ca tải ra thiếu ảnh. Link được xin lại ngay trước
-            # lúc tải từng ca, trong `download_studies_list`.
+            # Direct URLs are obtained on-demand right before download in download_studies_list
             for idx, st in enumerate(studies_to_process, 1):
                 if should_stop and should_stop():
                     log(">>> Đã nhận lệnh dừng!")
@@ -6685,7 +6303,7 @@ def search_patient_studies(
                     "date": st['date'],
                     "modality": st['modality'],
                     "desc": st['desc'],
-                    # Rỗng là CỐ Ý: link được xin mới ngay trước lúc tải ca này.
+                    # Kept empty intentionally; resolved on demand right before download
                     "direct_url": "",
                 })
 
@@ -6711,11 +6329,7 @@ def search_patient_studies(
 
 
 def _viewer_url_for_study(study: dict, hospital_key: str, log: LogFn, headless: bool, custom_username: Optional[str] = None, custom_password: Optional[str] = None) -> str:
-    """Link tải cho MỘT ca: ưu tiên xin mới từ RIS, và chặn link không dùng được.
-
-    Thà ném lỗi để ca đó hiện rõ là hỏng, còn hơn đưa cho trình tải một link
-    wrapper/đã nguội rồi thu về vài ảnh mà vẫn báo thành công.
-    """
+    """Resolve viewer URL for a study, prioritizing fresh RIS resolution."""
     uid = str(study.get("study_uid") or "").strip()
     hosp = str(study.get("hospital_key") or hospital_key or "").strip().lower()
     if uid and hosp in HOSPITALS:
@@ -6758,14 +6372,7 @@ def download_studies_list(
     custom_username: Optional[str] = None,
     custom_password: Optional[str] = None,
 ) -> int:
-    """
-    Tải danh sách ca phim đã chọn.
-
-    Với ca đến từ RIS (có `hospital_key` + `study_uid`), link viewer được XIN MỚI
-    ngay trước khi tải từng ca, vì link RIS mang token phiên sống rất ngắn. Ca
-    nào không lấy được link thì bị bỏ qua và ghi 'chưa đủ' trong hồ sơ, chứ
-    không tải bằng link hỏng rồi báo là xong.
-    """
+    """Download a list of selected studies."""
     if not studies:
         log("⚠️ Danh sách ca phim rỗng.")
         return 0
@@ -6944,8 +6551,7 @@ def download_studies_list(
             downloaded = dl.total() if dl else 0
             total_downloaded += downloaded
             stopped = bool(should_stop and should_stop())
-            # "Xong" nghĩa là ĐỦ so với manifest của viewer, không phải "có tải
-            # được cái gì đó". Đây chính là chỗ trước kia báo xong cho cả ca 4/348.
+            # Complete means all expected instances in manifest downloaded, not just partial count.
             complete = bool(dl and dl.is_complete() and not stopped)
             metadata = extract_patient_metadata(st_out_dir / "DICOM")
             if metadata:
@@ -7045,10 +6651,7 @@ def download_patient_mri_all(
     contrast_mode: str = CLINICAL,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> int:
-    """
-    Tự động đăng nhập RIS, tìm tất cả ca MRI & CT (Cắt lớp vi tính) sọ não của Mã Bệnh Nhân,
-    và tải trọn bộ tất cả các ca đó vào thư mục `out_base`.
-    """
+    """Automatically log into RIS, search MRI/CT brain studies for patient ID, and download all."""
     info = HOSPITALS.get(hospital_key.lower())
     hosp_name = info["name"] if info else hospital_key
 

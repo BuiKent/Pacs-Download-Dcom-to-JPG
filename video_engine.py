@@ -230,7 +230,7 @@ class EncodeFailedError(VideoEngineError):
 
 SUPPORTED_EXTENSIONS = {".mp4", ".avi", ".mkv", ".mpeg", ".mpg", ".mov", ".m4v", ".wmv", ".webm"}
 
-_DEFAULT_TIMEOUT_S = 60 * 30  # 30 phút
+_DEFAULT_TIMEOUT_S = 60 * 30  # 30 minutes
 
 
 def _run(
