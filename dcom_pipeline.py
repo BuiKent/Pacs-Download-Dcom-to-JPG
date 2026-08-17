@@ -1,24 +1,25 @@
 """
 dcom_pipeline.py
 ================
-Lõi xử lý cho công cụ tải ảnh DICOM từ trình xem (VradViewer / cornerstone) và
-chuyển sang JPG chất lượng cao.
+Core of the tool that pulls DICOM images out of a web viewer (VradViewer /
+cornerstone) and converts them to high-quality JPG.
 
-Quy trình 2 bước:
+Two stages:
   1) download_all(url, dicom_dir, ...):
-        - Mở link viewer bằng trình duyệt ảo (Playwright, KHÔNG sửa link).
-        - Tự động bấm qua TẤT CẢ series (xung) và cuộn hết các lát cắt / phase
-          để viewer tự gửi request ảnh.
-        - Bắt toàn bộ response GetImage (DICOM gốc) / GetImageJpeg và lưu lại,
-          tự loại trùng theo nội dung.
+        - Open the viewer link in a headless browser (Playwright); the link is
+          never rewritten.
+        - Step through EVERY series and scroll all slices/phases so the viewer
+          issues the image requests itself.
+        - Capture every GetImage (original DICOM) / GetImageJpeg response and
+          store it, de-duplicating by content.
   2) convert_all(dicom_dir, jpg_dir, ...):
-        - Đọc DICOM, dựng ảnh với cửa sổ (window/level) tốt hơn,
-          xuất JPG chất lượng cao (mặc định 95) tổ chức theo từng series.
+        - Read the DICOM, render with a better window/level, and write
+          high-quality JPG (default 95) grouped per series.
 
-Có thể chạy trực tiếp (CLI) hoặc import bởi giao diện dcom_downloader_app.py.
+Runs from the CLI, or is imported by the dcom_downloader_app.py GUI.
 
-Mọi thông báo được đẩy qua callback `log(msg)` để GUI hiển thị; nếu không truyền
-thì in ra màn hình.
+Every message goes through the `log(msg)` callback so the GUI can show it;
+without one, messages are printed.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ import unicodedata
 from dicom_io import discover_dicom_files
 
 # --------------------------------------------------------------------------- #
-#  Tiện ích chung
+#  Shared utilities
 # --------------------------------------------------------------------------- #
 
 LogFn = Callable[[str], None]
@@ -59,10 +60,11 @@ def _default_log(msg: str) -> None:
         pass
 
 
-# Vật thể DICOM KHÔNG chứa điểm ảnh: báo cáo có cấu trúc (SR — vd "Dose SR" của
-# máy CT), trạng thái hiển thị, ảnh khóa, tài liệu, vùng phân đoạn, dữ liệu xạ
-# trị. Không chuyển được sang JPG, và có PACS còn trả 500 khi bị hỏi tới. Tính
-# chúng vào tổng số ảnh sẽ khiến một ca đã tải đủ bị gắn "thiếu ảnh" vĩnh viễn.
+# DICOM objects that carry NO pixels: structured reports (a CT "Dose SR", say),
+# presentation states, key-object selections, documents, segmentations and
+# radiotherapy data. None of them convert to JPG, and some PACS even answer 500
+# when asked for one. Counting them toward the image total would leave a fully
+# downloaded study permanently flagged as "missing images".
 _NON_IMAGE_MODALITIES = frozenset({
     "SR", "PR", "KO", "DOC", "AU", "SEG", "REG", "FID", "PLAN",
     "RTSTRUCT", "RTPLAN", "RTRECORD", "STAND",
@@ -74,7 +76,7 @@ def _is_non_image_modality(modality: Any) -> bool:
 
 
 def _guess_ext(data: bytes) -> Optional[str]:
-    """Đoán loại file từ vài byte đầu."""
+    """Guess the file type from the first few bytes."""
     if data[:3] == b"\xff\xd8\xff":
         return "jpg"
     if data[:4] == b"\x89PNG":
@@ -85,10 +87,11 @@ def _guess_ext(data: bytes) -> Optional[str]:
 
 
 def _is_dicom_dataset_valid_for_decode(ds: Any) -> tuple[bool, str]:
-    """Kiểm tra dataset DICOM có đầy đủ dữ liệu pixel an toàn để giải mã C native không.
+    """Whether the dataset holds pixel data safe to hand to a native C decoder.
 
-    Ngăn chặn việc đưa codestream nén bị rách (JPEG2000, JPEG-LS, JPEG, RLE) vào openjpeg / pylibjpeg
-    gây STATUS_HEAP_CORRUPTION (0xC0000374).
+    Guards against feeding a torn compressed codestream (JPEG2000, JPEG-LS,
+    JPEG, RLE) into openjpeg / pylibjpeg, which crashes the process with
+    STATUS_HEAP_CORRUPTION (0xC0000374).
     """
     if ds is None or "PixelData" not in ds:
         return False, "Không có trường PixelData"
@@ -120,8 +123,9 @@ def _is_dicom_dataset_valid_for_decode(ds: Any) -> tuple[bool, str]:
             if not frags:
                 return False, "Encapsulated PixelData không chứa fragment nào"
 
-            # Phân loại họ nén JPEG / JPEG-LS / JPEG 2000 (1.2.840.10008.1.2.4.50-93),
-            # không áp dụng marker EOI cho các cú pháp nén video (1.2.840.10008.1.2.4.100+).
+            # The JPEG / JPEG-LS / JPEG 2000 family (1.2.840.10008.1.2.4.50-93).
+            # The EOI marker check does not apply to the video syntaxes
+            # (1.2.840.10008.1.2.4.100+).
             is_jpeg_family = "1.2.840.10008.1.2.4." in ts_uid and not any(
                 ts_uid.startswith(v) for v in ("1.2.840.10008.1.2.4.10", "1.2.840.10008.1.2.4.11")
             )
@@ -144,8 +148,9 @@ def _is_dicom_dataset_valid_for_decode(ds: Any) -> tuple[bool, str]:
                     if any(off > len(frag) for off in offsets):
                         return False, "RLE segment offset vượt quá độ dài fragment"
             else:
-                # Fragment đầu là Basic Offset Table — chuẩn cho phép rỗng, nên
-                # phải bỏ qua nó y như nhánh RLE, kẻo loại nhầm video MPEG/H.264.
+                # The first fragment is the Basic Offset Table, which the standard
+                # allows to be empty. Skip it exactly as the RLE branch does, or
+                # MPEG/H.264 video gets rejected by mistake.
                 image_frags = frags[1:] if len(frags) > 1 else frags
                 if any(len(frag) == 0 for frag in image_frags):
                     return False, "Encapsulated fragment ảnh rỗng"
@@ -156,7 +161,7 @@ def _is_dicom_dataset_valid_for_decode(ds: Any) -> tuple[bool, str]:
 
 
 def _validate_dicom_bytes_and_dataset(data: bytes) -> tuple[bool, str, Optional[Any]]:
-    """Kiểm tra tính toàn vẹn của dữ liệu nhị phân DICOM và trả về dataset nếu hợp lệ."""
+    """Check the integrity of raw DICOM bytes, returning the dataset when valid."""
     if not data or len(data) <= 132:
         return False, "Dữ liệu quá ngắn (<132 bytes)", None
     if data[128:132] != b"DICM":
@@ -202,9 +207,10 @@ def _validate_dicom_bytes_and_dataset(data: bytes) -> tuple[bool, str, Optional[
 
 
 def _validate_dicom_bytes(data: bytes) -> tuple[bool, str]:
-    """Kiểm tra tính toàn vẹn của dữ liệu nhị phân DICOM trước khi ghi đĩa hoặc nạp lại.
+    """Check raw DICOM bytes before writing them to disk or reloading them.
 
-    Trả về (True, "") nếu hợp lệ, hoặc (False, lý do) nếu dữ liệu bị cụt/hỏng.
+    Returns (True, "") when valid, or (False, reason) when the data is
+    truncated or corrupt.
     """
     valid, reason, _ds = _validate_dicom_bytes_and_dataset(data)
     return valid, reason
@@ -212,11 +218,13 @@ def _validate_dicom_bytes(data: bytes) -> tuple[bool, str]:
 
 def _maybe_base64_decode(body: bytes) -> bytes:
     """
-    Một số response trả về base64 dạng text thay vì nhị phân.
-    Nếu phát hiện là base64 hợp lệ và giải mã ra ảnh/DICOM thì trả bản đã giải mã.
+    Some servers answer with base64 text instead of binary.
+    When the body decodes as valid base64 that yields an image or DICOM, the
+    decoded form is returned instead.
     """
     stripped = body.strip()
-    # Chỉ thử nếu trông giống base64 (không có byte điều khiển, độ dài chia hết logic)
+    # Only attempt it when the body looks like base64: no control bytes and a
+    # plausible length
     if not stripped or len(stripped) < 100:
         return body
     if _guess_ext(stripped) is not None:
@@ -233,9 +241,10 @@ def _maybe_base64_decode(body: bytes) -> bytes:
 
 def _multipart_parts(body: bytes, content_type: str = "") -> "list[tuple[str, bytes]]":
     """
-    Tách response multipart/related (chuẩn WADO-RS) thành [(content-type phần, dữ liệu)].
-    Trả [] nếu không phải multipart. Boundary lấy từ header Content-Type; nếu
-    thiếu thì dò từ dòng đầu của thân ("--boundary\\r\\n").
+    Split a multipart/related response (the WADO-RS shape) into
+    [(part content-type, data)]. Returns [] when the body is not multipart.
+    The boundary comes from the Content-Type header, or is sniffed from the
+    first line of the body when that header is missing.
     """
     m = re.search(r'boundary="?([^";,\s]+)"?', content_type or "", re.I)
     if m:
@@ -259,17 +268,19 @@ def _multipart_parts(body: bytes, content_type: str = "") -> "list[tuple[str, by
             continue
         mt = re.search(rb"(?i)content-type:\s*([^\r\n]+)", head)
         pct = mt.group(1).decode("latin-1", "replace").strip() if mt else ""
-        # RFC 2046: đúng MỘT CRLF trước delimiter là của delimiter. `rstrip` sẽ ăn
-        # luôn pixel thật, vì 0x0D/0x0A nằm đầy trong dữ liệu ảnh 16-bit.
+        # RFC 2046: exactly ONE CRLF before the delimiter belongs to the
+        # delimiter. `rstrip` would eat real pixels too, because 0x0D/0x0A occur
+        # constantly inside 16-bit image data.
         if payload.endswith(b"\r\n"):
             payload = payload[:-2]
         parts.append((pct, payload))
     return parts
 
 
-# Content-type của frame WADO-RS -> Transfer Syntax UID tương ứng.
-# Bảng theo PS3.18 Table 6.1.1.8-3b, đối chiếu cornerstonewadoimageloader vốn đã
-# va đủ các biến thể mà server thật trả về.
+# WADO-RS frame content-type -> matching Transfer Syntax UID.
+# Table follows PS3.18 Table 6.1.1.8-3b, cross-checked against
+# cornerstonewadoimageloader, which has already met every variant real servers
+# return.
 _FRAME_TS_BY_MIME = {
     "image/dicom+jpeg": "1.2.840.10008.1.2.4.50",
     "image/jpeg": "1.2.840.10008.1.2.4.50",
@@ -286,19 +297,21 @@ _FRAME_TS_BY_MIME = {
     "image/jxl": "1.2.840.10008.1.2.4.140",
 }
 
-# Kiểu media ảnh/video nào cũng là dữ liệu ĐÃ NÉN. Không tra ra Transfer Syntax mà
-# vẫn ghi thẳng vào PixelData thì ra file mở được nhưng ảnh sai — hỏng kiểu không
-# ai nhìn thấy. Thà trả None để tầng trên đổi đường tải.
+# Every image/video media type is ALREADY compressed. Writing it straight into
+# PixelData without resolving a Transfer Syntax yields a file that opens but
+# shows the wrong image — the kind of corruption nobody notices. Returning None
+# instead lets the layer above switch download routes.
 _COMPRESSED_MEDIA_RE = re.compile(r"\b(?:image|video)/", re.I)
 
 _UNCOMPRESSED_TS = ("1.2.840.10008.1.2", "1.2.840.10008.1.2.1")
 
-# Thứ tự xin frame của WADO-RS, tốt nhất trước.
+# Order in which WADO-RS frames are requested, best first.
 #
-# `transfer-syntax=*` bảo server "cứ đưa nguyên cái anh đang giữ": pixel về đúng
-# bitstream máy chụp ghi ra, không qua một lần giải nén/nén lại nào. Server nào
-# không chiều (thường trả 406) hoặc đưa kiểu nén mà pydicom chưa ghi được thì lùi
-# về cách cũ — để server giải nén sẵn, mất bitstream gốc nhưng vẫn có ảnh đúng.
+# `transfer-syntax=*` tells the server "send exactly what you hold": the pixels
+# arrive as the scanner wrote them, with no decompress/recompress round trip. A
+# server that refuses (usually 406) or answers with a compression pydicom cannot
+# write falls back to the old way — the server decompresses first, which loses
+# the original bitstream but still gives a correct image.
 _FRAME_ACCEPT_LADDER = (
     'multipart/related; type="application/octet-stream"; transfer-syntax=*',
     'multipart/related; type="application/octet-stream", */*',
@@ -371,7 +384,7 @@ def _dicom_from_meta_frames(meta: dict, frames: "list[bytes]",
                              f"{(frame_ct or '').strip() or '(rỗng)'}")
 
         if not ts or ts in _UNCOMPRESSED_TS:
-            # octet-stream: điểm ảnh thô không nén — ghép các frame lại
+            # octet-stream: raw uncompressed pixels, so concatenate the frames
             pix = b"".join(frames)
             if len(pix) % 2:
                 pix += b"\x00"
@@ -379,7 +392,7 @@ def _dicom_from_meta_frames(meta: dict, frames: "list[bytes]",
             ds.add_new(0x7FE00010, vr, pix)
             ts_uid = ImplicitVRLittleEndian if ts == "1.2.840.10008.1.2" else ExplicitVRLittleEndian
         else:
-            # frame đã nén (JPEG/JLS/J2K/HTJ2K) -> đóng gói encapsulated
+            # already-compressed frames (JPEG/JLS/J2K/HTJ2K) -> encapsulate
             ds.add_new(0x7FE00010, "OB", encapsulate(list(frames)))
             ds["PixelData"].is_undefined_length = True
             ts_uid = UID(ts)
@@ -436,10 +449,10 @@ def ensure_browser(log: LogFn = _default_log) -> None:
         log(f"  Không tự tải được Chromium ({e}). Hãy chạy thủ công: python -m playwright install chromium")
 
 
-# --dns-over-https-mode=off: buộc Chromium dùng DNS của HỆ ĐIỀU HÀNH. Nếu
-# không, với DNS nội bộ/split-horizon (vd PACS bệnh viện), Chromium tự hỏi
-# resolver công khai -> ra IP công khai bị chặn -> ERR_CONNECTION_TIMED_OUT
-# dù trình duyệt thường vẫn vào được.
+# --dns-over-https-mode=off forces Chromium onto the OPERATING SYSTEM resolver.
+# Without it, on split-horizon or internal DNS (a hospital PACS, say), Chromium
+# asks a public resolver, gets the blocked public IP and fails with
+# ERR_CONNECTION_TIMED_OUT even though an ordinary browser reaches the host.
 _BROWSER_ARGS = ["--dns-over-https-mode=off", "--disable-features=DnsOverHttps,AsyncDns"]
 _BROWSER_STATE_LOCK = threading.Lock()
 _CHROME_UNAVAILABLE = False
@@ -491,8 +504,8 @@ def _launch_chromium(p, headless: bool, log: LogFn):
     with _BROWSER_STATE_LOCK:
         skip_chrome = _CHROME_UNAVAILABLE
 
-    # 1. Ưu tiên Google Chrome. Nếu Windows đã từ chối chạy trong lần đầu,
-    # bỏ qua các lần thử tiếp theo của cùng phiên app để không làm chậm mỗi study.
+    # 1. Prefer Google Chrome. Once Windows has refused to launch it, skip the
+    # retries for the rest of this app session so every study is not slowed down.
     chrome_error = None
     if not skip_chrome:
         try:
@@ -502,7 +515,7 @@ def _launch_chromium(p, headless: bool, log: LogFn):
         except Exception as exc:
             chrome_error = exc
 
-        # Chrome cài theo tài khoản Windows đôi khi không được channel tìm thấy.
+        # A per-user Chrome install is sometimes invisible to the channel lookup.
         for chrome_path in _installed_chrome_paths():
             try:
                 b = p.chromium.launch(
@@ -522,7 +535,7 @@ def _launch_chromium(p, headless: bool, log: LogFn):
             f"Chi tiết: {_short_browser_error(chrome_error)}"
         )
 
-    # 2. Thử Safari / WebKit (nếu chạy trên macOS)
+    # 2. Try Safari / WebKit (on macOS)
     try:
         if sys.platform == "darwin" and hasattr(p, "webkit"):
             b = p.webkit.launch(headless=headless)
