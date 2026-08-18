@@ -117,6 +117,9 @@ function updateSelected(){
     $('downloadBtn').classList.add('btn-loading');
     $('resumeBtn').disabled=true;
     $('resumeBtn').classList.add('btn-loading');
+    if(!job||job.status==='preparing'||isStartingDownload){
+      $('resumeBtn').innerHTML='<span class="spinner"></span> Reconnecting...';
+    }
     return;
   }
   $('downloadBtn').classList.remove('btn-loading');
@@ -139,17 +142,27 @@ function renderJob(){
   $('jobMeta').textContent=`${job.adapter||'DICOM'}${job.original||job.reconstructed?` · ${job.original||0} original${job.reconstructed?` · ${job.reconstructed} reconstructed`:''}`:''}`;
   const kind=job.status==='done'?'good':['error','done_with_errors'].includes(job.status)?'bad':['partial','cancelled'].includes(job.status)?'warn':'neutral';
   chip($('jobBadge'),jobLabel(job.status),kind);
-  const isBusy=['preparing','downloading','cancelling'].includes(job.status);
+  const isBusy=['preparing','downloading','cancelling'].includes(job.status)||isStartingDownload;
   setTopLoader(isBusy);
   if(isBusy){
-    show('cancelBtn',true);
-    show('resumeBtn',false);
-    show('jobNote',false);
-    $('cancelBtn').disabled=(job.status==='cancelling');
-    $('cancelBtn').textContent=(job.status==='cancelling'?'Cancelling...':'Cancel');
+    if(job&&['downloading','cancelling'].includes(job.status)){
+      show('cancelBtn',true);
+      show('resumeBtn',false);
+      show('jobNote',false);
+      $('cancelBtn').disabled=(job.status==='cancelling');
+      $('cancelBtn').textContent=(job.status==='cancelling'?'Cancelling...':'Cancel');
+    }else{
+      show('cancelBtn',false);
+      show('resumeBtn',true);
+      $('resumeBtn').disabled=true;
+      $('resumeBtn').classList.add('btn-loading');
+      $('resumeBtn').innerHTML='<span class="spinner"></span> Reconnecting...';
+      show('jobNote',true);
+      $('jobNote').textContent='Preparing and reconnecting to PACS...';
+    }
     $('downloadBtn').disabled=true;
     $('downloadBtn').classList.add('btn-loading');
-    $('downloadBtn').innerHTML=`<span class="spinner"></span> ${jobLabel(job.status)}...`;
+    $('downloadBtn').innerHTML=`<span class="spinner"></span> ${jobLabel(job?.status||'preparing')}...`;
   }else{
     $('cancelBtn').textContent='Cancel';
     if(['cancelled','done_with_errors','error','partial'].includes(job.status)){
