@@ -5,7 +5,7 @@ import {compatibleAdapterIds,mapSeriesSelection,tasksBelongToStudy,cumulativeAtt
 import {extractManifestCandidates,candidateProbePlan,recordsForSuccessfulShapes,manifestRecipeFromDiscovery,studyProfileFromProbeDetails,looksLikeDicomJson,urlShape} from './lib/generic_discovery.js';
 
 const TAB_PREFIX='pacs6_tab_',INV_PREFIX='pacs6_inv_',JOB_PREFIX='pacs6_job_',HISTORY_KEY='pacs6_history',RECIPES_KEY='pacs6_site_recipes';
-const MAX_HISTORY=100,MAX_NAV=60,MAX_REQUESTS=500,AUTO_SCORE=55;
+const MAX_HISTORY=100,MAX_NAV=60,MAX_REQUESTS=500,AUTO_SCORE=50,AUTO_ARM_SCORE=70;
 const analyzeTimers=new Map(),contextTimers=new Map(),probeTimers=new Map(),learnTimers=new Map(),jobMemory=new Map(),jobFlushTimers=new Map();
 let learnedRecipes={};
 const tabKey=id=>`${TAB_PREFIX}${id}`,invKey=id=>`${INV_PREFIX}${id}`,jobKey=id=>`${JOB_PREFIX}${id}`;
@@ -134,11 +134,37 @@ async function hasOrigin(url){const p=originPattern(url);if(!p)return false;retu
 async function missingPatterns(urls){const out=[];for(const p of [...new Set((urls||[]).map(originPattern).filter(Boolean))])if(!(await chrome.permissions.contains({origins:[p]})))out.push(p);return out;}
 async function injectContent(tabId){try{await chrome.scripting.executeScript({target:{tabId,allFrames:true},files:['content.js']});return true;}catch{try{await chrome.scripting.executeScript({target:{tabId},files:['content.js']});return true;}catch{return false;}}}
 async function injectGenericHook(tabId){try{await chrome.scripting.executeScript({target:{tabId,allFrames:true},world:'MAIN',files:['generic-hook.js']});return true;}catch{try{await chrome.scripting.executeScript({target:{tabId},world:'MAIN',files:['generic-hook.js']});return true;}catch{return false;}}}
-async function ensurePanel(tabId){try{await chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true});if(tabId)await chrome.sidePanel.setOptions({tabId,path:'sidepanel.html',enabled:true});}catch{}}
+async function ensurePanel(tabId){
+  try{
+    await chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true});
+    if(tabId)await chrome.sidePanel.setOptions({tabId,path:'sidepanel.html',enabled:true});
+  }catch{}
+}
 
 async function setBadge(tabId){if(tabId<0)return;const s=await getTabState(tabId),inv=await getSession(invKey(tabId)),job=jobMemory.get(tabId)||await getSession(jobKey(tabId));let text='',color='#64748b',title='PACS DICOM Downloader';if(job&&['preparing','downloading','cancelling'].includes(job.status)){text='↓';color='#2563eb';title='Downloading DICOM';}else if(inv?.previousDownload?.status==='done'){text='✓';color='#168a52';title='Study downloaded';}else if(inv?.series?.length){text=String(Math.min(99,inv.series.length));color='#168a52';title=`${inv.series.length} series`;}else if(s.tracking==='watching'){text='•';color='#2563eb';title='Tracking PACS';}else if(s.tracking==='candidate'){text='?';color='#b7791f';title='Possible PACS';}else if(s.tracking==='stopped'){text='Ⅱ';color='#7c8798';title='Tracking stopped';}await chrome.action.setBadgeBackgroundColor({tabId,color}).catch(()=>{});await chrome.action.setBadgeText({tabId,text}).catch(()=>{});await chrome.action.setTitle({tabId,title}).catch(()=>{});}
 
-async function markCandidate(tabId,url){const clean=cleanUrl(url);if(tabId<0||!clean)return;const score=urlConfidence(clean);const s=await getTabState(tabId);s.currentUrl=clean;s.confidence=Math.max(Number(s.confidence)||0,Math.min(100,Math.round(score)));if(score>=AUTO_SCORE&&!['watching','stopped'].includes(s.tracking)){s.tracking='candidate';if(await hasOrigin(clean))await injectContent(tabId);}await saveTabState(tabId,s);await setBadge(tabId);}
+async function markCandidate(tabId,url){
+  const clean=cleanUrl(url);
+  if(tabId<0||!clean)return;
+  await ensurePanel(tabId);
+  const score=urlConfidence(clean);
+  const shell=classifyViewerShell(clean);
+  const s=await getTabState(tabId);
+  s.currentUrl=clean;
+  s.confidence=Math.max(Number(s.confidence)||0,Math.min(100,Math.round(score)));
+  const shouldAutoArm=(score>=AUTO_ARM_SCORE||Boolean(shell))&&!['watching','stopped'].includes(s.tracking);
+  if(shouldAutoArm){
+    await startTracking(tabId,false);
+  }else if(score>=AUTO_SCORE&&!['watching','stopped'].includes(s.tracking)){
+    s.tracking='candidate';
+    if(await hasOrigin(clean))await injectContent(tabId);
+    await saveTabState(tabId,s);
+    await setBadge(tabId);
+  }else{
+    await saveTabState(tabId,s);
+    await setBadge(tabId);
+  }
+}
 async function maybeRecaptureVietmy(tabId){try{const s=await getTabState(tabId);if(s.tracking!=='watching'||s.vietmyRecaptureDone)return;const shell=classifyViewerShell(s.currentUrl||'');if(shell?.type!=='SHARE_STUDY')return;const summary=await scanTab(tabId),seen=summary.requests.some(x=>x.type==='VIETMY_MANIFEST'),captured=(s.pacsRequests||[]).some(x=>x.type==='VIETMY_MANIFEST');if(seen&&!captured){s.vietmyRecaptureDone=true;await saveTabState(tabId,s);await chrome.tabs.reload(tabId);}}catch{}}
 async function startTracking(tabId,manual=false){const s=await getTabState(tabId);s.tracking='watching';if(manual)s.manual=true;await saveTabState(tabId,s);await injectContent(tabId);await injectGenericHook(tabId);s.genericHookActive=true;await saveTabState(tabId,s);await setBadge(tabId);scheduleAnalyze(tabId,250);if(manual)setTimeout(()=>maybeRecaptureVietmy(tabId),450);return s;}
 async function stopTracking(tabId){const s=await getTabState(tabId);s.tracking='stopped';await saveTabState(tabId,s);await setBadge(tabId);return s;}
@@ -623,7 +649,17 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
   })().then(sendResponse).catch(e=>sendResponse({ok:false,error:String(e?.message||e)}));return true;
 });
 
+chrome.action.onClicked.addListener(async tab=>{
+  if(!tab?.id)return;
+  try{
+    await chrome.sidePanel.setOptions({tabId:tab.id,path:'sidepanel.html',enabled:true});
+    await chrome.sidePanel.open({tabId:tab.id});
+  }catch{
+    try{if(tab.windowId)await chrome.sidePanel.open({windowId:tab.windowId});}catch{}
+  }
+});
 chrome.tabs.onCreated.addListener(tab=>{if(tab.id)ensurePanel(tab.id).catch(()=>{});});
+chrome.tabs.onActivated.addListener(activeInfo=>{const tabId=activeInfo.tabId;if(!tabId)return;(async()=>{await ensurePanel(tabId);const tab=await chrome.tabs.get(tabId).catch(()=>null);if(!tab?.url)return;const clean=cleanUrl(tab.url),score=urlConfidence(clean),shell=classifyViewerShell(clean);if(score>=AUTO_ARM_SCORE||Boolean(shell)){const s=await getTabState(tabId);if(!['watching','stopped'].includes(s.tracking))await startTracking(tabId,false);}})().catch(()=>{});});
 chrome.tabs.onUpdated.addListener((tabId,change,tab)=>{ensurePanel(tabId).catch(()=>{});const u=change.url||tab.url||'';if(u)markCandidate(tabId,u).catch(()=>{});if(change.status==='complete'&&u)hasOrigin(u).then(ok=>{if(ok)setTimeout(()=>{injectContent(tabId);getTabState(tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(tabId);});},150);}).catch(()=>{});});
 chrome.tabs.onRemoved.addListener(tabId=>{(async()=>{const j=jobMemory.get(tabId)||await getSession(jobKey(tabId));if(j&&['preparing','downloading','cancelling'].includes(j.status)){chrome.storage.session.remove(tabKey(tabId)).catch(()=>{});return;}jobMemory.delete(tabId);chrome.storage.session.remove([tabKey(tabId),invKey(tabId),jobKey(tabId)]).catch(()=>{});})().catch(()=>{});});
 async function boot(){await setDownloadUi(true);await loadRecipes();await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});await chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true}).catch(()=>{});for(const tab of await chrome.tabs.query({})){if(!tab.id)continue;await ensurePanel(tab.id);if(tab.url){await markCandidate(tab.id,tab.url);if(await hasOrigin(tab.url))await injectContent(tab.id);}}}
