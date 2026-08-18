@@ -431,18 +431,24 @@ function groupSeriesHierarchically(seriesList) {
     }
     const studyMap = dateMap.get(dateKey);
 
-    let studyTitle = item.studyGroup || "";
-    if (studyTitle) {
-      const parts = studyTitle.split(" - ");
+    // `studyGroup` is "<ngày> - <modality> - <mô tả>", and the date is already
+    // this map's outer key. Taking the exam's own name where the backend
+    // reports one, and only falling back to the group otherwise, stops the
+    // header reading "MR - MR sọ não có tiêm".
+    const mod = item.modality && item.modality !== "UNKNOWN" ? item.modality : "";
+    let studyTitle = String(item.studyDescription || "").trim();
+    if (!studyTitle) {
+      const parts = String(item.studyGroup || "").trim().split(" - ");
       if (parts.length >= 2 && (/^\d{4}-\d{2}-\d{2}/.test(parts[0]) || /^\d{8}/.test(parts[0]))) {
-        studyTitle = parts.slice(1).join(" - ");
+        parts.shift();
       }
+      studyTitle = parts.join(" - ").trim();
     }
-    if (!studyTitle || studyTitle === "Không rõ ca chụp") {
-      const mod = item.modality && item.modality !== "UNKNOWN" ? item.modality : "";
-      const desc = item.studyDescription || "";
-      studyTitle = [mod, desc].filter(Boolean).join(" · ") || t("Ca chụp chưa phân loại");
+    if (studyTitle === "Không rõ ca chụp") studyTitle = "";
+    if (studyTitle && mod && !studyTitle.toUpperCase().startsWith(mod.toUpperCase())) {
+      studyTitle = `${mod} · ${studyTitle}`;
     }
+    if (!studyTitle) studyTitle = mod || t("Ca chụp chưa phân loại");
 
     if (!studyMap.has(studyTitle)) {
       studyMap.set(studyTitle, []);

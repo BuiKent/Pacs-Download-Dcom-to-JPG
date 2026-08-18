@@ -22,6 +22,41 @@ describe("Series grouping by study date and study", () => {
     expect(groups[0].items.map((item) => item.description)).toEqual(["T1 SAG", "T2 AX"]);
   });
 
+  it("never repeats the modality in a study header", () => {
+    // The backend reports the exam's own name in studyDescription. Reading the
+    // grouping key instead, which already carries "<ngày> - <modality> - <mô
+    // tả>", showed a radiologist "MR - MR sọ não có tiêm".
+    const series = [
+      {
+        id: "s1",
+        studyDate: "2026-07-10",
+        modality: "MR",
+        studyGroup: "2026-07-10 - MR - MR sọ não có tiêm",
+        studyDescription: "MR sọ não có tiêm",
+        description: "T1 SAG",
+        sliceCount: 24,
+      },
+    ];
+
+    expect(groupSeriesHierarchically(series)[0].studyTitle).toBe("MR sọ não có tiêm");
+  });
+
+  it("still names the modality when the exam name does not carry it", () => {
+    const series = [
+      {
+        id: "s1",
+        studyDate: "2026-07-10",
+        modality: "CT",
+        studyGroup: "2026-07-10 - CT - Bụng có cản quang",
+        studyDescription: "Bụng có cản quang",
+        description: "Axial",
+        sliceCount: 120,
+      },
+    ];
+
+    expect(groupSeriesHierarchically(series)[0].studyTitle).toBe("CT · Bụng có cản quang");
+  });
+
   it("orders groups newest date first, studies within a date in arrival order", () => {
     const series = [
       { id: "s1", studyDate: "2026-08-10", studyGroup: "2026-08-10 - MR - COT SONG", description: "T2 SAG", sliceCount: 20 },

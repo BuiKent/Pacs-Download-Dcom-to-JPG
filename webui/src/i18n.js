@@ -64,6 +64,8 @@ const EN = {
   "{} video": "{} videos",
   "{} file": "{} files",
   "{} ảnh": "{} photos",
+  "Series DICOM này thiếu hình học: chỉ xem/zoom/pan; không dùng kết quả đo vật lý.":
+    "This DICOM series has no usable geometry: view/zoom/pan only; do not rely on physical measurements.",
   "{} phim": "{} series",
   "Tên hiển thị trên timeline": "Timeline display name",
   "Đổi tên lần chụp hoặc loại media": "Rename this study or media entry",

@@ -590,6 +590,10 @@ def _direct_dicom_manifest(headers: list[DicomHeader]) -> tuple[Optional[dict], 
         "version": 1,
         "series_type": "DICOM_DIRECT",
         "series_description": first.description,
+        # The exam's own name, as distinct from this sequence's. Without it the
+        # patient timeline had nothing to show but the grouping key, which
+        # already repeats the modality: "MR - MR sọ não có tiêm".
+        "study_description": first.study_desc,
         "modality": "MR" if first.modality == "MRI" else first.modality,
         "series_number": first.series_number,
         "study_date": first.study_date,
@@ -1019,7 +1023,7 @@ class SeriesRecord:
             "mediaType": self.resolved_media_type(),
             "studyGroup": self.study_group,
             "studyDate": self.study_date or m.get("study_date") or m.get("studyDate", ""),
-            "studyDescription": m.get("study_description") or m.get("studyDescription", ""),
+            "studyDescription": self.study_label(),
             # The patient timeline shows one study/media group, while the
             # viewer's series selector still exposes every technical sequence.
             # DICOM series from one StudyInstanceUID therefore share this key.
@@ -1044,6 +1048,33 @@ class SeriesRecord:
                 ),
             }
         return data
+
+    def study_label(self) -> str:
+        """The exam's own name, without the prefix its grouping key carries.
+
+        `study_group` is assembled as "<ngày> - <modality> - <mô tả>" so the
+        DICOM half and the converted-JPG half of one study agree on a key. The
+        patient timeline shows that string to a reader, where the repeated
+        modality read as "MR - MR sọ não có tiêm". Series scanned before the
+        manifest carried `study_description` have only the group to recover it
+        from, so the two known prefixes are peeled back off.
+        """
+        manifest = self.manifest or {}
+        described = str(
+            manifest.get("study_description") or manifest.get("studyDescription") or ""
+        ).strip()
+        if described:
+            return described
+        label = str(self.study_group or "").strip()
+        if not label or label == "Không rõ ca chụp":
+            return ""
+        date = str(self.study_date or manifest.get("study_date") or "").strip()
+        if date and label.startswith(date):
+            label = label[len(date):].lstrip(" -")
+        modality = str(self.modality or "").strip()
+        if modality and label.upper().startswith(f"{modality.upper()} - "):
+            label = label[len(modality):].lstrip(" -")
+        return label.strip()
 
     def timeline_key(self) -> str:
         """Stable opaque identity for one patient-timeline row.
@@ -3044,10 +3075,14 @@ class WebController:
             raise PermissionError(
                 f"Truy cập bị từ chối: Đường dẫn nằm ngoài phạm vi cho phép ({root})"
             )
+        # The patient folder is looked for at or above the archive root, but
+        # never above the roots the app is allowed to touch: a stray manifest
+        # further up the disk must not become the file this writes to.
         folder = next(
             (
                 candidate for candidate in (start, *start.parents)
-                if (candidate / "patient-index.json").is_file()
+                if (not allowed or any(_is_within(candidate, base) for base in allowed))
+                and (candidate / "patient-index.json").is_file()
             ),
             None,
         )
@@ -3105,10 +3140,14 @@ class WebController:
             raise PermissionError(
                 f"Truy cập bị từ chối: Đường dẫn nằm ngoài phạm vi cho phép ({root})"
             )
+        # The patient folder is looked for at or above the archive root, but
+        # never above the roots the app is allowed to touch: a stray manifest
+        # further up the disk must not become the file this writes to.
         folder = next(
             (
                 candidate for candidate in (start, *start.parents)
-                if (candidate / "patient-index.json").is_file()
+                if (not allowed or any(_is_within(candidate, base) for base in allowed))
+                and (candidate / "patient-index.json").is_file()
             ),
             None,
         )

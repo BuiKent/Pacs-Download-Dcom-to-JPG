@@ -2061,9 +2061,14 @@ export async function showStacks(container, series, mode, comparison = null, too
   installResizeObserver(container);
   const applied = setTool(tool);
   for (const item of activeSeriesList) await restoreAnnotations(item);
+  // A DICOM series can also arrive without usable geometry — overlapping slice
+  // positions, a missing orientation. Calling it a "series JPG" then told the
+  // reader the wrong thing about what they had opened.
   onStatus(series.geometry
     ? "Đo chiều dài/ROI theo mm. Chuột giữa: pan · chuột phải: zoom · lăn: đổi lát."
-    : "Series JPG không có hình học: chỉ xem/zoom/pan; không dùng kết quả đo vật lý.");
+    : series?.sourceType === "dicom"
+      ? "Series DICOM này thiếu hình học: chỉ xem/zoom/pan; không dùng kết quả đo vật lý."
+      : "Series JPG không có hình học: chỉ xem/zoom/pan; không dùng kết quả đo vật lý.");
   return applied;
 }
 

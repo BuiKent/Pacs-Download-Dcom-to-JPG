@@ -18,6 +18,7 @@ from PIL import Image
 
 from web_backend import (
     ArchiveCatalog,
+    SeriesRecord,
     JobState,
     LocalApiServer,
     MEDIA_WORK_ROOT,
@@ -688,6 +689,54 @@ class CatalogTests(unittest.TestCase):
             finished = controller.job.snapshot()
             self.assertEqual(finished["status"], "complete")
             self.assertEqual(len(finished["result"]["series"]), 1)
+
+    def test_study_label_drops_the_date_and_modality_the_group_carries(self):
+        # `study_group` is "<ngay> - <modality> - <mo ta>" so both halves of a
+        # study agree on a key. Showing it verbatim on the patient timeline
+        # read as "MR - MR so nao co tiem" to the reader.
+        record = SeriesRecord(
+            series_id="a" * 20,
+            name="Series 1",
+            folder=Path("."),
+            images=[],
+            manifest={},
+            mpr_ready=False,
+            mpr_reason="",
+            modality="MR",
+            study_group="2026-07-10 - MR - MR so nao co tiem",
+            study_date="2026-07-10",
+        )
+        self.assertEqual("MR so nao co tiem", record.study_label())
+
+    def test_study_label_prefers_the_description_the_dicom_carried(self):
+        record = SeriesRecord(
+            series_id="b" * 20,
+            name="Series 1",
+            folder=Path("."),
+            images=[],
+            manifest={"study_description": "MR khop goi phai"},
+            mpr_ready=False,
+            mpr_reason="",
+            modality="MR",
+            study_group="2026-07-10 - MR - khong dung",
+            study_date="2026-07-10",
+        )
+        self.assertEqual("MR khop goi phai", record.study_label())
+
+    def test_study_label_is_empty_when_nothing_named_the_exam(self):
+        record = SeriesRecord(
+            series_id="c" * 20,
+            name="Series 1",
+            folder=Path("."),
+            images=[],
+            manifest={},
+            mpr_ready=False,
+            mpr_reason="",
+            modality="MR",
+            study_group="Không rõ ca chụp",
+            study_date="",
+        )
+        self.assertEqual("", record.study_label())
 
     def test_a_report_filed_beside_a_scan_is_listed_too(self):
         # A "benh_an" folder holds the scanned GPB picture and the typed MRI
