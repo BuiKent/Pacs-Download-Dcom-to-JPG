@@ -338,6 +338,32 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
             ("mode-mpr", 3, "mpr"),
             ("mode-volume3d", 4, "volume3d"),
         ):
+            # `__viewerReadyMode` is set just before the render task's finally
+            # block clears the busy state. A fast packaged build can observe
+            # that narrow interval and queue the next click against a workspace
+            # that is still being released. Wait for the actual UI-ready state,
+            # which is also what a user sees before the control is usable.
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                mode_control = window.evaluate_js(
+                    f"""(() => {{
+                      const button = document.querySelector('[data-action="{action}"]');
+                      return {{
+                        exists: Boolean(button),
+                        disabled: Boolean(button?.disabled),
+                        busy: Boolean(document.querySelector('#workspace.busy'))
+                      }};
+                    }})()"""
+                )
+                if (
+                    mode_control.get("exists")
+                    and not mode_control.get("disabled")
+                    and not mode_control.get("busy")
+                ):
+                    break
+                time.sleep(0.1)
+            else:
+                raise TimeoutError(f"Nút chuyển {key} chưa sẵn sàng: {mode_control}")
             window.evaluate_js(f'document.querySelector(\'[data-action="{action}"]\').click()')
             deadline = time.time() + 60
             while time.time() < deadline:
@@ -350,6 +376,7 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                       readyMode: window.__viewerReadyMode || '',
                       diagnostics: window.__viewerDiagnostics || null,
                       volumeLoad: window.__volumeLoadState || null,
+                      busy: Boolean(document.querySelector('#workspace.busy')),
                       sliceControls: document.querySelectorAll('.slice-control input').length,
                       toolLabels: [...document.querySelectorAll(
                         '.toolbar .icon-button[data-action^="tool-"]'
@@ -359,7 +386,11 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                 )
                 if state.get("error"):
                     raise RuntimeError(state.get("errorStack") or state["error"])
-                if state.get("canvases") == expected and state.get("readyMode") == action.removeprefix("mode-"):
+                if (
+                    state.get("canvases") == expected
+                    and state.get("readyMode") == action.removeprefix("mode-")
+                    and not state.get("busy")
+                ):
                     state["litPixels"] = _assert_panes_drawn(window, key, expected)
                     result[key] = state
                     _write_smoke_stage(result_path, result, key)
