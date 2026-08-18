@@ -1439,6 +1439,9 @@ class ViewerCapture:
     dicomweb_profile: Optional[DicomWebProfile] = None
 
     host: Optional[str] = None
+    vrpacs_host: Optional[str] = None
+    vrpacs_scu_host: Optional[str] = None
+    vrpacs_probed: set[str] = field(default_factory=set)
     cookies: Optional[list] = None
     session_headers: dict[str, dict] = field(default_factory=dict)
     session_error: Optional[str] = None
@@ -1455,6 +1458,8 @@ class ViewerCapture:
             "getstudies": self.getstudies,
             "template_url": self.template_url,
             "vrpacs": self.vrpacs,
+            "vrpacs_host": self.vrpacs_host,
+            "vrpacs_scu_host": self.vrpacs_scu_host,
             "vietmy": self.vietmy,
             "zfp": self.zfp,
             "zfp_page": self.zfp_page,
@@ -1551,15 +1556,140 @@ class VradAdapter(PacsAdapter):
         )
 
 
+_VRPACS_STANDARD_PORTS = (740, 86, 1325, 997, 82, 8080)
+
+# One connect attempt per port. A filtered port costs the full wait, and the whole
+# probe runs inside the manifest polling loop, whose budget is _MANIFEST_WAIT_MAX_S.
+_VRPACS_PROBE_TIMEOUT_S = 3
+
+
+def _vrpacs_share_payload(raw_url: str) -> Optional[bytes]:
+    """Return the share descriptor a VRPACS viewer link carries in `params=`, if any."""
+    from urllib.parse import urlparse, parse_qs, unquote
+    import base64
+
+    params_val = parse_qs(urlparse(raw_url).query).get("params", [""])[0]
+    if not params_val and "params=" in raw_url:
+        match = re.search(r"params=([A-Za-z0-9+/=_-]+)", raw_url)
+        if match:
+            params_val = match.group(1)
+    if not params_val:
+        return None
+    for candidate in (params_val, unquote(params_val)):
+        for decode in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                decoded = decode(candidate).decode("utf-8", errors="ignore")
+            except Exception:
+                continue
+            if "{" in decoded and "link" in decoded:
+                return decoded.encode("utf-8")
+    return None
+
+
+def _probe_vrpacs_manifest_from_url(raw_url: str, cap: ViewerCapture,
+                                    stop: Optional[Callable[[], bool]] = None) -> bool:
+    """Ask get-share-patient-image for the manifest on the page's port, then the standard ones.
+
+    Some sites publish the viewer on one port while the file service answers on
+    another, so the share link alone never reaches the manifest. Each URL is
+    probed once per session: the caller is a polling predicate, and re-running a
+    round of refused connections on every tick would eat the whole wait budget.
+    """
+    if not raw_url or cap.vrpacs is not None or raw_url in cap.vrpacs_probed:
+        return False
+    cap.vrpacs_probed.add(raw_url)
+    try:
+        from urllib.parse import urlparse
+        import ssl
+        import urllib.request
+
+        payload_bytes = _vrpacs_share_payload(raw_url)
+        if payload_bytes is None:
+            return False
+
+        pu = urlparse(raw_url)
+        hostname = pu.hostname or "127.0.0.1"
+        scheme = pu.scheme or "http"
+        current_port = pu.port or (443 if scheme == "https" else 80)
+        page_origin = f"{scheme}://{hostname}:{current_port}"
+
+        sslctx = ssl.create_default_context()
+        sslctx.check_hostname = False
+        sslctx.verify_mode = ssl.CERT_NONE  # Accept self-signed certificates (HTTPS PACS)
+        headers = {
+            "Content-Type": "application/json;charset=UTF-8",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": raw_url,
+            "Origin": page_origin,
+        }
+
+        ports = [current_port] + [p for p in _VRPACS_STANDARD_PORTS if p != current_port]
+        for port in ports:
+            if stop and stop():
+                return False
+            candidate_url = f"{scheme}://{hostname}:{port}/vrpacs-file/get-share-patient-image"
+            try:
+                request = urllib.request.Request(candidate_url, data=payload_bytes, headers=headers)
+                with urllib.request.urlopen(
+                        request, timeout=_VRPACS_PROBE_TIMEOUT_S, context=sslctx) as response:
+                    if response.status != 200:
+                        continue
+                    body = response.read()
+                    manifest = json.loads(body.decode("utf-8", errors="ignore"))
+            except Exception:
+                continue
+            # A live-but-wrong service can answer 200 with nothing in it; only a
+            # manifest that actually carries `data` counts as the winning port.
+            if isinstance(manifest, dict) and manifest.get("data"):
+                cap.vrpacs = body
+                cap.vrpacs_host = f"{scheme}://{hostname}:{port}"
+                cap.vrpacs_scu_host = page_origin
+                cap.host = page_origin
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _probe_vrpacs_from_page(page, url: str, cap: ViewerCapture,
+                            stop: Optional[Callable[[], bool]] = None) -> None:
+    """Try the share link of the page and of every frame it embeds."""
+    try:
+        if _probe_vrpacs_manifest_from_url(url, cap, stop):
+            return
+        for frame in page.frames:
+            try:
+                frame_url = frame.url or ""
+            except Exception:
+                continue
+            if "params=" in frame_url and _probe_vrpacs_manifest_from_url(frame_url, cap, stop):
+                return
+    except Exception:
+        pass
+
+
 class VrpacsAdapter(PacsAdapter):
     name = "VRPACS"
     source = "vrpacs"
     priority = 250
 
     def observe(self, response, cap: ViewerCapture) -> bool:
-        if "get-share-patient-image" in response.url and cap.vrpacs is None:
+        from urllib.parse import urlparse
+
+        url = response.url
+        if "get-share-patient-image" in url and cap.vrpacs is None:
             cap.vrpacs = response.body()
+            # The origin that answered is the file service. `cap.host` stays the page
+            # origin the caller records, which is where /vrpacs-scu/ images come from.
+            pu = urlparse(url)
+            cap.vrpacs_host = f"{pu.scheme}://{pu.netloc}"
+            # True regardless of what the body holds: the caller reads it as "handled",
+            # and a manifest that falls through here gets saved as if it were an image.
             return True
+        # A share link the page never fetched itself: the payload check inside the
+        # probe is the real gate, this is only the cheap prefilter.
+        if "params=" in url and cap.vrpacs is None:
+            return _probe_vrpacs_manifest_from_url(url, cap)
         return False
 
     def is_ready(self, cap: ViewerCapture) -> bool:
@@ -2984,6 +3114,8 @@ def download_all(
             log("Đang dò manifest của viewer...")
             def _seen_manifest() -> bool:
                 _inspect_zfp(page, cap)
+                if not _have_manifest():
+                    _probe_vrpacs_from_page(page, url, cap, stop)
                 return _have_manifest() or bool(cap.session_error)
 
             _wait_for_viewer_manifest(page, _seen_manifest, stop)
@@ -3255,6 +3387,8 @@ def discover_viewer_series(
 
         def _seen_series() -> bool:
             _inspect_zfp(page, cap)
+            if not _series_manifest_adapter(cap):
+                _probe_vrpacs_from_page(page, url, cap, stop)
             return bool(_series_manifest_adapter(cap) or cap.session_error)
 
         _wait_for_viewer_manifest(page, _seen_series, stop)
@@ -3622,7 +3756,8 @@ def _download_via_vrpacs(captured, save_body, stats,
 
     data = j.get("data", {}) if isinstance(j, dict) else {}
     studies = data.get("studyList", []) if isinstance(data, dict) else []
-    host = (captured.get("host") or "").rstrip("/")
+    scu_host = (captured.get("vrpacs_scu_host") or captured.get("host") or "").rstrip("/")
+    api_host = (captured.get("vrpacs_host") or captured.get("host") or "").rstrip("/")
 
     def to_url(image_id: str):
         s = image_id
@@ -3632,7 +3767,8 @@ def _download_via_vrpacs(captured, save_body, stats,
                 break
         if s.startswith("http"):
             return s
-        return host + "/" + s.lstrip("/")
+        target_host = scu_host if "vrpacs-scu" in s else (api_host or scu_host)
+        return target_host + "/" + s.lstrip("/")
 
     tasks, n_series, series_index = [], 0, 0
     for st in studies:

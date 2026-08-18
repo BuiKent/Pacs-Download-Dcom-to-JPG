@@ -76,5 +76,32 @@ if (Buffer.from(restoreBody(vnSeen.requestBody)).toString('utf8') !== vnJson)
 const bare = parseVrpacsManifest({data: {pName: 'X', pID: '9', studyList: []}});
 if (bare.patient.name !== 'X' || bare.patient.id !== '9') throw new Error('Parser ignored pName/pID');
 
-console.log('VRPACS share-link tests OK');
+// 7. Multi-port healing: when viewer is on port 82 and returns 405, adapter probes port 740 and succeeds.
+const MULTI_PORT_VIEWER = `http://113.160.182.21:82/viewershare?params=${PARAMS}`;
+let probedPorts = [];
+const multiPortCtx = {
+  summary: {currentUrl: 'http://113.160.182.21:4040/view-image?sid=103004', frameUrls: [MULTI_PORT_VIEWER], requests: [], navUrls: []},
+  state: {pacsRequests: [], headersByOrigin: {}},
+  normalizeStudy: x => x,
+  headersForUrl: () => ({}),
+  fetchJson: (url) => {
+    probedPorts.push(url);
+    if (url.includes(':82/')) throw new Error('HTTP 405 Method Not Allowed');
+    if (url.includes(':740/')) return manifest;
+    throw new Error('HTTP 404 Not Found');
+  },
+};
+if (!VrpacsAdapter.match(multiPortCtx.summary)) throw new Error('Failed to match VRPACS via frameUrls');
+const multiPortInv = await VrpacsAdapter.analyze(multiPortCtx);
+if (multiPortInv.context.manifestUrl !== 'http://113.160.182.21:740/vrpacs-file/get-share-patient-image')
+  throw new Error('Did not heal to winning port 740 manifest: ' + multiPortInv.context.manifestUrl);
+if (multiPortInv.series.length !== 2) throw new Error('Wrong series count in multi-port recovery');
+if (probedPorts[0] !== 'http://113.160.182.21:82/vrpacs-file/get-share-patient-image')
+  throw new Error('Must try the viewer own port first, tried: ' + probedPorts[0]);
 
+// 8. Images follow the port that answered, not the port the viewer sits on.
+const healedTasks = await VrpacsAdapter.enumerate(multiPortInv, [multiPortInv.series[0].id], multiPortCtx);
+if (!healedTasks[0].url.startsWith('http://113.160.182.21:740/vrpacs-file/image/'))
+  throw new Error('Image URL did not follow the healed port: ' + healedTasks[0].url);
+
+console.log('VRPACS share-link tests OK');
