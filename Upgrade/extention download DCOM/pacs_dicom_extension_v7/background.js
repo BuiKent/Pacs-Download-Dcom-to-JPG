@@ -284,12 +284,24 @@ return summary;}
 
 function headersForUrl(state,url){try{const h={...(state.headersByOrigin?.[new URL(url).origin]||{})};for(const k of Object.keys(h)){const l=k.toLowerCase();if(['content-type','cookie','origin','referer','host','content-length'].includes(l))delete h[k];}return h;}catch{return{};}}
 function restoreBody(stored){if(!stored)return undefined;if(stored.kind==='form'){const p=new URLSearchParams();for(const[k,vals]of Object.entries(stored.data||{}))for(const v of(Array.isArray(vals)?vals:[vals]))p.append(k,v);return p;}if(stored.kind==='raw'){const bins=(stored.chunks||[]).map(atob),len=bins.reduce((n,b)=>n+b.length,0),out=new Uint8Array(len);let off=0;for(const b of bins){for(let i=0;i<b.length;i++)out[off+i]=b.charCodeAt(i);off+=b.length;}return out;}return undefined;}
-async function fetchJsonFor(state,url,accept='application/json, application/dicom+json',requestMeta=null){const method=String(requestMeta?.method||'GET').toUpperCase(),body=['GET','HEAD'].includes(method)?undefined:restoreBody(requestMeta?.requestBody),headers={...headersForUrl(state,url),Accept:accept};if(!['GET','HEAD'].includes(method)){const ct=replayContentType(state,url,requestMeta,body);if(ct)headers['Content-Type']=ct;}const r=await fetch(url,{method,body,credentials:'include',cache:'no-store',redirect:'follow',headers});if(!r.ok)throw new Error(`HTTP ${r.status}: ${new URL(url).pathname}`);const text=await r.text(),head=text.trim().slice(0,1);
-if(head!=='{'&&head!=='['){const kind=/^\s*</.test(text)?'HTML page':'non-JSON data';throw new Error(`Server returned ${kind} instead of manifest JSON (${new URL(url).pathname}). The link may have expired, or reopen the viewer after enabling "Track tab" to record the request.`);}
-try{return JSON.parse(text);}catch(e){throw new Error(`Corrupted manifest, failed to parse JSON (${new URL(url).pathname}).`);}}
+async function fetchJsonFor(state,url,accept='application/json, application/dicom+json',requestMeta=null,timeoutMs=25000){
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
+  try{
+    const method=String(requestMeta?.method||'GET').toUpperCase(),body=['GET','HEAD'].includes(method)?undefined:restoreBody(requestMeta?.requestBody),headers={...headersForUrl(state,url),Accept:accept};
+    if(!['GET','HEAD'].includes(method)){
+      const ct=replayContentType(state,url,requestMeta,body);
+      if(ct)headers['Content-Type']=ct;
+    }
+    const r=await fetch(url,{method,body,credentials:'include',cache:'no-store',redirect:'follow',headers,signal:controller.signal});
+    if(!r.ok)throw new Error(`HTTP ${r.status}: ${new URL(url).pathname}`);
+    const text=await r.text(),head=text.trim().slice(0,1);
+    if(head!=='{'&&head!=='['){const kind=/^\s*</.test(text)?'HTML page':'non-JSON data';throw new Error(`Server returned ${kind} instead of manifest JSON (${new URL(url).pathname}). The link may have expired, or reopen the viewer after enabling "Track tab" to record the request.`);}
+    try{return JSON.parse(text);}catch(e){throw new Error(`Corrupted manifest, failed to parse JSON (${new URL(url).pathname}).`);}
+  }finally{clearTimeout(timer);}
+}
 function inheritQuery(target,source){const t=new URL(target),s=new URL(source);for(const[k,v]of s.searchParams)if(!t.searchParams.has(k))t.searchParams.append(k,v);return t.href;}
 function normalizeStudy(inv){const p=inv.patient||{};return{adapter:inv.adapter||'',studyUid:String(inv.studyUid||''),patient:{name:String(p.name||''),id:String(p.id||''),birthDate:String(p.birthDate||''),studyDate:String(p.studyDate||''),description:String(p.description||''),accession:String(p.accession||'')},series:Array.isArray(inv.series)?inv.series:[],context:inv.context||{}};}
-function adapterContext(summary,state){return{summary,state,fetchJson:(url,accept,req)=>fetchJsonFor(state,url,accept,req),headersForUrl:url=>headersForUrl(state,url),inheritQuery,normalizeStudy,zfpInfo:()=>zfpInfo(state.tabId)};}
+function adapterContext(summary,state){return{summary,state,fetchJson:(url,accept,req,timeoutMs)=>fetchJsonFor(state,url,accept,req,timeoutMs),headersForUrl:url=>headersForUrl(state,url),inheritQuery,normalizeStudy,zfpInfo:()=>zfpInfo(state.tabId)};}
 async function analyzeTab(tabId){
   const summary=await scanTab(tabId),state=await getTabState(tabId);
   let inv=null,lastError=null;

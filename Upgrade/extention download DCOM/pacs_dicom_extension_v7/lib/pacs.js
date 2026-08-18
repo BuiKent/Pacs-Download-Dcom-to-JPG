@@ -77,7 +77,7 @@ export function viewerStudyHint(raw) {
   try {
     const u = new URL(url);
     const candidates = [];
-    for (const key of ['studyUID','studyuid','StudyUID','study','id','share','session','stoken','token']) {
+    for (const key of ['studyUID','studyuid','StudyUID','studies','study','id','share','session','stoken','token']) {
       const v = u.searchParams.get(key);
       if (v) candidates.push([key.toLowerCase(), v]);
     }
@@ -87,7 +87,7 @@ export function viewerStudyHint(raw) {
     const qpos = hash.indexOf('?');
     if (qpos >= 0) {
       const hp = new URLSearchParams(hash.slice(qpos + 1));
-      for (const key of ['studyUID','studyuid','StudyUID','study','id','share','session','stoken','token']) {
+      for (const key of ['studyUID','studyuid','StudyUID','studies','study','id','share','session','stoken','token']) {
         const v = hp.get(key);
         if (v) candidates.push([key.toLowerCase(), v]);
       }
@@ -112,6 +112,7 @@ export function classifyViewerShell(raw) {
   if (/\/ris\/vr_?viewer(?:\/|$)/i.test(path)) return { type:'RIS_VRVIEWER', url, score:82 };
   if (/\/pages\/sharestudy\.aspx$/i.test(path) && (u.searchParams.has('stoken') || u.searchParams.has('token') || Boolean(unnamedToken(u.searchParams)))) return { type:'SHARE_STUDY', url, score:92 };
   if (path.includes('/viewer/s') && /(?:^#|\/)view\?id=/.test(hash)) return { type:'VRAD_SHELL', url, score:78 };
+  if (path.includes('/viewer') && u.searchParams.has('studies')) return { type:'DICOMWEB_VIEWER', url, score:88 };
   const tokenKeys=['token','stoken','access_token','access-token','jwt','share','session'];
   const hasBootstrapToken=tokenKeys.some(k=>u.searchParams.has(k)) || Boolean(unnamedToken(u.searchParams));
   const hostPath=(u.hostname + path).toLowerCase();
@@ -133,10 +134,10 @@ export function viewerUrlScore(raw) {
   if (!url) return -1;
   const lower = url.toLowerCase();
   let score = Math.min(url.length / 80, 8);
-  if (/study(uid|instanceuid)|studyinstanceuid/.test(lower)) score += 30;
+  if (/study(uid|instanceuid)|studyinstanceuid|studies=/.test(lower)) score += 30;
   if (/series(uid|instanceuid)|seriesinstanceuid/.test(lower)) score += 10;
   if (/token|stoken|session|share|access[_-]?key|key=|jwt|signature|sig=/.test(lower)) score += 16;
-  if (/viewer|view|pacs|ohif|cornerstone|sharestudy|pportal|portal|ketqua|radiology|pmr|ris/.test(lower)) score += 14;
+  if (/viewer|view|pacs|ohif|minerva|cornerstone|sharestudy|pportal|portal|ketqua|radiology|pmr|ris/.test(lower)) score += 14;
   if (/patient(id)?=/.test(lower)) score += 4;
   try {
     const u = new URL(url);
