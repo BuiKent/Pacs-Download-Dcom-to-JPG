@@ -170,7 +170,8 @@ function renderJob(){
       show('resumeBtn',true);
       show('jobNote',true);
       const remaining=Math.max(0,total-Number(job.completed||0));
-      $('resumeBtn').innerHTML=remaining?`🔄 Resume missing (${remaining})`:'🔄 Retry';
+      const isPartial=job.status==='partial'||Boolean(inventory?.series?.length>1&&!job.allSeriesSelected);
+      $('resumeBtn').innerHTML=remaining?`🔄 Resume missing (${remaining})`:(isPartial?'🔄 Resume remaining':'🔄 Retry');
       $('jobNote').textContent=job.status==='cancelled'
         ?`Download stopped. Safely saved ${job.completed||0}/${total||'?'} images. Click 'Resume' to download remaining files.`
         :job.status==='done_with_errors'
