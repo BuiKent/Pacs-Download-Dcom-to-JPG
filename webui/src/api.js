@@ -25,6 +25,20 @@ export function getApiSession() {
   return sessionId;
 }
 
+/**
+ * A URL a media element can load on its own.
+ *
+ * `<video>` and `<embed>` cannot set the auth header, and fetching them as a
+ * blob first means a whole surgical clip sits in memory before the first frame
+ * plays and cannot be seeked. The read-only media routes accept the token in
+ * the query instead, so the element streams the file itself.
+ */
+export function mediaAuthUrl(path) {
+  const params = new URLSearchParams({ token });
+  if (sessionId) params.set("session", sessionId);
+  return `${path}${path.includes("?") ? "&" : "?"}${params.toString()}`;
+}
+
 /** Auth and session headers every call shares. */
 function baseHeaders() {
   const headers = { "X-DCom-Token": token };

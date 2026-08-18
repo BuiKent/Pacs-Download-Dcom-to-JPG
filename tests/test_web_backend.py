@@ -20,6 +20,7 @@ from web_backend import (
     ArchiveCatalog,
     JobState,
     LocalApiServer,
+    MEDIA_WORK_ROOT,
     WebController,
     validate_mpr_manifest,
     _dicom_pixel_payload,
@@ -688,6 +689,121 @@ class CatalogTests(unittest.TestCase):
             self.assertEqual(finished["status"], "complete")
             self.assertEqual(len(finished["result"]["series"]), 1)
 
+    def test_a_report_filed_beside_a_scan_is_listed_too(self):
+        # A "benh_an" folder holds the scanned GPB picture and the typed MRI
+        # report side by side. Only the first kind found was listed, so the
+        # report sat on disk with nothing on the timeline pointing at it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "benh_an"
+            folder.mkdir(parents=True)
+            Image.new("RGB", (8, 8), (240, 240, 235)).save(folder / "gpb_scan.jpg")
+            (folder / "ket_qua_mri.txt").write_text("Thoai hoa sun do II.", encoding="utf-8")
+
+            series = ArchiveCatalog().open(root)["series"]
+
+            kinds = sorted(item["mediaType"] for item in series)
+            self.assertEqual(["doc", "text"], kinds)
+            # Two records in one folder must not collide on the same id.
+            self.assertEqual(2, len({item["id"] for item in series}))
+
+    def test_the_apps_own_bookkeeping_is_never_offered_as_a_report(self):
+        # Every converted JPG series has `mpr-volume.json` beside it. Listing
+        # companion material in a folder that already has pictures made that
+        # geometry file show up on the timeline as a document to read.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "Series_1"
+            folder.mkdir(parents=True)
+            Image.new("L", (8, 8)).save(folder / "IM_0001.jpg")
+            (folder / "mpr-volume.json").write_text("{}", encoding="utf-8")
+            (folder / "patient-index.json").write_text("{}", encoding="utf-8")
+
+            series = ArchiveCatalog().open(root)["series"]
+
+            self.assertEqual(1, len(series))
+            self.assertNotIn("text", {item["mediaType"] for item in series})
+
+    def test_a_video_filed_beside_photos_is_listed_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "trong_mo"
+            folder.mkdir(parents=True)
+            Image.new("RGB", (8, 8), (20, 90, 140)).save(folder / "mo_01.jpg")
+            (folder / "clip.mp4").write_bytes(bytes([0, 0, 0, 0x18]) + b"ftypmp42")
+
+            series = ArchiveCatalog().open(root)["series"]
+
+            self.assertEqual({"photo", "video"}, {item["mediaType"] for item in series})
+
+    def test_archive_scan_refreshes_the_catalog_it_was_given(self):
+        # "Cập nhật folder" is pressed inside a patient tab, and that tab reads
+        # from its own session catalog. Scanning into the shared default left
+        # the tab holding the series list from before the refresh.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            series = root / "Series_1"
+            series.mkdir()
+            Image.new("L", (4, 4)).save(series / "1.jpg")
+            controller = WebController()
+            session = controller.sessions.create_session(str(root))
+
+            Image.new("L", (4, 4)).save(series / "2.jpg")
+            controller.start_archive_scan(str(root), catalog=session.catalog)
+            deadline = time.time() + 3
+            while controller.job.snapshot()["status"] == "running" and time.time() < deadline:
+                time.sleep(0.01)
+
+            self.assertEqual("complete", controller.job.snapshot()["status"])
+            scanned = session.catalog.snapshot()["series"]
+            self.assertEqual(2, len(session.catalog.get(scanned[0]["id"]).images))
+            # The shared default catalog was never opened and stays empty.
+            self.assertEqual([], controller.catalog.snapshot()["series"])
+
+    def test_saving_an_edit_names_it_after_the_page_that_was_edited(self):
+        # A folder of intra-op photos is one series and the editor works on
+        # whichever page is on screen. Naming every edit after the first file
+        # made the second page read as a derivative of the first.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "anh_trong_mo"
+            folder.mkdir(parents=True)
+            for name in ("mo_01.jpg", "mo_02.jpg"):
+                Image.new("RGB", (8, 8), (20, 90, 140)).save(folder / name)
+            controller = WebController()
+            snapshot = controller.open_archive(str(root))
+            series_id = snapshot["series"][0]["id"]
+
+            work = MEDIA_WORK_ROOT / "unit_test_edit.jpg"
+            Image.new("RGB", (8, 8), (200, 20, 20)).save(work)
+            try:
+                saved = controller.save_media_edit(str(work), series_id, media_index=1)
+            finally:
+                work.unlink(missing_ok=True)
+
+            self.assertTrue(saved["name"].startswith("mo_02_edit_"))
+            Path(saved["savedPath"]).unlink(missing_ok=True)
+
+    def test_saving_an_edit_falls_back_to_the_first_page(self):
+        # An index the archive does not have must not raise at the reader.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "anh_trong_mo"
+            folder.mkdir(parents=True)
+            Image.new("RGB", (8, 8), (20, 90, 140)).save(folder / "mo_01.jpg")
+            controller = WebController()
+            series_id = controller.open_archive(str(root))["series"][0]["id"]
+
+            work = MEDIA_WORK_ROOT / "unit_test_edit_oob.jpg"
+            Image.new("RGB", (8, 8), (200, 20, 20)).save(work)
+            try:
+                saved = controller.save_media_edit(str(work), series_id, media_index=9)
+            finally:
+                work.unlink(missing_ok=True)
+
+            self.assertTrue(saved["name"].startswith("mo_01_edit_"))
+            Path(saved["savedPath"]).unlink(missing_ok=True)
+
     def test_direct_dicom_annotations_are_saved_outside_source_folder(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -725,8 +841,8 @@ class ServerSecurityTests(unittest.TestCase):
         self.server.stop()
         self.tmp.cleanup()
 
-    def request(self, path, token=None):
-        headers = {}
+    def request(self, path, token=None, extra=None):
+        headers = dict(extra or {})
         if token is not None:
             headers["X-DCom-Token"] = token
         return urllib.request.urlopen(
@@ -957,6 +1073,78 @@ class ServerSecurityTests(unittest.TestCase):
             self.assertEqual("4", response.headers["X-DCom-Rows"])
             pixels = np.frombuffer(body, dtype="<u2")
             np.testing.assert_array_equal(pixels, np.arange(16, dtype=np.uint16) + 3)
+
+    def test_media_file_accepts_the_token_in_the_query(self):
+        # <video src> and <embed src> cannot set a header. Without this the
+        # player could only load a clip through fetch(), which holds the whole
+        # operation in memory before the first frame appears.
+        series_id = self.controller.catalog.snapshot()["series"][0]["id"]
+        with self.request(
+            f"/api/series/{series_id}/image/0?token={self.server.token}"
+        ) as response:
+            self.assertEqual(response.status, 200)
+
+    def test_media_file_rejects_a_wrong_token_in_the_query(self):
+        series_id = self.controller.catalog.snapshot()["series"][0]["id"]
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.request(f"/api/series/{series_id}/image/0?token=khong-dung")
+        self.assertEqual(caught.exception.code, 401)
+        caught.exception.close()
+
+    def test_query_token_unlocks_media_files_only(self):
+        # A token in a URL is easier to leak than one in a header, so only the
+        # read-only file routes take it. Nothing that returns patient data as
+        # JSON, and nothing that writes, is reachable this way.
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.request(f"/api/archive?token={self.server.token}")
+        self.assertEqual(caught.exception.code, 401)
+        caught.exception.close()
+
+    def test_media_file_serves_a_byte_range(self):
+        series_id = self.controller.catalog.snapshot()["series"][0]["id"]
+        whole = self.controller.catalog.get(series_id).images[0].read_bytes()
+        with self.request(
+            f"/api/series/{series_id}/image/0",
+            self.server.token,
+            extra={"Range": "bytes=0-15"},
+        ) as response:
+            self.assertEqual(response.status, 206)
+            self.assertEqual(
+                response.headers["Content-Range"], f"bytes 0-15/{len(whole)}"
+            )
+            self.assertEqual(response.read(), whole[:16])
+
+    def test_media_file_serves_a_trailing_range(self):
+        series_id = self.controller.catalog.snapshot()["series"][0]["id"]
+        whole = self.controller.catalog.get(series_id).images[0].read_bytes()
+        with self.request(
+            f"/api/series/{series_id}/image/0",
+            self.server.token,
+            extra={"Range": "bytes=-8"},
+        ) as response:
+            self.assertEqual(response.status, 206)
+            self.assertEqual(response.read(), whole[-8:])
+
+    def test_media_file_advertises_range_support(self):
+        series_id = self.controller.catalog.snapshot()["series"][0]["id"]
+        whole = self.controller.catalog.get(series_id).images[0].read_bytes()
+        with self.request(
+            f"/api/series/{series_id}/image/0", self.server.token
+        ) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers["Accept-Ranges"], "bytes")
+            self.assertEqual(response.read(), whole)
+
+    def test_media_file_refuses_a_range_past_the_end(self):
+        series_id = self.controller.catalog.snapshot()["series"][0]["id"]
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.request(
+                f"/api/series/{series_id}/image/0",
+                self.server.token,
+                extra={"Range": "bytes=999999-"},
+            )
+        self.assertEqual(caught.exception.code, 416)
+        caught.exception.close()
 
     def test_path_traversal_is_not_served(self):
         with self.assertRaises(urllib.error.HTTPError) as caught:

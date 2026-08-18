@@ -52,6 +52,11 @@ APP_METADATA_NAMES = {
     "viewer-annotations.json",
     ".direct-download.json",
     "manifest.json",
+    # Written next to every converted JPG series by the MPR builder, so a
+    # study folder would otherwise list a second "report" holding geometry.
+    "mpr-volume.json",
+    "pacs-strategies-v1.json",
+    "settings.json",
 }
 # Largest text file the viewer will load into the page. A report or a manifest
 # is kilobytes; anything past this is a data dump that would freeze the tab.
@@ -62,6 +67,18 @@ TEXT_MAX_BYTES = 2 * 1024 * 1024
 # video of an operation.
 DOC_FOLDER_HINTS = {"doc", "docs", "benh_an", "benh-an", "benhan", "scan", "hoso", "ho_so"}
 ANNOTATIONS_NAME = "viewer-annotations.json"
+
+
+# What a folder can hold, in the order a folder with several kinds is read.
+MEDIA_KINDS: tuple[tuple[set[str], str], ...] = (
+    (VIDEO_EXTENSIONS, "video"),
+    (PDF_EXTENSIONS, "pdf"),
+    (TEXT_EXTENSIONS, "text"),
+    # Photographs and scanned paperwork filed beside a study. Without this, a
+    # patient folder holding both a scan and its operative photos listed the
+    # scan and silently dropped the photos.
+    (IMG_EXTENSIONS, "image"),
+)
 
 
 def media_type_for_file(path: Path) -> str:
@@ -104,6 +121,35 @@ def is_document_folder(folder: Path) -> bool:
 
 MEDIA_WORK_ROOT = Path(tempfile.gettempdir()) / "concord_media_work"
 MEDIA_WORK_ROOT.mkdir(parents=True, exist_ok=True)
+
+# How much of a media file goes out per write. Intra-op video runs to hundreds
+# of megabytes; answering a request by reading the whole file into memory made
+# the player wait for the entire download before the first frame.
+MEDIA_CHUNK_BYTES = 256 * 1024
+
+# GET routes that only read one media file back out. A <video> or <img> element
+# cannot set the `X-DCom-Token` header, so these accept the token in the query
+# instead — that is what lets the player stream and seek a file itself rather
+# than buffering the whole thing through fetch(). Nothing that writes is here.
+_MEDIA_STREAM_PATH_RE = re.compile(r"/api/series/[a-f0-9]{20}/image/\d+")
+
+
+def _allows_query_token(path: str) -> bool:
+    return bool(_MEDIA_STREAM_PATH_RE.fullmatch(path)) or path == "/api/media/work-file"
+
+
+def _token_matches(supplied: str, expected: str) -> bool:
+    """Constant-time token comparison that survives non-ASCII input.
+
+    `compare_digest` raises on strings it cannot encode, and both the header
+    and the query string are attacker-controlled.
+    """
+    try:
+        return secrets.compare_digest(supplied or "", expected)
+    except TypeError:
+        return False
+
+
 # The classic Tk app writes the same file. Sharing it means a user who switches
 # between the two UIs keeps one download history instead of two partial ones.
 HISTORY_FILE = Path.home() / ".dcom_downloader_history.json"
@@ -1041,9 +1087,14 @@ class ArchiveCatalog:
                 break
             dirnames[:] = [name for name in dirnames if name.upper() not in blocked]
             dirnames.sort(key=_natural_key)
-            record = self._media_record(Path(current), root)
+            folder = Path(current)
+            record = self._media_record(folder, root)
             if record is not None:
                 found[record.series_id] = record
+                for extra in self._companion_media_records(
+                    folder, root, skip={record.source_type},
+                ):
+                    found[extra.series_id] = extra
         return found
 
     def _media_record(self, folder: Path, root: Path) -> Optional[SeriesRecord]:
@@ -1054,35 +1105,70 @@ class ArchiveCatalog:
         beside a study rather than inside it, which is exactly the shape this
         catches — and which the old scanner dropped on the floor entirely.
         """
-        for extensions, source in (
-            (VIDEO_EXTENSIONS, "video"),
-            (PDF_EXTENSIONS, "pdf"),
-            (TEXT_EXTENSIONS, "text"),
-            # Photographs and scanned paperwork filed beside a study. Without
-            # this, a patient folder holding both a scan and its operative
-            # photos listed the scan and silently dropped the photos.
-            (IMG_EXTENSIONS, "image"),
-        ):
+        for extensions, source in MEDIA_KINDS:
             files = self._playable_files(folder, extensions)
-            if not files:
-                continue
-            digest = hashlib.sha256(str(folder).casefold().encode("utf-8")).hexdigest()[:20]
-            study_date, folder_modality, study_desc = _study_from_folder_path(folder)
-            relative_name = str(folder.relative_to(root)) if folder != root else folder.name
-            return SeriesRecord(
-                series_id=digest,
-                name=relative_name,
-                folder=folder,
-                images=files,
-                manifest={"series_description": folder.name},
-                mpr_ready=False,
-                mpr_reason="Series video, PDF hoặc văn bản, không dựng MPR.",
-                modality=folder_modality or "UNKNOWN",
-                source_type=source,
-                study_group=study_desc or folder.name,
-                study_date=study_date,
-            )
+            if files:
+                return self._build_media_record(folder, root, files, source)
         return None
+
+    def _companion_media_records(
+        self,
+        folder: Path,
+        root: Path,
+        *,
+        skip: set[str],
+    ) -> list[SeriesRecord]:
+        """The other kinds of material filed in a folder that already lists one.
+
+        A `benh_an` folder usually holds the scanned GPB picture and the typed
+        MRI report side by side, and a study folder can hold the operative
+        video. Only the first kind found was ever listed, so the report sat on
+        disk with nothing on the timeline pointing at it.
+        """
+        found: list[SeriesRecord] = []
+        for extensions, source in MEDIA_KINDS:
+            # Photographs are what the image scan already produced; listing
+            # them again here would double every folder of intra-op pictures.
+            if source == "image" or source in skip:
+                continue
+            files = self._playable_files(folder, extensions)
+            if files:
+                found.append(self._build_media_record(folder, root, files, source, kinded_id=True))
+        return found
+
+    def _build_media_record(
+        self,
+        folder: Path,
+        root: Path,
+        files: list[Path],
+        source: str,
+        *,
+        kinded_id: bool = False,
+    ) -> SeriesRecord:
+        """One media series for `folder`.
+
+        The primary record keeps the plain folder digest as its id, because
+        saved annotations are filed under it. A companion has to be told apart
+        from the primary living in the same folder, so its kind goes into the
+        hash.
+        """
+        key = f"{folder}\x00{source}" if kinded_id else str(folder)
+        digest = hashlib.sha256(key.casefold().encode("utf-8")).hexdigest()[:20]
+        study_date, folder_modality, study_desc = _study_from_folder_path(folder)
+        relative_name = str(folder.relative_to(root)) if folder != root else folder.name
+        return SeriesRecord(
+            series_id=digest,
+            name=relative_name,
+            folder=folder,
+            images=files,
+            manifest={"series_description": folder.name},
+            mpr_ready=False,
+            mpr_reason="Series video, PDF hoặc văn bản, không dựng MPR.",
+            modality=folder_modality or "UNKNOWN",
+            source_type=source,
+            study_group=study_desc or folder.name,
+            study_date=study_date,
+        )
 
     @staticmethod
     def _playable_files(folder: Path, extensions: set[str]) -> list[Path]:
@@ -1642,6 +1728,10 @@ class ArchiveCatalog:
                 media_record = self._media_record(folder, root)
                 if media_record is not None:
                     records[media_record.series_id] = media_record
+                    for extra in self._companion_media_records(
+                        folder, root, skip={media_record.source_type},
+                    ):
+                        records[extra.series_id] = extra
                 continue
             digest = hashlib.sha256(str(folder).casefold().encode("utf-8")).hexdigest()[:20]
             ready, reason = validate_mpr_manifest(folder, manifest)
@@ -1681,6 +1771,10 @@ class ArchiveCatalog:
                 study_group=study_group,
                 study_date=study_date,
             )
+            # The pictures are listed; the operative video or the typed report
+            # filed in the same folder still has to be.
+            for extra in self._companion_media_records(folder, root, skip=set()):
+                records[extra.series_id] = extra
         self._restore_legacy_jpg_geometry(
             records,
             root,
@@ -2080,6 +2174,15 @@ def _is_within(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _as_index(value: Any) -> int:
+    """A non-negative index from an untrusted payload, 0 when it is not one."""
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return index if index >= 0 else 0
 
 
 def _is_writable_dir(folder: Path) -> bool:
@@ -2723,11 +2826,24 @@ class WebController:
     def open_archive(self, path: str) -> dict:
         return self.catalog.open(path)
 
-    def start_archive_scan(self, path: str) -> dict:
+    def start_archive_scan(
+        self,
+        path: str,
+        catalog: Optional[ArchiveCatalog] = None,
+    ) -> dict:
+        """Re-read a folder from disk into the catalog the caller reads from.
+
+        "Cập nhật folder" is pressed inside a patient tab, and that tab answers
+        every other request from its own session catalog. Scanning into the
+        shared default instead left the tab showing a fresh snapshot while its
+        catalog still held the old series list, so opening a file that had just
+        appeared reported "Không tìm thấy series".
+        """
         root = str(Path(path).expanduser().resolve(strict=True))
+        target_catalog = catalog if catalog is not None else self.catalog
 
         def target() -> dict:
-            archive = self.catalog.open(
+            archive = target_catalog.open(
                 root,
                 log=self.job.log,
                 should_stop=self.job.stop_event.is_set,
@@ -2815,6 +2931,7 @@ class WebController:
         work_path: str,
         series_id: str,
         catalog: Optional[ArchiveCatalog] = None,
+        media_index: int = 0,
     ) -> dict:
         """Copy an edited photo out of the scratch folder into the record.
 
@@ -2834,9 +2951,14 @@ class WebController:
         if not source.is_file():
             raise ValueError("Không tìm thấy file đã chỉnh để lưu.")
 
+        # A folder of intra-op photos is one series, and the editor works on
+        # whichever page is on screen. Naming every edit after the first file
+        # made page 3's edit read as a derivative of page 1.
+        index = media_index if 0 <= media_index < len(record.images) else 0
+        origin = record.images[index]
         folder = record.folder
-        stem = record.images[0].stem
-        suffix = source.suffix or record.images[0].suffix or ".jpg"
+        stem = origin.stem
+        suffix = source.suffix or origin.suffix or ".jpg"
         stamp = time.strftime("%Y%m%d-%H%M%S")
         destination = folder / f"{stem}_edit_{stamp}{suffix}"
         counter = 2
@@ -3574,10 +3696,70 @@ class LocalApiServer:
                     # no client left to receive a second error response.
                     return
 
+            def _send_file(
+                self,
+                target: Path,
+                content_type: str,
+                extra: Optional[dict[str, str]] = None,
+            ) -> None:
+                """Serve a file from disk, honouring `Range`, a chunk at a time.
+
+                Video was previously read whole into memory and handed over in
+                one write, so a surgical clip had to finish downloading before
+                it would play and could not be seeked at all. Answering ranges
+                lets the player ask only for the part it is about to show.
+                """
+                size = target.stat().st_size
+                start, end = 0, max(size - 1, 0)
+                status = HTTPStatus.OK
+                requested = self.headers.get("Range", "").strip()
+                match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested) if requested else None
+                if match and size:
+                    first, last = match.group(1), match.group(2)
+                    if first:
+                        start = int(first)
+                        if last:
+                            end = min(int(last), size - 1)
+                    elif last:
+                        start = max(size - int(last), 0)
+                    else:
+                        match = None
+                    if match and (start >= size or start > end):
+                        self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                        self._headers(content_type, 0, {"Content-Range": f"bytes */{size}"})
+                        try:
+                            self.end_headers()
+                        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                            pass
+                        return
+                    if match:
+                        status = HTTPStatus.PARTIAL_CONTENT
+                length = (end - start + 1) if size else 0
+                headers = {"Accept-Ranges": "bytes", **(extra or {})}
+                if status == HTTPStatus.PARTIAL_CONTENT:
+                    headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+                self.send_response(status)
+                self._headers(content_type, length, headers)
+                try:
+                    self.end_headers()
+                    with target.open("rb") as handle:
+                        handle.seek(start)
+                        remaining = length
+                        while remaining > 0:
+                            chunk = handle.read(min(MEDIA_CHUNK_BYTES, remaining))
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            remaining -= len(chunk)
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    # The player abandons a range the moment the viewer seeks
+                    # somewhere else. There is no client left to answer.
+                    return
+
             def _json(self, status: int, value: Any) -> None:
                 self._send(status, _json_bytes(value), "application/json; charset=utf-8")
 
-            def _authorized(self) -> bool:
+            def _authorized(self, *, allow_query_token: bool = False) -> bool:
                 host = self.headers.get("Host", "")
                 if host not in {f"127.0.0.1:{owner.port}", f"localhost:{owner.port}"}:
                     return False
@@ -3587,7 +3769,13 @@ class LocalApiServer:
                     f"http://localhost:{owner.port}",
                 }:
                     return False
-                return secrets.compare_digest(self.headers.get("X-DCom-Token", ""), owner.token)
+                if _token_matches(self.headers.get("X-DCom-Token", ""), owner.token):
+                    return True
+                if not allow_query_token:
+                    return False
+                from urllib.parse import parse_qs
+                supplied = parse_qs(urlparse(self.path).query).get("token", [""])[0]
+                return _token_matches(supplied, owner.token)
 
             def _get_session_id(self) -> Optional[str]:
                 parsed = urlparse(self.path)
@@ -3657,7 +3845,7 @@ class LocalApiServer:
                     raise FileNotFoundError("Không tìm thấy file kết quả.")
                 ext = target.suffix.lower()
                 content_type = MIME_TYPES.get(ext, "application/octet-stream")
-                self._send(HTTPStatus.OK, target.read_bytes(), content_type, {"Cache-Control": "no-cache"})
+                self._send_file(target, content_type, {"Cache-Control": "no-cache"})
                 return True
 
             def _api_get(self, path: str, query: str = "") -> Any:
@@ -3735,7 +3923,9 @@ class LocalApiServer:
                     target_catalog = catalog if session_id else owner.controller.catalog
                     return target_catalog.open(str(payload.get("path") or ""))
                 if path == "/api/archive/scan":
-                    return owner.controller.start_archive_scan(str(payload.get("path") or ""))
+                    return owner.controller.start_archive_scan(
+                        str(payload.get("path") or ""), catalog=catalog,
+                    )
                 if path == "/api/output":
                     return owner.controller.set_output_root(str(payload.get("path") or ""))
                 if path == "/api/search":
@@ -3755,6 +3945,7 @@ class LocalApiServer:
                         str(payload.get("path") or ""),
                         str(payload.get("seriesId") or ""),
                         catalog=catalog,
+                        media_index=_as_index(payload.get("mediaIndex")),
                     )
                 if path == "/api/patient/diagnosis":
                     return owner.controller.set_patient_diagnosis(
@@ -3909,9 +4100,8 @@ class LocalApiServer:
                         headers,
                     )
                     return True
-                body = image.read_bytes()
                 mime = MIME_TYPES.get(image.suffix.casefold(), "application/octet-stream")
-                self._send(HTTPStatus.OK, body, mime)
+                self._send_file(image, mime)
                 return True
 
             def _static(self, path: str) -> None:
@@ -3935,7 +4125,7 @@ class LocalApiServer:
                 parsed_url = urlparse(self.path)
                 path = parsed_url.path
                 if path.startswith("/api/"):
-                    if not self._authorized():
+                    if not self._authorized(allow_query_token=_allows_query_token(path)):
                         self._json(HTTPStatus.UNAUTHORIZED, {"error": "Không được phép."})
                         return
                     try:

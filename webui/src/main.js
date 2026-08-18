@@ -1,5 +1,5 @@
 import "./styles.css";
-import { api, apiBlob, configureApi, getApiSession, setApiSession, thumbnailPath } from "./api.js";
+import { api, apiBlob, configureApi, getApiSession, mediaAuthUrl, setApiSession, thumbnailPath } from "./api.js";
 import { getLanguage, setLanguage, t, tf, translateLog } from "./i18n.js";
 import {
   hasCompleteSeriesSelection,
@@ -621,7 +621,7 @@ function renderSurgeryVideoStudio(series) {
       </div>
       <div class="surgery-video-body">
         <div class="surgery-video-stage">
-          <video id="surgery-video-player" class="surgery-video-element" ${workName ? `src="/api/media/work-file?name=${encodeURIComponent(workName)}"` : `data-media-src="${escapeHtml(series.id)}:${mediaFileIndex(series)}"`} playsinline preload="metadata"></video>
+          <video id="surgery-video-player" class="surgery-video-element" src="${escapeHtml(videoStreamUrl(series, workName))}" playsinline preload="metadata"></video>
         </div>
         <aside class="surgery-video-sidebar">
           <div class="surgery-video-sidebar-header">
@@ -825,6 +825,58 @@ function mediaFileUrl(seriesId, index) {
     mediaObjectUrls.set(key, pending);
   }
   return pending;
+}
+
+/**
+ * The URL the surgical player reads from.
+ *
+ * Video is the one medium that must not go through `apiBlob`: a clip of a
+ * whole operation would be held in memory in full, would only start playing
+ * once every byte had arrived, and could not be seeked. The stream URL carries
+ * its own credentials so the element can fetch ranges by itself.
+ */
+function videoStreamUrl(series, workName = "") {
+  if (workName) return mediaAuthUrl(`/api/media/work-file?name=${encodeURIComponent(workName)}`);
+  return mediaAuthUrl(`/api/series/${series.id}/image/${mediaFileIndex(series)}`);
+}
+
+/** Point a video element at a freshly rendered work file, still streaming. */
+function setVideoElementSrc(element, url) {
+  if (!element || !url) return;
+  element.src = mediaAuthUrl(url);
+  element.load();
+}
+
+/**
+ * Hand the reader a file the API will only release with a token.
+ *
+ * An `<a download href="/api/...">` cannot send the header, so both export
+ * buttons were answering 401 and saving nothing. jsdom never performs the
+ * navigation, which is why the tests stayed green.
+ */
+async function downloadApiFile(url, filename) {
+  const blob = await apiBlob(url);
+  const href = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(href), 60000);
+}
+
+/**
+ * Drop the blobs held for records that are no longer on screen.
+ *
+ * Every opened file used to stay in `mediaObjectUrls` for the life of the
+ * window, so reading through a worklist grew the browser's memory by the size
+ * of every photo and document that had been looked at.
+ */
+function releaseMediaObjectUrls(keepSeriesId = "") {
+  for (const [key, pending] of [...mediaObjectUrls]) {
+    if (keepSeriesId && key.startsWith(`${keepSeriesId}:`)) continue;
+    mediaObjectUrls.delete(key);
+    Promise.resolve(pending).then((url) => URL.revokeObjectURL(url)).catch(() => {});
+  }
 }
 
 /** Point every media element at its authenticated blob once the page is up. */
@@ -2873,7 +2925,12 @@ async function action(name, element = null) {
       if (!state.photoWorkingPath) throw new Error(t("Chưa có chỉnh sửa nào để lưu."));
       const saved = await api("/api/media/save", {
         method: "POST",
-        body: JSON.stringify({ path: state.photoWorkingPath, seriesId: series.id }),
+        // Named after the page that was edited, not the folder's first file.
+        body: JSON.stringify({
+          path: state.photoWorkingPath,
+          seriesId: series.id,
+          mediaIndex: mediaFileIndex(series),
+        }),
       });
       // The archive now holds one more file, so the strip and the rail have to
       // be re-read or the saved edit stays invisible until the next restart.
@@ -3310,8 +3367,7 @@ async function action(name, element = null) {
       });
       state.videoWorkingPath = res.outputPath;
       if (video) {
-        setMediaElementSrc(video, res.url);
-        video.load();
+        setVideoElementSrc(video, res.url);
       }
       setStatus(tf("Đã cắt đoạn video ({:.1f}s - {:.1f}s) thành công.", startSeconds, endSeconds));
       return;
@@ -3335,8 +3391,7 @@ async function action(name, element = null) {
       });
       state.videoWorkingPath = res.outputPath;
       if (video) {
-        setMediaElementSrc(video, res.url);
-        video.load();
+        setVideoElementSrc(video, res.url);
       }
       setStatus(t("Đã đóng dấu thông tin lên video thành công."));
       return;
@@ -3371,8 +3426,7 @@ async function action(name, element = null) {
       });
       state.videoWorkingPath = res.outputPath;
       if (video) {
-        setMediaElementSrc(video, res.url);
-        video.load();
+        setVideoElementSrc(video, res.url);
       }
       setStatus(t("Đã tối ưu hoá và xuất video MP4 thành công."));
       return;
@@ -3457,8 +3511,7 @@ async function action(name, element = null) {
       const domRoot = getDomRoot();
       const video = domRoot?.querySelector("#surgery-video-player");
       if (video) {
-        setMediaElementSrc(video, res.url);
-        video.load();
+        setVideoElementSrc(video, res.url);
       }
       setStatus(tf("Đã ghép thành công {} đoạn video clip.", sources.length));
       return;
@@ -3476,10 +3529,7 @@ async function action(name, element = null) {
         method: "POST",
         body: JSON.stringify({ path, atSeconds: current, maxWidth: 480 }),
       });
-      const link = document.createElement("a");
-      link.href = res.url;
-      link.download = `thumb_${Math.floor(current)}s.jpg`;
-      link.click();
+      await downloadApiFile(res.url, `thumb_${Math.floor(current)}s.jpg`);
       setStatus(tf("Đã tạo ảnh đại diện thumbnail thành công ({:.1f}s).", current));
       return;
     }
@@ -3616,10 +3666,7 @@ async function action(name, element = null) {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      const link = document.createElement("a");
-      link.href = res.url;
-      link.download = `patient_document_${Date.now()}.pdf`;
-      link.click();
+      await downloadApiFile(res.url, `patient_document_${Date.now()}.pdf`);
       setStatus(tf("Đã xuất PDF thành công: {}", res.outputPath));
       return;
     }
@@ -3735,6 +3782,9 @@ async function closeTab(tabId) {
     }).catch(() => {});
   }
   state.tabs.splice(tabIndex, 1);
+  // Nothing reads the closed record's files any more. Closing a background
+  // tab must leave the record on screen alone, which still holds its blobs.
+  releaseMediaObjectUrls(state.activeTabId === tabId ? "" : state.selectedId);
   if (state.activeTabId === tabId) {
     const nextTab = state.tabs[tabIndex] || state.tabs[tabIndex - 1];
     const nextTabId = nextTab ? nextTab.id : "worklist";
@@ -3815,6 +3865,8 @@ function renderViewer() {
   if (mediaType === "video" || mediaType === "photo" || mediaType === "doc") {
     if (state._lastPhotoSeriesId !== series.id) {
       state._lastPhotoSeriesId = series.id;
+      // Moving to another record releases the blobs held for the last one.
+      releaseMediaObjectUrls(series.id);
       state.photoWorkingPath = null;
       state.photoRotation = 0;
       state.videoWorkingPath = null;
