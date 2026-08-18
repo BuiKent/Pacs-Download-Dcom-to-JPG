@@ -2597,7 +2597,14 @@ async function action(name, element = null) {
       if (next === null || next.trim() === current.trim()) return;
       const result = await api("/api/patient/diagnosis", {
         method: "POST",
-        body: JSON.stringify({ diagnosis: next }),
+        // Name the record this tab is showing. The backend refuses to write
+        // when the folder belongs to a different patient, so a note cannot
+        // land in the chart of whichever archive happened to be opened last.
+        body: JSON.stringify({
+          diagnosis: next,
+          archiveRoot: state.archive?.root || "",
+          patientId: state.archive?.patient?.patientId || "",
+        }),
       });
       state.archive.patient = result.patient || state.archive.patient;
       render();

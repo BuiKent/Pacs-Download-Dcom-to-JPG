@@ -36,6 +36,9 @@ import mpr_engine
 APP_VERSION = "1.1.0"
 IMG_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
+# Modalities whose slices belong on the reading canvas no matter what file
+# format they arrived in. A converted JPG of an MR slice is still an MR slice.
+DIAGNOSTIC_MODALITIES = {"CT", "MR", "MRI", "CR", "DX", "XA", "US", "PT", "NM", "MG"}
 TEXT_EXTENSIONS = {".txt", ".json"}
 # Bookkeeping the app writes for itself. They are .json sitting in the archive,
 # so the text scanner would otherwise offer `patient-index.json` to a clinician
@@ -922,11 +925,22 @@ class SeriesRecord:
     def resolved_media_type(self) -> str:
         """Which viewer this series opens in.
 
-        Derived from the files the record actually holds, so a series built by
-        any of the construction paths below reports the truth without each of
-        them having to remember to set it.
+        Derived from the files the record holds, with one rule ahead of the
+        file extension: a JPG that is a slice of an MR or CT study is a
+        diagnostic image that happens to be stored as a picture. This app's own
+        "Chuyển Dcom → JPG" pipeline produces exactly that, and those series
+        must keep opening in the reading canvas — routing them to the photo
+        editor would hand a radiologist crop and redact tools where the
+        window/level and measurement tools belong.
+
+        So the container decides only once nothing says the series is imaging:
+        a recorded modality, or a pipeline manifest describing the series.
         """
         if self.source_type == "dicom":
+            return "dicom"
+        if self.modality in DIAGNOSTIC_MODALITIES:
+            return "dicom"
+        if (self.manifest or {}).get("series_type"):
             return "dicom"
         for image in self.images:
             kind = media_type_for_file(image)
@@ -934,7 +948,7 @@ class SeriesRecord:
                 return "doc"
             if kind:
                 return kind
-        return "dicom" if self.source_type == "dicom" else "photo"
+        return "photo"
 
     def public_dict(self) -> dict:
         m = self.manifest or {}
@@ -2736,23 +2750,39 @@ class WebController:
     def set_patient_diagnosis(
         self,
         text: str,
+        *,
+        archive_root: str = "",
+        expected_patient_id: str = "",
         catalog: Optional[ArchiveCatalog] = None,
     ) -> dict:
-        """Record the clinician's own diagnosis note on the open patient folder.
+        """Record the clinician's own diagnosis note on one patient folder.
 
         A local archive has no RIS behind it, and neither DICOM nor the manifest
         schema carries a clinical diagnosis — `StudyDescription` is the exam
         type, not a finding. So the note is typed by whoever is reading, and
         stored as an extra `diagnosis` key on `patient-index.json`. Only a new
         key is added; the manifest structure and format version are untouched.
+
+        The caller names the archive it is looking at and the patient ID it has
+        on screen, and both are checked before anything is written. Falling back
+        to "whichever catalog was opened last" would let a note typed in one
+        patient's tab land in another patient's record — the viewer does not yet
+        carry a session per tab, so that is a live risk rather than a
+        theoretical one.
         """
         target = catalog or self.catalog
-        root = target.root
+        root = str(archive_root or "").strip() or (str(target.root) if target.root else "")
         if not root:
             raise ValueError("Chưa mở hồ sơ nào để ghi chẩn đoán.")
+        start = Path(root).expanduser().resolve()
+        allowed = self._reveal_roots()
+        if allowed and not any(_is_within(start, base) for base in allowed):
+            raise PermissionError(
+                f"Truy cập bị từ chối: Đường dẫn nằm ngoài phạm vi cho phép ({root})"
+            )
         folder = next(
             (
-                candidate for candidate in (Path(root), *Path(root).parents)
+                candidate for candidate in (start, *start.parents)
                 if (candidate / "patient-index.json").is_file()
             ),
             None,
@@ -2764,11 +2794,21 @@ class WebController:
         manifest = dcom_pipeline._read_patient_manifest(folder)
         if manifest is None:
             raise ValueError("Không đọc được patient-index.json của hồ sơ này.")
+        recorded_id = str(manifest.get("patientId") or "").strip()
+        wanted_id = str(expected_patient_id or "").strip()
+        if wanted_id and recorded_id and wanted_id != recorded_id:
+            raise ValueError(
+                f"Từ chối ghi: hồ sơ trên màn hình là {wanted_id} nhưng thư mục "
+                f"{folder.name} thuộc bệnh nhân {recorded_id}."
+            )
         manifest["diagnosis"] = str(text or "").strip()
         dcom_pipeline._write_patient_manifest(folder, manifest)
+        patient = ArchiveCatalog._patient_block(manifest)
         with target._lock:
-            target._patient = target._patient_block(manifest)
-            patient = dict(target._patient)
+            # Only refresh the in-memory copy when it is the same patient; the
+            # open catalog may be someone else entirely.
+            if str(target._patient.get("patientId") or "") == recorded_id:
+                target._patient = dict(patient)
         return {"patient": patient}
 
     def start_search(self, payload: dict) -> dict:
@@ -3604,7 +3644,10 @@ class LocalApiServer:
                     return owner.controller.start_history_open(str(payload.get("folder") or ""))
                 if path == "/api/patient/diagnosis":
                     return owner.controller.set_patient_diagnosis(
-                        str(payload.get("diagnosis") or ""), catalog=catalog,
+                        str(payload.get("diagnosis") or ""),
+                        archive_root=str(payload.get("archiveRoot") or ""),
+                        expected_patient_id=str(payload.get("patientId") or ""),
+                        catalog=catalog,
                     )
                 if path == "/api/worklist/reveal-folder":
                     return owner.controller.reveal_folder(str(payload.get("folder") or ""))

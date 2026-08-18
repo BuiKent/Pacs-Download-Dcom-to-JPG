@@ -1691,6 +1691,71 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertEqual(saved["patientName"], "LÊ VĂN MẪU")
         self.assertEqual(saved["studies"]["1.2.3"]["status"], "complete")
 
+    def test_converted_mri_jpgs_stay_on_the_reading_canvas(self) -> None:
+        """The app's own DICOM→JPG output must not open in the photo editor.
+
+        A JPG slice of an MR or CT study is a diagnostic image in a picture
+        container. Routing it by extension handed a radiologist crop, redact
+        and arrow tools where window/level and measurement belong.
+        """
+        from PIL import Image
+
+        for folder, modality in (("MR - SO NAO", "MR"), ("CT - O BUNG", "CT")):
+            root = self.temp_dir / f"BN-{modality}"
+            slices = root / f"2026-08-06 - {folder}" / "JPG" / "T1_SAG"
+            slices.mkdir(parents=True)
+            for index in range(3):
+                Image.new("L", (64, 64), 100 + index * 20).save(slices / f"IM_{index:04d}.jpg")
+
+            series = ArchiveCatalog().open(root)["series"][0]
+            self.assertEqual(series["modality"], modality)
+            self.assertEqual(series["mediaType"], "dicom", f"{modality} JPG left the canvas")
+
+    def test_photos_without_a_modality_are_still_photos(self) -> None:
+        """The fix above must not drag clinical photographs onto the canvas."""
+        from PIL import Image
+
+        root = self.temp_dir / "BN-ANH"
+        for folder, expected in (("ANH-TRONG-MO", "photo"), ("BENH_AN-SCAN", "doc")):
+            target = root / folder
+            target.mkdir(parents=True)
+            Image.new("RGB", (64, 64), (10, 20, 30)).save(target / "p1.jpg")
+
+        kinds = {item["name"]: item["mediaType"] for item in ArchiveCatalog().open(root)["series"]}
+        self.assertEqual(kinds["ANH-TRONG-MO"], "photo")
+        self.assertEqual(kinds["BENH_AN-SCAN"], "doc")
+
+    def test_diagnosis_refuses_to_write_into_a_different_patient(self) -> None:
+        """Without a session per tab, the open catalog is not proof of identity.
+
+        A note typed while looking at one patient must never reach another's
+        record just because that folder was opened more recently.
+        """
+        other = self.temp_dir / "BN-KHAC"
+        (other / "VIDEO").mkdir(parents=True)
+        self._write_video(other / "VIDEO" / "a.mp4")
+        (other / "patient-index.json").write_text(json.dumps({
+            "format": "dcom-patient-index-v1",
+            "patientId": "BN-KHAC",
+            "patientName": "TRẦN THỊ B",
+            "studies": {},
+        }), encoding="utf-8")
+
+        catalog = ArchiveCatalog()
+        catalog.open(other)
+
+        with self.assertRaises(ValueError) as caught:
+            self.controller.set_patient_diagnosis(
+                "Ghi nhầm chỗ",
+                archive_root=str(other),
+                expected_patient_id="BN-DANG-XEM",
+                catalog=catalog,
+            )
+        self.assertIn("Từ chối ghi", str(caught.exception))
+
+        saved = json.loads((other / "patient-index.json").read_text(encoding="utf-8"))
+        self.assertNotIn("diagnosis", saved)
+
     def test_diagnosis_refuses_a_folder_with_no_manifest(self) -> None:
         """Nowhere to record it means saying so, not writing a new file."""
         patient = self.temp_dir / "BN-0010"
