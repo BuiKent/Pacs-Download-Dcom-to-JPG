@@ -54,10 +54,11 @@ function renderLink(){
 }
 function previousResult(){const p=inventory?.previousDownload;return p&&p.lastDownloadAt&&RESULT_LABELS[p.status]?p:null;}
 function fillStudyCard(){$('studySub').textContent=inventory.studyUid||inventory.patient?.description||'—';chip($('adapterChip'),inventory.adapter||'DICOM','good');$('patientName').textContent=fmtName(inventory.patient?.name)||'—';$('patientId').textContent=inventory.patient?.id||'—';$('studyDate').textContent=fmtDate(inventory.patient?.studyDate);$('seriesCount').textContent=String(inventory.series?.length||0);}
-function renderInventory(){if(!inventory){show('doneCard',false);show('studyCard',false);show('seriesCard',false);show('stickyBar',false);return;}
+let lastRenderedStudyKey='';
+function renderInventory(){
+  if(!inventory){show('doneCard',false);show('studyCard',false);show('seriesCard',false);show('stickyBar',false);return;}
   const result=previousResult();
   if(result&&!revealDownloaded){
-    // Tai xong thi cat danh sach series di, nhung GIU card thong tin benh nhan.
     fillStudyCard();
     show('doneCard',true);show('studyCard',true);show('seriesCard',false);show('stickyBar',false);show('partialBanner',false);
     $('doneTitle').textContent=RESULT_LABELS[result.status];
@@ -65,10 +66,51 @@ function renderInventory(){if(!inventory){show('doneCard',false);show('studyCard
     $('doneMeta').textContent=[fmtName(inventory.patient?.name)||'Study',inventory.patient?.id,fmtDate(inventory.patient?.studyDate),fmtWhen(result.lastDownloadAt)].filter(Boolean).join(' · ');
     return;
   }
-  show('doneCard',false);show('studyCard',true);show('seriesCard',true);show('stickyBar',true);fillStudyCard();const prev=inventory.previousDownload;show('partialBanner',Boolean(prev&&prev.status!=='done'&&prev.lastDownloadAt));if(prev&&prev.status!=='done'&&prev.lastDownloadAt)$('partialBanner').textContent=`Lần trước: ${prev.completed||0}/${prev.total||'?'} ảnh · tải lại sẽ bỏ qua file đã có.`;// GE ZFP khac han cac dong khac: khong tai theo yeu cau duoc, phai ngoi hung
-// anh do chinh viewer bom ra, nen tab viewer se tu nap lai va phai de yen.
-show('adapterNote',inventory.adapter==='ZFP');if(inventory.adapter==='ZFP')$('adapterNote').textContent='Viewer GE không cho tải ảnh theo yêu cầu. Extension hứng ảnh do chính viewer nạp, nên tab này sẽ tự nạp lại — để yên tab trong lúc tải.';
-const list=$('seriesList');list.textContent='';for(const s of(inventory.series||[])){const row=document.createElement('label');row.className='series-row';const cb=document.createElement('input');cb.type='checkbox';cb.checked=true;cb.dataset.id=s.id;cb.addEventListener('change',updateSelected);const main=document.createElement('div');main.className='series-main';const title=document.createElement('div');title.className='series-title';title.textContent=`${s.number?`${s.number} · `:''}${s.description||'Series'}`;const meta=document.createElement('div');meta.className='series-meta';const m1=document.createElement('span');m1.textContent=s.modality||'DICOM';const m2=document.createElement('span');m2.textContent=s.sequenceHint||'';meta.append(m1,m2);main.append(title,meta);const count=document.createElement('span');count.className='series-count';count.textContent=s.imageCount?`${s.imageCount} ảnh`:'? ảnh';row.append(cb,main,count);list.append(row);}updateSelected();}
+  show('doneCard',false);show('studyCard',true);show('seriesCard',true);show('stickyBar',true);fillStudyCard();
+  const prev=inventory.previousDownload;
+  show('partialBanner',Boolean(prev&&prev.status!=='done'&&prev.lastDownloadAt));
+  if(prev&&prev.status!=='done'&&prev.lastDownloadAt)$('partialBanner').textContent=`Lần trước: ${prev.completed||0}/${prev.total||'?'} ảnh · tải lại sẽ bỏ qua file đã có.`;
+  show('adapterNote',inventory.adapter==='ZFP');
+  if(inventory.adapter==='ZFP')$('adapterNote').textContent='Viewer GE không cho tải ảnh theo yêu cầu. Extension hứng ảnh do chính viewer nạp, nên tab này sẽ tự nạp lại — để yên tab trong lúc tải.';
+
+  const currentStudyKey=inventory.studyUid||`${inventory.patient?.id||''}_${inventory.patient?.studyDate||''}`;
+  const isSameStudy=(currentStudyKey&&currentStudyKey===lastRenderedStudyKey);
+  const existingCbs=$('seriesList').querySelectorAll('input[type=checkbox]');
+  const hadUserSelection=isSameStudy&&existingCbs.length>0;
+  const currentCheckedIds=new Set([...existingCbs].filter(x=>x.checked).map(x=>x.dataset.id));
+  lastRenderedStudyKey=currentStudyKey;
+
+  const list=$('seriesList');
+  list.textContent='';
+  for(const s of(inventory.series||[])){
+    const row=document.createElement('label');
+    row.className='series-row';
+    const cb=document.createElement('input');
+    cb.type='checkbox';
+    cb.checked=hadUserSelection?currentCheckedIds.has(s.id):true;
+    cb.dataset.id=s.id;
+    cb.addEventListener('change',updateSelected);
+    const main=document.createElement('div');
+    main.className='series-main';
+    const title=document.createElement('div');
+    title.className='series-title';
+    title.textContent=`${s.number?`${s.number} · `:''}${s.description||'Series'}`;
+    const meta=document.createElement('div');
+    meta.className='series-meta';
+    const m1=document.createElement('span');
+    m1.textContent=s.modality||'DICOM';
+    const m2=document.createElement('span');
+    m2.textContent=s.sequenceHint||'';
+    meta.append(m1,m2);
+    main.append(title,meta);
+    const count=document.createElement('span');
+    count.className='series-count';
+    count.textContent=s.imageCount?`${s.imageCount} ảnh`:'? ảnh';
+    row.append(cb,main,count);
+    list.append(row);
+  }
+  updateSelected();
+}
 function selectedIds(){return[...$('seriesList').querySelectorAll('input[type=checkbox]:checked')].map(x=>x.dataset.id);}
 function updateSelected(){
   const ids=selectedIds(),sel=(inventory?.series||[]).filter(s=>ids.includes(s.id)),images=sel.reduce((n,s)=>n+(Number(s.imageCount)||0),0);

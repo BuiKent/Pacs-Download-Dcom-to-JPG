@@ -308,7 +308,8 @@ function scheduleJobFlush(tabId,force=false){if(force){clearTimeout(jobFlushTime
 async function getJob(tabId){return jobMemory.get(tabId)||await getSession(jobKey(tabId));}
 async function finalizeJob(tabId,engineResult){let job=jobMemory.get(tabId)||await getSession(jobKey(tabId),{tabId});let inv=await getSession(invKey(tabId));job={...job,...engineResult,updatedAt:Date.now()};if(inv&&engineResult?.resolvedMeta){const m=engineResult.resolvedMeta||{},p={...(inv.patient||{})};if(!p.name&&m.patientName)p.name=m.patientName;if(!p.id&&m.patientId)p.id=m.patientId;if(!p.studyDate&&m.studyDate)p.studyDate=m.studyDate;if(!inv.studyUid&&m.studyUid)inv.studyUid=m.studyUid;inv={...inv,patient:p};await setSession(invKey(tabId),inv);}const known=Boolean(inv?.context?.completeKnown),fullSelection=Boolean(job.allSeriesSelected);if(job.status==='done'&&(!known||!fullSelection))job.status='partial';if(job.status==='done_with_errors'&&(!known||!fullSelection)&&job.completed)job.status='partial';jobMemory.set(tabId,job);scheduleJobFlush(tabId,true);
 if(inv){
-  const row=await upsertHistory(inv,{status:job.status,lastDownloadAt:Date.now(),completed:job.completed||0,total:job.total||0,failed:job.failed||0});
+  const completedSopUids = Array.isArray(job.completedSopUids) ? job.completedSopUids : [];
+  const row=await upsertHistory(inv,{status:job.status,lastDownloadAt:Date.now(),completed:job.completed||0,total:job.total||0,failed:job.failed||0,completedSopUids});
   if(row){inv={...inv,previousDownload:row};await setSession(invKey(tabId),inv);}
   try{
     const studyUrl=inv.summary?.currentUrl||inv.context?.url||'';
@@ -348,6 +349,10 @@ async function startJob(tabId,selected,options={}){
   await ensureOffscreen();
   const attemptId=crypto.randomUUID();
   const expectedSopUids=[...new Set(tasks.map(t=>String(t.sopInstanceUid||'').trim()).filter(Boolean))];
+  const prevCompletedSopUids = (inv.previousDownload && Array.isArray(inv.previousDownload.completedSopUids))
+    ? inv.previousDownload.completedSopUids
+    : (Array.isArray(existing?.completedSopUids) ? existing.completedSopUids : []);
+  const baselineCompleted = tasks.filter(t => t.sopInstanceUid && prevCompletedSopUids.includes(String(t.sopInstanceUid).trim())).length;
   const job={
     id:crypto.randomUUID(),
     attemptId,
@@ -361,13 +366,13 @@ async function startJob(tabId,selected,options={}){
     selectedSeries:selected,
     allSeriesSelected:selected.length===Number(inv.series?.length||0),
     total:tasks.length,
-    completed:0,
+    completed:baselineCompleted,
     failed:0,
     skipped:0,
     bytesWritten:0,
     currentFile:'',
     errors:[],
-    completedSopUids:[],
+    completedSopUids:prevCompletedSopUids,
     expectedSopUids,
     logicalTotal:tasks.length,
     attemptBaseOriginal:0,
@@ -391,8 +396,8 @@ async function startJob(tabId,selected,options={}){
     saveMode:options.saveMode==='downloads'?'downloads':'filesystem',
     concurrency:options.concurrency||6,
     frameConcurrency:options.frameConcurrency||6,
-    alreadyCompletedSopUids:[],
-    baselineCompleted:0,
+    alreadyCompletedSopUids:prevCompletedSopUids,
+    baselineCompleted,
     logicalTotal:tasks.length
   };
   job.saveMode=spec.saveMode;

@@ -118,13 +118,19 @@ function failTask(job,relativePath,message){job.failed++;job.errors.push(`${rela
 
 async function runTask(job,task,index){
   if(job.cancelled)throw new DOMException('Cancelled','AbortError');
+  const declaredSop=String(task.sopInstanceUid||'').trim();
+  if(declaredSop&&job.completedSopUids.has(declaredSop)){
+    job.skipped++;
+    emit(job);
+    return;
+  }
   job.currentFile=task.relativePath;
   emit(job);
   const existing=job.saveMode==='filesystem'?await existingValid(job.studyRoot,task.relativePath):null;
   if(existing){
     const identityError=dicomTaskIdentityError(task,existing);if(identityError)throw new Error(identityError);
-    const sopUid=String(existing.sopInstanceUid||'').trim();
-    if(!job.completedSopUids.has(sopUid)){job.completed++;job.completedSopUids.add(sopUid);}
+    const sopUid=String(existing.sopInstanceUid||declaredSop||'').trim();
+    if(sopUid&&!job.completedSopUids.has(sopUid)){job.completed++;job.completedSopUids.add(sopUid);}
     job.skipped++;emit(job,true);return;
   }
   let last='';
