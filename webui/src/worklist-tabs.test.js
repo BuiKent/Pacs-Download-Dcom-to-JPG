@@ -15,6 +15,7 @@ import {
   studyCountLine,
   filteredPatientList,
   filteredHistoryEntries,
+  syncToolHighlight,
 } from "./main.js";
 
 const PATIENTS = [
@@ -229,6 +230,26 @@ describe("Worklist: Study List / Activity & Queue tabs", () => {
   });
 });
 
+describe("viewer toolbar state", () => {
+  it("updates only tool buttons after the toolbar redesign", () => {
+    const root = document.createElement("div");
+    root.innerHTML = `
+      <nav class="toolbar">
+        <button class="icon-button active" data-action="mode-mpr" aria-pressed="true"></button>
+        <button class="icon-button active" data-action="tool-window" aria-pressed="true"></button>
+        <button class="icon-button" data-action="tool-crosshair" aria-pressed="false"></button>
+      </nav>`;
+    state.tool = "crosshair";
+
+    syncToolHighlight(root);
+
+    expect(root.querySelector('[data-action="mode-mpr"]').classList.contains("active")).toBe(true);
+    expect(root.querySelector('[data-action="tool-window"]').getAttribute("aria-pressed")).toBe("false");
+    expect(root.querySelector('[data-action="tool-crosshair"]').getAttribute("aria-pressed")).toBe("true");
+    expect(root.querySelector('[data-action="tool-crosshair"]').classList.contains("active")).toBe(true);
+  });
+});
+
 function jsonResponse(data) {
   return {
     ok: true,
@@ -368,4 +389,3 @@ describe("Worklist: scanned data replaces the history fallback", () => {
     expect((row.match(/disabled/g) || []).length).toBe(2);
   });
 });
-

@@ -122,6 +122,10 @@ const state = {
   concatClips: [],
   concatTargetHeight: 1080,
   concatTargetFps: 30,
+  mediaIndex: {},
+  mediaEdits: {},
+  photoWorkingPath: null,
+  videoWorkingPath: null,
   tabs: [],
   activeTabId: "worklist",
   worklistSearch: "",
@@ -599,17 +603,18 @@ function formatVideoTime(seconds) {
 
 function renderSurgeryVideoStudio(series) {
   if (!series) return `<div class="empty-state"><b>${escapeHtml(t("Chưa có video nào"))}</b></div>`;
-  // A work file is served by name and needs no session; the archive's own
-  // files go through the authenticated blob fetch like every other media.
-  const workName = state.videoWorkingPath
-    ? state.videoWorkingPath.split(/[\/]/).pop()
-    : "";
+  // A work file is served by its random name; both work and archive streams
+  // carry the active tab's read-only media credentials in the URL.
+  // The work path comes back from the backend with Windows separators, so
+  // splitting on "/" alone left the whole path in place as the file name.
+  const workName = workFileName(state.videoWorkingPath);
   const bookmarks = state.videoBookmarks || [];
   const filmstrip = state.videoFilmstrip || [];
   return `
     <div class="surgery-video-studio">
       <div class="surgery-video-toolbar" style="display:flex; gap:8px; padding:8px 12px; background:var(--bg-card); border-bottom:1px solid var(--border-subtle); align-items:center; flex-wrap:wrap;">
         ${renderMediaFileNav(series)}
+        ${renderEditHistoryNav(series)}
         <button class="tool-btn" data-action="video-tool-trim" title="${escapeHtml(t("Cắt đoạn video"))}">✂ ${escapeHtml(t("Cắt đoạn"))}</button>
         <button class="tool-btn" data-action="video-tool-concat" title="${escapeHtml(t("Ghép các clip video"))}">🔗 ${escapeHtml(t("Ghép clips"))}</button>
         <button class="tool-btn" data-action="video-tool-burn-text" title="${escapeHtml(t("Đóng dấu / Chèn thông tin phẫu thuật"))}">🏷 ${escapeHtml(t("Đóng dấu thông tin"))}</button>
@@ -642,7 +647,8 @@ function renderSurgeryVideoStudio(series) {
         <div class="surgery-video-filmstrip" style="display:flex; gap:6px; padding:6px 12px; background:var(--bg-canvas); overflow-x:auto; border-top:1px solid var(--border-subtle);">
           ${filmstrip.map((framePath, idx) => {
             const frameName = framePath.split(/[\\/]/).pop();
-            return `<img src="/api/media/work-file?name=${encodeURIComponent(frameName)}" style="height:48px; border-radius:4px; cursor:pointer; border:1px solid var(--border-subtle);" title="Frame ${idx + 1}" data-action="seek-filmstrip-idx" data-idx="${idx}" data-total="${filmstrip.length}" />`;
+            const frameUrl = mediaAuthUrl(`/api/media/work-file?name=${encodeURIComponent(frameName)}`);
+            return `<img src="${escapeHtml(frameUrl)}" style="height:48px; border-radius:4px; cursor:pointer; border:1px solid var(--border-subtle);" title="Frame ${idx + 1}" data-action="seek-filmstrip-idx" data-idx="${idx}" data-total="${filmstrip.length}" />`;
           }).join("")}
         </div>
       ` : ""}
@@ -686,9 +692,9 @@ function stepMediaFile(series, delta) {
   const next = Math.max(0, Math.min(mediaFileIndex(series) + delta, total - 1));
   if (next === mediaFileIndex(series)) return;
   state.mediaIndex = { ...(state.mediaIndex || {}), [series.id]: next };
-  // A new file invalidates whatever edit was being previewed for the old one.
-  state.photoWorkingPath = null;
-  state.videoWorkingPath = null;
+  // Each file owns its own edit chain. Restore the chain for the page landed
+  // on instead of carrying page 1's derivative into page 2.
+  restoreMediaEditState(series);
   state.photoRotation = 0;
   state.videoFilmstrip = [];
   render();
@@ -711,11 +717,15 @@ function renderMediaFileNav(series) {
 
 function renderPhotoEditorStudio(series) {
   if (!series) return `<div class="empty-state"><b>${escapeHtml(t("Chưa có ảnh nào"))}</b></div>`;
-  const imageUrl = `/api/series/${series.id}/image/${mediaFileIndex(series)}`;
+  // Naming the edit in the markup is what makes undo work and what stops any
+  // re-render from silently dropping back to the untouched file.
+  const workName = workFileName(state.photoWorkingPath);
+  const source = workName ? `work:${workName}` : `${series.id}:${mediaFileIndex(series)}`;
   return `
     <div class="photo-editor-studio">
       <div class="photo-editor-toolbar">
         ${renderMediaFileNav(series)}
+        ${renderEditHistoryNav(series)}
         <button class="tool-btn" data-action="photo-rotate-cw">↻ ${escapeHtml(t("Xoay 90°"))}</button>
         <button class="tool-btn" data-action="photo-tool-crop">✂ ${escapeHtml(t("Cắt vùng chọn"))}</button>
         <button class="tool-btn" data-action="photo-tool-redact">⬛ ${escapeHtml(t("Che tên/danh tính"))}</button>
@@ -728,7 +738,7 @@ function renderPhotoEditorStudio(series) {
       </div>
       <div class="photo-editor-stage">
         <div class="photo-editor-canvas-wrap" id="photo-editor-canvas">
-          <img id="photo-editor-img" class="photo-editor-image" data-media-src="${escapeHtml(series.id)}:${mediaFileIndex(series)}" style="transform: rotate(${state.photoRotation || 0}deg);" alt="${escapeHtml(series.description || "")}">
+          <img id="photo-editor-img" class="photo-editor-image" data-media-src="${escapeHtml(source)}" style="transform: rotate(${state.photoRotation || 0}deg);" alt="${escapeHtml(series.description || "")}">
           <div id="photo-selection" class="photo-selection" hidden></div>
         </div>
       </div>
@@ -797,8 +807,19 @@ function renderTextViewer(series) {
 async function setMediaElementSrc(element, url) {
   if (!element || !url) return;
   try {
-    const blob = await apiBlob(url);
-    element.src = URL.createObjectURL(blob);
+    const parsed = new URL(url, window.location?.origin || "http://127.0.0.1");
+    const workName = parsed.pathname === "/api/media/work-file"
+      ? parsed.searchParams.get("name")
+      : "";
+    const seriesMatch = parsed.pathname.match(/^\/api\/series\/([a-f0-9]{20})\/image\/(\d+)$/);
+    const descriptor = workName
+      ? `work:${workName}`
+      : seriesMatch
+        ? `${seriesMatch[1]}:${seriesMatch[2]}`
+        : "";
+    element.src = descriptor
+      ? await mediaBlobUrl(descriptor)
+      : URL.createObjectURL(await apiBlob(url));
   } catch (error) {
     setStatus(humanError(error), true);
   }
@@ -815,16 +836,33 @@ async function setMediaElementSrc(element, url) {
  */
 const mediaObjectUrls = new Map();
 
-function mediaFileUrl(seriesId, index) {
-  const key = `${seriesId}:${index}`;
+/**
+ * The blob for one media descriptor, fetched once.
+ *
+ * A descriptor is either `seriesId:index` for a file in the archive or
+ * `work:name` for one the editor has just written. Both go through the same
+ * cache so a pane that is showing an edit survives a re-render: the markup
+ * says which file it wants and this resolves it.
+ */
+function mediaBlobUrl(descriptor) {
+  const key = String(descriptor);
   let pending = mediaObjectUrls.get(key);
   if (!pending) {
-    pending = apiBlob(`/api/series/${seriesId}/image/${index}`)
-      .then((blob) => URL.createObjectURL(blob));
+    const separator = key.indexOf(":");
+    const head = key.slice(0, separator);
+    const tail = key.slice(separator + 1);
+    const path = head === "work"
+      ? `/api/media/work-file?name=${encodeURIComponent(tail)}`
+      : `/api/series/${head}/image/${Number(tail) || 0}`;
+    pending = apiBlob(path).then((blob) => URL.createObjectURL(blob));
     pending.catch(() => mediaObjectUrls.delete(key));
     mediaObjectUrls.set(key, pending);
   }
   return pending;
+}
+
+function mediaFileUrl(seriesId, index) {
+  return mediaBlobUrl(`${seriesId}:${index}`);
 }
 
 /**
@@ -879,14 +917,124 @@ function releaseMediaObjectUrls(keepSeriesId = "") {
   }
 }
 
+/**
+ * The chain of edits made to one record since it was opened.
+ *
+ * Each tool writes a new file into the scratch folder and leaves the previous
+ * one there, so stepping back is only a matter of pointing at the earlier file
+ * again — nothing is recomputed, and the file in the archive is never touched
+ * by any of it. A reader who crops too tightly or redacts the wrong corner had
+ * no way back before this except reopening the record.
+ */
+function editHistoryFor(seriesId, index = 0) {
+  const all = state.mediaEdits || (state.mediaEdits = {});
+  const key = `${seriesId}:${Math.max(0, Number(index) || 0)}`;
+  return all[key] || (all[key] = { steps: [], cursor: -1 });
+}
+
+function seriesEditHistory(series) {
+  return editHistoryFor(series.id, mediaFileIndex(series));
+}
+
+/** Record the file a tool just produced as the newest step. */
+function pushMediaEdit(series, result) {
+  if (!series || !result?.outputPath) return;
+  const history = seriesEditHistory(series);
+  // Editing after stepping back replaces the branch that was undone.
+  history.steps = history.steps.slice(0, history.cursor + 1);
+  history.steps.push({ path: result.outputPath, url: result.url || "" });
+  history.cursor = history.steps.length - 1;
+  syncEditHistoryButtons(series);
+}
+
+/** Cursor -1 is the untouched file the archive holds. */
+function currentMediaEdit(series) {
+  if (!series) return null;
+  const history = seriesEditHistory(series);
+  return history.cursor >= 0 ? history.steps[history.cursor] : null;
+}
+
+function canUndoMediaEdit(series) {
+  return Boolean(series) && seriesEditHistory(series).cursor >= 0;
+}
+
+function canRedoMediaEdit(series) {
+  if (!series) return false;
+  const history = seriesEditHistory(series);
+  return history.cursor < history.steps.length - 1;
+}
+
+/** Move along the chain and repaint the pane at the step landed on. */
+function stepMediaEdit(series, delta) {
+  if (!series) return;
+  const history = seriesEditHistory(series);
+  const next = Math.max(-1, Math.min(history.cursor + delta, history.steps.length - 1));
+  if (next === history.cursor) return;
+  history.cursor = next;
+  const step = next >= 0 ? history.steps[next] : null;
+  if (getSeriesMediaType(series) === "video") {
+    state.videoWorkingPath = step ? step.path : null;
+  } else {
+    state.photoWorkingPath = step ? step.path : null;
+    // The rotation was baked into the file the step points at.
+    state.photoRotation = 0;
+  }
+  // The pane names the file it wants in its markup, so a plain re-render is
+  // enough to bring the right one back.
+  render();
+  renderViewer();
+  setStatus(step
+    ? tf(delta < 0 ? "Đã hoàn tác đến bước {}/{}." : "Đã làm lại đến bước {}/{}.", next + 1, history.steps.length)
+    : t("Đã quay lại file gốc trong hồ sơ."));
+}
+
+/** Restore the derivative, if any, for the selected file in this series. */
+function restoreMediaEditState(series) {
+  const step = currentMediaEdit(series);
+  if (getSeriesMediaType(series) === "video") {
+    state.videoWorkingPath = step?.path || null;
+    state.photoWorkingPath = null;
+  } else {
+    state.photoWorkingPath = step?.path || null;
+    state.videoWorkingPath = null;
+  }
+}
+
+/** Keep the two arrows in step with the history without a full re-render. */
+function syncEditHistoryButtons(series) {
+  const root = getDomRoot();
+  if (!root) return;
+  const undo = root.querySelector("[data-action='media-edit-undo']");
+  const redo = root.querySelector("[data-action='media-edit-redo']");
+  if (undo) undo.disabled = !canUndoMediaEdit(series);
+  if (redo) redo.disabled = !canRedoMediaEdit(series);
+  const save = root.querySelector("[data-action='photo-save-edit']");
+  if (save) save.disabled = !state.photoWorkingPath;
+}
+
+/** The undo/redo pair both studios share. */
+function renderEditHistoryNav(series) {
+  return `
+    <button class="tool-btn" data-action="media-edit-undo" ${canUndoMediaEdit(series) ? "" : "disabled"}
+      title="${escapeHtml(t("Hoàn tác bước chỉnh sửa"))}">↶</button>
+    <button class="tool-btn" data-action="media-edit-redo" ${canRedoMediaEdit(series) ? "" : "disabled"}
+      title="${escapeHtml(t("Làm lại bước vừa hoàn tác"))}">↷</button>
+  `;
+}
+
+/** The scratch file name a work path points at, for a media descriptor. */
+function workFileName(workPath) {
+  return String(workPath || "").split(/[\\/]/).pop() || "";
+}
+
 /** Point every media element at its authenticated blob once the page is up. */
 function hydrateMediaSources() {
   const root = getDomRoot();
   if (!root) return;
   for (const element of root.querySelectorAll("[data-media-src]")) {
-    const [seriesId, index] = String(element.dataset.mediaSrc).split(":");
-    if (!seriesId) continue;
-    mediaFileUrl(seriesId, Number(index) || 0)
+    const descriptor = String(element.dataset.mediaSrc);
+    if (!descriptor.includes(":")) continue;
+    mediaBlobUrl(descriptor)
       .then((url) => { element.src = url; })
       .catch((error) => setStatus(humanError(error), true));
   }
@@ -2041,7 +2189,7 @@ function renderConcatModal() {
         <p style="margin:0; font-size:12px; color:var(--label-muted,#7890a2);">${escapeHtml(t("Chọn các clip và sử dụng nút ▲/▼ để sắp xếp thứ tự ghép nối theo trình tự phẫu thuật:"))}</p>
         <div class="concat-clip-list">
           ${clips.length === 0 ? `<div class="empty-state" style="padding:20px;"><b>${escapeHtml(t("Không tìm thấy clip video nào trong ca mổ"))}</b></div>` : clips.map((clip, idx) => `
-            <div class="concat-clip-item ${clip.selected ? "" : "disabled"}" data-clip-id="${escapeHtml(clip.seriesId)}">
+            <div class="concat-clip-item ${clip.selected ? "" : "disabled"}" data-clip-id="${escapeHtml(`${clip.seriesId}:${clip.index ?? 0}`)}">
               <input type="checkbox" class="concat-clip-checkbox" data-action="toggle-concat-clip" data-clip-idx="${idx}" ${clip.selected ? "checked" : ""} style="cursor:pointer;" title="${escapeHtml(t("Bật/tắt clip này"))}">
               <span class="concat-clip-order">#${idx + 1}</span>
               <div class="concat-clip-info">
@@ -2787,18 +2935,42 @@ function initMediaEvents() {
   }
 }
 
+/**
+ * Every video file in the record, in the order it would be joined.
+ *
+ * Read off the files rather than the series so a folder holding three clips
+ * of one operation offers three lines to order and tick.
+ */
+async function concatClipCandidates() {
+  const candidates = [];
+  for (const series of state.archive?.series || []) {
+    if (getSeriesMediaType(series) !== "video") continue;
+    const response = await api(`/api/series/${series.id}/file-paths`).catch(() => null);
+    const paths = (response?.images || []).filter(Boolean);
+    paths.forEach((path, index) => {
+      candidates.push({
+        seriesId: series.id,
+        index,
+        path,
+        name: String(path).split(/[\\/]/).pop() || series.description || series.name,
+        // Only a lone clip in a folder can be matched to the duration the
+        // catalog reports; there is no per-file duration for the rest.
+        duration: paths.length === 1 ? (series.durationSeconds || 0) : 0,
+        selected: true,
+      });
+    });
+  }
+  return candidates;
+}
+
 async function getVideoSourcePath(series) {
   if (!series) return null;
   if (state.videoWorkingPath && (!state.selectedId || series.id === state.selectedId)) {
     return state.videoWorkingPath;
   }
   const filePathsRes = await api(`/api/series/${series.id}/file-paths`).catch(() => null);
-  const filePath = filePathsRes?.images?.[0];
-  if (filePath) {
-    if (!state.selectedId || series.id === state.selectedId) state.videoWorkingPath = filePath;
-    return filePath;
-  }
-  return null;
+  const paths = filePathsRes?.images || [];
+  return paths[mediaFileIndex(series)] || paths[0] || null;
 }
 
 async function getPhotoSourcePath(series) {
@@ -2807,12 +2979,8 @@ async function getPhotoSourcePath(series) {
     return state.photoWorkingPath;
   }
   const filePathsRes = await api(`/api/series/${series.id}/file-paths`).catch(() => null);
-  const filePath = filePathsRes?.images?.[0];
-  if (filePath) {
-    if (!state.selectedId || series.id === state.selectedId) state.photoWorkingPath = filePath;
-    return filePath;
-  }
-  return null;
+  const paths = filePathsRes?.images || [];
+  return paths[mediaFileIndex(series)] || paths[0] || null;
 }
 
 async function action(name, element = null) {
@@ -2923,13 +3091,14 @@ async function action(name, element = null) {
       const series = selectedSeries();
       if (!series) return;
       if (!state.photoWorkingPath) throw new Error(t("Chưa có chỉnh sửa nào để lưu."));
+      const editedIndex = mediaFileIndex(series);
       const saved = await api("/api/media/save", {
         method: "POST",
         // Named after the page that was edited, not the folder's first file.
         body: JSON.stringify({
           path: state.photoWorkingPath,
           seriesId: series.id,
-          mediaIndex: mediaFileIndex(series),
+          mediaIndex: editedIndex,
         }),
       });
       // The archive now holds one more file, so the strip and the rail have to
@@ -2939,7 +3108,25 @@ async function action(name, element = null) {
         body: JSON.stringify({ path: state.archive.root }),
       }).catch(() => null);
       if (archive?.series) applyArchive(archive, getApiSession(), state.archive.root);
+      const refreshed = selectedSeries();
+      if (refreshed?.id === series.id) {
+        const filePaths = await api(`/api/series/${series.id}/file-paths`).catch(() => null);
+        const savedIndex = (filePaths?.images || []).findIndex((path) => sameFolder(path, saved.savedPath));
+        if (savedIndex >= 0) {
+          state.mediaIndex = { ...(state.mediaIndex || {}), [series.id]: savedIndex };
+        }
+        const history = editHistoryFor(series.id, editedIndex);
+        history.steps = [];
+        history.cursor = -1;
+        state.photoWorkingPath = null;
+        render();
+        renderViewer();
+      }
       setStatus(tf("Đã lưu vào hồ sơ: {}", saved.name));
+      return;
+    }
+    if (name === "media-edit-undo" || name === "media-edit-redo") {
+      stepMediaEdit(selectedSeries(), name === "media-edit-redo" ? 1 : -1);
       return;
     }
     if (name === "media-file-prev" || name === "media-file-next") {
@@ -3366,6 +3553,7 @@ async function action(name, element = null) {
         body: JSON.stringify({ path, startSeconds, endSeconds, reencode: false }),
       });
       state.videoWorkingPath = res.outputPath;
+      pushMediaEdit(series, res);
       if (video) {
         setVideoElementSrc(video, res.url);
       }
@@ -3390,6 +3578,7 @@ async function action(name, element = null) {
         }),
       });
       state.videoWorkingPath = res.outputPath;
+      pushMediaEdit(series, res);
       if (video) {
         setVideoElementSrc(video, res.url);
       }
@@ -3425,6 +3614,7 @@ async function action(name, element = null) {
         body: JSON.stringify({ path, crf: 23, use_hw: true }),
       });
       state.videoWorkingPath = res.outputPath;
+      pushMediaEdit(series, res);
       if (video) {
         setVideoElementSrc(video, res.url);
       }
@@ -3432,16 +3622,14 @@ async function action(name, element = null) {
       return;
     }
     if (name === "video-tool-concat") {
-      const allVideoSeries = (state.archive?.series || []).filter((s) => getSeriesMediaType(s) === "video");
-      if (allVideoSeries.length < 2 && !state.videoWorkingPath) {
+      // A folder of clips is one series with many files. Listing series meant
+      // three recordings of one operation offered a single line to tick, and
+      // only the first file was ever handed to FFmpeg.
+      const clips = await concatClipCandidates();
+      if (clips.length < 2) {
         throw new Error(t("Cần ít nhất 2 clip video trong ca mổ để ghép."));
       }
-      state.concatClips = allVideoSeries.map((s, idx) => ({
-        seriesId: s.id,
-        name: s.description || s.name || tf("Clip video {}", idx + 1),
-        duration: s.durationSeconds || 0,
-        selected: true,
-      }));
+      state.concatClips = clips;
       state.showConcatModal = true;
       render();
       return;
@@ -3480,19 +3668,14 @@ async function action(name, element = null) {
       return;
     }
     if (name === "start-concat-video") {
+      const series = selectedSeries();
+      if (!series) return;
       const selected = (state.concatClips || []).filter((c) => c.selected);
       if (selected.length < 2) {
         throw new Error(t("Cần chọn ít nhất 2 clip video để ghép."));
       }
       setStatus(tf("Đang chuẩn bị ghép {} clip video...", selected.length));
-      const sources = [];
-      for (const clip of selected) {
-        const series = (state.archive?.series || []).find((s) => s.id === clip.seriesId);
-        if (series) {
-          const p = await getVideoSourcePath(series);
-          if (p && !sources.includes(p)) sources.push(p);
-        }
-      }
+      const sources = selected.map((clip) => clip.path).filter(Boolean);
       if (sources.length < 2) {
         throw new Error(t("Không đủ số lượng file video hợp lệ để ghép."));
       }
@@ -3508,6 +3691,7 @@ async function action(name, element = null) {
         }),
       });
       state.videoWorkingPath = res.outputPath;
+      pushMediaEdit(series, res);
       const domRoot = getDomRoot();
       const video = domRoot?.querySelector("#surgery-video-player");
       if (video) {
@@ -3545,6 +3729,7 @@ async function action(name, element = null) {
         body: JSON.stringify({ path, degrees: 90 }),
       });
       state.photoWorkingPath = res.outputPath;
+      pushMediaEdit(series, res);
       const domRoot = getDomRoot();
       const img = domRoot?.querySelector("#photo-editor-img");
       setMediaElementSrc(img, res.url);
@@ -3563,6 +3748,7 @@ async function action(name, element = null) {
         body: JSON.stringify({ path, rect }),
       });
       state.photoWorkingPath = res.outputPath;
+      pushMediaEdit(series, res);
       const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
       const img = domRoot?.querySelector("#photo-editor-img");
       setMediaElementSrc(img, res.url);
@@ -3581,6 +3767,7 @@ async function action(name, element = null) {
         body: JSON.stringify({ path, regions, fill: [0, 0, 0] }),
       });
       state.photoWorkingPath = res.outputPath;
+      pushMediaEdit(series, res);
       const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
       const img = domRoot?.querySelector("#photo-editor-img");
       setMediaElementSrc(img, res.url);
@@ -3606,6 +3793,7 @@ async function action(name, element = null) {
         body: JSON.stringify({ path, arrows, texts: [], boxes: [] }),
       });
       state.photoWorkingPath = res.outputPath;
+      pushMediaEdit(series, res);
       const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
       const img = domRoot?.querySelector("#photo-editor-img");
       setMediaElementSrc(img, res.url);
@@ -3624,6 +3812,7 @@ async function action(name, element = null) {
         body: JSON.stringify({ path, boxes, texts: [], arrows: [] }),
       });
       state.photoWorkingPath = res.outputPath;
+      pushMediaEdit(series, res);
       const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
       const img = domRoot?.querySelector("#photo-editor-img");
       setMediaElementSrc(img, res.url);
@@ -3649,6 +3838,7 @@ async function action(name, element = null) {
         body: JSON.stringify({ path, texts, arrows: [], boxes: [] }),
       });
       state.photoWorkingPath = res.outputPath;
+      pushMediaEdit(series, res);
       const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
       const img = domRoot?.querySelector("#photo-editor-img");
       setMediaElementSrc(img, res.url);
@@ -3689,8 +3879,8 @@ function defaultToolForMode(mode, currentTool) {
   return currentTool === "orbit3d" || currentTool === "crosshair" ? "window" : currentTool;
 }
 
-function syncToolHighlight() {
-  app.querySelectorAll(".interaction-tools .icon-button").forEach((button) => {
+function syncToolHighlight(root = app || (typeof document !== "undefined" ? document : null)) {
+  root?.querySelectorAll('.toolbar .icon-button[data-action^="tool-"]').forEach((button) => {
     const active = button.dataset.action === `tool-${state.tool}`;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
@@ -3731,6 +3921,36 @@ function downloadOptions() {
   return options;
 }
 
+function saveMediaWorkspaceToTab(tab) {
+  if (!tab) return;
+  tab.mediaIndex = state.mediaIndex || {};
+  tab.mediaEdits = state.mediaEdits || {};
+  tab.photoWorkingPath = state.photoWorkingPath || null;
+  tab.videoWorkingPath = state.videoWorkingPath || null;
+  tab.videoBookmarks = state.videoBookmarks || [];
+  tab.videoFilmstrip = state.videoFilmstrip || [];
+  tab.lastMediaSeriesId = state._lastPhotoSeriesId || "";
+  tab.textDoc = state.textDoc || null;
+}
+
+function restoreMediaWorkspaceFromTab(tab) {
+  state.mediaIndex = tab?.mediaIndex || {};
+  state.mediaEdits = tab?.mediaEdits || {};
+  state.photoWorkingPath = tab?.photoWorkingPath || null;
+  state.videoWorkingPath = tab?.videoWorkingPath || null;
+  state.videoBookmarks = tab?.videoBookmarks || [];
+  state.videoFilmstrip = tab?.videoFilmstrip || [];
+  state._lastPhotoSeriesId = tab?.lastMediaSeriesId || "";
+  state.textDoc = tab?.textDoc || null;
+  state.photoSelection = null;
+  state.showConcatModal = false;
+  state.concatClips = [];
+}
+
+function resetMediaWorkspace() {
+  restoreMediaWorkspaceFromTab(null);
+}
+
 async function switchTab(tabId) {
   if (state.activeTabId === tabId) return;
   const currentTab = state.tabs.find((t) => t.id === state.activeTabId);
@@ -3743,6 +3963,7 @@ async function switchTab(tabId) {
     currentTab.windowPreset = state.windowPreset;
     currentTab.mprPrimary = state.mprPrimary;
     currentTab.status = state.status;
+    saveMediaWorkspaceToTab(currentTab);
   }
   clearViewer();
   state.activeTabId = tabId;
@@ -3765,6 +3986,7 @@ async function switchTab(tabId) {
     state.windowPreset = targetTab.windowPreset;
     state.mprPrimary = targetTab.mprPrimary;
     state.status = targetTab.status;
+    restoreMediaWorkspaceFromTab(targetTab);
     for (const series of state.archive.series) registerSeries(series);
   }
   render();
@@ -3808,6 +4030,7 @@ function applyArchive(archive, sessionId = "", folder = "") {
   const tabName = archive.root ? archive.root.split(/[\\/]/).pop() : (archive.patient?.patientName || "Bệnh nhân");
   let currentTab = state.tabs.find((t) => t.id === state.activeTabId);
   if (!currentTab || state.activeTabId === "worklist") {
+    resetMediaWorkspace();
     const newTab = {
       id: `tab-${Date.now()}`,
       sessionId: sessionId || "",
@@ -3825,6 +4048,14 @@ function applyArchive(archive, sessionId = "", folder = "") {
       mprPrimary: "axial",
       scrollLinked: false,
       status: "Sẵn sàng.",
+      mediaIndex: state.mediaIndex,
+      mediaEdits: state.mediaEdits,
+      photoWorkingPath: null,
+      videoWorkingPath: null,
+      videoBookmarks: [],
+      videoFilmstrip: [],
+      lastMediaSeriesId: "",
+      textDoc: null,
     };
     state.tabs.push(newTab);
     state.activeTabId = newTab.id;
@@ -3865,11 +4096,11 @@ function renderViewer() {
   if (mediaType === "video" || mediaType === "photo" || mediaType === "doc") {
     if (state._lastPhotoSeriesId !== series.id) {
       state._lastPhotoSeriesId = series.id;
-      // Moving to another record releases the blobs held for the last one.
+      // Moving to another record releases decoded blobs, while the lightweight
+      // edit paths stay attached to their own series/file and can be restored.
       releaseMediaObjectUrls(series.id);
-      state.photoWorkingPath = null;
+      restoreMediaEditState(series);
       state.photoRotation = 0;
-      state.videoWorkingPath = null;
       state.videoFilmstrip = [];
       state._videoInfoLoaded = false;
     }
@@ -4348,6 +4579,7 @@ async function boot() {
       scrollLinked: false,
       status: "Sẵn sàng.",
     };
+    saveMediaWorkspaceToTab(initialTab);
     state.tabs.push(initialTab);
     state.activeTabId = initialTab.id;
   } else {
@@ -4412,6 +4644,13 @@ export {
   getSeriesMediaType,
   getPhotoSourcePath,
   getVideoSourcePath,
+  concatClipCandidates,
+  editHistoryFor,
+  canUndoMediaEdit,
+  canRedoMediaEdit,
+  saveMediaWorkspaceToTab,
+  restoreMediaWorkspaceFromTab,
+  syncToolHighlight,
   renderSurgeryVideoStudio,
   renderPhotoEditorStudio,
   renderTextViewer,

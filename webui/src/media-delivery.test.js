@@ -8,7 +8,17 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { configureApi, mediaAuthUrl, setApiSession } from "./api.js";
 import { setLanguage } from "./i18n.js";
-import { state, action, renderSurgeryVideoStudio } from "./main.js";
+import {
+  state,
+  action,
+  canRedoMediaEdit,
+  canUndoMediaEdit,
+  editHistoryFor,
+  renderPhotoEditorStudio,
+  renderSurgeryVideoStudio,
+  restoreMediaWorkspaceFromTab,
+  saveMediaWorkspaceToTab,
+} from "./main.js";
 
 const TOKEN = "test-token-123";
 
@@ -40,6 +50,8 @@ describe("Authenticated media delivery", () => {
     setApiSession("session-abc");
     global.URL.createObjectURL = vi.fn(() => "blob:mock-url");
     global.URL.revokeObjectURL = vi.fn();
+    state.mediaIndex = {};
+    state.mediaEdits = {};
   });
 
   it("moves the token into the query for elements that fetch their own source", () => {
@@ -56,9 +68,11 @@ describe("Authenticated media delivery", () => {
     // until the last byte and makes seeking impossible.
     const series = { id: "series_video_1", name: "phau_thuat.mp4", mediaType: "video" };
     state.videoWorkingPath = null;
+    state.videoFilmstrip = ["D:/tmp/frame_01.jpg"];
     const html = renderSurgeryVideoStudio(series);
     expect(html).toContain(`token=${TOKEN}`);
     expect(html).not.toContain("data-media-src");
+    expect(html).toMatch(/work-file\?name=frame_01\.jpg&amp;token=/);
   });
 
   it("fetches an exported PDF with the token instead of navigating to it", async () => {
@@ -121,6 +135,108 @@ describe("Authenticated media delivery", () => {
 
     const fetched = fetchMock.mock.calls.map(([url]) => String(url));
     expect(fetched.some((url) => url.includes("/api/media/work-file"))).toBe(true);
+  });
+
+  it("steps back through the edits made to a record and forward again", async () => {
+    // Every tool writes a new scratch file and leaves the previous one, so a
+    // reader who crops too tightly can walk back instead of reopening the
+    // record. Cursor -1 is the untouched file in the archive.
+    const series = { id: "series_photo_1", name: "gpb.jpg", mediaType: "photo", sliceCount: 2 };
+    state.archive = { root: "D:/kho", series: [series] };
+    state.selectedId = "series_photo_1";
+    state.photoWorkingPath = null;
+    state.mediaEdits = {};
+    state.photoSelection = { x: 10, y: 10, width: 50, height: 50 };
+    document.body.innerHTML = `<div id="app"><div id="workspace"></div></div>`;
+
+    let step = 0;
+    global.fetch = vi.fn().mockImplementation(async (url) => {
+      if (String(url).includes("/file-paths")) {
+        return jsonResponse({ images: ["D:/kho/gpb.jpg"] });
+      }
+      step += 1;
+      return jsonResponse({
+        outputPath: `D:/tmp/edit_${step}.jpg`,
+        url: `/api/media/work-file?name=edit_${step}.jpg`,
+      });
+    });
+
+    await action("photo-tool-crop");
+    await action("photo-tool-redact");
+    expect(state.photoWorkingPath).toBe("D:/tmp/edit_2.jpg");
+    expect(canUndoMediaEdit(series)).toBe(true);
+    expect(canRedoMediaEdit(series)).toBe(false);
+
+    await action("media-edit-undo");
+    expect(state.photoWorkingPath).toBe("D:/tmp/edit_1.jpg");
+    expect(canRedoMediaEdit(series)).toBe(true);
+
+    await action("media-edit-undo");
+    expect(state.photoWorkingPath).toBe(null);
+    expect(canUndoMediaEdit(series)).toBe(false);
+
+    // Nothing further back than the original exists.
+    await action("media-edit-undo");
+    expect(state.photoWorkingPath).toBe(null);
+
+    await action("media-edit-redo");
+    expect(state.photoWorkingPath).toBe("D:/tmp/edit_1.jpg");
+
+    // Editing after stepping back drops the branch that was undone.
+    await action("photo-tool-crop");
+    expect(state.photoWorkingPath).toBe("D:/tmp/edit_3.jpg");
+    expect(editHistoryFor(series.id).steps.length).toBe(2);
+    expect(canRedoMediaEdit(series)).toBe(false);
+
+    // Page 2 has an independent history; returning to page 1 restores its
+    // derivative instead of editing or saving the wrong source file.
+    await action("media-file-next");
+    expect(state.photoWorkingPath).toBe(null);
+    expect(canUndoMediaEdit(series)).toBe(false);
+    await action("media-file-prev");
+    expect(state.photoWorkingPath).toBe("D:/tmp/edit_3.jpg");
+    expect(canUndoMediaEdit(series)).toBe(true);
+  });
+
+  it("asks for the edit it is showing, so a re-render does not drop it", () => {
+    // The pane used to be repainted only by assigning src after each tool, so
+    // any later render quietly put the untouched file back on screen while the
+    // toolbar still claimed there was an edit to save.
+    const series = { id: "series_photo_1", name: "gpb.jpg", mediaType: "photo" };
+    state.archive = { root: "D:/kho", series: [series] };
+    state.selectedId = "series_photo_1";
+
+    state.photoWorkingPath = null;
+    expect(renderPhotoEditorStudio(series)).toContain('data-media-src="series_photo_1:0"');
+
+    state.photoWorkingPath = "C:\\Temp\\concord_media_work\\edit_7.jpg";
+    expect(renderPhotoEditorStudio(series)).toContain('data-media-src="work:edit_7.jpg"');
+  });
+
+  it("keeps media editing state isolated when switching patient tabs", () => {
+    state.mediaIndex = { series_a: 2 };
+    state.mediaEdits = { "series_a:2": { steps: [{ path: "D:/tmp/a.jpg" }], cursor: 0 } };
+    state.photoWorkingPath = "D:/tmp/a.jpg";
+    state.videoWorkingPath = null;
+    const tabA = {};
+    saveMediaWorkspaceToTab(tabA);
+
+    state.mediaIndex = { series_b: 0 };
+    state.mediaEdits = {};
+    state.photoWorkingPath = null;
+    state.videoWorkingPath = "D:/tmp/b.mp4";
+    const tabB = {};
+    saveMediaWorkspaceToTab(tabB);
+
+    restoreMediaWorkspaceFromTab(tabA);
+    expect(state.mediaIndex).toEqual({ series_a: 2 });
+    expect(state.photoWorkingPath).toBe("D:/tmp/a.jpg");
+    expect(state.videoWorkingPath).toBe(null);
+
+    restoreMediaWorkspaceFromTab(tabB);
+    expect(state.mediaIndex).toEqual({ series_b: 0 });
+    expect(state.photoWorkingPath).toBe(null);
+    expect(state.videoWorkingPath).toBe("D:/tmp/b.mp4");
   });
 
   it("names a saved edit after the page that was on screen", async () => {

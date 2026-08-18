@@ -19,6 +19,8 @@ import {
 describe("Media Studio Detection & Layouts", () => {
   beforeEach(() => {
     setLanguage("vi");
+    state.mediaIndex = {};
+    state.mediaEdits = {};
     state.photoWorkingPath = null;
     state.photoRotation = 0;
     state.videoWorkingPath = null;
@@ -98,6 +100,8 @@ describe("Photo & Video Path Resolvers", () => {
   beforeEach(() => {
     state.photoWorkingPath = null;
     state.videoWorkingPath = null;
+    state.mediaIndex = {};
+    global.fetch = vi.fn();
   });
 
   it("getPhotoSourcePath returns working path when set", async () => {
@@ -110,6 +114,24 @@ describe("Photo & Video Path Resolvers", () => {
     state.videoWorkingPath = "C:/tmp/working_video.mp4";
     const path = await getVideoSourcePath({ id: "s1" });
     expect(path).toBe("C:/tmp/working_video.mp4");
+  });
+
+  it("resolves the file currently selected in a multi-file series", async () => {
+    state.mediaIndex = { s1: 1 };
+    global.fetch = vi.fn().mockResolvedValue(
+      mockJsonResponse({ images: ["D:/case/page_1.jpg", "D:/case/page_2.jpg"] })
+    );
+
+    await expect(getPhotoSourcePath({ id: "s1", sliceCount: 2 }))
+      .resolves.toBe("D:/case/page_2.jpg");
+    expect(state.photoWorkingPath).toBe(null);
+
+    global.fetch = vi.fn().mockResolvedValue(
+      mockJsonResponse({ images: ["D:/case/part_1.mp4", "D:/case/part_2.mp4"] })
+    );
+    await expect(getVideoSourcePath({ id: "s1", sliceCount: 2 }))
+      .resolves.toBe("D:/case/part_2.mp4");
+    expect(state.videoWorkingPath).toBe(null);
   });
 });
 
@@ -132,6 +154,8 @@ describe("Photo Studio Action Handlers", () => {
     };
     state.selectedId = "series_photo_1";
     state.photoWorkingPath = "D:/storage/photo_01.jpg";
+    state.mediaIndex = {};
+    state.mediaEdits = {};
     state.photoSelection = null;
     document.body.innerHTML = `
       <div id="app">
@@ -273,6 +297,9 @@ describe("Surgery Video Studio Action Handlers", () => {
     state.activeTabId = "tab_1";
     state.tabs = [{ id: "tab_1", title: "BN 02" }];
     state.videoWorkingPath = "D:/storage/surgery_01.mp4";
+    state.mediaIndex = {};
+    state.mediaEdits = {};
+    state.isError = false;
     state.videoBookmarks = [];
     document.body.innerHTML = `
       <div id="app">
@@ -379,13 +406,26 @@ describe("Surgery Video Studio Action Handlers", () => {
       patientName: "BN 02",
       durationSeconds: 120,
     });
+    const fetchMock = vi.fn().mockImplementation(async (url) => {
+      if (String(url).includes("/series_video_1/file-paths")) {
+        return mockJsonResponse({ images: ["D:/storage/surgery_01.mp4"] });
+      }
+      if (String(url).includes("/series_video_2/file-paths")) {
+        return mockJsonResponse({ images: ["D:/storage/surgery_02.mp4"] });
+      }
+      return mockJsonResponse({
+        outputPath: "D:/storage/concatenated.mp4",
+        url: "/api/media/work-file?name=concatenated.mp4",
+      });
+    });
+    global.fetch = fetchMock;
 
     // 1. Open modal
     await action("video-tool-concat");
     expect(state.showConcatModal).toBe(true);
     expect(state.concatClips.length).toBe(2);
-    expect(state.concatClips[0].seriesId).toBe("series_video_1");
-    expect(state.concatClips[1].seriesId).toBe("series_video_2");
+    expect(state.concatClips[0].path).toBe("D:/storage/surgery_01.mp4");
+    expect(state.concatClips[1].path).toBe("D:/storage/surgery_02.mp4");
 
     // 2. Reorder clips (move clip 1 down -> swap with clip 2)
     await action("move-concat-clip-down", { dataset: { clipIdx: "0" } });
@@ -399,14 +439,6 @@ describe("Surgery Video Studio Action Handlers", () => {
     expect(state.concatClips[1].selected).toBe(true);
 
     // 4. Start concat with reordered clips
-    const fetchMock = vi.fn().mockImplementation(async (url) => {
-      if (String(url).includes("/series_video_2/file-paths") || String(url).includes("/file-paths")) {
-        return mockJsonResponse({ images: ["D:/storage/surgery_02.mp4"] });
-      }
-      return mockJsonResponse({ outputPath: "D:/storage/concatenated.mp4", url: "/api/media/work-file?name=concatenated.mp4" });
-    });
-    global.fetch = fetchMock;
-
     await action("start-concat-video");
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -422,6 +454,40 @@ describe("Surgery Video Studio Action Handlers", () => {
     );
     expect(state.showConcatModal).toBe(false);
     expect(state.videoWorkingPath).toBe("D:/storage/concatenated.mp4");
+    expect(state.isError).toBe(false);
+  });
+
+  it("offers every clip in a folder, not one line for the whole folder", async () => {
+    // Three recordings of one operation live in one folder, which the catalog
+    // reports as a single series. Listing series gave the reader one line to
+    // tick and handed FFmpeg only the first file.
+    state.archive.series = [{
+      id: "series_video_1",
+      name: "video_mo",
+      mediaType: "video",
+      sliceCount: 3,
+    }];
+    global.fetch = vi.fn().mockImplementation(async (url) =>
+      mockJsonResponse(String(url).includes("/file-paths")
+        ? { images: ["D:/mo/part1.mp4", "D:/mo/part2.mp4", "D:/mo/part3.mp4"] }
+        : { outputPath: "D:/mo/joined.mp4", url: "/api/media/work-file?name=joined.mp4" }));
+
+    await action("video-tool-concat");
+
+    expect(state.concatClips.length).toBe(3);
+    expect(state.concatClips.map((clip) => clip.name))
+      .toEqual(["part1.mp4", "part2.mp4", "part3.mp4"]);
+    // No per-file duration exists, so none is invented for a multi-clip folder.
+    expect(state.concatClips.every((clip) => clip.duration === 0)).toBe(true);
+
+    await action("start-concat-video");
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/video/concat"),
+      expect.objectContaining({
+        body: expect.stringContaining("part3.mp4"),
+      })
+    );
   });
 
   it("video-tool-thumb calls thumbnail API at current timestamp", async () => {

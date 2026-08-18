@@ -244,6 +244,12 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                   canvases: document.querySelectorAll('#workspace canvas').length,
                   locationSearch: location.search,
                   diagnostics: window.__viewerDiagnostics || null,
+                  worklistTab: Boolean(document.querySelector(
+                    '.winbar-tab[data-tab-id="worklist"]'
+                  )),
+                  activeTabId: document.querySelector('.winbar-tab.active')
+                    ?.dataset.tabId || '',
+                  downloadPanelVisible: Boolean(document.querySelector('.download-panel')),
                   panelToggle: Boolean(document.querySelector(
                     '.app-header [data-action="toggle-download"][aria-expanded]'
                   ))
@@ -259,9 +265,48 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
             raise TimeoutError(f"Không dựng được stack: {state}")
         if "token=" in result["single"].get("locationSearch", ""):
             raise RuntimeError("Token phiên vẫn còn trong URL sau khi khởi động.")
-        if not result["single"].get("panelToggle"):
-            raise RuntimeError("Thiếu nút thu gọn/mở khu tải phim có trạng thái truy cập.")
+        if not result["single"].get("worklistTab"):
+            raise RuntimeError("Thiếu tab Worklist trong thanh tab chính.")
+        if result["single"].get("activeTabId") == "worklist":
+            raise RuntimeError("Viewer không giữ tab hồ sơ làm tab đang hoạt động.")
+        if result["single"].get("downloadPanelVisible") or result["single"].get("panelToggle"):
+            raise RuntimeError("Khu Download vẫn xuất hiện bên trong tab Viewer.")
         result["single"]["litPixels"] = _assert_panes_drawn(window, "single", 1)
+
+        # A patient archive may start with a scout, ultrasound or radiograph.
+        # Select an actual volume before exercising montage/MPR/3D rather than
+        # clicking disabled controls and timing out on the previous layout.
+        result["mprSeries"] = window.evaluate_js(
+            """(() => {
+              const card = [...document.querySelectorAll('.series-card')]
+                .find(item => item.querySelector('.badge-3d'));
+              if (!card) return null;
+              const sliceCount = Number(card.querySelector('.series-thumb-count')?.textContent || 0);
+              card.click();
+              return { id: card.dataset.seriesId || '', sliceCount };
+            })()"""
+        )
+        if not result["mprSeries"] or result["mprSeries"].get("sliceCount", 0) < 12:
+            raise RuntimeError(f"Archive không có volume đủ lát cho release smoke: {result['mprSeries']}")
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            selected = window.evaluate_js(
+                """({
+                  id: document.querySelector('.series-card.active')?.dataset.seriesId || '',
+                  readyMode: window.__viewerReadyMode || '',
+                  error: document.querySelector('.empty-state.error')?.textContent || ''
+                })"""
+            )
+            if selected.get("error"):
+                raise RuntimeError(selected["error"])
+            if (
+                selected.get("id") == result["mprSeries"].get("id")
+                and selected.get("readyMode") == "single"
+            ):
+                break
+            time.sleep(0.5)
+        else:
+            raise TimeoutError(f"Không chọn được volume cho smoke: {selected}")
 
         for action, expected, key in (
             ("mode-compare", 2, "compare"),
@@ -283,7 +328,9 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                       diagnostics: window.__viewerDiagnostics || null,
                       volumeLoad: window.__volumeLoadState || null,
                       sliceControls: document.querySelectorAll('.slice-control input').length,
-                      toolLabels: [...document.querySelectorAll('.interaction-tools .icon-button')]
+                      toolLabels: [...document.querySelectorAll(
+                        '.toolbar .icon-button[data-action^="tool-"]'
+                      )]
                         .map(e => e.getAttribute('aria-label') || '')
                     })"""
                 )
@@ -309,8 +356,13 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                     f"{key} slice controls mismatch: {result[key].get('sliceControls')}"
                 )
         diagnostics = result["mpr"].get("diagnostics", {})
-        expected_decode = "dicom-direct" if diagnostics.get("sourceType") == "dicom" else "worker"
-        if diagnostics.get("decodePath") != expected_decode:
+        decode_path = diagnostics.get("decodePath", "")
+        valid_decode = (
+            decode_path in {"dicom-direct", "dicom-color"}
+            if diagnostics.get("sourceType") == "dicom"
+            else decode_path == "worker"
+        )
+        if not valid_decode:
             raise RuntimeError(f"Unexpected decode path: {result['mpr']}")
         # MPR: crosshair, window, pan, zoom + length, angle, ellipse, freehand, text.
         if len(result["mpr"].get("toolLabels", [])) != 9:
@@ -327,33 +379,50 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
             if indices != list(range(count)):
                 raise RuntimeError(f"{key} panes are not consecutive: {indices}")
         window.evaluate_js(
+            "document.querySelector('[data-action=\"mode-montage6\"]')?.click()"
+        )
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            montage_ready = window.evaluate_js(
+                """({
+                  readyMode: window.__viewerReadyMode || '',
+                  slider: Boolean(document.querySelector(
+                    '[data-viewport-id="stack-2"] .slice-control input'
+                  ))
+                })"""
+            )
+            if montage_ready.get("readyMode") == "montage6" and montage_ready.get("slider"):
+                break
+            time.sleep(0.25)
+        else:
+            raise TimeoutError(f"Montage controls did not become ready: {montage_ready}")
+        window.evaluate_js(
             """(() => {
-              document.querySelector('[data-action="mode-montage6"]').click();
-              setTimeout(() => {
-                document.querySelector('#stack-2')?.dispatchEvent(new WheelEvent('wheel', {
-                  deltaY: -120,
-                  bubbles: true,
-                  cancelable: true
-                }));
-              }, 750);
+              const slider = document.querySelector(
+                '[data-viewport-id="stack-2"] .slice-control input'
+              );
+              slider.value = String(Number(slider.value) + 1);
+              slider.dispatchEvent(new Event('input', { bubbles: true }));
             })()"""
         )
-        time.sleep(2)
+        time.sleep(1)
         result["montageScroll"] = window.evaluate_js(
             """({
               readyMode: window.__viewerReadyMode || '',
-              labels: [...document.querySelectorAll('.viewport-label')].map(item => item.textContent)
+              indices: (window.__viewerDiagnostics?.viewports || [])
+                .map(item => item.imageIndex),
+              sliders: [...document.querySelectorAll('.slice-control input')]
+                .map(item => Number(item.value))
             })"""
         )
-        # The source pane moves from index 2 to 3. All six panes must advance
-        # together and remain consecutive.
-        montage_labels = result["montageScroll"].get("labels", [])
-        expected_suffixes = [f"· {index}/121" for index in range(2, 8)]
-        if (
-            len(montage_labels) != 6
-            or not all(label.endswith(suffix) for label, suffix in zip(montage_labels, expected_suffixes))
-        ):
-            raise RuntimeError(f"Montage wheel synchronization failed: {result['montageScroll']}")
+        # The source pane moves from index 2 to 3 through its visible slice
+        # control. All six panes must advance together and remain consecutive.
+        montage_sliders = result["montageScroll"].get("sliders", [])
+        expected_indices = list(range(1, 7))
+        # __viewerDiagnostics is a layout/action snapshot; the live controls
+        # are updated by each viewport's STACK_NEW_IMAGE event.
+        if montage_sliders != expected_indices:
+            raise RuntimeError(f"Montage slice synchronization failed: {result['montageScroll']}")
 
         # Regression gate for the real-world failure where repeated MPR/3D
         # switches left only the crosshair overlay on a blank WebGL viewport.
@@ -412,7 +481,9 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
         # The toolbar must never highlight a tool the layout refused to activate.
         tool_state = window.evaluate_js(
             """({
-              highlighted: [...document.querySelectorAll('.interaction-tools .icon-button.active')]
+              highlighted: [...document.querySelectorAll(
+                '.toolbar .icon-button[data-action^="tool-"].active'
+              )]
                 .map(item => item.dataset.action.replace('tool-', '')),
               active: window.__viewerDiagnostics?.tool || ''
             })"""
@@ -463,7 +534,11 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                 .map(item => item.imageIndex)
             })"""
         )
-        if result["mprReset"].get("indices") != [60, 95, 96]:
+        initial_mpr_indices = [
+            item.get("imageIndex")
+            for item in result["mpr"].get("diagnostics", {}).get("viewports", [])
+        ]
+        if result["mprReset"].get("indices") != initial_mpr_indices:
             raise RuntimeError(f"MPR crosshair reset failed: {result['mprReset']}")
 
         window.evaluate_js(
@@ -482,17 +557,49 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
             })"""
         )
         ranges = result["windowPreset"].get("ranges", [])
+        initial_ranges = result["mpr"].get("diagnostics", {}).get("viewports", [])
+        initial_range = initial_ranges[0].get("voiRange") if initial_ranges else None
+        first_range = ranges[0] if ranges else None
+        initial_width = (
+            initial_range.get("upper", 0) - initial_range.get("lower", 0)
+            if initial_range else 0
+        )
+        soft_width = (
+            first_range.get("upper", 0) - first_range.get("lower", 0)
+            if first_range else 0
+        )
         if (
             result["windowPreset"].get("selected") != "soft"
             or len(ranges) != 3
-            or not all(
-                value
-                and value.get("lower") == 28
-                and value.get("upper") == 205
-                for value in ranges
-            )
+            or not first_range
+            or not all(value == first_range for value in ranges)
+            or initial_width <= 0
+            or not 1.45 <= soft_width / initial_width <= 1.55
         ):
-            raise RuntimeError(f"JPG display preset failed: {result['windowPreset']}")
+            raise RuntimeError(f"Display preset failed: {result['windowPreset']}")
+
+        # Download belongs to Worklist, not to each patient viewer. Verify the
+        # other half of that contract only after all canvas checks are done.
+        window.evaluate_js(
+            "document.querySelector('.winbar-tab[data-tab-id=\"worklist\"]')?.click()"
+        )
+        time.sleep(0.5)
+        result["worklist"] = window.evaluate_js(
+            """({
+              activeTabId: document.querySelector('.winbar-tab.active')
+                ?.dataset.tabId || '',
+              panelToggle: document.querySelector(
+                '.app-header [data-action="toggle-download"]'
+              )?.getAttribute('aria-expanded') || '',
+              downloadPanelVisible: Boolean(document.querySelector('.download-panel'))
+            })"""
+        )
+        if (
+            result["worklist"].get("activeTabId") != "worklist"
+            or result["worklist"].get("panelToggle") != "true"
+            or not result["worklist"].get("downloadPanelVisible")
+        ):
+            raise RuntimeError(f"Worklist/Download contract failed: {result['worklist']}")
     except Exception as exc:
         result["error"] = str(exc)
     finally:
