@@ -124,6 +124,8 @@ const state = {
   concatTargetFps: 30,
   mediaIndex: {},
   mediaEdits: {},
+  // Which exam rows in the record history are showing their series.
+  timelineOpen: {},
   photoWorkingPath: null,
   videoWorkingPath: null,
   tabs: [],
@@ -1119,11 +1121,13 @@ const MEDIA_KIND_LABELS = {
 };
 
 /**
- * The open archive grouped into study/media rows, then days, newest first.
+ * The record's exam history: one row per examination, newest first.
  *
- * The rail is a chronological record of one patient, so the grouping key is
- * the study date. A series whose date was never recorded lands in a single
- * undated bucket at the end rather than being stamped with today.
+ * Modelled on the "Lịch sử khám" list a reader already works with in the
+ * hospital PACS — each row is the modality and the date and nothing else. An
+ * MRI is one row however many sequences it holds; those live in the series
+ * strip and in this row's own expander. A series whose date was never recorded
+ * lands at the end rather than being stamped with today.
  */
 function buildMediaTimeline(seriesList, timelineLabels = {}) {
   const days = new Map();
@@ -1143,70 +1147,67 @@ function buildMediaTimeline(seriesList, timelineLabels = {}) {
     }
     groups.get(timelineKey).series.push(item);
   }
-  return [...days.entries()]
+  const rows = [...days.entries()]
     .sort((a, b) => {
       // The undated bucket sorts last whichever side it appears on.
       if (!a[0]) return 1;
       if (!b[0]) return -1;
       return b[0].localeCompare(a[0]);
     })
-    .map(([key, groups]) => ({
-      key,
-      label: key ? `${key.slice(6, 8)}/${key.slice(4, 6)}/${key.slice(0, 4)}` : t("Chưa rõ ngày chụp"),
-      items: [...groups.values()].map((group) => {
-        const descriptions = group.series
-          .map((item) => String(item.studyDescription || "").trim())
-          .filter(Boolean);
-        let defaultTitle = descriptions[0] || "";
-        if (!defaultTitle) {
-          defaultTitle = String(group.series[0]?.studyGroup || "")
-            .replace(/^\d{4}(?:-?\d{2}){2}\s*-\s*/, "")
-            .trim();
-        }
-        if (!defaultTitle || defaultTitle === "Không rõ ca chụp") {
-          defaultTitle = String(group.series[0]?.description || group.series[0]?.name || "").trim();
-        }
-        const modality = String(group.series[0]?.modality || "").trim();
-        if (
-          group.kind === "dicom"
-          && modality
-          && defaultTitle
-          && !defaultTitle.toUpperCase().startsWith(modality.toUpperCase())
-        ) {
-          defaultTitle = `${modality} ${defaultTitle}`;
-        }
-        if (!defaultTitle) defaultTitle = t(MEDIA_KIND_LABELS[group.kind] || "Phim chụp");
-        const primary = [...group.series].sort((left, right) => (
-          Number(Boolean(right.mprReady)) - Number(Boolean(left.mprReady))
-          || Number(right.sliceCount || 0) - Number(left.sliceCount || 0)
-        ))[0];
-        return {
-          ...group,
-          defaultTitle,
-          title: String(timelineLabels?.[group.key] || "").trim() || defaultTitle,
-          primaryId: primary?.id || "",
-          memberIds: group.series.map((item) => item.id),
-        };
-      }),
+    .flatMap(([dateKey, groups]) => [...groups.values()].map((group) => {
+      const first = group.series[0] || {};
+      const modality = String(first.modality || "").trim().toUpperCase();
+      // What kind of examination this was, in the reader's own shorthand: the
+      // DICOM modality where there is one, the media kind otherwise.
+      const badge = group.kind === "dicom" && modality && modality !== "UNKNOWN"
+        ? modality
+        : t(MEDIA_KIND_LABELS[group.kind] || "Phim chụp");
+      const dateLabel = dateKey
+        ? `${dateKey.slice(6, 8)}/${dateKey.slice(4, 6)}/${dateKey.slice(0, 4)}`
+        : t("Chưa rõ ngày chụp");
+      // The exam's own name is not on the row — it is what tells two exams of
+      // the same kind on one day apart, and the hover text.
+      const examName = String(first.studyDescription || first.description || first.name || "").trim();
+      const primary = [...group.series].sort((left, right) => (
+        Number(Boolean(right.mprReady)) - Number(Boolean(left.mprReady))
+        || Number(right.sliceCount || 0) - Number(left.sliceCount || 0)
+      ))[0];
+      // Photos and paperwork often carry no date. "Ảnh - Chưa rõ ngày chụp"
+      // says nothing and repeats across folders, so those rows take the
+      // folder's own name instead.
+      const suffix = dateKey ? dateLabel : (examName || dateLabel);
+      return {
+        ...group,
+        dateKey,
+        dateLabel,
+        badge,
+        examName,
+        defaultTitle: `${badge} - ${suffix}`,
+        primaryId: primary?.id || "",
+        memberIds: group.series.map((item) => item.id),
+        members: group.series.map((item) => ({
+          id: item.id,
+          label: String(item.description || item.name || "").trim() || t("Chưa có mô tả"),
+        })),
+      };
     }));
+
+  // Two exams of the same kind on one day would read identically, so those —
+  // and only those — carry their name as well.
+  const seen = new Map();
+  for (const row of rows) seen.set(row.defaultTitle, (seen.get(row.defaultTitle) || 0) + 1);
+  for (const row of rows) {
+    if (seen.get(row.defaultTitle) > 1 && row.examName) {
+      row.defaultTitle = `${row.badge} - ${row.dateLabel} · ${row.examName}`;
+    }
+    row.title = String(timelineLabels?.[row.key] || "").trim() || row.defaultTitle;
+  }
+  return rows;
 }
 
-/** The simple study/media count shown at the right edge of one timeline row. */
-function timelineItemCount(group) {
-  if (group.kind === "dicom") return tf("{} phim", group.series.length);
-  const total = group.series.reduce((sum, item) => {
-    const count = Number(item.sliceCount);
-    return sum + (Number.isFinite(count) && count > 0 ? count : 0);
-  }, 0);
-  if (!total) return "";
-  switch (group.kind) {
-    case "video": return tf("{} video", total);
-    case "pdf": return tf("{} bản PDF", total);
-    case "text": return tf("{} file", total);
-    case "doc": return tf("{} trang", total);
-    case "photo": return tf("{} ảnh", total);
-    default: return "";
-  }
+/** Whether one exam row is showing the series inside it. */
+function timelineRowOpen(key) {
+  return Boolean((state.timelineOpen || {})[key]);
 }
 
 /**
@@ -1248,42 +1249,48 @@ function renderPatientRail() {
         </div>
       </dl>
 
-      <div class="rec-timeline-head"><b>${escapeHtml(t("Timeline hồ sơ"))}</b></div>
+      <div class="rec-timeline-head"><b>${escapeHtml(t("Lịch sử khám"))}</b></div>
       <div class="tl">
         ${timeline.length === 0
           ? `<div class="tl-empty">${escapeHtml(t("Chưa có dữ liệu nào trong hồ sơ này."))}</div>`
-          : timeline.map((day) => `
-            <div class="tl-day">
-              <div class="tl-date">${escapeHtml(day.label)}</div>
-              ${day.items.map((item) => {
-                const kind = item.kind;
-                const count = timelineItemCount(item);
-                const active = item.memberIds.includes(state.selectedId);
-                return `
-                  <div class="tl-item ${kind}${active ? " on" : ""}"
-                    data-timeline-key="${escapeHtml(item.key)}"
-                    data-timeline-members="${escapeHtml(item.memberIds.join(","))}"
-                    data-timeline-label="${escapeHtml(item.title)}"
-                    data-default-label="${escapeHtml(item.defaultTitle)}"
-                    title="${escapeHtml(`${t(MEDIA_KIND_LABELS[kind] || "Phim chụp")} · ${item.title}`)}">
-                    <button class="tl-open" type="button" data-series-id="${escapeHtml(item.primaryId)}">
-                      <i></i>
-                      <span class="nm">${escapeHtml(item.title)}</span>
-                      ${count ? `<span class="ct">${escapeHtml(count)}</span>` : ""}
-                    </button>
-                    <input class="tl-name-input" value="${escapeHtml(item.title)}"
-                      maxlength="120" aria-label="${escapeHtml(t("Tên hiển thị trên timeline"))}">
-                    <button class="tl-edit" type="button" data-action="edit-timeline-label"
-                      title="${escapeHtml(t("Đổi tên lần chụp hoặc loại media"))}" aria-label="${escapeHtml(t("Đổi tên lần chụp hoặc loại media"))}">✎</button>
-                    <button class="tl-edit-save" type="button" data-action="save-timeline-label"
-                      title="${escapeHtml(t("Lưu tên"))}" aria-label="${escapeHtml(t("Lưu tên"))}">✓</button>
-                    <button class="tl-edit-cancel" type="button" data-action="cancel-timeline-label"
-                      title="${escapeHtml(t("Bỏ thay đổi tên"))}" aria-label="${escapeHtml(t("Bỏ thay đổi tên"))}">×</button>
+          : timeline.map((row) => {
+            const active = row.memberIds.includes(state.selectedId);
+            const open = timelineRowOpen(row.key);
+            return `
+              <div class="tl-item ${row.kind}${active ? " on" : ""}${open ? " open" : ""}"
+                data-timeline-key="${escapeHtml(row.key)}"
+                data-timeline-members="${escapeHtml(row.memberIds.join(","))}"
+                data-timeline-label="${escapeHtml(row.title)}"
+                data-default-label="${escapeHtml(row.defaultTitle)}"
+                title="${escapeHtml(row.examName ? `${row.title} · ${row.examName}` : row.title)}">
+                <div class="tl-row">
+                  <button class="tl-open" type="button" data-series-id="${escapeHtml(row.primaryId)}">
+                    <i></i>
+                    <span class="nm">${escapeHtml(row.title)}</span>
+                  </button>
+                  <input class="tl-name-input" value="${escapeHtml(row.title)}"
+                    maxlength="120" aria-label="${escapeHtml(t("Tên hiển thị trên timeline"))}">
+                  <button class="tl-edit" type="button" data-action="edit-timeline-label"
+                    title="${escapeHtml(t("Đổi tên lần chụp hoặc loại media"))}" aria-label="${escapeHtml(t("Đổi tên lần chụp hoặc loại media"))}">✎</button>
+                  <button class="tl-edit-save" type="button" data-action="save-timeline-label"
+                    title="${escapeHtml(t("Lưu tên"))}" aria-label="${escapeHtml(t("Lưu tên"))}">✓</button>
+                  <button class="tl-edit-cancel" type="button" data-action="cancel-timeline-label"
+                    title="${escapeHtml(t("Bỏ thay đổi tên"))}" aria-label="${escapeHtml(t("Bỏ thay đổi tên"))}">×</button>
+                  <button class="tl-expand" type="button" data-action="toggle-timeline-row"
+                    aria-expanded="${open ? "true" : "false"}"
+                    title="${escapeHtml(t("Xem các series bên trong"))}" aria-label="${escapeHtml(t("Xem các series bên trong"))}">${open ? "⌄" : "›"}</button>
+                </div>
+                ${open ? `
+                  <div class="tl-sub">
+                    ${row.members.map((member) => `
+                      <button class="tl-sub-item${member.id === state.selectedId ? " on" : ""}" type="button"
+                        data-series-id="${escapeHtml(member.id)}">${escapeHtml(member.label)}</button>
+                    `).join("")}
                   </div>
-                `;
-              }).join("")}
-            </div>
-          `).join("")}
+                ` : ""}
+              </div>
+            `;
+          }).join("")}
       </div>
     </aside>
   `;
@@ -3228,6 +3235,16 @@ async function action(name, element = null) {
       state.archive.patient = result.patient || state.archive.patient;
       render();
       setStatus(t("Đã lưu chẩn đoán vào hồ sơ bệnh nhân."));
+      return;
+    }
+    if (name === "toggle-timeline-row") {
+      const key = element?.closest(".tl-item")?.dataset?.timelineKey;
+      if (!key) return;
+      const open = { ...(state.timelineOpen || {}) };
+      if (open[key]) delete open[key];
+      else open[key] = true;
+      state.timelineOpen = open;
+      render();
       return;
     }
     if (name === "edit-timeline-label") {

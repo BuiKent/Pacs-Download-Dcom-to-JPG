@@ -913,16 +913,8 @@ button:disabled { opacity: .35; cursor: default; }
   font-size: 11px;
   color: var(--label-muted, #7890a2);
 }
-.tl-day { margin-bottom: 10px; }
-.tl-date {
-  padding: 4px 6px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--label-fg, #8fa8bd);
-}
 .tl-item {
-  display: flex;
-  align-items: center;
+  display: block;
   width: 100%;
   padding: 1px 3px 1px 1px;
   margin-bottom: 2px;
@@ -971,12 +963,49 @@ button:disabled { opacity: .35; cursor: default; }
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.tl-item .ct {
-  flex: none;
-  font-size: 10px;
-  color: var(--label-muted, #7890a2);
-  font-variant-numeric: tabular-nums;
+/* One exam per line: kind, date, and the two controls that act on it. */
+.tl-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
 }
+.tl-expand {
+  flex: none;
+  width: 22px;
+  padding: 4px 0;
+  border: 0;
+  border-radius: var(--control-radius, 6px);
+  background: transparent;
+  color: var(--label-muted, #7890a2);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.tl-expand:hover { background: var(--control-bg-hover, #1b2b39); color: var(--body-fg); }
+.tl-item.editing .tl-expand { display: none; }
+/* The sequences inside one examination, shown only on request. */
+.tl-sub {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0 4px 22px;
+}
+.tl-sub-item {
+  padding: 4px 7px;
+  border: 0;
+  border-radius: var(--control-radius, 6px);
+  background: none;
+  color: var(--label-fg, #8fa8bd);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.tl-sub-item:hover { background: var(--list-hover, #16202b); color: var(--body-fg); }
+.tl-sub-item.on { color: var(--accent, #2383e2); font-weight: 600; }
 
 .toolbar {
   display: flex;

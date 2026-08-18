@@ -22,8 +22,8 @@ const PATIENT = {
 };
 
 const SERIES = [
-  { id: "s1", timelineKey: "mr-study", studyDate: "20260806", mediaType: "dicom", studyDescription: "MR sọ não có tiêm", sliceCount: 1412, mprReady: true },
-  { id: "s1b", timelineKey: "mr-study", studyDate: "20260806", mediaType: "dicom", studyDescription: "MR sọ não có tiêm", description: "Ax T2 FLAIR", sliceCount: 28 },
+  { id: "s1", timelineKey: "mr-study", studyDate: "20260806", mediaType: "dicom", modality: "MR", studyDescription: "MR sọ não có tiêm", sliceCount: 1412, mprReady: true },
+  { id: "s1b", timelineKey: "mr-study", studyDate: "20260806", mediaType: "dicom", modality: "MR", studyDescription: "MR sọ não có tiêm", description: "Ax T2 FLAIR", sliceCount: 28 },
   { id: "s2", timelineKey: "photos", studyDate: "20260806", mediaType: "photo", studyDescription: "Ảnh đối chiếu", sliceCount: 4 },
   { id: "s3", timelineKey: "operation", studyDate: "20260702", mediaType: "video", studyDescription: "Mổ nội soi ổ bụng", sliceCount: 2 },
   { id: "s4", timelineKey: "report", studyDate: "", mediaType: "text", studyDescription: "Tường trình phẫu thuật", sliceCount: 1 },
@@ -36,6 +36,7 @@ describe("Viewer tab: patient rail", () => {
     setLanguage("vi");
     state.selectedId = "s1";
     state.archive = { root: "D:\\PACS\\BN", patient: { ...PATIENT }, series: SERIES.map((s) => ({ ...s })) };
+    state.timelineOpen = {};
   });
 
   afterEach(() => {
@@ -43,30 +44,34 @@ describe("Viewer tab: patient rail", () => {
     vi.restoreAllMocks();
   });
 
-  it("groups the record into days, newest first, undated last", () => {
+  it("lists one row per examination, newest first, undated last", () => {
     const timeline = buildMediaTimeline(SERIES);
 
-    expect(timeline.map((day) => day.label)).toEqual([
-      "06/08/2026",
-      "02/07/2026",
-      "Chưa rõ ngày chụp",
+    // The row reads the way the reader's hospital PACS writes it: what kind of
+    // examination, and when. Nothing else.
+    expect(timeline.map((row) => row.title)).toEqual([
+      "MR - 06/08/2026",
+      "Ảnh - 06/08/2026",
+      "Video - 02/07/2026",
+      // Paperwork with no date is named by the folder it sits in; a row
+      // reading "Văn bản - Chưa rõ ngày chụp" tells the reader nothing.
+      "Văn bản - Tường trình phẫu thuật",
     ]);
-    expect(timeline[0].items).toHaveLength(2);
-    expect(timeline[0].items.find((item) => item.key === "mr-study").series).toHaveLength(2);
+    expect(timeline[0].series).toHaveLength(2);
   });
 
-  it("prefixes a diagnostic study with its modality when the source description omits it", () => {
-    const [day] = buildMediaTimeline([{
-      id: "ct-1",
-      timelineKey: "ct-study",
-      studyDate: "20260807",
-      mediaType: "dicom",
-      modality: "CT",
-      studyDescription: "sọ não không tiêm",
-      sliceCount: 100,
-    }]);
+  it("names the exam only when two of one kind share a day", () => {
+    const rows = buildMediaTimeline([
+      { id: "a", timelineKey: "us-1", studyDate: "20260817", mediaType: "dicom", modality: "US", studyDescription: "Ổ bụng" },
+      { id: "b", timelineKey: "us-2", studyDate: "20260817", mediaType: "dicom", modality: "US", studyDescription: "Tuyến giáp" },
+      { id: "c", timelineKey: "dx-1", studyDate: "20260817", mediaType: "dicom", modality: "DX", studyDescription: "Ngực thẳng" },
+    ]);
 
-    expect(day.items[0].title).toBe("CT sọ não không tiêm");
+    expect(rows.map((row) => row.title)).toEqual([
+      "US - 17/08/2026 · Ổ bụng",
+      "US - 17/08/2026 · Tuyến giáp",
+      "DX - 17/08/2026",
+    ]);
   });
 
   it("shows the identity the manifest recorded", () => {
@@ -92,20 +97,33 @@ describe("Viewer tab: patient rail", () => {
     expect(blank).not.toContain("1962");
   });
 
-  it("shows one simple row per study/media group, not every MRI sequence", () => {
+  it("shows one row per examination, with no counts and no sequence names", () => {
     const html = renderPatientRail();
 
     expect(html).toContain('class="tl-item dicom on"');
-    expect(html).toContain("2 phim");
     expect((html.match(/data-timeline-key="mr-study"/g) || [])).toHaveLength(1);
+    // A count of series or photos beside the row is exactly what the reader
+    // does not want there, and a sequence name belongs in the series strip.
     expect(html).not.toContain("Ax T2 FLAIR");
-    expect(html).not.toContain("1412 lát");
+    expect(html).not.toMatch(/\d+ (phim|series|ảnh|photos|lát|slices|video)/);
     expect(html).toContain('class="tl-item photo"');
-    expect(html).toContain("4 ảnh");
     expect(html).toContain('class="tl-item video"');
-    expect(html).toContain("2 video");
     expect(html).toContain('class="tl-item text"');
-    expect(html).toContain("1 file");
+  });
+
+  it("opens one exam to reach the sequences inside it", () => {
+    // The count used to hint at how much was in a row; the expander shows it
+    // and lets the reader jump straight to a sequence.
+    document.body.innerHTML = `<div id="app">${renderPatientRail()}</div>`;
+    const row = document.querySelector('[data-timeline-key="mr-study"]');
+    expect(row.querySelector(".tl-sub")).toBe(null);
+
+    action("toggle-timeline-row", row.querySelector('[data-action="toggle-timeline-row"]'));
+
+    expect(state.timelineOpen["mr-study"]).toBe(true);
+    const html = renderPatientRail();
+    expect(html).toContain("Ax T2 FLAIR");
+    expect(html).toContain('class="tl-sub-item"');
   });
 
   it("drives selection through the same handler as the thumbnail strip", () => {
@@ -151,12 +169,11 @@ describe("Viewer tab: patient rail", () => {
     expect(row.classList.contains("editing")).toBe(false);
   });
 
-  it("counts the study once without inventing a slice count", () => {
+  it("falls back to the media kind when the modality was never recorded", () => {
     state.archive.series = [{ id: "x", studyDate: "20260806", mediaType: "dicom", studyDescription: "Ca chưa quét" }];
     const html = renderPatientRail();
 
-    expect(html).toContain("Ca chưa quét");
-    expect(html).toContain("1 phim");
+    expect(html).toContain("Phim chụp - 06/08/2026");
     expect(html).not.toContain("lát");
   });
 
