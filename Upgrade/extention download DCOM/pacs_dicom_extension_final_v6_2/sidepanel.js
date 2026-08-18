@@ -1,6 +1,7 @@
 'use strict';
 const $=id=>document.getElementById(id),show=(id,on)=>$(id).classList.toggle('hidden',!on);const TERMINAL=new Set(['done','partial','done_with_errors','error','cancelled']);
-let tabId=null,summary=null,state=null,inventory=null,job=null,history=[],revealDownloaded=false,refreshTimer=null,activeTabUrl='';
+let tabId=null,summary=null,state=null,inventory=null,job=null,history=[],revealDownloaded=false,refreshTimer=null,activeTabUrl='',isStartingDownload=false;
+function setTopLoader(on){const e=$('topLoader');if(e)e.classList.toggle('active',Boolean(on));}
 const FS_DB='pacs_dicom_fs_v1',FS_STORE='handles',FS_KEY='download-root',SAVE_MODE_KEY='pacs6_save_mode';
 
 async function send(type,payload={}){const r=await chrome.runtime.sendMessage({type,...payload});if(!r?.ok)throw new Error(r?.error||'Lỗi extension');return r;}
@@ -69,10 +70,10 @@ function renderInventory(){if(!inventory){show('doneCard',false);show('studyCard
 show('adapterNote',inventory.adapter==='ZFP');if(inventory.adapter==='ZFP')$('adapterNote').textContent='Viewer GE không cho tải ảnh theo yêu cầu. Extension hứng ảnh do chính viewer nạp, nên tab này sẽ tự nạp lại — để yên tab trong lúc tải.';
 const list=$('seriesList');list.textContent='';for(const s of(inventory.series||[])){const row=document.createElement('label');row.className='series-row';const cb=document.createElement('input');cb.type='checkbox';cb.checked=true;cb.dataset.id=s.id;cb.addEventListener('change',updateSelected);const main=document.createElement('div');main.className='series-main';const title=document.createElement('div');title.className='series-title';title.textContent=`${s.number?`${s.number} · `:''}${s.description||'Series'}`;const meta=document.createElement('div');meta.className='series-meta';const m1=document.createElement('span');m1.textContent=s.modality||'DICOM';const m2=document.createElement('span');m2.textContent=s.sequenceHint||'';meta.append(m1,m2);main.append(title,meta);const count=document.createElement('span');count.className='series-count';count.textContent=s.imageCount?`${s.imageCount} ảnh`:'? ảnh';row.append(cb,main,count);list.append(row);}updateSelected();}
 function selectedIds(){return[...$('seriesList').querySelectorAll('input[type=checkbox]:checked')].map(x=>x.dataset.id);}
-function updateSelected(){const ids=selectedIds(),sel=(inventory?.series||[]).filter(s=>ids.includes(s.id)),images=sel.reduce((n,s)=>n+(Number(s.imageCount)||0),0);$('selectedSummary').textContent=`${ids.length}/${inventory?.series?.length||0} series${images?` · ~${images} ảnh`:''}`;$('stickyTitle').textContent=`${ids.length} series${images?` · ~${images} ảnh`:''}`;$('stickySub').textContent='Tên - ID - Ngày / Series';$('downloadBtn').disabled=!ids.length;$('downloadBtn').textContent=inventory?.previousDownload&&inventory.previousDownload.status!=='done'?'Tải phần thiếu':'Tải DICOM';}
+function updateSelected(){const ids=selectedIds(),sel=(inventory?.series||[]).filter(s=>ids.includes(s.id)),images=sel.reduce((n,s)=>n+(Number(s.imageCount)||0),0);$('selectedSummary').textContent=`${ids.length}/${inventory?.series?.length||0} series${images?` · ~${images} ảnh`:''}`;$('stickyTitle').textContent=`${ids.length} series${images?` · ~${images} ảnh`:''}`;$('stickySub').textContent='Tên - ID - Ngày / Series';if(isStartingDownload||(job&&['preparing','downloading','cancelling'].includes(job.status))){$('downloadBtn').disabled=true;$('downloadBtn').classList.add('btn-loading');return;}$('downloadBtn').classList.remove('btn-loading');$('downloadBtn').disabled=!ids.length;$('downloadBtn').textContent=inventory?.previousDownload&&inventory.previousDownload.status!=='done'?'Tải phần thiếu':'Tải DICOM';}
 
 function jobLabel(s){return({preparing:'Chuẩn bị',downloading:'Đang tải',done:'Hoàn tất',partial:'Đã lưu',done_with_errors:'Có lỗi',error:'Lỗi',cancelling:'Đang dừng',cancelled:'Đã dừng'})[s]||s||'—';}
-function renderJob(){if(!job||Number(job.tabId)!==Number(tabId)){show('progressCard',false);return;}show('progressCard',true);const total=Number(job.total)||0,done=Number(job.completed||0)+Number(job.failed||0),pct=total?Math.min(100,Math.round(done*100/total)):0;$('progressBar').style.width=`${pct}%`;$('progressText').textContent=`${done} / ${total||'?'}`;$('failedText').textContent=`${job.failed||0} lỗi${job.skipped?` · ${job.skipped} có sẵn`:''}`;$('currentFile').textContent=job.currentFile||'';$('jobTitle').textContent=job.status==='partial'?'Đã lưu dữ liệu bắt được':job.status==='done'?'Tải hoàn tất':job.status==='done_with_errors'?'Hoàn tất có lỗi':'Đang tải DICOM';$('jobMeta').textContent=`${job.adapter||'DICOM'}${job.original||job.reconstructed?` · ${job.original||0} gốc${job.reconstructed?` · ${job.reconstructed} dựng lại`:''}`:''}`;const kind=job.status==='done'?'good':['error','done_with_errors'].includes(job.status)?'bad':['partial','cancelled'].includes(job.status)?'warn':'neutral';chip($('jobBadge'),jobLabel(job.status),kind);$('cancelBtn').disabled=!['preparing','downloading','cancelling'].includes(job.status);const errs=job.errors||[];show('errorDetails',errs.length>0);$('errorLog').textContent=errs.join('\n');if(TERMINAL.has(job.status)){refreshHistory().catch(()=>{});setTimeout(refresh,250);}}
+function renderJob(){if(!job||Number(job.tabId)!==Number(tabId)){show('progressCard',false);setTopLoader(false);return;}show('progressCard',true);const total=Number(job.total)||0,done=Number(job.completed||0)+Number(job.failed||0),pct=total?Math.min(100,Math.round(done*100/total)):0;$('progressBar').style.width=`${pct}%`;$('progressText').textContent=`${done} / ${total||'?'}`;$('failedText').textContent=`${job.failed||0} lỗi${job.skipped?` · ${job.skipped} có sẵn`:''}`;$('currentFile').textContent=job.currentFile||'';$('jobTitle').textContent=job.status==='partial'?'Đã lưu dữ liệu bắt được':job.status==='done'?'Tải hoàn tất':job.status==='done_with_errors'?'Hoàn tất có lỗi':'Đang tải DICOM';$('jobMeta').textContent=`${job.adapter||'DICOM'}${job.original||job.reconstructed?` · ${job.original||0} gốc${job.reconstructed?` · ${job.reconstructed} dựng lại`:''}`:''}`;const kind=job.status==='done'?'good':['error','done_with_errors'].includes(job.status)?'bad':['partial','cancelled'].includes(job.status)?'warn':'neutral';chip($('jobBadge'),jobLabel(job.status),kind);const isBusy=['preparing','downloading','cancelling'].includes(job.status);$('cancelBtn').disabled=!isBusy;setTopLoader(isBusy);if(isBusy){$('downloadBtn').disabled=true;$('downloadBtn').classList.add('btn-loading');$('downloadBtn').innerHTML=`<span class="spinner"></span> ${jobLabel(job.status)}...`;}else{updateSelected();}const errs=job.errors||[];show('errorDetails',errs.length>0);$('errorLog').textContent=errs.join('\n');if(TERMINAL.has(job.status)){refreshHistory().catch(()=>{});setTimeout(refresh,250);}}
 
 function historyStatus(s){return({done:'Đã tải',partial:'Đã lưu',done_with_errors:'Có lỗi',error:'Tải lỗi',cancelled:'Đã dừng',viewed:'Đã xem'})[s]||'Đã xem';}
 function historyKind(s){return s==='done'?'done':['error','done_with_errors'].includes(s)?'bad':['partial','cancelled'].includes(s)?'warn':'';}
@@ -94,7 +95,14 @@ function scheduleRefresh(ms=180){clearTimeout(refreshTimer);refreshTimer=setTime
  * Downloads như v2/v2.1; muốn thư mục riêng thì bấm "Đổi" — chọn ở đó, một lần.
  */
 async function startDownload(){
+  if(isStartingDownload)return;
+  if(job&&['preparing','downloading','cancelling'].includes(job.status))return;
   if(!selectedIds().length)return;
+  isStartingDownload=true;
+  $('downloadBtn').disabled=true;
+  $('downloadBtn').classList.add('btn-loading');
+  $('downloadBtn').innerHTML='<span class="spinner"></span> Đang chuẩn bị...';
+  setTopLoader(true);
   try{
     const pref=(await chrome.storage.local.get(SAVE_MODE_KEY))[SAVE_MODE_KEY]||'';
     let saveMode='downloads';
@@ -111,17 +119,24 @@ async function startDownload(){
     await renderFolder();
     const r=await send('START_DOWNLOAD',{tabId,selectedSeries:selectedIds(),options:{concurrency:saveMode==='downloads'?3:6,frameConcurrency:6,saveMode}});
     job=r.job;renderJob();
-  }catch(e){toast(e.message||String(e),true);}
+  }catch(e){
+    toast(e.message||String(e),true);
+    setTopLoader(false);
+    isStartingDownload=false;
+    updateSelected();
+  }finally{
+    isStartingDownload=false;
+  }
 }
 
-$('grantBtn').addEventListener('click',()=>grantAccess().catch(e=>toast(e.message||String(e),true)));
+$('grantBtn').addEventListener('click',async()=>{if($('grantBtn').disabled)return;$('grantBtn').disabled=true;try{await grantAccess();}catch(e){toast(e.message||String(e),true);}finally{$('grantBtn').disabled=false;}});
 $('folderBtn').addEventListener('click',async()=>{try{const h=await window.showDirectoryPicker({id:'pacs-dicom',startIn:'downloads',mode:'readwrite'});await fsSet(h);await chrome.storage.local.set({[SAVE_MODE_KEY]:'filesystem'});await renderFolder();toast('Đã chọn thư mục tải nhanh.');}catch(e){if(e?.name!=='AbortError')toast(e.message||String(e),true);}});
 $('copyLinkBtn').addEventListener('click',async()=>{const t=$('viewerUrl').textContent||'';if(!t||t==='—')return;try{await navigator.clipboard.writeText(t);toast('Đã chép link viewer.');}catch(e){toast('Không chép được, bôi đen dòng link để copy tay.',true);}});
 $('folderResetBtn').addEventListener('click',async()=>{try{await chrome.storage.local.set({[SAVE_MODE_KEY]:'downloads'});await renderFolder();toast('Sẽ lưu vào Downloads / PACS_DICOM.');}catch(e){toast(e.message||String(e),true);}});
-$('trackBtn').addEventListener('click',async()=>{try{if(state?.tracking==='watching')await send('STOP_TRACKING',{tabId});else{if((summary?.missingOrigins||[]).length)await grantAccess();await send('START_TRACKING',{tabId});}await refresh();}catch(e){toast(e.message||String(e),true);}});
-$('scanBtn').addEventListener('click',async()=>{try{await send('ANALYZE_TAB',{tabId});await refresh();}catch(e){toast(e.message||String(e),true);}});
-$('deepScanBtn').addEventListener('click',async()=>{try{const r=await send('DEEP_SCAN',{tabId});toast(r.valid?.length?`Đã nhận diện ${r.valid.length} endpoint DICOM.`:'Chưa xác nhận được endpoint DICOM.',!r.valid?.length);await refresh();}catch(e){toast(e.message||String(e),true);}});
-$('learnToggleBtn').addEventListener('click',async()=>{try{if(state?.learning?.active)await send('STOP_LEARNING',{tabId});else{if((summary?.missingOrigins||[]).length)await grantAccess();await send('START_LEARNING',{tabId});}await refresh();}catch(e){toast(e.message||String(e),true);}});
+$('trackBtn').addEventListener('click',async()=>{if($('trackBtn').disabled)return;$('trackBtn').disabled=true;const old=$('trackBtn').textContent;$('trackBtn').innerHTML='<span class="spinner dark"></span> Đang xử lý...';setTopLoader(true);try{if(state?.tracking==='watching')await send('STOP_TRACKING',{tabId});else{if((summary?.missingOrigins||[]).length)await grantAccess();await send('START_TRACKING',{tabId});}await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('trackBtn').disabled=false;$('trackBtn').textContent=old;setTopLoader(false);}});
+$('scanBtn').addEventListener('click',async()=>{if($('scanBtn').disabled)return;$('scanBtn').disabled=true;const old=$('scanBtn').textContent;$('scanBtn').innerHTML='<span class="spinner dark"></span> Đang quét...';setTopLoader(true);try{await send('ANALYZE_TAB',{tabId});await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('scanBtn').disabled=false;$('scanBtn').textContent=old;setTopLoader(false);}});
+$('deepScanBtn').addEventListener('click',async()=>{if($('deepScanBtn').disabled)return;$('deepScanBtn').disabled=true;const old=$('deepScanBtn').textContent;$('deepScanBtn').innerHTML='<span class="spinner dark"></span> Đang quét sâu...';setTopLoader(true);try{const r=await send('DEEP_SCAN',{tabId});toast(r.valid?.length?`Đã nhận diện ${r.valid.length} endpoint DICOM.`:'Chưa xác nhận được endpoint DICOM.',!r.valid?.length);await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('deepScanBtn').disabled=false;$('deepScanBtn').textContent=old;setTopLoader(false);}});
+$('learnToggleBtn').addEventListener('click',async()=>{if($('learnToggleBtn').disabled)return;$('learnToggleBtn').disabled=true;try{if(state?.learning?.active)await send('STOP_LEARNING',{tabId});else{if((summary?.missingOrigins||[]).length)await grantAccess();await send('START_LEARNING',{tabId});}await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('learnToggleBtn').disabled=false;}});
 $('selectAllBtn').addEventListener('click',()=>{$('seriesList').querySelectorAll('input').forEach(x=>x.checked=true);updateSelected();});
 $('selectNoneBtn').addEventListener('click',()=>{$('seriesList').querySelectorAll('input').forEach(x=>x.checked=false);updateSelected();});
 $('downloadBtn').addEventListener('click',startDownload);
