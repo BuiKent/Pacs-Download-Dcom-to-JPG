@@ -57,7 +57,6 @@ const EN = {
   "Bệnh viện": "Hospital",
   "Chẩn đoán": "Diagnosis",
   "Lịch sử khám": "Exam history",
-  "Xem các series bên trong": "Show the series inside",
   "Chưa có dữ liệu nào trong hồ sơ này.": "Nothing recorded for this patient yet.",
   "Chưa rõ ngày chụp": "Date not recorded",
   "Chưa có mô tả": "No description",

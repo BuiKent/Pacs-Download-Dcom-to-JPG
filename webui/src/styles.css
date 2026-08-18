@@ -963,49 +963,12 @@ button:disabled { opacity: .35; cursor: default; }
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-/* One exam per line: kind, date, and the two controls that act on it. */
+/* One exam per line: kind, date, and its inline rename control. */
 .tl-row {
   display: flex;
   align-items: center;
   width: 100%;
 }
-.tl-expand {
-  flex: none;
-  width: 22px;
-  padding: 4px 0;
-  border: 0;
-  border-radius: var(--control-radius, 6px);
-  background: transparent;
-  color: var(--label-muted, #7890a2);
-  font: inherit;
-  font-size: 13px;
-  line-height: 1;
-  cursor: pointer;
-}
-.tl-expand:hover { background: var(--control-bg-hover, #1b2b39); color: var(--body-fg); }
-.tl-item.editing .tl-expand { display: none; }
-/* The sequences inside one examination, shown only on request. */
-.tl-sub {
-  display: flex;
-  flex-direction: column;
-  padding: 2px 0 4px 22px;
-}
-.tl-sub-item {
-  padding: 4px 7px;
-  border: 0;
-  border-radius: var(--control-radius, 6px);
-  background: none;
-  color: var(--label-fg, #8fa8bd);
-  font: inherit;
-  font-size: 11px;
-  text-align: left;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-.tl-sub-item:hover { background: var(--list-hover, #16202b); color: var(--body-fg); }
-.tl-sub-item.on { color: var(--accent, #2383e2); font-weight: 600; }
 
 .toolbar {
   display: flex;

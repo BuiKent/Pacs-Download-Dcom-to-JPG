@@ -36,7 +36,6 @@ describe("Viewer tab: patient rail", () => {
     setLanguage("vi");
     state.selectedId = "s1";
     state.archive = { root: "D:\\PACS\\BN", patient: { ...PATIENT }, series: SERIES.map((s) => ({ ...s })) };
-    state.timelineOpen = {};
   });
 
   afterEach(() => {
@@ -111,19 +110,12 @@ describe("Viewer tab: patient rail", () => {
     expect(html).toContain('class="tl-item text"');
   });
 
-  it("opens one exam to reach the sequences inside it", () => {
-    // The count used to hint at how much was in a row; the expander shows it
-    // and lets the reader jump straight to a sequence.
-    document.body.innerHTML = `<div id="app">${renderPatientRail()}</div>`;
-    const row = document.querySelector('[data-timeline-key="mr-study"]');
-    expect(row.querySelector(".tl-sub")).toBe(null);
-
-    action("toggle-timeline-row", row.querySelector('[data-action="toggle-timeline-row"]'));
-
-    expect(state.timelineOpen["mr-study"]).toBe(true);
+  it("keeps technical sequences out of the exam history", () => {
     const html = renderPatientRail();
-    expect(html).toContain("Ax T2 FLAIR");
-    expect(html).toContain('class="tl-sub-item"');
+
+    expect(html).not.toContain("Ax T2 FLAIR");
+    expect(html).not.toContain('data-action="toggle-timeline-row"');
+    expect(html).not.toContain('class="tl-sub"');
   });
 
   it("drives selection through the same handler as the thumbnail strip", () => {

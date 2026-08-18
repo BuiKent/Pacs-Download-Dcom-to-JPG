@@ -124,8 +124,6 @@ const state = {
   concatTargetFps: 30,
   mediaIndex: {},
   mediaEdits: {},
-  // Which exam rows in the record history are showing their series.
-  timelineOpen: {},
   photoWorkingPath: null,
   videoWorkingPath: null,
   tabs: [],
@@ -1125,9 +1123,9 @@ const MEDIA_KIND_LABELS = {
  *
  * Modelled on the "Lịch sử khám" list a reader already works with in the
  * hospital PACS — each row is the modality and the date and nothing else. An
- * MRI is one row however many sequences it holds; those live in the series
- * strip and in this row's own expander. A series whose date was never recorded
- * lands at the end rather than being stamped with today.
+ * MRI is one row however many sequences it holds; those stay in the viewer's
+ * series selector and filmstrip. A series whose date was never recorded lands
+ * at the end rather than being stamped with today.
  */
 function buildMediaTimeline(seriesList, timelineLabels = {}) {
   const days = new Map();
@@ -1185,10 +1183,6 @@ function buildMediaTimeline(seriesList, timelineLabels = {}) {
         defaultTitle: `${badge} - ${suffix}`,
         primaryId: primary?.id || "",
         memberIds: group.series.map((item) => item.id),
-        members: group.series.map((item) => ({
-          id: item.id,
-          label: String(item.description || item.name || "").trim() || t("Chưa có mô tả"),
-        })),
       };
     }));
 
@@ -1203,11 +1197,6 @@ function buildMediaTimeline(seriesList, timelineLabels = {}) {
     row.title = String(timelineLabels?.[row.key] || "").trim() || row.defaultTitle;
   }
   return rows;
-}
-
-/** Whether one exam row is showing the series inside it. */
-function timelineRowOpen(key) {
-  return Boolean((state.timelineOpen || {})[key]);
 }
 
 /**
@@ -1255,9 +1244,8 @@ function renderPatientRail() {
           ? `<div class="tl-empty">${escapeHtml(t("Chưa có dữ liệu nào trong hồ sơ này."))}</div>`
           : timeline.map((row) => {
             const active = row.memberIds.includes(state.selectedId);
-            const open = timelineRowOpen(row.key);
             return `
-              <div class="tl-item ${row.kind}${active ? " on" : ""}${open ? " open" : ""}"
+              <div class="tl-item ${row.kind}${active ? " on" : ""}"
                 data-timeline-key="${escapeHtml(row.key)}"
                 data-timeline-members="${escapeHtml(row.memberIds.join(","))}"
                 data-timeline-label="${escapeHtml(row.title)}"
@@ -1276,18 +1264,7 @@ function renderPatientRail() {
                     title="${escapeHtml(t("Lưu tên"))}" aria-label="${escapeHtml(t("Lưu tên"))}">✓</button>
                   <button class="tl-edit-cancel" type="button" data-action="cancel-timeline-label"
                     title="${escapeHtml(t("Bỏ thay đổi tên"))}" aria-label="${escapeHtml(t("Bỏ thay đổi tên"))}">×</button>
-                  <button class="tl-expand" type="button" data-action="toggle-timeline-row"
-                    aria-expanded="${open ? "true" : "false"}"
-                    title="${escapeHtml(t("Xem các series bên trong"))}" aria-label="${escapeHtml(t("Xem các series bên trong"))}">${open ? "⌄" : "›"}</button>
                 </div>
-                ${open ? `
-                  <div class="tl-sub">
-                    ${row.members.map((member) => `
-                      <button class="tl-sub-item${member.id === state.selectedId ? " on" : ""}" type="button"
-                        data-series-id="${escapeHtml(member.id)}">${escapeHtml(member.label)}</button>
-                    `).join("")}
-                  </div>
-                ` : ""}
               </div>
             `;
           }).join("")}
@@ -3235,16 +3212,6 @@ async function action(name, element = null) {
       state.archive.patient = result.patient || state.archive.patient;
       render();
       setStatus(t("Đã lưu chẩn đoán vào hồ sơ bệnh nhân."));
-      return;
-    }
-    if (name === "toggle-timeline-row") {
-      const key = element?.closest(".tl-item")?.dataset?.timelineKey;
-      if (!key) return;
-      const open = { ...(state.timelineOpen || {}) };
-      if (open[key]) delete open[key];
-      else open[key] = true;
-      state.timelineOpen = open;
-      render();
       return;
     }
     if (name === "edit-timeline-label") {

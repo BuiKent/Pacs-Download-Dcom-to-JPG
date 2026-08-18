@@ -259,7 +259,13 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                   timelineEditButtons: document.querySelectorAll(
                     '.tl-item [data-action="edit-timeline-label"]'
                   ).length,
-                  timelineInputs: document.querySelectorAll('.tl-item .tl-name-input').length
+                  timelineInputs: document.querySelectorAll('.tl-item .tl-name-input').length,
+                  timelineExpanders: document.querySelectorAll(
+                    '.tl-item [data-action="toggle-timeline-row"], .tl-sub'
+                  ).length,
+                  timelineHeaderControls: document.querySelectorAll(
+                    '.rec-timeline-head button, .rec-timeline-head input'
+                  ).length
                 })"""
             )
             if state.get("fatal"):
@@ -284,6 +290,8 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
             or timeline_rows > result["single"].get("series", 0)
             or result["single"].get("timelineEditButtons") != timeline_rows
             or result["single"].get("timelineInputs") != timeline_rows
+            or result["single"].get("timelineExpanders") != 0
+            or result["single"].get("timelineHeaderControls") != 0
         ):
             raise RuntimeError(f"Study-level timeline/editor contract failed: {result['single']}")
         result["single"]["litPixels"] = _assert_panes_drawn(window, "single", 1)
