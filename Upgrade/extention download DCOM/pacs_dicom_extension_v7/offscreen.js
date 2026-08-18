@@ -230,7 +230,7 @@ async function runJob(spec){
   jobs.set(job.tabId,job);
   emit(job,true);
   let next=0;
-  async function worker(){while(true){if(job.cancelled)return;const i=next++;if(i>=spec.tasks.length)return;try{await runTask(job,spec.tasks[i],i);}catch(e){if(e?.name==='AbortError')return;job.failed++;job.errors.push(`${spec.tasks[i]?.relativePath||i}: ${e?.message||e}`);emit(job,true);}}}
+  async function worker(){while(true){if(job.cancelled)return;const i=next++;if(i>=spec.tasks.length)return;try{await runTask(job,spec.tasks[i],i);}catch(e){if(job.cancelled||e?.name==='AbortError'||String(e?.message||e).toLowerCase().includes('abort')||String(e?.message||e).toLowerCase().includes('user_canceled'))return;job.failed++;job.errors.push(`${spec.tasks[i]?.relativePath||i}: ${e?.message||e}`);emit(job,true);}}}
   if(isZfp){const m=await runZfpJob(job,spec.tasks);if(m&&!Object.keys(resolvedMeta).length)resolvedMeta=m;}
   else await Promise.all(Array.from({length:Math.min(job.concurrency,Math.max(1,spec.tasks.length))},worker));
   job.status=job.cancelled?'cancelled':job.failed?(job.completed?'done_with_errors':'error'):'done';

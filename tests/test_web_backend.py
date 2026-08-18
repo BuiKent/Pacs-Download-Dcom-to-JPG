@@ -1627,6 +1627,134 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
             data = build_series_thumbnail(record)
             self.assertTrue(data.startswith(b"\xff\xd8"), f"{record.name} not a JPEG")
 
+    def test_two_sessions_keep_separate_catalogs(self) -> None:
+        """One catalog per tab, so a second patient cannot displace the first.
+
+        Every request used to fall through to the shared default catalog, so
+        opening a second record made the first tab report "Không tìm thấy
+        series" for slices it had just been showing.
+        """
+        first = self.temp_dir / "BN-S1"
+        (first / "VIDEO").mkdir(parents=True)
+        self._write_video(first / "VIDEO" / "a.mp4")
+        second = self.temp_dir / "BN-S2"
+        (second / "BAO-CAO").mkdir(parents=True)
+        (second / "BAO-CAO" / "b.txt").write_text("x", encoding="utf-8")
+
+        sessions = self.controller.sessions
+        one = sessions.create_session(str(first))
+        two = sessions.create_session(str(second))
+        self.assertNotEqual(one.session_id, two.session_id)
+
+        id_one = one.catalog.snapshot()["series"][0]["id"]
+        id_two = two.catalog.snapshot()["series"][0]["id"]
+
+        # Each session still resolves its own series after the other opened.
+        self.assertEqual(sessions.get_catalog(one.session_id).get(id_one).series_id, id_one)
+        self.assertEqual(sessions.get_catalog(two.session_id).get(id_two).series_id, id_two)
+        with self.assertRaises(KeyError):
+            sessions.get_catalog(one.session_id).get(id_two)
+
+    def test_creating_a_session_records_the_folder_in_history(self) -> None:
+        """Opening through a session is still opening; the worklist needs it."""
+        folder = self.temp_dir / "BN-S3"
+        (folder / "VIDEO").mkdir(parents=True)
+        self._write_video(folder / "VIDEO" / "a.mp4")
+
+        self.controller.sessions.create_session(
+            str(folder), on_opened=self.controller.history.add,
+        )
+        recorded = {item.get("folder", "").casefold() for item in self.controller.history_snapshot()}
+        self.assertIn(str(folder.resolve()).casefold(), recorded)
+
+    def test_studies_sort_newest_first_by_real_date(self) -> None:
+        """studyDate is dd/mm/yyyy for display, so sorting it as text is wrong.
+
+        Ordering the display string put 20/06/2026 ahead of 06/08/2026, which
+        also meant "Mở hồ sơ" opened the wrong visit.
+        """
+        from web_backend import WorklistScanner
+
+        patient = self._patient_with_manifest({
+            "1.1": {"studyUid": "1.1", "date": "20260620", "modality": "MR",
+                    "description": "MR cu", "folder": "CU", "status": "complete"},
+            "1.2": {"studyUid": "1.2", "date": "20260806", "modality": "MR",
+                    "description": "MR moi", "folder": "MOI", "status": "complete"},
+        })
+        for name in ("CU", "MOI"):
+            (patient / name).mkdir(parents=True, exist_ok=True)
+            (patient / name / "s.dcm").write_bytes(b"DICM" + b"\0" * 100)
+
+        studies = next(
+            p for p in WorklistScanner(self.controller).scan() if p["patientId"] == "TEST-7777"
+        )["studies"]
+        self.assertEqual([s["studyDate"] for s in studies], ["06/08/2026", "20/06/2026"])
+
+    def test_worklist_ignores_history_outside_the_selected_archive(self) -> None:
+        """Otherwise a one-patient archive reports every folder ever opened."""
+        from web_backend import WorklistScanner
+
+        inside = self.temp_dir / "BN-TRONG-KHO"
+        (inside / "VIDEO").mkdir(parents=True)
+        self._write_video(inside / "VIDEO" / "a.mp4")
+
+        outside = Path(tempfile.mkdtemp()) / "BN-NGOAI-KHO"
+        (outside / "VIDEO").mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, outside.parent, True)
+        self._write_video(outside / "VIDEO" / "a.mp4")
+
+        self.controller.history.add(str(inside))
+        self.controller.history.add(str(outside))
+        self.controller.output_root = self.temp_dir
+
+        ids = {p["patientId"] for p in WorklistScanner(self.controller).scan()}
+        self.assertIn("BN-TRONG-KHO", ids)
+        self.assertNotIn("BN-NGOAI-KHO", ids)
+
+    def test_saving_an_edit_writes_beside_the_original_without_touching_it(self) -> None:
+        """Edits used to live only in %TEMP% and vanish on the next tab switch."""
+        from PIL import Image
+        import web_backend
+
+        patient = self.temp_dir / "BN-EDIT"
+        photos = patient / "ANH-MO"
+        photos.mkdir(parents=True)
+        original = photos / "p1.jpg"
+        Image.new("RGB", (48, 48), (10, 20, 30)).save(original)
+        before = original.read_bytes()
+
+        catalog = ArchiveCatalog()
+        series_id = catalog.open(patient)["series"][0]["id"]
+
+        work = web_backend.MEDIA_WORK_ROOT / "edited_probe.jpg"
+        Image.new("RGB", (24, 24), (200, 10, 10)).save(work)
+        self.addCleanup(work.unlink, True)
+
+        saved = self.controller.save_media_edit(str(work), series_id, catalog=catalog)
+
+        destination = Path(saved["savedPath"])
+        self.assertTrue(destination.is_file())
+        # Windows hands back 8.3 short paths here, so compare resolved ones.
+        self.assertEqual(destination.parent.resolve(), photos.resolve())
+        self.assertNotEqual(destination.resolve(), original.resolve())
+        self.assertEqual(original.read_bytes(), before, "the original was modified")
+
+    def test_saving_refuses_a_path_outside_the_work_folder(self) -> None:
+        """The save endpoint copies a file; it must not copy an arbitrary one."""
+        from PIL import Image
+
+        patient = self.temp_dir / "BN-EDIT2"
+        photos = patient / "ANH"
+        photos.mkdir(parents=True)
+        Image.new("RGB", (32, 32), (0, 0, 0)).save(photos / "p1.jpg")
+        stray = self.temp_dir / "khong-phai-work.jpg"
+        Image.new("RGB", (8, 8), (1, 2, 3)).save(stray)
+
+        catalog = ArchiveCatalog()
+        series_id = catalog.open(patient)["series"][0]["id"]
+        with self.assertRaises(PermissionError):
+            self.controller.save_media_edit(str(stray), series_id, catalog=catalog)
+
     def test_archive_snapshot_carries_patient_identity_from_the_manifest(self) -> None:
         """The viewer rail reads this block; before, it was never sent."""
         patient = self.temp_dir / "BN-0007"

@@ -1,5 +1,5 @@
 import "./styles.css";
-import { api, apiBlob, configureApi, thumbnailPath } from "./api.js";
+import { api, apiBlob, configureApi, getApiSession, setApiSession, thumbnailPath } from "./api.js";
 import { getLanguage, setLanguage, t, tf, translateLog } from "./i18n.js";
 import {
   hasCompleteSeriesSelection,
@@ -77,6 +77,13 @@ const state = {
   // The text/JSON file currently in the reading pane: { seriesId, index, name,
   // language, text }. Null until a text series is opened.
   textDoc: null,
+  // Which file of a multi-file photo or video series is shown, keyed by series
+  // id so switching away and back keeps the reader's place.
+  mediaIndex: {},
+  // Rectangle the user dragged on the photo, in source-image pixels. Null when
+  // nothing is selected: the editing tools then say so rather than inventing a
+  // region, which is what the fixed 5% crop used to do.
+  photoSelection: null,
   // Series shown beside the primary one; index 0 is pane B, index 1 is pane C.
   compareIds: ["", ""],
   scrollSync: true,
@@ -561,7 +568,7 @@ function renderWinbar() {
 }
 
 /** Media types the viewer knows how to open. */
-const MEDIA_TYPES = new Set(["dicom", "photo", "video", "doc", "text"]);
+const MEDIA_TYPES = new Set(["dicom", "photo", "video", "doc", "text", "pdf"]);
 
 /**
  * Which viewer a series opens in, as decided by the backend.
@@ -592,12 +599,17 @@ function formatVideoTime(seconds) {
 
 function renderSurgeryVideoStudio(series) {
   if (!series) return `<div class="empty-state"><b>${escapeHtml(t("Chưa có video nào"))}</b></div>`;
-  const videoUrl = state.videoWorkingPath ? `/api/media/work-file?name=${encodeURIComponent(state.videoWorkingPath.split(/[\\/]/).pop())}` : `/api/series/${series.id}/image/0`;
+  // A work file is served by name and needs no session; the archive's own
+  // files go through the authenticated blob fetch like every other media.
+  const workName = state.videoWorkingPath
+    ? state.videoWorkingPath.split(/[\/]/).pop()
+    : "";
   const bookmarks = state.videoBookmarks || [];
   const filmstrip = state.videoFilmstrip || [];
   return `
     <div class="surgery-video-studio">
       <div class="surgery-video-toolbar" style="display:flex; gap:8px; padding:8px 12px; background:var(--bg-card); border-bottom:1px solid var(--border-subtle); align-items:center; flex-wrap:wrap;">
+        ${renderMediaFileNav(series)}
         <button class="tool-btn" data-action="video-tool-trim" title="${escapeHtml(t("Cắt đoạn video"))}">✂ ${escapeHtml(t("Cắt đoạn"))}</button>
         <button class="tool-btn" data-action="video-tool-concat" title="${escapeHtml(t("Ghép các clip video"))}">🔗 ${escapeHtml(t("Ghép clips"))}</button>
         <button class="tool-btn" data-action="video-tool-burn-text" title="${escapeHtml(t("Đóng dấu / Chèn thông tin phẫu thuật"))}">🏷 ${escapeHtml(t("Đóng dấu thông tin"))}</button>
@@ -609,7 +621,7 @@ function renderSurgeryVideoStudio(series) {
       </div>
       <div class="surgery-video-body">
         <div class="surgery-video-stage">
-          <video id="surgery-video-player" class="surgery-video-element" src="${videoUrl}" playsinline preload="metadata"></video>
+          <video id="surgery-video-player" class="surgery-video-element" ${workName ? `src="/api/media/work-file?name=${encodeURIComponent(workName)}"` : `data-media-src="${escapeHtml(series.id)}:${mediaFileIndex(series)}"`} playsinline preload="metadata"></video>
         </div>
         <aside class="surgery-video-sidebar">
           <div class="surgery-video-sidebar-header">
@@ -653,12 +665,57 @@ function renderSurgeryVideoStudio(series) {
   `;
 }
 
+/**
+ * Which file of a multi-file media series is on screen.
+ *
+ * A folder of intra-operative photos or clips is one series with many files.
+ * Both studios addressed `/image/0` and showed only the first, so a timeline
+ * row reading "10 ảnh" opened a single picture with no way to reach the rest.
+ */
+function mediaFileIndex(series) {
+  const total = Number(series?.sliceCount) || 1;
+  const raw = Number(state.mediaIndex?.[series?.id] ?? 0);
+  if (!Number.isFinite(raw)) return 0;
+  return Math.max(0, Math.min(Math.trunc(raw), total - 1));
+}
+
+/** Move the cursor within the current media series and repaint its pane. */
+function stepMediaFile(series, delta) {
+  if (!series) return;
+  const total = Number(series.sliceCount) || 1;
+  const next = Math.max(0, Math.min(mediaFileIndex(series) + delta, total - 1));
+  if (next === mediaFileIndex(series)) return;
+  state.mediaIndex = { ...(state.mediaIndex || {}), [series.id]: next };
+  // A new file invalidates whatever edit was being previewed for the old one.
+  state.photoWorkingPath = null;
+  state.videoWorkingPath = null;
+  state.photoRotation = 0;
+  state.videoFilmstrip = [];
+  render();
+  renderViewer();
+}
+
+/** The `‹ n/N ›` strip both media studios share, hidden for a lone file. */
+function renderMediaFileNav(series) {
+  const total = Number(series?.sliceCount) || 1;
+  if (total <= 1) return "";
+  const index = mediaFileIndex(series);
+  return `
+    <span class="media-file-nav">
+      <button class="tool-btn" data-action="media-file-prev" ${index <= 0 ? "disabled" : ""}>‹</button>
+      <span class="media-file-count">${index + 1}/${total}</span>
+      <button class="tool-btn" data-action="media-file-next" ${index >= total - 1 ? "disabled" : ""}>›</button>
+    </span>
+  `;
+}
+
 function renderPhotoEditorStudio(series) {
   if (!series) return `<div class="empty-state"><b>${escapeHtml(t("Chưa có ảnh nào"))}</b></div>`;
-  const imageUrl = `/api/series/${series.id}/image/0`;
+  const imageUrl = `/api/series/${series.id}/image/${mediaFileIndex(series)}`;
   return `
     <div class="photo-editor-studio">
       <div class="photo-editor-toolbar">
+        ${renderMediaFileNav(series)}
         <button class="tool-btn" data-action="photo-rotate-cw">↻ ${escapeHtml(t("Xoay 90°"))}</button>
         <button class="tool-btn" data-action="photo-tool-crop">✂ ${escapeHtml(t("Cắt vùng chọn"))}</button>
         <button class="tool-btn" data-action="photo-tool-redact">⬛ ${escapeHtml(t("Che tên/danh tính"))}</button>
@@ -666,11 +723,13 @@ function renderPhotoEditorStudio(series) {
         <button class="tool-btn" data-action="photo-tool-box">▢ ${escapeHtml(t("Khoanh vùng"))}</button>
         <button class="tool-btn" data-action="photo-tool-text">T ${escapeHtml(t("Ghi chú chữ"))}</button>
         <span style="flex:1;"></span>
+        <button class="tool-btn" data-action="photo-save-edit" ${state.photoWorkingPath ? "" : "disabled"}>💾 ${escapeHtml(t("Lưu vào hồ sơ"))}</button>
         <button class="tool-btn primary" data-action="photo-export-pdf">📄 ${escapeHtml(t("Xuất file PDF"))}</button>
       </div>
       <div class="photo-editor-stage">
-        <div class="photo-editor-canvas-wrap">
-          <img id="photo-editor-img" class="photo-editor-image" src="${imageUrl}" style="transform: rotate(${state.photoRotation || 0}deg);" alt="${escapeHtml(series.description || "")}">
+        <div class="photo-editor-canvas-wrap" id="photo-editor-canvas">
+          <img id="photo-editor-img" class="photo-editor-image" data-media-src="${escapeHtml(series.id)}:${mediaFileIndex(series)}" style="transform: rotate(${state.photoRotation || 0}deg);" alt="${escapeHtml(series.description || "")}">
+          <div id="photo-selection" class="photo-selection" hidden></div>
         </div>
       </div>
     </div>
@@ -728,6 +787,83 @@ function renderTextViewer(series) {
 }
 
 /**
+ * Point a media element at an API URL it cannot fetch by itself.
+ *
+ * Every /api route requires the `X-DCom-Token` header, which `<img src>`,
+ * `<video src>` and `<embed src>` cannot send — assigning the URL directly
+ * produced a 401 and a broken element. The blob is fetched with the header and
+ * the element gets an object URL.
+ */
+async function setMediaElementSrc(element, url) {
+  if (!element || !url) return;
+  try {
+    const blob = await apiBlob(url);
+    element.src = URL.createObjectURL(blob);
+  } catch (error) {
+    setStatus(humanError(error), true);
+  }
+}
+
+/**
+ * Object URLs for media files fetched through the authenticated API.
+ *
+ * `<img src>` and `<embed src>` cannot carry the `X-DCom-Token` header, so
+ * pointing them straight at `/api/series/.../image/N` returned 401 and the
+ * photo pane showed a broken image. Each file is fetched once as a blob — the
+ * same trick the thumbnail strip already used — and the object URL is what the
+ * element gets.
+ */
+const mediaObjectUrls = new Map();
+
+function mediaFileUrl(seriesId, index) {
+  const key = `${seriesId}:${index}`;
+  let pending = mediaObjectUrls.get(key);
+  if (!pending) {
+    pending = apiBlob(`/api/series/${seriesId}/image/${index}`)
+      .then((blob) => URL.createObjectURL(blob));
+    pending.catch(() => mediaObjectUrls.delete(key));
+    mediaObjectUrls.set(key, pending);
+  }
+  return pending;
+}
+
+/** Point every media element at its authenticated blob once the page is up. */
+function hydrateMediaSources() {
+  const root = getDomRoot();
+  if (!root) return;
+  for (const element of root.querySelectorAll("[data-media-src]")) {
+    const [seriesId, index] = String(element.dataset.mediaSrc).split(":");
+    if (!seriesId) continue;
+    mediaFileUrl(seriesId, Number(index) || 0)
+      .then((url) => { element.src = url; })
+      .catch((error) => setStatus(humanError(error), true));
+  }
+}
+
+/**
+ * The PDF reading pane.
+ *
+ * Scanned paperwork is read, never edited, so this is a plain embed of the
+ * file the archive already serves — no toolbar, no annotation layer. The
+ * worklist has always counted these documents; until now nothing could open
+ * one.
+ */
+function renderPdfViewer(series) {
+  if (!series) return `<div class="empty-state"><b>${escapeHtml(t("Chưa có tài liệu nào"))}</b></div>`;
+  const index = mediaFileIndex(series);
+  return `
+    <div class="pdf-viewer">
+      <div class="pdf-viewer-bar">
+        <span class="pdf-viewer-name">${escapeHtml(series.description || series.name || "")}</span>
+        ${renderMediaFileNav(series)}
+      </div>
+      <embed class="pdf-viewer-frame" type="application/pdf"
+        data-media-src="${escapeHtml(series.id)}:${index}">
+    </div>
+  `;
+}
+
+/**
  * Which pane fills the workspace for the selected series.
  *
  * One switch on the media type the backend reported, so adding a reader means
@@ -743,6 +879,8 @@ function renderWorkspacePane(series) {
       return renderPhotoEditorStudio(series);
     case "text":
       return renderTextViewer(series);
+    case "pdf":
+      return renderPdfViewer(series);
     default:
       break;
   }
@@ -774,6 +912,7 @@ const MEDIA_KIND_LABELS = {
   doc: "Bệnh án",
   video: "Video",
   text: "Văn bản",
+  pdf: "Bệnh án PDF",
 };
 
 /**
@@ -811,6 +950,7 @@ function timelineItemCount(series) {
   if (!Number.isFinite(slices) || slices <= 0) return "";
   switch (getSeriesMediaType(series)) {
     case "video": return tf("{} video", slices);
+    case "pdf": return tf("{} bản PDF", slices);
     case "text": return tf("{} file", slices);
     case "doc": return tf("{} trang", slices);
     case "photo": return tf("{} ảnh", slices);
@@ -1157,9 +1297,12 @@ function bindWorklistOpenButtons(host) {
       e.stopPropagation();
       const pid = btn.dataset.patientId;
       const patient = getEffectiveWorklistPatients().find((p) => p.id === pid);
-      if (patient && patient.studies && patient.studies.length > 0) {
-        openHistoryEntry({ folder: patient.studies[0].folder });
-      }
+      if (!patient) return;
+      // "Mở hồ sơ" means the whole record. Opening `studies[0].folder` gave
+      // one study — and, with the rows sorted wrong, often not even the newest
+      // one — leaving the timeline showing a single visit out of four.
+      const folder = patient.folder || patient.studies?.[0]?.folder;
+      if (folder) openHistoryEntry({ folder });
     });
   });
 
@@ -2367,20 +2510,48 @@ function syncDownloadButton() {
     || !hasSeriesSelection;
 }
 
+/** Whether two archive paths name the same folder, ignoring case and slashes. */
+function sameFolder(left, right) {
+  const clean = (value) => String(value || "").replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+  const a = clean(left);
+  return Boolean(a) && a === clean(right);
+}
+
+/**
+ * Open a record in its own viewer tab, backed by its own catalog.
+ *
+ * Each patient gets a backend session so tabs stop sharing one archive. The
+ * shared catalog is what made a second tab report "Không tìm thấy series" for
+ * the first patient's slices, and it is why every write had to guess which
+ * record it belonged to.
+ */
 async function openHistoryEntry(entry) {
   try {
+    const folder = entry.folder || "";
+    // One tab per record: reopening one already on screen focuses it instead
+    // of stacking a duplicate tab on the same folder.
+    const existing = state.tabs.find((tab) => sameFolder(tab.folder, folder));
+    if (existing) {
+      await switchTab(existing.id);
+      return;
+    }
+
     // Re-opening restores the link that filled the folder, so a retry after a
     // restart still knows which link to resume.
     state.lastDirectUrl = entry.url || "";
-    const field = app.querySelector("#direct-url");
+    const field = getDomRoot()?.querySelector("#direct-url");
     if (field) field.value = state.lastDirectUrl;
     syncManualInfoVisibility(state.lastDirectUrl);
-    state.bootstrap.job = await api("/api/history/open", {
+
+    setStatus(t("Đang mở hồ sơ…"));
+    const result = await api("/api/sessions/create", {
       method: "POST",
-      body: JSON.stringify({ folder: entry.folder }),
+      body: JSON.stringify({ path: folder }),
     });
-    setStatus(t("Đang mở lại thư mục từ lịch sử…"));
-    startJobPolling();
+    setApiSession(result.sessionId || "");
+    applyArchive(result.archive, result.sessionId || "", folder);
+    refreshHistory();
+    setStatus(t("Sẵn sàng."));
   } catch (error) {
     setStatus(humanError(error), true);
   }
@@ -2400,7 +2571,114 @@ async function refreshHistory() {
   }
 }
 
+/**
+ * Let the reader drag a rectangle on the photo.
+ *
+ * The tools used to act on made-up regions — crop took a fixed 5% off each
+ * edge, redact always covered the top-left corner — so what a clinician got
+ * had no relation to what they meant to hide or keep. The drag is recorded in
+ * source-image pixels, because that is the coordinate space the photo engine
+ * works in and the displayed image is scaled to fit.
+ */
+function initPhotoSelection() {
+  const wrap = getDomRoot()?.querySelector("#photo-editor-canvas");
+  const img = getDomRoot()?.querySelector("#photo-editor-img");
+  const box = getDomRoot()?.querySelector("#photo-selection");
+  if (!wrap || !img || !box) return;
+
+  let origin = null;
+
+  /** Displayed pixels -> source-image pixels. */
+  const toSource = (rect) => {
+    const bounds = img.getBoundingClientRect();
+    if (!bounds.width || !bounds.height) return null;
+    const scaleX = (img.naturalWidth || bounds.width) / bounds.width;
+    const scaleY = (img.naturalHeight || bounds.height) / bounds.height;
+    return {
+      x: Math.max(0, Math.round(rect.left * scaleX)),
+      y: Math.max(0, Math.round(rect.top * scaleY)),
+      width: Math.max(1, Math.round(rect.width * scaleX)),
+      height: Math.max(1, Math.round(rect.height * scaleY)),
+    };
+  };
+
+  const paint = (rect) => {
+    box.hidden = false;
+    box.style.left = `${rect.left}px`;
+    box.style.top = `${rect.top}px`;
+    box.style.width = `${rect.width}px`;
+    box.style.height = `${rect.height}px`;
+  };
+
+  const rectFrom = (event) => {
+    const bounds = img.getBoundingClientRect();
+    const wrapBox = wrap.getBoundingClientRect();
+    const clampX = (value) => Math.min(Math.max(value, bounds.left), bounds.right);
+    const clampY = (value) => Math.min(Math.max(value, bounds.top), bounds.bottom);
+    const x1 = clampX(origin.x);
+    const y1 = clampY(origin.y);
+    const x2 = clampX(event.clientX);
+    const y2 = clampY(event.clientY);
+    return {
+      left: Math.min(x1, x2) - wrapBox.left,
+      top: Math.min(y1, y2) - wrapBox.top,
+      width: Math.abs(x2 - x1),
+      height: Math.abs(y2 - y1),
+      imageLeft: Math.min(x1, x2) - bounds.left,
+      imageTop: Math.min(y1, y2) - bounds.top,
+    };
+  };
+
+  img.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+    origin = { x: event.clientX, y: event.clientY };
+    state.photoSelection = null;
+    box.hidden = true;
+  });
+
+  window.addEventListener("mousemove", (event) => {
+    if (!origin) return;
+    paint(rectFrom(event));
+  });
+
+  window.addEventListener("mouseup", (event) => {
+    if (!origin) return;
+    const rect = rectFrom(event);
+    origin = null;
+    // A click without a drag clears the selection instead of leaving a sliver.
+    if (rect.width < 4 || rect.height < 4) {
+      state.photoSelection = null;
+      box.hidden = true;
+      return;
+    }
+    state.photoSelection = toSource({
+      left: rect.imageLeft, top: rect.imageTop, width: rect.width, height: rect.height,
+    });
+    setStatus(tf(
+      "Đã chọn vùng {}×{} px. Chọn công cụ để áp dụng.",
+      state.photoSelection.width, state.photoSelection.height,
+    ));
+  });
+}
+
+/**
+ * The rectangle a photo tool should act on.
+ *
+ * Throws rather than falling back to a default region: a redact box that lands
+ * somewhere the reader did not choose can leave the patient's name on screen
+ * while looking like it worked.
+ */
+function requirePhotoSelection() {
+  const rect = state.photoSelection;
+  if (!rect || rect.width < 1 || rect.height < 1) {
+    throw new Error(t("Hãy kéo chuột trên ảnh để chọn vùng trước."));
+  }
+  return rect;
+}
+
 function initMediaEvents() {
+  hydrateMediaSources();
+  initPhotoSelection();
   const video = app.querySelector("#surgery-video-player");
   if (video) {
     const timeDisplay = app.querySelector("#video-time-display");
@@ -2587,6 +2865,28 @@ async function action(name, element = null) {
         setStatus(t("Đang nhận diện DICOM hoặc JPG/PNG trong folder…"));
         startJobPolling();
       }
+      return;
+    }
+    if (name === "photo-save-edit") {
+      const series = selectedSeries();
+      if (!series) return;
+      if (!state.photoWorkingPath) throw new Error(t("Chưa có chỉnh sửa nào để lưu."));
+      const saved = await api("/api/media/save", {
+        method: "POST",
+        body: JSON.stringify({ path: state.photoWorkingPath, seriesId: series.id }),
+      });
+      // The archive now holds one more file, so the strip and the rail have to
+      // be re-read or the saved edit stays invisible until the next restart.
+      const archive = await api("/api/archive/open", {
+        method: "POST",
+        body: JSON.stringify({ path: state.archive.root }),
+      }).catch(() => null);
+      if (archive?.series) applyArchive(archive, getApiSession(), state.archive.root);
+      setStatus(tf("Đã lưu vào hồ sơ: {}", saved.name));
+      return;
+    }
+    if (name === "media-file-prev" || name === "media-file-next") {
+      stepMediaFile(selectedSeries(), name === "media-file-next" ? 1 : -1);
       return;
     }
     if (name === "edit-diagnosis") {
@@ -3010,7 +3310,7 @@ async function action(name, element = null) {
       });
       state.videoWorkingPath = res.outputPath;
       if (video) {
-        video.src = `${res.url}&t=${Date.now()}`;
+        setMediaElementSrc(video, res.url);
         video.load();
       }
       setStatus(tf("Đã cắt đoạn video ({:.1f}s - {:.1f}s) thành công.", startSeconds, endSeconds));
@@ -3035,7 +3335,7 @@ async function action(name, element = null) {
       });
       state.videoWorkingPath = res.outputPath;
       if (video) {
-        video.src = `${res.url}&t=${Date.now()}`;
+        setMediaElementSrc(video, res.url);
         video.load();
       }
       setStatus(t("Đã đóng dấu thông tin lên video thành công."));
@@ -3071,7 +3371,7 @@ async function action(name, element = null) {
       });
       state.videoWorkingPath = res.outputPath;
       if (video) {
-        video.src = `${res.url}&t=${Date.now()}`;
+        setMediaElementSrc(video, res.url);
         video.load();
       }
       setStatus(t("Đã tối ưu hoá và xuất video MP4 thành công."));
@@ -3157,7 +3457,7 @@ async function action(name, element = null) {
       const domRoot = getDomRoot();
       const video = domRoot?.querySelector("#surgery-video-player");
       if (video) {
-        video.src = `${res.url}&t=${Date.now()}`;
+        setMediaElementSrc(video, res.url);
         video.load();
       }
       setStatus(tf("Đã ghép thành công {} đoạn video clip.", sources.length));
@@ -3197,7 +3497,7 @@ async function action(name, element = null) {
       state.photoWorkingPath = res.outputPath;
       const domRoot = getDomRoot();
       const img = domRoot?.querySelector("#photo-editor-img");
-      if (img) img.src = `${res.url}&t=${Date.now()}`;
+      setMediaElementSrc(img, res.url);
       setStatus(t("Đã xoay ảnh 90° thành công."));
       return;
     }
@@ -3206,16 +3506,8 @@ async function action(name, element = null) {
       if (!series) return;
       const path = await getPhotoSourcePath(series);
       if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
+      const rect = requirePhotoSelection();
       setStatus(t("Đang cắt ảnh..."));
-      const info = await api("/api/media/photo/info", {
-        method: "POST",
-        body: JSON.stringify({ path }),
-      });
-      const w = info?.info?.width || 800;
-      const h = info?.info?.height || 600;
-      const marginX = Math.round(w * 0.05);
-      const marginY = Math.round(h * 0.05);
-      const rect = { x: marginX, y: marginY, width: w - 2 * marginX, height: h - 2 * marginY };
       const res = await api("/api/media/photo/crop", {
         method: "POST",
         body: JSON.stringify({ path, rect }),
@@ -3223,7 +3515,7 @@ async function action(name, element = null) {
       state.photoWorkingPath = res.outputPath;
       const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
       const img = domRoot?.querySelector("#photo-editor-img");
-      if (img) img.src = `${res.url}&t=${Date.now()}`;
+      setMediaElementSrc(img, res.url);
       setStatus(t("Đã cắt vùng chọn ảnh thành công."));
       return;
     }
@@ -3232,14 +3524,8 @@ async function action(name, element = null) {
       if (!series) return;
       const path = await getPhotoSourcePath(series);
       if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
+      const regions = [requirePhotoSelection()];
       setStatus(t("Đang che vùng thông tin định danh..."));
-      const info = await api("/api/media/photo/info", {
-        method: "POST",
-        body: JSON.stringify({ path }),
-      });
-      const w = info?.info?.width || 800;
-      const h = info?.info?.height || 600;
-      const regions = [{ x: 10, y: 10, width: Math.min(320, Math.round(w * 0.4)), height: Math.min(60, Math.round(h * 0.15)) }];
       const res = await api("/api/media/photo/redact", {
         method: "POST",
         body: JSON.stringify({ path, regions, fill: [0, 0, 0] }),
@@ -3247,7 +3533,7 @@ async function action(name, element = null) {
       state.photoWorkingPath = res.outputPath;
       const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
       const img = domRoot?.querySelector("#photo-editor-img");
-      if (img) img.src = `${res.url}&t=${Date.now()}`;
+      setMediaElementSrc(img, res.url);
       setStatus(t("Đã che vùng danh tính (ĐÃ CHE) thành công."));
       return;
     }
@@ -3256,14 +3542,15 @@ async function action(name, element = null) {
       if (!series) return;
       const path = await getPhotoSourcePath(series);
       if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
+      // The drag names the arrow: it runs from where the reader started to
+      // where they released, so it points at what they were pointing at.
+      const sel = requirePhotoSelection();
+      const arrows = [{
+        x1: sel.x, y1: sel.y,
+        x2: sel.x + sel.width, y2: sel.y + sel.height,
+        color: [255, 70, 70],
+      }];
       setStatus(t("Đang chèn mũi tên chỉ điểm..."));
-      const info = await api("/api/media/photo/info", {
-        method: "POST",
-        body: JSON.stringify({ path }),
-      });
-      const w = info?.info?.width || 800;
-      const h = info?.info?.height || 600;
-      const arrows = [{ x1: Math.round(w * 0.2), y1: Math.round(h * 0.2), x2: Math.round(w * 0.5), y2: Math.round(h * 0.5), color: [255, 70, 70] }];
       const res = await api("/api/media/photo/annotate", {
         method: "POST",
         body: JSON.stringify({ path, arrows, texts: [], boxes: [] }),
@@ -3271,7 +3558,7 @@ async function action(name, element = null) {
       state.photoWorkingPath = res.outputPath;
       const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
       const img = domRoot?.querySelector("#photo-editor-img");
-      if (img) img.src = `${res.url}&t=${Date.now()}`;
+      setMediaElementSrc(img, res.url);
       setStatus(t("Đã chèn mũi tên chỉ điểm thành công."));
       return;
     }
@@ -3280,14 +3567,8 @@ async function action(name, element = null) {
       if (!series) return;
       const path = await getPhotoSourcePath(series);
       if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
+      const boxes = [{ rect: requirePhotoSelection(), color: [255, 70, 70], width: 3 }];
       setStatus(t("Đang khoanh vùng tổn thương..."));
-      const info = await api("/api/media/photo/info", {
-        method: "POST",
-        body: JSON.stringify({ path }),
-      });
-      const w = info?.info?.width || 800;
-      const h = info?.info?.height || 600;
-      const boxes = [{ rect: { x: Math.round(w * 0.35), y: Math.round(h * 0.35), width: Math.round(w * 0.3), height: Math.round(h * 0.3) }, color: [255, 70, 70], width: 3 }];
       const res = await api("/api/media/photo/annotate", {
         method: "POST",
         body: JSON.stringify({ path, boxes, texts: [], arrows: [] }),
@@ -3295,7 +3576,7 @@ async function action(name, element = null) {
       state.photoWorkingPath = res.outputPath;
       const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
       const img = domRoot?.querySelector("#photo-editor-img");
-      if (img) img.src = `${res.url}&t=${Date.now()}`;
+      setMediaElementSrc(img, res.url);
       setStatus(t("Đã khoanh vùng tổn thương thành công."));
       return;
     }
@@ -3320,7 +3601,7 @@ async function action(name, element = null) {
       state.photoWorkingPath = res.outputPath;
       const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
       const img = domRoot?.querySelector("#photo-editor-img");
-      if (img) img.src = `${res.url}&t=${Date.now()}`;
+      setMediaElementSrc(img, res.url);
       setStatus(t("Đã chèn ghi chú chữ thành công."));
       return;
     }
@@ -3419,11 +3700,16 @@ async function switchTab(tabId) {
   clearViewer();
   state.activeTabId = tabId;
   if (tabId === "worklist") {
+    // The worklist scans the shared archive, not one patient's session.
+    setApiSession("");
     render();
     return;
   }
   const targetTab = state.tabs.find((t) => t.id === tabId);
   if (targetTab) {
+    // Point every subsequent request at this tab's own catalog before any of
+    // them go out, or the tab reads whichever archive was opened last.
+    setApiSession(targetTab.sessionId || "");
     state.archive = targetTab.archive;
     state.selectedId = targetTab.selectedId;
     state.compareIds = [...targetTab.compareIds];
@@ -3458,7 +3744,7 @@ async function closeTab(tabId) {
   }
 }
 
-function applyArchive(archive, sessionId = "") {
+function applyArchive(archive, sessionId = "", folder = "") {
   state.archive = archive;
   for (const series of archive.series) registerSeries(series);
   if (!archive.series.some((item) => item.id === state.selectedId)) {
@@ -3475,6 +3761,9 @@ function applyArchive(archive, sessionId = "") {
     const newTab = {
       id: `tab-${Date.now()}`,
       sessionId: sessionId || "",
+      // The folder this tab reads. Used to focus an open record instead of
+      // opening a second tab on it.
+      folder: folder || archive.root || "",
       patientId: archive.patient?.patientId || "",
       patientName: archive.patient?.patientName || tabName,
       archive,
@@ -3494,6 +3783,7 @@ function applyArchive(archive, sessionId = "") {
     currentTab.selectedId = state.selectedId;
     currentTab.patientName = archive.patient?.patientName || currentTab.patientName;
     currentTab.patientId = archive.patient?.patientId || currentTab.patientId;
+    currentTab.folder = folder || archive.root || currentTab.folder || "";
     if (sessionId) currentTab.sessionId = sessionId;
   }
 
@@ -3511,6 +3801,15 @@ function renderViewer() {
     state.busyViewer = false;
     app.querySelector(".status-dot")?.classList.remove("busy");
     loadTextContent(series, currentTextDoc(series)?.index || 0);
+    return Promise.resolve();
+  }
+  if (mediaType === "pdf") {
+    clearViewer();
+    state.busyViewer = false;
+    getDomRoot()?.querySelector(".status-dot")?.classList.remove("busy");
+    // The embed needs its authenticated blob just like the photo pane does.
+    hydrateMediaSources();
+    setStatus(t("Sẵn sàng."));
     return Promise.resolve();
   }
   if (mediaType === "video" || mediaType === "photo" || mediaType === "doc") {
@@ -3982,6 +4281,9 @@ async function boot() {
     const initialTab = {
       id: "tab-init",
       sessionId: "",
+      // Without this the boot tab matches no folder, so opening the same
+      // record from the worklist added a second tab on top of it.
+      folder: state.archive.root || "",
       patientId: state.archive.patient?.patientId || "",
       patientName: state.archive.patient?.patientName || tabName,
       archive: state.archive,

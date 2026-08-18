@@ -15,6 +15,7 @@ import math
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,9 @@ VIDEO_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
 # format they arrived in. A converted JPG of an MR slice is still an MR slice.
 DIAGNOSTIC_MODALITIES = {"CT", "MR", "MRI", "CR", "DX", "XA", "US", "PT", "NM", "MG"}
 TEXT_EXTENSIONS = {".txt", ".json"}
+# Scanned paperwork arrives as PDF. The worklist has always counted these, but
+# nothing could open one, so they were tallied and then unreachable.
+PDF_EXTENSIONS = {".pdf"}
 # Bookkeeping the app writes for itself. They are .json sitting in the archive,
 # so the text scanner would otherwise offer `patient-index.json` to a clinician
 # as though it were a report.
@@ -76,6 +80,8 @@ def media_type_for_file(path: Path) -> str:
     suffix = path.suffix.casefold()
     if suffix in VIDEO_EXTENSIONS:
         return "video"
+    if suffix in PDF_EXTENSIONS:
+        return "pdf"
     if suffix in TEXT_EXTENSIONS:
         return "" if path.name.casefold() in APP_METADATA_NAMES else "text"
     if suffix in IMG_EXTENSIONS:
@@ -792,7 +798,7 @@ def _placeholder_thumbnail(kind: str) -> bytes:
     """
     from PIL import Image
 
-    tint = {"video": (48, 30, 60), "text": (54, 46, 28)}.get(kind, (24, 28, 34))
+    tint = {"video": (48, 30, 60), "text": (54, 46, 28), "pdf": (58, 34, 34)}.get(kind, (24, 28, 34))
     return _encode_thumbnail(Image.new("RGB", THUMBNAIL_BOX, tint))
 
 
@@ -811,7 +817,7 @@ def build_series_thumbnail(record: "SeriesRecord") -> bytes:
         frame = record.frame_indices[middle] if record.frame_indices else 0
         return _encode_thumbnail(_dicom_thumbnail_image(path, frame))
     kind = record.resolved_media_type()
-    if kind in {"video", "text"}:
+    if kind in {"video", "text", "pdf"}:
         return _placeholder_thumbnail(kind)
     with Image.open(path) as handle:
         return _encode_thumbnail(handle.convert("RGB"))
@@ -1026,7 +1032,10 @@ class ArchiveCatalog:
         and hide the operative video and report filed next to it.
         """
         found: dict[str, SeriesRecord] = {}
-        blocked = {"DICOM", "RAW_JPG"}
+        # `JPG` holds slices converted from the DICOM beside it, which the DICOM
+        # series already represents. Everything else — intra-operative photos,
+        # scanned records — is its own material and must still be listed.
+        blocked = {"DICOM", "RAW_JPG", "JPG"}
         for current, dirnames, _filenames in os.walk(root):
             if should_stop and should_stop():
                 break
@@ -1045,7 +1054,15 @@ class ArchiveCatalog:
         beside a study rather than inside it, which is exactly the shape this
         catches — and which the old scanner dropped on the floor entirely.
         """
-        for extensions, source in ((VIDEO_EXTENSIONS, "video"), (TEXT_EXTENSIONS, "text")):
+        for extensions, source in (
+            (VIDEO_EXTENSIONS, "video"),
+            (PDF_EXTENSIONS, "pdf"),
+            (TEXT_EXTENSIONS, "text"),
+            # Photographs and scanned paperwork filed beside a study. Without
+            # this, a patient folder holding both a scan and its operative
+            # photos listed the scan and silently dropped the photos.
+            (IMG_EXTENSIONS, "image"),
+        ):
             files = self._playable_files(folder, extensions)
             if not files:
                 continue
@@ -1059,7 +1076,7 @@ class ArchiveCatalog:
                 images=files,
                 manifest={"series_description": folder.name},
                 mpr_ready=False,
-                mpr_reason="Series video hoặc văn bản, không dựng MPR.",
+                mpr_reason="Series video, PDF hoặc văn bản, không dựng MPR.",
                 modality=folder_modality or "UNKNOWN",
                 source_type=source,
                 study_group=study_desc or folder.name,
@@ -1512,7 +1529,7 @@ class ArchiveCatalog:
             return self.snapshot()
 
         kind = media_type_for_file(file_path)
-        if kind in {"video", "text"}:
+        if kind in {"video", "text", "pdf"}:
             folder = file_path.parent
             digest = hashlib.sha256(str(file_path).casefold().encode("utf-8")).hexdigest()[:20]
             study_date, folder_modality, study_desc = _study_from_folder_path(folder)
@@ -1523,7 +1540,7 @@ class ArchiveCatalog:
                 images=[file_path],
                 manifest={"series_description": file_path.stem},
                 mpr_ready=False,
-                mpr_reason="Series video hoặc văn bản, không dựng MPR.",
+                mpr_reason="Series video, PDF hoặc văn bản, không dựng MPR.",
                 modality=folder_modality or "UNKNOWN",
                 source_type=kind,
                 study_group=study_desc or folder.name,
@@ -1534,7 +1551,7 @@ class ArchiveCatalog:
                 self._patient = self._patient_block(patient_manifest)
                 self._series = {digest: record}
             if log:
-                label = "video" if kind == "video" else "văn bản"
+                label = {"video": "video", "pdf": "PDF"}.get(kind, "văn bản")
                 log(f"Đã mở file {label}: {file_path.name}")
             return self.snapshot()
 
@@ -1758,12 +1775,22 @@ class ViewerSessionRegistry:
         self._sessions: dict[str, ViewerSession] = {}
         self._lock = threading.RLock()
 
-    def create_session(self, path: str, session_id: Optional[str] = None) -> ViewerSession:
+    def create_session(
+        self,
+        path: str,
+        session_id: Optional[str] = None,
+        *,
+        on_opened: Optional[Callable[[str], None]] = None,
+    ) -> ViewerSession:
         if not session_id:
             session_id = secrets.token_hex(8)
         catalog = ArchiveCatalog()
         if path:
             catalog.open(path)
+            # Opening a record through a session is still opening it, so the
+            # shared history and worklist have to hear about it.
+            if on_opened:
+                on_opened(str(Path(path).expanduser().resolve()))
         session = ViewerSession(
             session_id=session_id,
             catalog=catalog,
@@ -2206,6 +2233,22 @@ class WorklistScanner:
         return records.get(key)
 
     @staticmethod
+    def _sortable_study_date(raw: str) -> str:
+        """The same date as YYYYMMDD, or "" — for ordering, never for display.
+
+        Accepts either a DICOM DA or the dd/mm/yyyy the display field carries,
+        so both call sites can hand it whatever they already have.
+        """
+        digits = re.sub(r"\D", "", str(raw or ""))
+        if len(digits) != 8:
+            return ""
+        if _is_real_date(digits):
+            return digits
+        # dd/mm/yyyy stripped of separators is ddmmyyyy.
+        reordered = f"{digits[4:8]}{digits[2:4]}{digits[0:2]}"
+        return reordered if _is_real_date(reordered) else ""
+
+    @staticmethod
     def _format_study_date(raw: str) -> str:
         """DICOM DA (or an ISO-ish variant) as dd/mm/yyyy; "" when unusable.
 
@@ -2301,6 +2344,7 @@ class WorklistScanner:
                 # A folder that is gone has nothing left to read; the manifest
                 # is the only surviving record of when the study was taken.
                 "studyDate": self._format_study_date(record.get("date", "")),
+                "studyDateSort": self._sortable_study_date(record.get("date", "")),
                 "studyName": str(record.get("description") or "").strip() or study_dir.name,
                 "modality": str(record.get("modality") or "").strip().upper(),
                 "seriesCount": 0,
@@ -2421,6 +2465,7 @@ class WorklistScanner:
         return {
             "id": hashlib.sha256(folder_str.encode("utf-8")).hexdigest()[:16],
             "studyDate": study_date,
+            "studyDateSort": self._sortable_study_date(study_date),
             "studyName": study_name,
             "modality": modality,
             "seriesCount": series_count,
@@ -2447,10 +2492,25 @@ class WorklistScanner:
     def scan(self) -> list[dict]:
         roots_to_scan = []
         if self.controller.output_root and self.controller.output_root.is_dir():
-            roots_to_scan.append(self.controller.output_root)
+            roots_to_scan.append(self.controller.output_root.resolve())
 
+        # History spans every folder ever opened, including temp fixtures and
+        # archives that have since moved. Folding all of it into the Study List
+        # made a one-patient archive report fourteen patients and twenty-five
+        # items "needing attention". The Study List shows the archive that is
+        # actually selected; the Activity tab is where the full history lives.
         history = self.controller.history_snapshot()
-        history_folders = [Path(item["folder"]) for item in history if item.get("folder")]
+        history_folders = []
+        for item in history:
+            if not item.get("folder"):
+                continue
+            candidate = Path(item["folder"])
+            try:
+                resolved = candidate.expanduser().resolve()
+            except OSError:
+                continue
+            if any(_is_within(resolved, root) for root in roots_to_scan):
+                history_folders.append(candidate)
 
         patient_map: dict[str, dict] = {}
 
@@ -2515,7 +2575,10 @@ class WorklistScanner:
                 "video": video_tot,
                 "doc": doc_tot,
             }
-            p["studies"].sort(key=lambda s: s.get("studyDate", ""), reverse=True)
+            # `studyDate` is already formatted dd/mm/yyyy for display, so
+            # sorting it as text ordered by day and put 20/06/2026 ahead of
+            # 06/08/2026. `studyDateSort` is the same date as YYYYMMDD.
+            p["studies"].sort(key=lambda s: s.get("studyDateSort", ""), reverse=True)
             patients.append(p)
 
         return patients
@@ -2746,6 +2809,46 @@ class WebController:
         self.output_root = root
         self._write_settings()
         return {"outputRoot": str(root)}
+
+    def save_media_edit(
+        self,
+        work_path: str,
+        series_id: str,
+        catalog: Optional[ArchiveCatalog] = None,
+    ) -> dict:
+        """Copy an edited photo out of the scratch folder into the record.
+
+        Edits landed in `%TEMP%\\concord_media_work` and nowhere else, so
+        leaving the tab and coming back showed the untouched original — the
+        work was silently gone. This writes a new file beside the source, never
+        over it: the original stays the record of what the camera captured, and
+        the edit is a derived file the archive can list.
+        """
+        target_catalog = catalog or self.catalog
+        record = target_catalog.get(series_id)
+        if not record.images:
+            raise ValueError("Series không có file nào để lưu cạnh.")
+        source = Path(str(work_path or "")).expanduser().resolve()
+        if not _is_within(source, MEDIA_WORK_ROOT.resolve()):
+            raise PermissionError("Chỉ lưu được file vừa chỉnh trong thư mục làm việc.")
+        if not source.is_file():
+            raise ValueError("Không tìm thấy file đã chỉnh để lưu.")
+
+        folder = record.folder
+        stem = record.images[0].stem
+        suffix = source.suffix or record.images[0].suffix or ".jpg"
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        destination = folder / f"{stem}_edit_{stamp}{suffix}"
+        counter = 2
+        while destination.exists():
+            destination = folder / f"{stem}_edit_{stamp}_{counter}{suffix}"
+            counter += 1
+        shutil.copy2(source, destination)
+        return {
+            "savedPath": str(destination),
+            "name": destination.name,
+            "folder": str(folder),
+        }
 
     def set_patient_diagnosis(
         self,
@@ -3445,7 +3548,10 @@ class LocalApiServer:
                     "Content-Security-Policy",
                     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
                     "img-src 'self' blob: data:; media-src 'self' blob:; worker-src 'self' blob:; connect-src 'self'; "
-                    "object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+                    # Scanned records are PDFs and the reader embeds them. Only
+                    # blobs this origin already fetched are allowed, so nothing
+                    # external can be plugged in.
+                    "object-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'",
                 )
                 for name, value in (extra or {}).items():
                     self.send_header(name, value)
@@ -3617,7 +3723,9 @@ class LocalApiServer:
                 if path == "/api/sessions/create":
                     p = str(payload.get("path") or "")
                     sid = str(payload.get("sessionId") or "") or None
-                    sess = owner.controller.sessions.create_session(p, session_id=sid)
+                    sess = owner.controller.sessions.create_session(
+                        p, session_id=sid, on_opened=owner.controller.history.add,
+                    )
                     return {"sessionId": sess.session_id, "archive": sess.catalog.snapshot()}
                 if path == "/api/sessions/close":
                     sid = str(payload.get("sessionId") or "")
@@ -3642,6 +3750,12 @@ class LocalApiServer:
                     return owner.controller.stop()
                 if path == "/api/history/open":
                     return owner.controller.start_history_open(str(payload.get("folder") or ""))
+                if path == "/api/media/save":
+                    return owner.controller.save_media_edit(
+                        str(payload.get("path") or ""),
+                        str(payload.get("seriesId") or ""),
+                        catalog=catalog,
+                    )
                 if path == "/api/patient/diagnosis":
                     return owner.controller.set_patient_diagnosis(
                         str(payload.get("diagnosis") or ""),

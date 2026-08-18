@@ -132,6 +132,7 @@ describe("Photo Studio Action Handlers", () => {
     };
     state.selectedId = "series_photo_1";
     state.photoWorkingPath = "D:/storage/photo_01.jpg";
+    state.photoSelection = null;
     document.body.innerHTML = `
       <div id="app">
         <div id="workspace"></div>
@@ -140,11 +141,15 @@ describe("Photo Studio Action Handlers", () => {
     `;
   });
 
-  it("photo-rotate-cw calls rotate API and updates photoWorkingPath and img element", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      mockJsonResponse({ outputPath: "D:/storage/rotated_01.jpg", url: "/api/media/work-file?name=rotated_01.jpg" })
-    );
+  it("photo-rotate-cw rotates and re-fetches the result through the token", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url) => {
+      if (String(url).includes("/api/media/work-file")) {
+        return { ok: true, status: 200, headers: { get: () => "image/jpeg" }, blob: async () => new Blob([1]) };
+      }
+      return mockJsonResponse({ outputPath: "D:/storage/rotated_01.jpg", url: "/api/media/work-file?name=rotated_01.jpg" });
+    });
     global.fetch = fetchMock;
+    global.URL.createObjectURL = vi.fn(() => "blob:rotated");
 
     await action("photo-rotate-cw");
 
@@ -156,31 +161,65 @@ describe("Photo Studio Action Handlers", () => {
       })
     );
     expect(state.photoWorkingPath).toBe("D:/storage/rotated_01.jpg");
-    const img = document.querySelector("#photo-editor-img");
-    expect(img.src).toContain("rotated_01.jpg");
+    // `<img src>` cannot send X-DCom-Token, so the result is fetched as a blob
+    // and the element gets an object URL. Assigning the API URL gave a 401.
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/work-file?name=rotated_01.jpg"),
+      expect.objectContaining({ headers: expect.objectContaining({ "X-DCom-Token": expect.anything() }) })
+    );
   });
 
-  it("photo-tool-crop calls info and crop APIs", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(mockJsonResponse({ info: { width: 1000, height: 800 } }))
-      .mockResolvedValueOnce(mockJsonResponse({ outputPath: "D:/storage/cropped_01.jpg", url: "/api/media/work-file?name=cropped_01.jpg" }));
+  it("photo-tool-crop crops the region the reader dragged", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ outputPath: "D:/storage/cropped_01.jpg", url: "/api/media/work-file?name=cropped_01.jpg" })
+    );
     global.fetch = fetchMock;
+    state.photoSelection = { x: 120, y: 90, width: 300, height: 240 };
 
     await action("photo-tool-crop");
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/photo/crop"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ path: "D:/storage/photo_01.jpg", rect: state.photoSelection }),
+      })
+    );
     expect(state.photoWorkingPath).toBe("D:/storage/cropped_01.jpg");
   });
 
-  it("photo-tool-redact calls redact API", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(mockJsonResponse({ info: { width: 1000, height: 800 } }))
-      .mockResolvedValueOnce(mockJsonResponse({ outputPath: "D:/storage/redacted_01.jpg", url: "/api/media/work-file?name=redacted_01.jpg" }));
+  it("refuses to act on a made-up region when nothing is selected", async () => {
+    // The old code cropped a fixed 5% off each edge and always redacted the
+    // top-left corner, so the result had no relation to what was meant.
+    const fetchMock = vi.fn();
     global.fetch = fetchMock;
+    state.photoSelection = null;
+
+    for (const tool of ["photo-tool-crop", "photo-tool-redact", "photo-tool-box", "photo-tool-arrow"]) {
+      await action(tool);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("photo-tool-redact covers exactly the selected region", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ outputPath: "D:/storage/redacted_01.jpg", url: "/api/media/work-file?name=redacted_01.jpg" })
+    );
+    global.fetch = fetchMock;
+    state.photoSelection = { x: 8, y: 12, width: 260, height: 44 };
 
     await action("photo-tool-redact");
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/media/photo/redact"),
+      expect.objectContaining({
+        body: JSON.stringify({
+          path: "D:/storage/photo_01.jpg",
+          regions: [state.photoSelection],
+          fill: [0, 0, 0],
+        }),
+      })
+    );
     expect(state.photoWorkingPath).toBe("D:/storage/redacted_01.jpg");
   });
 
@@ -192,13 +231,23 @@ describe("Photo Studio Action Handlers", () => {
       return mockJsonResponse({ outputPath: "D:/storage/annotated_01.jpg", url: "/api/media/work-file?name=annotated_01.jpg" });
     });
     global.fetch = fetchMock;
+    state.photoSelection = { x: 200, y: 160, width: 300, height: 240 };
 
     window.prompt = vi.fn().mockReturnValue("Ghi chú thử nghiệm");
 
     await action("photo-tool-arrow");
+    // The arrow spans the drag: it points from where the reader started to
+    // where they released.
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("/api/media/photo/annotate"),
-      expect.objectContaining({ method: "POST" })
+      expect.objectContaining({
+        body: JSON.stringify({
+          path: "D:/storage/photo_01.jpg",
+          arrows: [{ x1: 200, y1: 160, x2: 500, y2: 400, color: [255, 70, 70] }],
+          texts: [],
+          boxes: [],
+        }),
+      })
     );
 
     await action("photo-tool-box");

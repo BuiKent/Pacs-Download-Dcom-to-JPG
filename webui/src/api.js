@@ -1,7 +1,35 @@
 let token = "";
 
+/**
+ * The viewer session every request is answered from.
+ *
+ * The backend keeps one catalog per session and falls back to a single shared
+ * default when no session is named. Nothing used to send this, so every viewer
+ * tab read whichever archive was opened last: switching back to an earlier
+ * patient reported "Không tìm thấy series", and a write meant for one chart
+ * could land in another's. Tab switches set this, so a request is always
+ * answered from the archive the tab is actually showing.
+ */
+let sessionId = "";
+
 export function configureApi(value) {
   token = value;
+}
+
+export function setApiSession(value) {
+  sessionId = String(value || "");
+  return sessionId;
+}
+
+export function getApiSession() {
+  return sessionId;
+}
+
+/** Auth and session headers every call shares. */
+function baseHeaders() {
+  const headers = { "X-DCom-Token": token };
+  if (sessionId) headers["X-Viewer-Session"] = sessionId;
+  return headers;
 }
 
 export async function api(path, options = {}) {
@@ -10,7 +38,7 @@ export async function api(path, options = {}) {
     cache: "no-store",
     headers: {
       "Content-Type": "application/json",
-      "X-DCom-Token": token,
+      ...baseHeaders(),
       ...(options.headers || {}),
     },
   });
@@ -27,7 +55,7 @@ export async function api(path, options = {}) {
 export async function apiBlob(path) {
   const response = await fetch(path, {
     cache: "no-store",
-    headers: { "X-DCom-Token": token },
+    headers: baseHeaders(),
   });
   if (!response.ok) {
     let message = `HTTP ${response.status}`;
@@ -44,7 +72,7 @@ export async function apiBlob(path) {
 export async function apiPixelData(path) {
   const response = await fetch(path, {
     cache: "no-store",
-    headers: { "X-DCom-Token": token },
+    headers: baseHeaders(),
   });
   if (!response.ok) {
     let message = `HTTP ${response.status}`;

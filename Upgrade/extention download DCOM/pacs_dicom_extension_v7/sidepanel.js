@@ -64,10 +64,77 @@ function renderInventory(){if(!inventory){show('doneCard',false);show('studyCard
   show('adapterNote',inventory.adapter==='ZFP');if(inventory.adapter==='ZFP')$('adapterNote').textContent='GE viewer does not support on-demand image fetching. The extension captures images loaded by the viewer itself, so this tab will reload automatically — keep tab untouched during download.';
   const list=$('seriesList');list.textContent='';for(const s of(inventory.series||[])){const row=document.createElement('label');row.className='series-row';const cb=document.createElement('input');cb.type='checkbox';cb.checked=true;cb.dataset.id=s.id;cb.addEventListener('change',updateSelected);const main=document.createElement('div');main.className='series-main';const title=document.createElement('div');title.className='series-title';title.textContent=`${s.number?`${s.number} · `:''}${s.description||'Series'}`;const meta=document.createElement('div');meta.className='series-meta';const m1=document.createElement('span');m1.textContent=s.modality||'DICOM';const m2=document.createElement('span');m2.textContent=s.sequenceHint||'';meta.append(m1,m2);main.append(title,meta);const count=document.createElement('span');count.className='series-count';count.textContent=s.imageCount?`${s.imageCount} images`:'? images';row.append(cb,main,count);list.append(row);}updateSelected();}
 function selectedIds(){return[...$('seriesList').querySelectorAll('input[type=checkbox]:checked')].map(x=>x.dataset.id);}
-function updateSelected(){const ids=selectedIds(),sel=(inventory?.series||[]).filter(s=>ids.includes(s.id)),images=sel.reduce((n,s)=>n+(Number(s.imageCount)||0),0);$('selectedSummary').textContent=`${ids.length}/${inventory?.series?.length||0} series${images?` · ~${images} images`:''}`;$('stickyTitle').textContent=`${ids.length} series${images?` · ~${images} images`:''}`;$('stickySub').textContent='Name - ID - Date / Series';if(isStartingDownload||(job&&['preparing','downloading','cancelling'].includes(job.status))){$('downloadBtn').disabled=true;$('downloadBtn').classList.add('btn-loading');return;}$('downloadBtn').classList.remove('btn-loading');$('downloadBtn').disabled=!ids.length;$('downloadBtn').textContent=inventory?.previousDownload&&inventory.previousDownload.status!=='done'?'Download missing':'Download DICOM';}
+function updateSelected(){
+  const ids=selectedIds(),sel=(inventory?.series||[]).filter(s=>ids.includes(s.id)),images=sel.reduce((n,s)=>n+(Number(s.imageCount)||0),0);
+  $('selectedSummary').textContent=`${ids.length}/${inventory?.series?.length||0} series${images?` · ~${images} images`:''}`;
+  $('stickyTitle').textContent=`${ids.length} series${images?` · ~${images} images`:''}`;
+  $('stickySub').textContent='Name - ID - Date / Series';
+  const isBusy=isStartingDownload||(job&&['preparing','downloading','cancelling'].includes(job.status));
+  if(isBusy){
+    $('downloadBtn').disabled=true;
+    $('downloadBtn').classList.add('btn-loading');
+    $('resumeBtn').disabled=true;
+    $('resumeBtn').classList.add('btn-loading');
+    return;
+  }
+  $('downloadBtn').classList.remove('btn-loading');
+  $('downloadBtn').disabled=!ids.length;
+  $('downloadBtn').textContent=inventory?.previousDownload&&inventory.previousDownload.status!=='done'?'Download missing':'Download DICOM';
+  $('resumeBtn').classList.remove('btn-loading');
+  $('resumeBtn').disabled=!ids.length;
+}
 
 function jobLabel(s){return({preparing:'Preparing',downloading:'Downloading',done:'Completed',partial:'Partial',done_with_errors:'Errors',error:'Failed',cancelling:'Cancelling',cancelled:'Cancelled'})[s]||s||'—';}
-function renderJob(){if(!job||Number(job.tabId)!==Number(tabId)){show('progressCard',false);setTopLoader(false);return;}show('progressCard',true);const total=Number(job.total)||0,done=Number(job.completed||0)+Number(job.failed||0),pct=total?Math.min(100,Math.round(done*100/total)):0;$('progressBar').style.width=`${pct}%`;$('progressText').textContent=`${done} / ${total||'?'}`;$('failedText').textContent=`${job.failed||0} errors${job.skipped?` · ${job.skipped} skipped`:''}`;$('currentFile').textContent=job.currentFile||'';$('jobTitle').textContent=job.status==='partial'?'Saved captured data':job.status==='done'?'Download complete':job.status==='done_with_errors'?'Completed with errors':'Downloading DICOM';$('jobMeta').textContent=`${job.adapter||'DICOM'}${job.original||job.reconstructed?` · ${job.original||0} original${job.reconstructed?` · ${job.reconstructed} reconstructed`:''}`:''}`;const kind=job.status==='done'?'good':['error','done_with_errors'].includes(job.status)?'bad':['partial','cancelled'].includes(job.status)?'warn':'neutral';chip($('jobBadge'),jobLabel(job.status),kind);const isBusy=['preparing','downloading','cancelling'].includes(job.status);$('cancelBtn').disabled=!isBusy;setTopLoader(isBusy);if(isBusy){$('downloadBtn').disabled=true;$('downloadBtn').classList.add('btn-loading');$('downloadBtn').innerHTML=`<span class="spinner"></span> ${jobLabel(job.status)}...`;}else{updateSelected();}const errs=job.errors||[];show('errorDetails',errs.length>0);$('errorLog').textContent=errs.join('\n');if(TERMINAL.has(job.status)){refreshHistory().catch(()=>{});setTimeout(refresh,250);}}
+function renderJob(){
+  if(!job||Number(job.tabId)!==Number(tabId)){show('progressCard',false);setTopLoader(false);return;}
+  show('progressCard',true);
+  const total=Number(job.total)||0,done=Number(job.completed||0)+Number(job.failed||0),pct=total?Math.min(100,Math.round(done*100/total)):0;
+  $('progressBar').style.width=`${pct}%`;
+  $('progressText').textContent=`${done} / ${total||'?'}`;
+  $('failedText').textContent=`${job.failed||0} errors${job.skipped?` · ${job.skipped} skipped`:''}`;
+  $('currentFile').textContent=job.currentFile||'';
+  $('jobTitle').textContent=job.status==='partial'?'Saved captured data':job.status==='done'?'Download complete':job.status==='done_with_errors'?'Completed with errors':job.status==='cancelled'?'Download stopped':'Downloading DICOM';
+  $('jobMeta').textContent=`${job.adapter||'DICOM'}${job.original||job.reconstructed?` · ${job.original||0} original${job.reconstructed?` · ${job.reconstructed} reconstructed`:''}`:''}`;
+  const kind=job.status==='done'?'good':['error','done_with_errors'].includes(job.status)?'bad':['partial','cancelled'].includes(job.status)?'warn':'neutral';
+  chip($('jobBadge'),jobLabel(job.status),kind);
+  const isBusy=['preparing','downloading','cancelling'].includes(job.status);
+  setTopLoader(isBusy);
+  if(isBusy){
+    show('cancelBtn',true);
+    show('resumeBtn',false);
+    show('jobNote',false);
+    $('cancelBtn').disabled=(job.status==='cancelling');
+    $('cancelBtn').textContent=(job.status==='cancelling'?'Cancelling...':'Cancel');
+    $('downloadBtn').disabled=true;
+    $('downloadBtn').classList.add('btn-loading');
+    $('downloadBtn').innerHTML=`<span class="spinner"></span> ${jobLabel(job.status)}...`;
+  }else{
+    $('cancelBtn').textContent='Cancel';
+    if(['cancelled','done_with_errors','error','partial'].includes(job.status)){
+      show('cancelBtn',false);
+      show('resumeBtn',true);
+      show('jobNote',true);
+      const remaining=Math.max(0,total-Number(job.completed||0));
+      $('resumeBtn').innerHTML=remaining?`🔄 Resume missing (${remaining})`:'🔄 Retry';
+      $('jobNote').textContent=job.status==='cancelled'
+        ?`Download stopped. Safely saved ${job.completed||0}/${total||'?'} images. Click 'Resume' to download remaining files.`
+        :job.status==='done_with_errors'
+        ?`Saved ${job.completed||0}/${total||'?'} images (${job.failed||0} errors). Click 'Resume' to retry failed files.`
+        :job.status==='error'
+        ?`Download failed. Click 'Resume' to retry connecting.`
+        :job.status==='partial'
+        ?`Saved ${job.completed||0}/${total||'?'} images. Click 'Resume' to finish remaining files.`
+        :`Incomplete download (${job.completed||0}/${total||'?'}). Click 'Resume' to finish.`;
+    }else{
+      show('cancelBtn',false);
+      show('resumeBtn',false);
+      show('jobNote',false);
+    }
+    updateSelected();
+  }
+  const errs=job.errors||[];show('errorDetails',errs.length>0);$('errorLog').textContent=errs.join('\n');
+  if(TERMINAL.has(job.status)){refreshHistory().catch(()=>{});setTimeout(refresh,250);}
+}
 
 function historyStatus(s){return({done:'Downloaded',partial:'Partial',done_with_errors:'Errors',error:'Failed',cancelled:'Cancelled',viewed:'Viewed'})[s]||'Viewed';}
 function historyKind(s){return s==='done'?'done':['error','done_with_errors'].includes(s)?'bad':['partial','cancelled'].includes(s)?'warn':'';}
@@ -90,7 +157,12 @@ async function startDownload(){
   $('downloadBtn').disabled=true;
   $('downloadBtn').classList.add('btn-loading');
   $('downloadBtn').innerHTML='<span class="spinner"></span> Starting...';
+  $('resumeBtn').disabled=true;
+  $('resumeBtn').classList.add('btn-loading');
+  $('resumeBtn').innerHTML='<span class="spinner"></span> Reconnecting...';
   setTopLoader(true);
+  show('jobNote',true);
+  $('jobNote').textContent='Preparing and reconnecting to PACS...';
   try{
     const pref=(await chrome.storage.local.get(SAVE_MODE_KEY))[SAVE_MODE_KEY]||'';
     let saveMode='downloads';
@@ -106,6 +178,11 @@ async function startDownload(){
     toast(e.message||String(e),true);
     setTopLoader(false);
     isStartingDownload=false;
+    show('jobNote',true);
+    $('jobNote').textContent=`Connection error: ${e.message||String(e)}`;
+    $('resumeBtn').disabled=false;
+    $('resumeBtn').classList.remove('btn-loading');
+    $('resumeBtn').innerHTML='🔄 Retry';
     updateSelected();
   }finally{
     isStartingDownload=false;
@@ -123,6 +200,7 @@ $('learnToggleBtn').addEventListener('click',async()=>{if($('learnToggleBtn').di
 $('selectAllBtn').addEventListener('click',()=>{$('seriesList').querySelectorAll('input').forEach(x=>x.checked=true);updateSelected();});
 $('selectNoneBtn').addEventListener('click',()=>{$('seriesList').querySelectorAll('input').forEach(x=>x.checked=false);updateSelected();});
 $('downloadBtn').addEventListener('click',startDownload);
+$('resumeBtn').addEventListener('click',startDownload);
 $('cancelBtn').addEventListener('click',()=>send('CANCEL_JOB',{tabId}).then(()=>scheduleRefresh(100)).catch(e=>toast(e.message||String(e),true)));
 $('revealDownloadedBtn').addEventListener('click',()=>{revealDownloaded=true;renderInventory();});
 $('historyOpenBtn').addEventListener('click',async()=>{show('historyCard',true);$('historyToggle').querySelector('span').textContent='⌄';await refreshHistory();});

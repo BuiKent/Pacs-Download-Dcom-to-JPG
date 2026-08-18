@@ -46,10 +46,11 @@
 
   <section id="progressCard" class="card hidden">
     <div class="section-head"><div><h3 id="jobTitle">Đang tải</h3><p id="jobMeta">—</p></div><span id="jobBadge" class="chip neutral">—</span></div>
+    <div id="jobNote" class="partial-banner hidden"></div>
     <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
     <div class="progress-numbers"><strong id="progressText">0 / 0</strong><span id="failedText">0 lỗi</span></div>
     <div id="currentFile" class="current-file"></div>
-    <div class="toolbar"><button id="cancelBtn" class="danger">Dừng tải</button></div>
+    <div class="toolbar"><button id="cancelBtn" class="danger">Dừng tải</button><button id="resumeBtn" class="primary hidden">Tải tiếp</button></div>
     <details id="errorDetails" class="errors hidden"><summary>Chi tiết lỗi</summary><pre id="errorLog"></pre></details>
   </section>
 

@@ -2504,3 +2504,64 @@ button:disabled { opacity: .35; cursor: default; }
 
 
 
+
+/* PDF reading pane and the shared multi-file navigator. Both sit on the
+   diagnostic side of the app, so their colours are hardcoded dark alongside
+   the other viewer panes (CLAUDE.md §5). */
+.pdf-viewer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: #0b0b0b;
+  overflow: hidden;
+}
+.pdf-viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #141414;
+  border-bottom: 1px solid #262626;
+  color: #e6e6e6;
+  font-size: 12px;
+  flex: none;
+}
+.pdf-viewer-name {
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.pdf-viewer-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #1a1a1a;
+}
+
+.media-file-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.media-file-count {
+  min-width: 46px;
+  text-align: center;
+  font-size: 11px;
+  color: #9a9a9a;
+  font-variant-numeric: tabular-nums;
+}
+.tl-item.pdf > i { background: var(--m-doc, #7f8c8d); }
+
+/* Drag-selection rectangle on the photo editor. */
+.photo-editor-canvas-wrap { position: relative; }
+.photo-selection {
+  position: absolute;
+  border: 1px dashed #4da3ff;
+  background: rgba(77, 163, 255, 0.16);
+  pointer-events: none;
+}
+.photo-editor-image { cursor: crosshair; user-select: none; }
