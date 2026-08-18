@@ -1019,5 +1019,176 @@ class StrategyStoreTests(unittest.TestCase):
         self.assertTrue(stats.cancelled)
 
 
+class TestEarlyMetadataExtraction(unittest.TestCase):
+    def test_vrad_manifest_patient_extraction(self):
+        vrad_json = json.dumps({
+            "data": [{
+                "PatientName": "NGO THI NHIEU^62T",
+                "PatientID": "24C000117",
+                "StudyDate": "2024-12-24",
+                "StudyDescription": "CT SO NAO",
+                "StuInsUID": "1.2.840.113619.2.55.3.2831175655.732.1735003350.210",
+                "AccessionNumber": "24C000117",
+            }]
+        }).encode("utf-8")
+        cap = dcom_pipeline.ViewerCapture()
+        dcom_pipeline._extract_vrad_patient_meta(vrad_json, cap)
+        self.assertEqual(cap.patient_name, "NGO THI NHIEU")
+        self.assertEqual(cap.patient_id, "24C000117")
+        self.assertEqual(cap.study_date, "2024-12-24")
+        self.assertEqual(cap.study_description, "CT SO NAO")
+        self.assertEqual(cap.study_uid, "1.2.840.113619.2.55.3.2831175655.732.1735003350.210")
+        self.assertEqual(cap.accession_number, "24C000117")
+
+    def test_vrpacs_manifest_patient_extraction(self):
+        vrpacs_json = json.dumps({
+            "data": {
+                "studyList": [{
+                    "patientName": "TRAN VAN A",
+                    "patientId": "BN12345",
+                    "studyDate": "20250101",
+                    "studyDescription": "X QUANG NGUC",
+                    "studyInstanceUid": "1.2.3.4.5",
+                }]
+            }
+        }).encode("utf-8")
+        cap = dcom_pipeline.ViewerCapture()
+        dcom_pipeline._extract_vrpacs_patient_meta(vrpacs_json, cap)
+        self.assertEqual(cap.patient_name, "TRAN VAN A")
+        self.assertEqual(cap.patient_id, "BN12345")
+        self.assertEqual(cap.study_date, "2025-01-01")
+        self.assertEqual(cap.study_description, "X QUANG NGUC")
+        self.assertEqual(cap.study_uid, "1.2.3.4.5")
+
+    def test_dicomweb_qido_patient_extraction(self):
+        qido_json = json.dumps([{
+            "00100010": {"vr": "PN", "Value": [{"Alphabetic": "DAO QUOC MINH^61T"}]},
+            "00100020": {"vr": "LO", "Value": ["26019453"]},
+            "00080020": {"vr": "DA", "Value": ["20260709"]},
+            "00081030": {"vr": "LO", "Value": ["MRI COT SONG"]},
+            "0020000D": {"vr": "UI", "Value": ["123.105518253792563.1870226218988456"]},
+        }]).encode("utf-8")
+        cap = dcom_pipeline.ViewerCapture()
+        dcom_pipeline._extract_dicomweb_patient_meta(qido_json, cap)
+        self.assertEqual(cap.patient_name, "DAO QUOC MINH")
+        self.assertEqual(cap.patient_id, "26019453")
+        self.assertEqual(cap.study_date, "2026-07-09")
+        self.assertEqual(cap.study_description, "MRI COT SONG")
+        self.assertEqual(cap.study_uid, "123.105518253792563.1870226218988456")
+
+    def test_vietmy_manifest_patient_extraction(self):
+        vietmy_json = json.dumps({"data": [{
+            "PatientName": "LE THI B^45T",
+            "PatientCode": "MSC0099",
+            "StudyDate": "20250620",
+            "StudyDescription": "SIEU AM O BUNG",
+            "StudyInstanceUID": "1.2.3.9.9",
+        }]}).encode("utf-8")
+        cap = dcom_pipeline.ViewerCapture()
+        dcom_pipeline._extract_vietmy_patient_meta(vietmy_json, cap)
+        self.assertEqual(cap.patient_name, "LE THI B")
+        self.assertEqual(cap.patient_id, "MSC0099")
+        self.assertEqual(cap.study_date, "2025-06-20")
+        self.assertEqual(cap.study_description, "SIEU AM O BUNG")
+
+    def test_a_field_the_pacs_did_not_send_stays_empty(self):
+        """Rule: an unknown clinical field is blank, never filled from elsewhere."""
+        cap = dcom_pipeline.ViewerCapture()
+        dcom_pipeline._extract_vrad_patient_meta(
+            json.dumps({"data": [{"PatientName": "NGUYEN VAN C"}]}).encode("utf-8"), cap)
+        self.assertEqual(cap.patient_name, "NGUYEN VAN C")
+        self.assertIsNone(cap.patient_id)
+        self.assertIsNone(cap.study_date)
+        self.assertIsNone(cap.study_description)
+        # A second manifest must not rename the study the download already started.
+        dcom_pipeline._extract_vrad_patient_meta(
+            json.dumps({"data": [{"PatientName": "TRAN VAN D", "PatientID": "X1"}]}).encode("utf-8"),
+            cap)
+        self.assertEqual(cap.patient_name, "NGUYEN VAN C")
+        self.assertEqual(cap.patient_id, "X1")
+
+    def test_vrad_download_via_manifest_preserves_weburl_params(self):
+        vrad_json = json.dumps({
+            "data": [{
+                "SeriesList": [{
+                    "SeriesInsUID": "1.2.3.series1",
+                    "ImageCount": 1,
+                    "ImageBaseUrl": "http://10.10.102.52:7194/imageserver/dicomData/GetImage",
+                    "ImageList": [{
+                        "WebUrl": "imageObjKey=ABC12345&vendorCode=link&patId=P001&bucketName=b1",
+                        "Signature": "sig999",
+                        "SOPInstanceUID": "1.2.3.sop1",
+                        "ImageID": 101,
+                    }]
+                }]
+            }]
+        }).encode("utf-8")
+        captured = {
+            "getstudies": vrad_json,
+            "template_url": "https://viewer.vnrad.vn:7194/imageserver/dicomData/GetImage?imageObjKey=SAMPLE",
+            "host": "https://viewer.vnrad.vn:7198",
+        }
+        tasks_seen = []
+
+        def fake_run_tasks(tasks, *args, **kwargs):
+            tasks_seen.extend(tasks)
+
+        original_run = dcom_pipeline._run_fetch_tasks
+        try:
+            dcom_pipeline._run_fetch_tasks = fake_run_tasks
+            stats = dcom_pipeline.DownloadStats()
+            dcom_pipeline._download_via_manifest(captured, lambda _b: True, stats, lambda _m: None, lambda: False)
+            self.assertEqual(len(tasks_seen), 1)
+            task_url = tasks_seen[0]
+            # Public domain resolved
+            self.assertTrue(task_url.startswith("https://viewer.vnrad.vn:7194/imageserver/dicomData/GetImage"))
+            # Parameters preserved
+            self.assertIn("vendorCode=link", task_url)
+            self.assertIn("patId=P001", task_url)
+            self.assertIn("bucketName=b1", task_url)
+            self.assertIn("imageObjKey=ABC12345", task_url)
+            self.assertIn("signature=sig999", task_url)
+        finally:
+            dcom_pipeline._run_fetch_tasks = original_run
+
+    def test_one_image_url_does_not_inherit_another_images_identity(self):
+        """The template URL belongs to a single real image.
+
+        Reusing its imageUid or signature asks the server for that one image over
+        and over, so a whole series arrives as a single deduplicated slice.
+        """
+        vrad_json = json.dumps({"data": [{"SeriesList": [{
+            "SeriesInsUID": "1.2.3.series1",
+            "ImageCount": 2,
+            "ImageBaseUrl": "https://viewer.test/GetImage",
+            "ImageList": [{"WebUrl": "imageObjKey=KEY_A"}, {"WebUrl": "imageObjKey=KEY_B"}],
+        }]}]}).encode("utf-8")
+        captured = {
+            "getstudies": vrad_json,
+            "template_url": ("https://viewer.test/GetImage?imageObjKey=TPL_KEY"
+                             "&imageUid=TPL_UID&imageid=77&signature=TPL_SIG&vendorCode=link"),
+            "host": "https://viewer.test",
+        }
+        tasks_seen = []
+
+        original_run = dcom_pipeline._run_fetch_tasks
+        try:
+            dcom_pipeline._run_fetch_tasks = lambda tasks, *a, **k: tasks_seen.extend(tasks)
+            dcom_pipeline._download_via_manifest(
+                captured, lambda _b: True, dcom_pipeline.DownloadStats(),
+                lambda _m: None, lambda: False)
+        finally:
+            dcom_pipeline._run_fetch_tasks = original_run
+
+        self.assertEqual(len(tasks_seen), 2)
+        for task_url in tasks_seen:
+            for leaked in ("TPL_UID", "TPL_SIG", "imageid=77", "TPL_KEY"):
+                self.assertNotIn(leaked, task_url)
+            # Study-level parameters of the template are still what the server wants.
+            self.assertIn("vendorCode=link", task_url)
+        self.assertIn("imageObjKey=KEY_A", tasks_seen[0])
+        self.assertIn("imageObjKey=KEY_B", tasks_seen[1])
+
+
 if __name__ == "__main__":
     unittest.main()

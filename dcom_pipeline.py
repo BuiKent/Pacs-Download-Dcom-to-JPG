@@ -648,6 +648,125 @@ def _vrpacs_series_choices(body: bytes) -> list[dict]:
     return [_normalise_series_choice(item, "vrpacs", index) for index, item in enumerate(raw_series)]
 
 
+def _first_str(source: Any, *keys: str) -> str:
+    """First non-empty value among `keys`, as a stripped string."""
+    if not isinstance(source, dict):
+        return ""
+    for key in keys:
+        value = source.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _record_study_meta(cap: ViewerCapture, name: str = "", pid: str = "",
+                       study_date: str = "", description: str = "",
+                       study_uid: str = "", accession: str = "") -> None:
+    """Keep the study identity the first manifest that carries it reports.
+
+    Blank stays blank: a field the PACS did not send is left unset so the reader
+    sees "—" rather than a value borrowed from somewhere else. First writer wins,
+    so a later manifest cannot rename the study mid-download.
+    """
+    if name and not cap.patient_name:
+        cap.patient_name = _patient_display_name(name)
+    if pid and not cap.patient_id:
+        cap.patient_id = pid
+    if study_date and not cap.study_date:
+        cap.study_date = _normalise_dicom_date(study_date)
+    if description and not cap.study_description:
+        cap.study_description = description
+    if study_uid and not cap.study_uid:
+        cap.study_uid = study_uid
+    if accession and not cap.accession_number:
+        cap.accession_number = accession
+
+
+def _extract_vrad_patient_meta(body: bytes, cap: ViewerCapture) -> None:
+    """Read the study identity VRAD ships in StudyData/GetStudies."""
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+        data = payload.get("data", payload) if isinstance(payload, dict) else payload
+        study = data[0] if isinstance(data, list) and data else data
+        _record_study_meta(
+            cap,
+            name=_first_str(study, "PatientName", "PatName"),
+            pid=_first_str(study, "PatientID", "PatID"),
+            study_date=_first_str(study, "StudyDate", "StuDate"),
+            description=_first_str(study, "StudyDescription", "Description"),
+            study_uid=_first_str(study, "StuInsUID", "StudyInstanceUID"),
+            accession=_first_str(study, "AccessionNumber", "AccNum"),
+        )
+    except Exception:
+        pass
+
+
+def _extract_vrpacs_patient_meta(body: bytes, cap: ViewerCapture) -> None:
+    """Read the study identity VRPACS ships in get-share-patient-image."""
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+        data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        studies = data.get("studyList", []) if isinstance(data, dict) else []
+        study = studies[0] if studies else {}
+        _record_study_meta(
+            cap,
+            # The share descriptor names the patient at its root; the study rows
+            # repeat it only on some builds.
+            name=(_first_str(study, "patientName", "PatientName")
+                  or _first_str(data, "pName", "patientName")),
+            pid=(_first_str(study, "patientId", "PatientID")
+                 or _first_str(data, "pCode", "pID", "patientId")),
+            study_date=_first_str(study, "studyDate", "StudyDate"),
+            description=_first_str(study, "studyDescription", "StudyDescription"),
+            study_uid=_first_str(study, "studyInstanceUid", "StudyInstanceUID"),
+        )
+    except Exception:
+        pass
+
+
+def _extract_dicomweb_patient_meta(body: bytes, cap: ViewerCapture) -> None:
+    """Read the study identity from a QIDO-RS answer."""
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+        if isinstance(payload, dict):
+            payload = [payload]
+        if not isinstance(payload, list) or not payload:
+            return
+        first = payload[0]
+        patient_name = _dicom_json_value(first, "00100010")
+        _record_study_meta(
+            cap,
+            name=str((patient_name.get("Alphabetic", "")
+                      if isinstance(patient_name, dict) else patient_name) or "").strip(),
+            pid=str(_dicom_json_value(first, "00100020") or "").strip(),
+            study_date=str(_dicom_json_value(first, "00080020") or "").strip(),
+            description=str(_dicom_json_value(first, "00081030") or "").strip(),
+            study_uid=str(_dicom_json_value(first, "0020000D") or "").strip(),
+            accession=str(_dicom_json_value(first, "00080050") or "").strip(),
+        )
+    except Exception:
+        pass
+
+
+def _extract_vietmy_patient_meta(body: bytes, cap: ViewerCapture) -> None:
+    """Read the study identity MSC/VietMy ships in GetListImageFileInfo."""
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+        data = payload.get("data", payload) if isinstance(payload, dict) else payload
+        items = data if isinstance(data, list) else [data]
+        study = items[0] if items else {}
+        _record_study_meta(
+            cap,
+            name=_first_str(study, "PatientName", "patientName", "PatientFullName"),
+            pid=_first_str(study, "PatientID", "patientID", "PatientCode"),
+            study_date=_first_str(study, "StudyDate", "studyDate"),
+            description=_first_str(study, "StudyDescription", "studyDescription"),
+            study_uid=_first_str(study, "StudyInstanceUID", "studyInstanceUID"),
+        )
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # GE Centricity Universal Viewer — Zero Footprint (ZFP)
 #
@@ -1360,6 +1479,7 @@ class DownloadStats:
     # Provenance counts for current download session.
     original_dicom: int = 0
     reconstructed_dicom: int = 0
+    manifest_metadata: dict[str, str] = field(default_factory=dict)
 
     def total(self) -> int:
         return self.dicom + self.jpg + self.png
@@ -1452,6 +1572,14 @@ class ViewerCapture:
     seen_urls: list[str] = field(default_factory=list)
     discovered_attachments: list[dict] = field(default_factory=list)
 
+    # Early-extracted study & patient metadata from manifests / QIDO
+    patient_name: Optional[str] = None
+    patient_id: Optional[str] = None
+    study_date: Optional[str] = None
+    study_description: Optional[str] = None
+    accession_number: Optional[str] = None
+    study_uid: Optional[str] = None
+
     def as_legacy_dict(self) -> dict:
         """Return dict representation expected by `_download_via_*()` handlers."""
         return {
@@ -1476,6 +1604,12 @@ class ViewerCapture:
             "existing_sop_uids": self.existing_sop_uids,
             "socket_tracker": self.socket_tracker,
             "discovered_attachments": self.discovered_attachments,
+            "patient_name": self.patient_name,
+            "patient_id": self.patient_id,
+            "study_date": self.study_date,
+            "study_description": self.study_description,
+            "accession_number": self.accession_number,
+            "study_uid": self.study_uid,
         }
 
 
@@ -1527,7 +1661,9 @@ class VradAdapter(PacsAdapter):
     def observe(self, response, cap: ViewerCapture) -> bool:
         url = response.url
         if "StudyData/GetStudies" in url and cap.getstudies is None:
-            cap.getstudies = response.body()
+            body = response.body()
+            cap.getstudies = body
+            _extract_vrad_patient_meta(body, cap)
             return True
         # Real image URL used as template for remaining image URLs.
         if (cap.template_url is None
@@ -1645,6 +1781,7 @@ def _probe_vrpacs_manifest_from_url(raw_url: str, cap: ViewerCapture,
                 cap.vrpacs_host = f"{scheme}://{hostname}:{port}"
                 cap.vrpacs_scu_host = page_origin
                 cap.host = page_origin
+                _extract_vrpacs_patient_meta(body, cap)
                 return True
     except Exception:
         pass
@@ -1678,11 +1815,13 @@ class VrpacsAdapter(PacsAdapter):
 
         url = response.url
         if "get-share-patient-image" in url and cap.vrpacs is None:
-            cap.vrpacs = response.body()
+            body = response.body()
+            cap.vrpacs = body
             # The origin that answered is the file service. `cap.host` stays the page
             # origin the caller records, which is where /vrpacs-scu/ images come from.
             pu = urlparse(url)
             cap.vrpacs_host = f"{pu.scheme}://{pu.netloc}"
+            _extract_vrpacs_patient_meta(body, cap)
             # True regardless of what the body holds: the caller reads it as "handled",
             # and a manifest that falls through here gets saved as if it were an image.
             return True
@@ -1742,7 +1881,9 @@ class DicomWebAdapter(PacsAdapter):
                 cap.qido_series = url
             if cap.qido_series_body is None:
                 try:
-                    cap.qido_series_body = response.body()
+                    body = response.body()
+                    cap.qido_series_body = body
+                    _extract_dicomweb_patient_meta(body, cap)
                 except Exception:
                     pass
             return True
@@ -1817,7 +1958,9 @@ class VietmyAdapter(PacsAdapter):
 
     def observe(self, response, cap: ViewerCapture) -> bool:
         if "GetListImageFileInfo" in response.url and cap.vietmy is None:
-            cap.vietmy = response.body()
+            body = response.body()
+            cap.vietmy = body
+            _extract_vietmy_patient_meta(body, cap)
             return True
         return False
 
@@ -3295,6 +3438,16 @@ def download_all(
                 should_stop=should_stop,
             )
 
+    if cap.patient_name or cap.patient_id or cap.study_date or cap.study_description:
+        stats.manifest_metadata = {
+            "PatientName": cap.patient_name or "",
+            "PatientID": cap.patient_id or "",
+            "StudyDate": cap.study_date or "",
+            "StudyDescription": cap.study_description or "",
+            "AccessionNumber": cap.accession_number or "",
+            "StudyInstanceUID": cap.study_uid or "",
+        }
+
     log(f"Tải xong. Tổng ảnh: {stats.total()} "
         f"(DICOM {stats.dicom}, JPG {stats.jpg}, PNG {stats.png}, trùng bỏ {stats.duplicates}).")
     fidelity = stats.fidelity_report()
@@ -3476,6 +3629,12 @@ def discover_viewer_series(
             "series": choices,
             "attachments": cap.discovered_attachments,
             "selectable": True,
+            "patientName": cap.patient_name or "",
+            "patientId": cap.patient_id or "",
+            "studyDate": cap.study_date or "",
+            "studyDescription": cap.study_description or "",
+            "accessionNumber": cap.accession_number or "",
+            "studyUid": cap.study_uid or "",
         }
 
 
@@ -3646,6 +3805,13 @@ def _report_download_result(stats: DownloadStats, expected: int, log: LogFn,
             f"không thể tự đối chiếu đủ/thiếu.")
 
 
+def _vrad_image_param(manifest_value: Any, web_params: dict, key: str) -> str:
+    """Per-image query value: what the manifest says, else the image's own WebUrl."""
+    if manifest_value not in (None, ""):
+        return str(manifest_value)
+    return (web_params.get(key) or [""])[0]
+
+
 def _download_via_manifest(captured, save_body, stats,
                            log: LogFn, stop: Callable[[], bool],
                            selected_series: Optional[set[str]] = None) -> None:
@@ -3679,15 +3845,36 @@ def _download_via_manifest(captured, save_body, stats,
     # Template extracted from a real image URL fetched by the browser:
     # - study/share-level query parameters
     # - public host and path (avoiding internal IPs in manifest ImageBaseUrl)
-    tp = urlparse(captured["template_url"])
+    tp = urlparse(captured.get("template_url") or "")
     tmpl_base = f"{tp.scheme}://{tp.netloc}{tp.path}" if tp.netloc else None
-    tmpl = {k: v[0] for k, v in parse_qs(tp.query).items()}
+    tmpl = {k: v[0] for k, v in parse_qs(tp.query).items()} if tp.query else {}
 
-    def obj_key(web: str):
-        if not web:
+    def _resolve_vrad_base(raw_base: Optional[str]) -> Optional[str]:
+        """Where to fetch a series from: the real image URL, else ImageBaseUrl.
+
+        Manifests often name the image server by its LAN address, which is
+        unreachable from here. When there is no real image URL to copy, the path
+        is moved onto the origin the viewer itself was served from.
+        """
+        if tmpl_base:
+            return tmpl_base
+        if not raw_base:
             return None
-        q = web[1:] if web.startswith("?") else web
-        return parse_qs(q).get("imageObjKey", [None])[0]
+        ru = urlparse(raw_base)
+        host = ru.hostname or ""
+        is_private = (
+            host.startswith("10.")
+            or host.startswith("192.168.")
+            or bool(re.match(r"^172\.(1[6-9]|2[0-9]|3[0-1])\.", host))
+            or host in ("localhost", "127.0.0.1")
+        )
+        # Without a path there is nothing to move; guessing an endpoint would only
+        # turn a reachable failure into an invented one.
+        if is_private and ru.path:
+            pub_host = urlparse(captured.get("host") or captured.get("vrpacs_host") or "")
+            if pub_host.netloc:
+                return f"{pub_host.scheme}://{pub_host.netloc}{ru.path}"
+        return raw_base
 
     tasks = []
     total_expected = 0
@@ -3698,20 +3885,32 @@ def _download_via_manifest(captured, save_body, stats,
             continue
         selected_count += 1
         total_expected += int(s.get("ImageCount", 0) or 0)
-        base = tmpl_base or s.get("ImageBaseUrl")  # Prefer public host from real URL
+        base = _resolve_vrad_base(s.get("ImageBaseUrl"))
         if not base:
             continue
         for im in (s.get("ImageList", []) or []):
-            io = obj_key(im.get("WebUrl") or "")
-            if not io:
+            web_url = im.get("WebUrl") or ""
+            web_params = parse_qs(web_url[1:] if web_url.startswith("?") else web_url)
+            if not web_params:
                 continue
             params = dict(tmpl)
-            params["imageObjKey"] = io
-            params["signature"] = im.get("Signature", "")
-            params["seriesuid"] = s.get("SeriesInsUID", params.get("seriesuid", ""))
-            params["studyuid"] = s.get("StuInsUID", params.get("studyuid", ""))
-            params["imageUid"] = im.get("SOPInstanceUID", "")
-            params["imageid"] = str(im.get("ImageID", 0))
+            for key, values in web_params.items():
+                if values:
+                    params[key] = values[0]
+            # tmpl carries the query of ONE real image request. Its per-image values
+            # must be replaced for every image, never inherited: asking for each slice
+            # with the template's imageUid and signature returns that one slice again.
+            for key, value in (
+                ("imageObjKey", None),
+                ("signature", im.get("Signature")),
+                ("imageUid", im.get("SOPInstanceUID")),
+                ("imageid", im.get("ImageID")),
+            ):
+                params[key] = _vrad_image_param(value, web_params, key)
+            if s.get("SeriesInsUID"):
+                params["seriesuid"] = s["SeriesInsUID"]
+            if s.get("StuInsUID"):
+                params["studyuid"] = s["StuInsUID"]
             exp = s.get("Expires") or im.get("Expires")
             if exp:
                 params["expires"] = str(exp)
@@ -6038,18 +6237,21 @@ def run_pipeline(
     summarize_dicom(dicom_dir, log=log)
 
     try:
+        manifest_meta = getattr(dl, "manifest_metadata", {}) or {}
         metadata = (
-            extract_patient_metadata(dicom_dir, manual_info=manual_info, allow_mixed=True) or first_metadata
+            extract_patient_metadata(dicom_dir, manual_info=manual_info, allow_mixed=True)
+            or first_metadata
+            or manifest_meta
             if rename_patient_root or after_dicom_download is not None
             else {}
         )
     except PatientIdentityConflictError as e:
         log(f"⚠ Phát hiện nhiều định danh bệnh nhân trong folder DICOM ({e}); "
             f"sử dụng thông tin DICOM đầu tiên để tạo tên thư mục và tiếp tục chuyển đổi JPG.")
-        metadata = first_metadata or {}
+        metadata = first_metadata or getattr(dl, "manifest_metadata", {}) or {}
     except Exception as e:
         log(f"⚠ Lỗi trích xuất metadata ({e}); sử dụng thông tin DICOM đầu tiên.")
-        metadata = first_metadata or {}
+        metadata = first_metadata or getattr(dl, "manifest_metadata", {}) or {}
     if metadata and after_dicom_download is not None:
         out_base = Path(after_dicom_download(out_base, metadata))
         dicom_dir = out_base / "DICOM"
