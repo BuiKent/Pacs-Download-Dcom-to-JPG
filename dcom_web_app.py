@@ -252,7 +252,14 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                   downloadPanelVisible: Boolean(document.querySelector('.download-panel')),
                   panelToggle: Boolean(document.querySelector(
                     '.app-header [data-action="toggle-download"][aria-expanded]'
-                  ))
+                  )),
+                  timelineRows: document.querySelectorAll('.tl-item').length,
+                  timelineCounts: [...document.querySelectorAll('.tl-item .ct')]
+                    .map(item => item.textContent.trim()),
+                  timelineEditButtons: document.querySelectorAll(
+                    '.tl-item [data-action="edit-timeline-label"]'
+                  ).length,
+                  timelineInputs: document.querySelectorAll('.tl-item .tl-name-input').length
                 })"""
             )
             if state.get("fatal"):
@@ -271,6 +278,14 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
             raise RuntimeError("Viewer không giữ tab hồ sơ làm tab đang hoạt động.")
         if result["single"].get("downloadPanelVisible") or result["single"].get("panelToggle"):
             raise RuntimeError("Khu Download vẫn xuất hiện bên trong tab Viewer.")
+        timeline_rows = result["single"].get("timelineRows", 0)
+        if (
+            timeline_rows < 1
+            or timeline_rows > result["single"].get("series", 0)
+            or result["single"].get("timelineEditButtons") != timeline_rows
+            or result["single"].get("timelineInputs") != timeline_rows
+        ):
+            raise RuntimeError(f"Study-level timeline/editor contract failed: {result['single']}")
         result["single"]["litPixels"] = _assert_panes_drawn(window, "single", 1)
 
         # A patient archive may start with a scout, ultrasound or radiograph.

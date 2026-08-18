@@ -2007,6 +2007,74 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertEqual(saved["patientName"], "LÊ VĂN MẪU")
         self.assertEqual(saved["studies"]["1.2.3"]["status"], "complete")
 
+    def test_timeline_label_is_stored_without_overwriting_study_metadata(self) -> None:
+        """A friendly local title is an overlay, not a rewritten DICOM field."""
+        patient = self.temp_dir / "BN-TIMELINE"
+        (patient / "VIDEO").mkdir(parents=True)
+        self._write_video(patient / "VIDEO" / "a.mp4")
+        manifest_path = patient / "patient-index.json"
+        manifest_path.write_text(json.dumps({
+            "format": "dcom-patient-index-v1",
+            "patientId": "BN-TIMELINE",
+            "patientName": "NGUYỄN VĂN MẪU",
+            "studies": {
+                "1.2.840": {
+                    "studyUid": "1.2.840",
+                    "description": "VIDEO GỐC",
+                    "folder": "VIDEO",
+                    "status": "complete",
+                },
+            },
+        }), encoding="utf-8")
+
+        catalog = ArchiveCatalog()
+        snapshot = catalog.open(patient)
+        timeline_key = snapshot["series"][0]["timelineKey"]
+        result = self.controller.set_timeline_label(
+            timeline_key,
+            "Video trong mổ lần 1",
+            archive_root=str(patient),
+            expected_patient_id="BN-TIMELINE",
+            catalog=catalog,
+        )
+
+        self.assertEqual(
+            result["patient"]["timelineLabels"][timeline_key],
+            "Video trong mổ lần 1",
+        )
+        saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["timelineLabels"][timeline_key], "Video trong mổ lần 1")
+        self.assertEqual(saved["studies"]["1.2.840"]["description"], "VIDEO GỐC")
+        reopened = ArchiveCatalog().open(patient)
+        self.assertEqual(
+            reopened["patient"]["timelineLabels"][timeline_key],
+            "Video trong mổ lần 1",
+        )
+        self.assertEqual(reopened["series"][0]["timelineKey"], timeline_key)
+
+    def test_timeline_label_rejects_a_row_outside_the_open_catalog(self) -> None:
+        patient = self.temp_dir / "BN-TIMELINE-GUARD"
+        (patient / "VIDEO").mkdir(parents=True)
+        self._write_video(patient / "VIDEO" / "a.mp4")
+        manifest_path = patient / "patient-index.json"
+        manifest_path.write_text(json.dumps({
+            "format": "dcom-patient-index-v1",
+            "patientId": "BN-TIMELINE-GUARD",
+            "studies": {},
+        }), encoding="utf-8")
+        catalog = ArchiveCatalog()
+        catalog.open(patient)
+
+        with self.assertRaises(ValueError):
+            self.controller.set_timeline_label(
+                "not-a-real-row",
+                "Không được ghi",
+                catalog=catalog,
+            )
+
+        saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertNotIn("timelineLabels", saved)
+
     def test_converted_mri_jpgs_stay_on_the_reading_canvas(self) -> None:
         """The app's own DICOM→JPG output must not open in the photo editor.
 

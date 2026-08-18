@@ -923,9 +923,8 @@ button:disabled { opacity: .35; cursor: default; }
 .tl-item {
   display: flex;
   align-items: center;
-  gap: 7px;
   width: 100%;
-  padding: 6px 8px;
+  padding: 1px 3px 1px 1px;
   margin-bottom: 2px;
   border: 1px solid transparent;
   border-radius: var(--control-radius, 6px);
@@ -933,27 +932,38 @@ button:disabled { opacity: .35; cursor: default; }
   color: var(--body-fg, #dce7f2);
   font: inherit;
   font-size: 12px;
-  text-align: left;
-  cursor: pointer;
 }
 .tl-item:hover { background: var(--list-hover, #16202b); }
 .tl-item.on {
   border-color: var(--accent, #2383e2);
   background: var(--list-active, #17293a);
 }
+.tl-open {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
 /* The dot carries the media kind; the same four colours as the worklist chips
    so one legend covers both screens. */
-.tl-item > i {
+.tl-open > i {
   flex: none;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--m-dicom, #2383e2);
 }
-.tl-item.photo > i { background: var(--m-photo, #2e7d32); }
-.tl-item.doc > i   { background: var(--m-doc, #7f8c8d); }
-.tl-item.video > i { background: var(--m-video, #8e44ad); }
-.tl-item.text > i  { background: var(--m-text, #b7791f); }
+.tl-item.photo .tl-open > i { background: var(--m-photo, #2e7d32); }
+.tl-item.doc .tl-open > i   { background: var(--m-doc, #7f8c8d); }
+.tl-item.video .tl-open > i { background: var(--m-video, #8e44ad); }
+.tl-item.text .tl-open > i  { background: var(--m-text, #b7791f); }
 .tl-item .nm {
   flex: 1;
   min-width: 0;
@@ -2554,7 +2564,42 @@ button:disabled { opacity: .35; cursor: default; }
   color: #9a9a9a;
   font-variant-numeric: tabular-nums;
 }
-.tl-item.pdf > i { background: var(--m-doc, #7f8c8d); }
+.tl-edit,
+.tl-edit-save,
+.tl-edit-cancel {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--label-muted, #7890a2);
+  font-size: 13px;
+}
+.tl-edit:hover,
+.tl-edit-save:hover,
+.tl-edit-cancel:hover { background: var(--control-bg-hover, #1b2b39); color: var(--body-fg); }
+.tl-name-input {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--field-border-focus, #2383e2);
+  border-radius: 4px;
+  background: var(--field-bg, #111b26);
+  color: var(--field-fg, #eaf4fb);
+  font: inherit;
+}
+.tl-edit-save,
+.tl-edit-cancel { display: none; }
+.tl-item.editing .tl-open,
+.tl-item.editing .tl-edit { display: none; }
+.tl-item.editing .tl-name-input,
+.tl-item.editing .tl-edit-save,
+.tl-item.editing .tl-edit-cancel { display: block; }
+.tl-item.pdf .tl-open > i { background: var(--m-doc, #7f8c8d); }
 
 /* Drag-selection rectangle on the photo editor. */
 .photo-editor-canvas-wrap { position: relative; }

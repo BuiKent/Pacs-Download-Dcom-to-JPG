@@ -235,23 +235,20 @@ function seriesVisiblePanes(seriesId) {
   return panes;
 }
 
-/** Update the series-card strip highlighting without rebuilding the DOM. */
+/** Update series thumbnails and study-level timeline highlighting in place. */
 function updateSeriesCardHighlight() {
-  for (const card of app.querySelectorAll("[data-series-id]")) {
+  for (const card of app.querySelectorAll(".series-card[data-series-id]")) {
     const panes = seriesVisiblePanes(card.dataset.seriesId);
-    // Timeline rows in the patient rail share `data-series-id` with the
-    // thumbnail cards so both follow one selection, but they mark the current
-    // row with `.on` rather than the card's `.active`.
-    if (card.classList.contains("tl-item")) {
-      card.classList.toggle("on", panes.length > 0);
-      continue;
-    }
     card.classList.toggle("active", panes.length > 0);
     if (panes.length) {
       card.dataset.pane = panes.join(",");
     } else {
       delete card.dataset.pane;
     }
+  }
+  for (const row of app.querySelectorAll(".tl-item[data-timeline-members]")) {
+    const memberIds = row.dataset.timelineMembers.split(",").filter(Boolean);
+    row.classList.toggle("on", memberIds.some((id) => seriesVisiblePanes(id).length > 0));
   }
 }
 
@@ -1116,19 +1113,29 @@ const MEDIA_KIND_LABELS = {
 };
 
 /**
- * The open archive's series grouped into days, newest first.
+ * The open archive grouped into study/media rows, then days, newest first.
  *
  * The rail is a chronological record of one patient, so the grouping key is
  * the study date. A series whose date was never recorded lands in a single
  * undated bucket at the end rather than being stamped with today.
  */
-function buildMediaTimeline(seriesList) {
+function buildMediaTimeline(seriesList, timelineLabels = {}) {
   const days = new Map();
   for (const item of seriesList || []) {
-    const digits = String(item.studyDate || "").replace(/\D/g, "");
+    let rawDate = item.studyDate || "";
+    if (!rawDate && item.studyGroup) rawDate = item.studyGroup.split(" - ")[0];
+    const digits = String(rawDate).replace(/\D/g, "");
     const key = digits.length >= 8 ? digits.slice(0, 8) : "";
-    if (!days.has(key)) days.set(key, []);
-    days.get(key).push(item);
+    if (!days.has(key)) days.set(key, new Map());
+    const kind = getSeriesMediaType(item);
+    const legacyIdentity = item.studyGroup || item.studyDescription
+      || (kind === "dicom" ? item.modality : item.id) || item.id;
+    const timelineKey = item.timelineKey || `legacy:${key}:${kind}:${legacyIdentity}`;
+    const groups = days.get(key);
+    if (!groups.has(timelineKey)) {
+      groups.set(timelineKey, { key: timelineKey, kind, series: [] });
+    }
+    groups.get(timelineKey).series.push(item);
   }
   return [...days.entries()]
     .sort((a, b) => {
@@ -1137,24 +1144,62 @@ function buildMediaTimeline(seriesList) {
       if (!b[0]) return -1;
       return b[0].localeCompare(a[0]);
     })
-    .map(([key, items]) => ({
+    .map(([key, groups]) => ({
       key,
       label: key ? `${key.slice(6, 8)}/${key.slice(4, 6)}/${key.slice(0, 4)}` : t("Chưa rõ ngày chụp"),
-      items,
+      items: [...groups.values()].map((group) => {
+        const descriptions = group.series
+          .map((item) => String(item.studyDescription || "").trim())
+          .filter(Boolean);
+        let defaultTitle = descriptions[0] || "";
+        if (!defaultTitle) {
+          defaultTitle = String(group.series[0]?.studyGroup || "")
+            .replace(/^\d{4}(?:-?\d{2}){2}\s*-\s*/, "")
+            .trim();
+        }
+        if (!defaultTitle || defaultTitle === "Không rõ ca chụp") {
+          defaultTitle = String(group.series[0]?.description || group.series[0]?.name || "").trim();
+        }
+        const modality = String(group.series[0]?.modality || "").trim();
+        if (
+          group.kind === "dicom"
+          && modality
+          && defaultTitle
+          && !defaultTitle.toUpperCase().startsWith(modality.toUpperCase())
+        ) {
+          defaultTitle = `${modality} ${defaultTitle}`;
+        }
+        if (!defaultTitle) defaultTitle = t(MEDIA_KIND_LABELS[group.kind] || "Phim chụp");
+        const primary = [...group.series].sort((left, right) => (
+          Number(Boolean(right.mprReady)) - Number(Boolean(left.mprReady))
+          || Number(right.sliceCount || 0) - Number(left.sliceCount || 0)
+        ))[0];
+        return {
+          ...group,
+          defaultTitle,
+          title: String(timelineLabels?.[group.key] || "").trim() || defaultTitle,
+          primaryId: primary?.id || "",
+          memberIds: group.series.map((item) => item.id),
+        };
+      }),
     }));
 }
 
-/** The count shown on a timeline entry, or "" when nothing counted it. */
-function timelineItemCount(series) {
-  const slices = Number(series.sliceCount);
-  if (!Number.isFinite(slices) || slices <= 0) return "";
-  switch (getSeriesMediaType(series)) {
-    case "video": return tf("{} video", slices);
-    case "pdf": return tf("{} bản PDF", slices);
-    case "text": return tf("{} file", slices);
-    case "doc": return tf("{} trang", slices);
-    case "photo": return tf("{} ảnh", slices);
-    default: return tf("{} lát", slices);
+/** The simple study/media count shown at the right edge of one timeline row. */
+function timelineItemCount(group) {
+  if (group.kind === "dicom") return tf("{} phim", group.series.length);
+  const total = group.series.reduce((sum, item) => {
+    const count = Number(item.sliceCount);
+    return sum + (Number.isFinite(count) && count > 0 ? count : 0);
+  }, 0);
+  if (!total) return "";
+  switch (group.kind) {
+    case "video": return tf("{} video", total);
+    case "pdf": return tf("{} bản PDF", total);
+    case "text": return tf("{} file", total);
+    case "doc": return tf("{} trang", total);
+    case "photo": return tf("{} ảnh", total);
+    default: return "";
   }
 }
 
@@ -1177,7 +1222,7 @@ function renderPatientRail() {
     .filter(Boolean)
     .join(" · ");
 
-  const timeline = buildMediaTimeline(series);
+  const timeline = buildMediaTimeline(series, patient.timelineLabels || {});
 
   return `
     <aside class="rec-rail">
@@ -1205,17 +1250,30 @@ function renderPatientRail() {
             <div class="tl-day">
               <div class="tl-date">${escapeHtml(day.label)}</div>
               ${day.items.map((item) => {
-                const kind = getSeriesMediaType(item);
+                const kind = item.kind;
                 const count = timelineItemCount(item);
-                const title = item.studyDescription || item.description || item.name || "";
+                const active = item.memberIds.includes(state.selectedId);
                 return `
-                  <button class="tl-item ${kind}${item.id === state.selectedId ? " on" : ""}" type="button"
-                    data-series-id="${escapeHtml(item.id)}"
-                    title="${escapeHtml(`${t(MEDIA_KIND_LABELS[kind] || "Phim chụp")} · ${title}`)}">
-                    <i></i>
-                    <span class="nm">${escapeHtml(title || t("Chưa có mô tả"))}</span>
-                    ${count ? `<span class="ct">${escapeHtml(count)}</span>` : ""}
-                  </button>
+                  <div class="tl-item ${kind}${active ? " on" : ""}"
+                    data-timeline-key="${escapeHtml(item.key)}"
+                    data-timeline-members="${escapeHtml(item.memberIds.join(","))}"
+                    data-timeline-label="${escapeHtml(item.title)}"
+                    data-default-label="${escapeHtml(item.defaultTitle)}"
+                    title="${escapeHtml(`${t(MEDIA_KIND_LABELS[kind] || "Phim chụp")} · ${item.title}`)}">
+                    <button class="tl-open" type="button" data-series-id="${escapeHtml(item.primaryId)}">
+                      <i></i>
+                      <span class="nm">${escapeHtml(item.title)}</span>
+                      ${count ? `<span class="ct">${escapeHtml(count)}</span>` : ""}
+                    </button>
+                    <input class="tl-name-input" value="${escapeHtml(item.title)}"
+                      maxlength="120" aria-label="${escapeHtml(t("Tên hiển thị trên timeline"))}">
+                    <button class="tl-edit" type="button" data-action="edit-timeline-label"
+                      title="${escapeHtml(t("Đổi tên lần chụp hoặc loại media"))}" aria-label="${escapeHtml(t("Đổi tên lần chụp hoặc loại media"))}">✎</button>
+                    <button class="tl-edit-save" type="button" data-action="save-timeline-label"
+                      title="${escapeHtml(t("Lưu tên"))}" aria-label="${escapeHtml(t("Lưu tên"))}">✓</button>
+                    <button class="tl-edit-cancel" type="button" data-action="cancel-timeline-label"
+                      title="${escapeHtml(t("Bỏ thay đổi tên"))}" aria-label="${escapeHtml(t("Bỏ thay đổi tên"))}">×</button>
+                  </div>
                 `;
               }).join("")}
             </div>
@@ -2624,6 +2682,17 @@ function bindEvents() {
       renderViewer();
     });
   });
+  app.querySelectorAll(".tl-name-input").forEach((input) => {
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        input.closest(".tl-item")?.querySelector("[data-action='save-timeline-label']")?.click();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        input.closest(".tl-item")?.querySelector("[data-action='cancel-timeline-label']")?.click();
+      }
+    });
+  });
   app.querySelectorAll("[data-study-index]").forEach((item) => {
     item.addEventListener("change", () => updateStudySelection(item));
   });
@@ -3153,6 +3222,53 @@ async function action(name, element = null) {
       state.archive.patient = result.patient || state.archive.patient;
       render();
       setStatus(t("Đã lưu chẩn đoán vào hồ sơ bệnh nhân."));
+      return;
+    }
+    if (name === "edit-timeline-label") {
+      const row = element?.closest(".tl-item");
+      const input = row?.querySelector(".tl-name-input");
+      if (!row || !input) return;
+      row.classList.add("editing");
+      input.value = row.dataset.timelineLabel || row.dataset.defaultLabel || "";
+      input.focus();
+      input.select();
+      return;
+    }
+    if (name === "cancel-timeline-label") {
+      const row = element?.closest(".tl-item");
+      const input = row?.querySelector(".tl-name-input");
+      if (!row) return;
+      if (input) input.value = row.dataset.timelineLabel || row.dataset.defaultLabel || "";
+      row.classList.remove("editing");
+      return;
+    }
+    if (name === "save-timeline-label") {
+      const row = element?.closest(".tl-item");
+      const input = row?.querySelector(".tl-name-input");
+      const timelineKey = row?.dataset.timelineKey || "";
+      if (!row || !input || !timelineKey) return;
+      const next = input.value.trim();
+      const current = row.dataset.timelineLabel || row.dataset.defaultLabel || "";
+      if (next === current) {
+        row.classList.remove("editing");
+        return;
+      }
+      const result = await api("/api/patient/timeline-label", {
+        method: "POST",
+        body: JSON.stringify({
+          timelineKey,
+          label: next,
+          archiveRoot: state.archive?.root || "",
+          patientId: state.archive?.patient?.patientId || "",
+        }),
+      });
+      state.archive.patient = result.patient || state.archive.patient;
+      const display = result.label || row.dataset.defaultLabel || t("Chưa có mô tả");
+      row.dataset.timelineLabel = display;
+      row.querySelector(".nm").textContent = display;
+      input.value = display;
+      row.classList.remove("editing");
+      setStatus(t("Đã lưu tên hiển thị trên timeline."));
       return;
     }
     if (name === "file-info") {

@@ -1020,6 +1020,10 @@ class SeriesRecord:
             "studyGroup": self.study_group,
             "studyDate": self.study_date or m.get("study_date") or m.get("studyDate", ""),
             "studyDescription": m.get("study_description") or m.get("studyDescription", ""),
+            # The patient timeline shows one study/media group, while the
+            # viewer's series selector still exposes every technical sequence.
+            # DICOM series from one StudyInstanceUID therefore share this key.
+            "timelineKey": self.timeline_key(),
         }
         if self.pixel_data:
             data["pixelData"] = self.pixel_data
@@ -1040,6 +1044,32 @@ class SeriesRecord:
                 ),
             }
         return data
+
+    def timeline_key(self) -> str:
+        """Stable opaque identity for one patient-timeline row.
+
+        DICOM series use StudyInstanceUID so T1, T2, FLAIR, DWI, ADC, etc. from
+        the same examination collapse into one row.  Non-DICOM media use the
+        enclosing study label and media kind, keeping photos/video/documents as
+        separate clinical entries even when they share the same date.
+        """
+        manifest = self.manifest or {}
+        study_uid = str(
+            manifest.get("study_instance_uid")
+            or manifest.get("studyInstanceUID")
+            or manifest.get("study_uid")
+            or ""
+        ).strip()
+        if study_uid:
+            identity = f"uid:{study_uid}"
+        else:
+            group = str(self.study_group or "").strip()
+            date = str(self.study_date or manifest.get("study_date") or "").strip()
+            identity = f"group:{date}|{group}"
+            if not date and not group:
+                identity = f"folder:{str(self.folder).casefold()}"
+        raw = f"{identity}|{self.resolved_media_type()}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
 
 
 class ArchiveCatalog:
@@ -1821,6 +1851,12 @@ class ArchiveCatalog:
             except ValueError:
                 age = ""
         sex = str(manifest.get("patientSex") or "").strip().upper()
+        raw_labels = manifest.get("timelineLabels")
+        timeline_labels = {
+            str(key): str(value).strip()
+            for key, value in (raw_labels.items() if isinstance(raw_labels, dict) else [])
+            if str(key).strip() and str(value).strip()
+        }
         return {
             "patientId": str(manifest.get("patientId") or "").strip(),
             "patientName": str(manifest.get("patientName") or "").strip(),
@@ -1834,6 +1870,9 @@ class ArchiveCatalog:
             # has no RIS to read a clinical diagnosis from. Present so the UI
             # has one place to read it once a source exists.
             "diagnosis": str(manifest.get("diagnosis") or "").strip(),
+            # User-authored display names for study-level timeline rows. These
+            # never overwrite DICOM StudyDescription or a source manifest.
+            "timelineLabels": timeline_labels,
         }
 
     def snapshot(self) -> dict:
@@ -3036,6 +3075,76 @@ class WebController:
                 target._patient = dict(patient)
         return {"patient": patient}
 
+    def set_timeline_label(
+        self,
+        timeline_key: str,
+        text: str,
+        *,
+        archive_root: str = "",
+        expected_patient_id: str = "",
+        catalog: Optional[ArchiveCatalog] = None,
+    ) -> dict:
+        """Store a user-authored name for one study-level timeline row."""
+        target = catalog or self.catalog
+        key = str(timeline_key or "").strip()
+        with target._lock:
+            valid_keys = {record.timeline_key() for record in target._series.values()}
+        if not key or key not in valid_keys:
+            raise ValueError("Dòng timeline không thuộc hồ sơ đang mở.")
+
+        label = str(text or "").strip()
+        if len(label) > 120:
+            raise ValueError("Tên timeline không được dài quá 120 ký tự.")
+
+        root = str(archive_root or "").strip() or (str(target.root) if target.root else "")
+        if not root:
+            raise ValueError("Chưa mở hồ sơ nào để đổi tên timeline.")
+        start = Path(root).expanduser().resolve()
+        allowed = self._reveal_roots()
+        if allowed and not any(_is_within(start, base) for base in allowed):
+            raise PermissionError(
+                f"Truy cập bị từ chối: Đường dẫn nằm ngoài phạm vi cho phép ({root})"
+            )
+        folder = next(
+            (
+                candidate for candidate in (start, *start.parents)
+                if (candidate / "patient-index.json").is_file()
+            ),
+            None,
+        )
+        if folder is None:
+            raise ValueError(
+                "Hồ sơ này chưa có patient-index.json nên chưa đổi được tên timeline."
+            )
+        manifest = dcom_pipeline._read_patient_manifest(folder)
+        if manifest is None:
+            raise ValueError("Không đọc được patient-index.json của hồ sơ này.")
+        recorded_id = str(manifest.get("patientId") or "").strip()
+        wanted_id = str(expected_patient_id or "").strip()
+        if wanted_id and recorded_id and wanted_id != recorded_id:
+            raise ValueError(
+                f"Từ chối ghi: hồ sơ trên màn hình là {wanted_id} nhưng thư mục "
+                f"{folder.name} thuộc bệnh nhân {recorded_id}."
+            )
+
+        raw_labels = manifest.get("timelineLabels")
+        labels = dict(raw_labels) if isinstance(raw_labels, dict) else {}
+        if label:
+            labels[key] = label
+        else:
+            labels.pop(key, None)
+        if labels:
+            manifest["timelineLabels"] = labels
+        else:
+            manifest.pop("timelineLabels", None)
+        dcom_pipeline._write_patient_manifest(folder, manifest)
+
+        patient = ArchiveCatalog._patient_block(manifest)
+        with target._lock:
+            if str(target._patient.get("patientId") or "") == recorded_id:
+                target._patient = dict(patient)
+        return {"patient": patient, "timelineKey": key, "label": label}
+
     def start_search(self, payload: dict) -> dict:
         hospital = str(payload.get("hospital") or "dhy")
         patient_id = str(payload.get("patientId") or "").strip()
@@ -3950,6 +4059,14 @@ class LocalApiServer:
                 if path == "/api/patient/diagnosis":
                     return owner.controller.set_patient_diagnosis(
                         str(payload.get("diagnosis") or ""),
+                        archive_root=str(payload.get("archiveRoot") or ""),
+                        expected_patient_id=str(payload.get("patientId") or ""),
+                        catalog=catalog,
+                    )
+                if path == "/api/patient/timeline-label":
+                    return owner.controller.set_timeline_label(
+                        str(payload.get("timelineKey") or ""),
+                        str(payload.get("label") or ""),
                         archive_root=str(payload.get("archiveRoot") or ""),
                         expected_patient_id=str(payload.get("patientId") or ""),
                         catalog=catalog,
