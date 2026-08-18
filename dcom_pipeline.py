@@ -1447,6 +1447,7 @@ class ViewerCapture:
     existing_sop_uids: set[str] = field(default_factory=set)
     socket_tracker: Optional[ActiveSocketTracker] = None
     seen_urls: list[str] = field(default_factory=list)
+    discovered_attachments: list[dict] = field(default_factory=list)
 
     def as_legacy_dict(self) -> dict:
         """Return dict representation expected by `_download_via_*()` handlers."""
@@ -1469,6 +1470,7 @@ class ViewerCapture:
             "strategy_fingerprint": self.strategy_fingerprint,
             "existing_sop_uids": self.existing_sop_uids,
             "socket_tracker": self.socket_tracker,
+            "discovered_attachments": self.discovered_attachments,
         }
 
 
@@ -1722,6 +1724,7 @@ def _observe_response(response, cap: ViewerCapture) -> bool:
 
     A failure in one adapter must never abort the entire download session.
     """
+    _inspect_attachment_candidate(response, cap)
     for adapter in PACS_ADAPTERS:
         try:
             if adapter.observe(response, cap):
@@ -1729,6 +1732,180 @@ def _observe_response(response, cap: ViewerCapture) -> bool:
         except Exception:
             continue
     return False
+
+
+# Web assets and image payloads that are never a clinical document.
+_NON_ATTACHMENT_SUFFIXES = (
+    ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+    ".woff", ".woff2", ".ttf", ".ico", ".dcm", ".dicom", ".map",
+)
+
+# Path or query fragments a PACS uses for its printed report / clinical document.
+_ATTACHMENT_PATH_HINTS = (
+    "report", "ketqua", "ket-qua", "ket_qua", "phieu", "diagnosis", "summary", "attachment",
+)
+
+_ATTACHMENT_EXTENSIONS = {"pdf": "pdf", "text": "txt", "doc": "doc"}
+
+# A clinical report is a few MB at most; anything larger is a mislabelled stream.
+_ATTACHMENT_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _attachment_filename(raw_name: Any, doc_type: str, index: int) -> str:
+    """Turn a Content-Disposition or URL basename into a safe local file name.
+
+    The name arrives from the server, so it may be percent-encoded, quoted, or
+    carry a path of its own; writing it unchecked would let a document escape
+    the DOCUMENTS folder.
+    """
+    from urllib.parse import unquote
+
+    text = unquote(str(raw_name or "").strip()).strip("\"' ")
+    text = text.replace("\\", "/").rsplit("/", 1)[-1]
+    # _safe_name() answers "Unknown" for an empty string; the numbered fallback below
+    # is the more honest name when the server gave us nothing.
+    text = _safe_name(text).lstrip(". ") if text else ""
+    stem, _dot, ext = text.rpartition(".")
+    if not stem:
+        stem, ext = text, ""
+    if not ext or len(ext) > 8 or not ext.isalnum():
+        ext = _ATTACHMENT_EXTENSIONS.get(doc_type, "bin")
+    if not stem:
+        stem = f"Bao_cao_{index}"
+    return f"{stem[:80].strip()}.{ext.lower()}"
+
+
+def _inspect_attachment_candidate(response, cap: ViewerCapture) -> bool:
+    """Record non-DICOM clinical documents (PDF report, TXT/Word summary) seen on the wire."""
+    try:
+        url = str(getattr(response, "url", "") or "")
+        if not url:
+            return False
+        headers = getattr(response, "headers", {}) or {}
+        content_type = str(headers.get("content-type") or "").lower()
+        disposition = str(headers.get("content-disposition") or "")
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        path = parsed.path.lower()
+        query = parsed.query.lower()
+        if path.endswith(_NON_ATTACHMENT_SUFFIXES):
+            return False
+
+        looks_like_report = any(hint in path or hint in query for hint in _ATTACHMENT_PATH_HINTS)
+        is_pdf = ("application/pdf" in content_type
+                  or path.endswith(".pdf")
+                  or ".pdf" in query
+                  or ".pdf" in disposition.lower())
+        is_doc = (any(kind in content_type for kind in
+                      ("application/msword", "wordprocessingml", "application/rtf"))
+                  or path.endswith((".doc", ".docx", ".rtf", ".hhh")))
+        # A bare text/plain body is usually a token or a heartbeat: keep it only when
+        # the endpoint itself says "report", so DOCUMENTS/ does not fill with junk.
+        is_text = (path.endswith(".txt") or "text/plain" in content_type) and looks_like_report
+        if not (is_pdf or is_doc or is_text):
+            return False
+        if any(att.get("url") == url for att in cap.discovered_attachments):
+            return False
+
+        doc_type = "pdf" if is_pdf else ("doc" if is_doc else "text")
+        match = re.search(r"filename\*?=(?:UTF-8'')?[\"']?([^\";\r\n]+)",
+                          disposition, re.IGNORECASE)
+        index = len(cap.discovered_attachments) + 1
+        name = _attachment_filename(
+            match.group(1) if match else os.path.basename(parsed.path), doc_type, index)
+        try:
+            size = int(headers.get("content-length") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        cap.discovered_attachments.append({
+            "id": f"att_{index}",
+            "name": name,
+            "url": url,
+            "type": doc_type,
+            "size": size,
+            "description": f"Tài liệu {doc_type.upper()}",
+        })
+        return True
+    except Exception:
+        return False
+
+
+def download_attachments(
+    attachments: list[dict],
+    destination_dir: Path,
+    log: LogFn = _default_log,
+    captured: Any = None,
+    tracker: Any = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> int:
+    """Fetch clinical documents into DOCUMENTS/, kept apart from the DICOM tree.
+
+    `captured` is the ViewerCapture (or its legacy dict) whose cookies and
+    session headers open the document endpoint; without it the request goes out
+    unauthenticated and the PACS answers 401.
+    """
+    if not attachments:
+        return 0
+    import ssl
+    import urllib.request
+
+    destination_dir = Path(destination_dir)
+    sslctx = ssl.create_default_context()
+    sslctx.check_hostname = False
+    sslctx.verify_mode = ssl.CERT_NONE  # Accept self-signed certificates (HTTPS PACS)
+    passport = _passport_builder(captured) if captured is not None else (lambda _url: {})
+    if tracker is not None:
+        opener = tracker.opener(sslctx, passport=passport)
+    else:
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=sslctx),
+            _ScopedRedirectHandler(passport),
+        )
+
+    downloaded = 0
+    used_names: set[str] = set()
+    for index, attachment in enumerate(attachments, 1):
+        if should_stop and should_stop():
+            break
+        url = str(attachment.get("url") or "").strip()
+        if not url:
+            continue
+        name = _attachment_filename(
+            attachment.get("name"), str(attachment.get("type") or ""), index)
+        stem, _dot, ext = name.rpartition(".")
+        copy = 2
+        while name.lower() in used_names:
+            name = f"{stem} ({copy}).{ext}"
+            copy += 1
+        used_names.add(name.lower())
+
+        headers = dict(passport(url))
+        headers.setdefault(
+            "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        log(f"  [Tài liệu đính kèm] {name}")
+        try:
+            with opener.open(urllib.request.Request(url, headers=headers), timeout=30) as response:
+                data = response.read(_ATTACHMENT_MAX_BYTES + 1)
+        except Exception as exc:
+            log(f"  ⚠ Không tải được tài liệu {name}: {exc}")
+            continue
+        if not data:
+            continue
+        if len(data) > _ATTACHMENT_MAX_BYTES:
+            log(f"  ⚠ Bỏ qua {name}: tệp lớn hơn {_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB.")
+            continue
+        try:
+            destination_dir.mkdir(parents=True, exist_ok=True)
+            (destination_dir / name).write_bytes(data)
+        except OSError as exc:
+            log(f"  ⚠ Không ghi được tài liệu {name}: {exc}")
+            continue
+        downloaded += 1
+
+    if downloaded:
+        log(f"✓ Đã tải {downloaded} tài liệu đính kèm vào: {destination_dir}")
+    return downloaded
 
 
 def compute_url_fingerprint(url: str, adapter_name: str = "") -> str:
@@ -2569,6 +2746,8 @@ def download_all(
     resume: bool = False,
     selected_series_ids: Optional[list[str]] = None,
     dicom_output_resolver: Optional[Callable[[bytes], Path]] = None,
+    download_attachments_flag: bool = True,
+    attachments: Optional[list[dict]] = None,
 ) -> DownloadStats:
     """
     Download complete study images via direct API or UI interaction fallback.
@@ -2968,12 +3147,70 @@ def download_all(
             except Exception:
                 pass
 
+    if download_attachments_flag:
+        # Documents the picker already listed, plus whatever this session saw on the wire.
+        pending = list(attachments or [])
+        for found in cap.discovered_attachments:
+            if not any(known.get("url") == found.get("url") for known in pending):
+                pending.append(found)
+        if pending:
+            download_attachments(
+                pending,
+                dicom_dir.parent / "DOCUMENTS",
+                log=log,
+                captured=cap,
+                tracker=tracker,
+                should_stop=should_stop,
+            )
+
     log(f"Tải xong. Tổng ảnh: {stats.total()} "
         f"(DICOM {stats.dicom}, JPG {stats.jpg}, PNG {stats.png}, trùng bỏ {stats.duplicates}).")
     fidelity = stats.fidelity_report()
     if fidelity:
         log(f"  Nguồn gốc ảnh: {fidelity}.")
     return stats
+
+
+def _collect_dom_attachments(page, cap: ViewerCapture) -> None:
+    """Add report links the viewer renders as anchors or PDF frames.
+
+    Only links that name a document file or a report endpoint count: a selector
+    as loose as `a[href*='doc']` also matches every /docs/ help page.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        elements = page.query_selector_all(
+            "a[href$='.pdf'], a[href*='.pdf?'], a[href*='report'], a[href*='Report'], "
+            "a[href*='ketqua'], a[href*='phieu'], a[href$='.doc'], a[href$='.docx'], "
+            "iframe[src*='.pdf']"
+        )
+    except Exception:
+        return
+    for element in elements:
+        try:
+            href = element.get_attribute("href") or element.get_attribute("src") or ""
+            if not href or href.lower().startswith(("javascript:", "mailto:", "blob:", "data:")):
+                continue
+            url = page.evaluate("(u) => new URL(u, window.location.href).href", href)
+            if urlparse(url).scheme not in ("http", "https"):
+                continue
+            if any(att.get("url") == url for att in cap.discovered_attachments):
+                continue
+            label = (element.inner_text() or "").strip()
+            doc_type = "pdf" if ".pdf" in url.lower() else "doc"
+            index = len(cap.discovered_attachments) + 1
+            cap.discovered_attachments.append({
+                "id": f"att_{index}",
+                "name": _attachment_filename(
+                    os.path.basename(urlparse(url).path), doc_type, index),
+                "url": url,
+                "type": doc_type,
+                "size": 0,
+                "description": label or f"Tài liệu {doc_type.upper()}",
+            })
+        except Exception:
+            continue
 
 
 def discover_viewer_series(
@@ -3091,11 +3328,21 @@ def discover_viewer_series(
                     "ImageCount": count,
                 }, "viewer", index))
 
+        _collect_dom_attachments(page, cap)
+
         browser.close()
         if not choices:
             raise ValueError("Viewer không cung cấp manifest và không tìm thấy thumbnail series để chọn.")
-        log(f"Đã quét {len(choices)} series; chưa tải file ảnh nào.")
-        return {"source": source, "series": choices, "selectable": True}
+        if cap.discovered_attachments:
+            log(f"Đã quét {len(choices)} series và phát hiện {len(cap.discovered_attachments)} tài liệu đính kèm (PDF/Báo cáo).")
+        else:
+            log(f"Đã quét {len(choices)} series; chưa tải file ảnh nào.")
+        return {
+            "source": source,
+            "series": choices,
+            "attachments": cap.discovered_attachments,
+            "selectable": True,
+        }
 
 
 def _shutdown_executor(ex, wait: bool) -> None:
@@ -5598,6 +5845,8 @@ def run_pipeline(
     after_dicom_download: Optional[Callable[[Path, dict], Path]] = None,
     after_first_dicom: Optional[Callable[[Path, dict], Path]] = None,
     manual_info: Optional[dict] = None,
+    download_attachments_flag: bool = True,
+    attachments: Optional[list[dict]] = None,
 ):
     out_base = Path(out_base)
     dicom_dir = out_base / "DICOM"
@@ -5639,7 +5888,9 @@ def run_pipeline(
     dl = download_all(url, dicom_dir, log=log, headless=headless,
                       should_stop=should_stop, resume=resume,
                       selected_series_ids=selected_series_ids,
-                      dicom_output_resolver=first_dicom_resolver)
+                      dicom_output_resolver=first_dicom_resolver,
+                      download_attachments_flag=download_attachments_flag,
+                      attachments=attachments)
     dicom_dir = out_base / "DICOM"
     jpg_dir = out_base / "JPG"
     if should_stop and should_stop():
@@ -6369,6 +6620,8 @@ def download_studies_list(
     selected_series_by_study: Optional[dict[str, list[str]]] = None,
     custom_username: Optional[str] = None,
     custom_password: Optional[str] = None,
+    download_attachments_flag: bool = True,
+    attachments_by_study: Optional[dict[str, list[dict]]] = None,
 ) -> int:
     """Download a list of selected studies."""
     if not studies:
@@ -6543,6 +6796,8 @@ def download_studies_list(
                 jpg_folder_name_override="JPG",
                 after_dicom_download=rename_patient_before_conversion,
                 after_first_dicom=rename_patient_before_conversion,
+                download_attachments_flag=download_attachments_flag,
+                attachments=(attachments_by_study.get(study_uid) if attachments_by_study else None),
             )
             # The pre-conversion callback may have renamed the patient root.
             st_out_dir = Path(jpg_dir).parent

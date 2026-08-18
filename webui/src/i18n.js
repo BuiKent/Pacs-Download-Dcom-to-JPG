@@ -183,6 +183,12 @@ const EN = {
   "Tính năng xuất JPG riêng; không dùng để mở DICOM trong viewer.":
     "A separate JPG export feature; not the way to open DICOM in the viewer.",
   "Chuyển Dcom → JPG": "Convert DICOM → JPG",
+  "Phát hiện tài liệu & Báo cáo đính kèm": "Detected Attachments & Reports",
+  "Tải kèm toàn bộ tài liệu đính kèm (PDF, TXT, Báo cáo)": "Download all attachments (PDF, TXT, Reports)",
+  "Các tệp này sẽ được tải riêng vào thư mục DOCUMENTS": "These files will be saved in the DOCUMENTS folder",
+  "Tài liệu đính kèm": "Attachments",
+  "Tải kèm": "Include",
+  "Tài liệu": "Documents",
   "Mã bệnh nhân": "Patient code",
   "Tìm ca": "Find studies",
   "Tìm các ca MRI/CT của mã bệnh nhân này trên RIS": "Search RIS for this patient's MRI/CT studies",

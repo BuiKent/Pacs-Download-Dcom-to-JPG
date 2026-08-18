@@ -77,9 +77,6 @@ const state = {
   // The text/JSON file currently in the reading pane: { seriesId, index, name,
   // language, text }. Null until a text series is opened.
   textDoc: null,
-  // Which file of a multi-file photo or video series is shown, keyed by series
-  // id so switching away and back keeps the reader's place.
-  mediaIndex: {},
   // Rectangle the user dragged on the photo, in source-image pixels. Null when
   // nothing is selected: the editing tools then say so rather than inventing a
   // region, which is what the fixed 5% crop used to do.
@@ -95,6 +92,7 @@ const state = {
   studies: [],
   patient: null,
   downloadAllFiles: true,
+  downloadAttachments: true,
   seriesInventory: [],
   rememberedSeriesSelections: {},
   status: "Đang khởi động...",
@@ -122,6 +120,8 @@ const state = {
   concatClips: [],
   concatTargetHeight: 1080,
   concatTargetFps: 30,
+  // Which file of a multi-file photo or video series is shown, keyed by series
+  // id so switching away and back keeps the reader's place.
   mediaIndex: {},
   mediaEdits: {},
   photoWorkingPath: null,
@@ -2449,6 +2449,43 @@ function renderManualInfoPanel() {
   `;
 }
 
+// Documents the last scan found, read straight off the inventory so clearing the
+// series list (new patient, new link) cannot leave another study's reports behind.
+function discoveredAttachments() {
+  return state.seriesInventory.flatMap((group) => group.attachments || []);
+}
+
+function renderAttachmentCard() {
+  const attachments = discoveredAttachments();
+  if (!attachments.length) return "";
+
+  return `
+    <div class="attachment-notification-card">
+      <div class="attachment-header">
+        <div class="attachment-title-wrap">
+          <span class="attachment-icon">📎</span>
+          <div>
+            <strong>${escapeHtml(t("Phát hiện tài liệu & Báo cáo đính kèm"))} (${attachments.length})</strong>
+            <small>${escapeHtml(t("Các tệp này sẽ được tải riêng vào thư mục DOCUMENTS"))}</small>
+          </div>
+        </div>
+        <label class="attachment-toggle-label">
+          <input type="checkbox" id="attachment-download-toggle" ${state.downloadAttachments ? "checked" : ""}>
+          <span>${escapeHtml(t("Tải kèm"))}</span>
+        </label>
+      </div>
+      <div class="attachment-file-list">
+        ${attachments.map((att) => `
+          <div class="attachment-item-chip" title="${escapeHtml(att.url || '')}">
+            <span class="attachment-chip-icon">${att.type === "pdf" ? "📄" : (att.type === "text" ? "📝" : "📁")}</span>
+            <span class="attachment-chip-name">${escapeHtml(att.name || t("Tài liệu"))}</span>
+            <span class="attachment-chip-badge">${escapeHtml((att.type || "DOC").toUpperCase())}</span>
+          </div>
+        `).join("")}
+      </div>
+    </div>`;
+}
+
 function renderManualInfoPanelOnly() {
   const container = app.querySelector("#manual-info-container");
   if (container) {
@@ -2483,6 +2520,7 @@ function syncManualInfoVisibility(urlValue) {
 }
 
 function renderSeriesPicker() {
+  const attachmentCard = renderAttachmentCard();
   const actions = `
     <div class="series-picker-actions">
       <button data-action="discover-series">${escapeHtml(t("Quét danh sách series"))}</button>
@@ -2495,7 +2533,7 @@ function renderSeriesPicker() {
       "Bỏ chế độ tải tất cả, sau đó quét để chọn T1, T2, FLAIR hoặc series cụ thể.",
     ))}</small>`;
   }
-  return `${actions}${state.seriesInventory.map((group, groupIndex) => `
+  return `${attachmentCard}${actions}${state.seriesInventory.map((group, groupIndex) => `
     <section class="series-choice-group">
       <b>${escapeHtml([
       group.studyDate,
@@ -2717,6 +2755,9 @@ function bindEvents() {
 }
 
 function bindSeriesPickerEvents() {
+  app.querySelector("#attachment-download-toggle")?.addEventListener("change", (event) => {
+    state.downloadAttachments = event.target.checked;
+  });
   app.querySelectorAll("[data-series-group][data-series-choice]").forEach((item) => {
     item.addEventListener("change", () => {
       const series = state.seriesInventory[Number(item.dataset.seriesGroup)]
@@ -4008,12 +4049,27 @@ function humanError(error) {
   return hint ? `${t(hint[1])} (${t("chi tiết")}: ${raw})` : raw;
 }
 
+// Documents the scan found, keyed by study so a patient folder only receives
+// the reports that belong to that study.
+function attachmentsByStudy() {
+  const byStudy = {};
+  state.seriesInventory.forEach((group) => {
+    if (group.studyUid && group.studyUid !== "direct" && group.attachments?.length) {
+      byStudy[group.studyUid] = group.attachments;
+    }
+  });
+  return byStudy;
+}
+
 function downloadOptions() {
   const options = {
     outputRoot: state.bootstrap.outputRoot,
     quality: Number(app.querySelector("#quality").value || 100),
     showBrowser: app.querySelector("#show-browser").checked,
     downloadAllFiles: state.downloadAllFiles,
+    downloadAttachments: Boolean(state.downloadAttachments),
+    attachments: discoveredAttachments(),
+    attachmentsByStudy: attachmentsByStudy(),
     customUsername: state.customRisUser,
     customPassword: state.customRisPass,
   };

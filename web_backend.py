@@ -3345,6 +3345,8 @@ class WebController:
                 selected_series_by_study=normalised_selections,
                 custom_username=payload.get("customUsername") or payload.get("username"),
                 custom_password=payload.get("customPassword") or payload.get("password"),
+                download_attachments_flag=bool(payload.get("downloadAttachments", True)),
+                attachments_by_study=payload.get("attachmentsByStudy"),
             )
             patient_folder, _manifest = dcom_pipeline.find_patient_archive(
                 output_root, patient_id, hospital,
@@ -3502,6 +3504,8 @@ class WebController:
                 resume=resumed,
                 selected_series_ids=selected_series_ids,
                 manual_info=manual_info,
+                download_attachments_flag=bool(payload.get("downloadAttachments", True)),
+                attachments=payload.get("attachments"),
             )
             jpg_dir = Path(jpg_dir)
             if jpg_dir.parent.is_dir():
