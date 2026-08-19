@@ -93,6 +93,26 @@ describe("controls the browser paints for us", () => {
     expect(body).toContain("var(--accent-fg");
   });
 
+  it("gives the focus ring a colour for each shell", () => {
+    // One fixed ring cannot serve both: the cyan tuned for the image canvas is
+    // 1.9:1 on the white Worklist, so keyboard users had no focus indicator
+    // there at all.
+    expect(cssSource).toContain("--focus-ring: #2383e2");
+    expect(cssSource).toMatch(/\.app-shell\.viewer-active \{[\s\S]*?--focus-ring:/);
+    expect(cssSource).toContain("outline: 2px solid var(--focus-ring");
+  });
+
+  it("lets the panel's primary and danger buttons keep their own colours", () => {
+    // The shared download-panel rule outranks button.primary/button.danger, so
+    // it must not set colour at all: the main action and the Stop button both
+    // arrived as plain white buttons when it did.
+    const rule = cssSource.slice(cssSource.indexOf(".download-panel button:not(.icon-button)"));
+    const body = rule.slice(0, rule.indexOf("}"));
+    expect(body).not.toContain("color:");
+    expect(body).not.toContain("background:");
+    expect(cssSource).toContain(":not(.primary):not(.danger)");
+  });
+
   it("keeps the workspace empty state from covering the whole Worklist", () => {
     // `.empty-state` is absolute + inset: 0 for the reading canvas; unscoped it
     // painted the entire window black behind the patient list.

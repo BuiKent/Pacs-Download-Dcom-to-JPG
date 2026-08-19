@@ -43,6 +43,21 @@ describe("editable patient code and viewer link", () => {
   });
 });
 
+describe("session token survives a reload", () => {
+  it("keeps the token out of the URL but not out of the window", () => {
+    // The token arrives once in the query string and is stripped immediately so
+    // it never lands in history or a screenshot. Without the sessionStorage
+    // copy that strip was one-way: pressing F5 destroyed the only token the
+    // window had and the app could never start again, fatal screen included.
+    expect(mainSource).toContain('sessionUrl.searchParams.delete("token")');
+    expect(mainSource).toContain("sessionStorage.setItem(SESSION_TOKEN_KEY");
+    expect(mainSource).toContain("sessionStorage.getItem(SESSION_TOKEN_KEY)");
+    // A token the server rejects must not come back on the next reload.
+    expect(mainSource).toContain("function forgetSessionToken");
+    expect(mainSource).toContain("forgetSessionToken()");
+  });
+});
+
 describe("patient study selection", () => {
   it("defaults new/incomplete studies once and then preserves user edits", () => {
     const initial = initialiseStudySelections(studies);

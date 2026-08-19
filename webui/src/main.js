@@ -58,8 +58,23 @@ function getDomRoot() {
   }
   return (app && app.isConnected) ? app : document;
 }
+// The backend hands the token over once in the query string and it is taken
+// straight back out, so it never sits in the address bar, a screenshot or a
+// copied link. sessionStorage keeps the only other copy: without it, reloading
+// the page — F5, or the Reload button on the fatal-error screen — threw the
+// token away and the app could never start again in that window. The store is
+// scoped to this window and to host:port, and the server picks a fresh port
+// every launch, so a token cannot outlive the server that issued it.
+const SESSION_TOKEN_KEY = "dcom.sessionToken";
 const sessionUrl = new URL(location.href);
 let sessionToken = sessionUrl.searchParams.get("token") || "";
+try {
+  if (sessionToken) sessionStorage.setItem(SESSION_TOKEN_KEY, sessionToken);
+  else sessionToken = sessionStorage.getItem(SESSION_TOKEN_KEY) || "";
+} catch (_) {
+  // Private modes and file:// origins refuse sessionStorage; the token from
+  // the URL still works for this load, only the reload path is lost.
+}
 configureApi(sessionToken);
 const hasSessionToken = Boolean(sessionToken);
 sessionToken = "";
@@ -69,6 +84,15 @@ history.replaceState(
   "",
   `${sessionUrl.pathname}${sessionUrl.search}${sessionUrl.hash}`,
 );
+
+/** Drop a token the server no longer accepts so a reload stops replaying it. */
+function forgetSessionToken() {
+  try {
+    sessionStorage.removeItem(SESSION_TOKEN_KEY);
+  } catch (_) {
+    // Nothing to forget when the store was never available.
+  }
+}
 
 const state = {
   bootstrap: null,
@@ -4751,6 +4775,10 @@ const isRunningInTest = (typeof process !== "undefined" && Boolean(process.env?.
 
 if (!isRunningInTest) {
   boot().catch((error) => {
+    // A stored token the server rejects would come back on every reload, so
+    // the Reload button could never recover. Drop it and let the next start
+    // ask for a fresh one.
+    if (/\b(401|403)\b/.test(String(error?.message || ""))) forgetSessionToken();
     app.innerHTML = `<div class="fatal-error"><b>${escapeHtml(t("Không khởi động được DICOM/JPG Downloader & Viewer"))}</b>
       <pre>${escapeHtml(error.stack || error.message)}</pre>
       <button class="primary" id="fatal-reload">${escapeHtml(t("Tải lại"))}</button></div>`;

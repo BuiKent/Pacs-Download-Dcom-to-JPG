@@ -51,6 +51,10 @@
   --field-fg: #37352f;
   --field-border: #e9e9e7;
   --field-border-focus: #2383e2;
+  /* Keyboard focus ring. The dark shell overrides it: a colour bright enough
+     to sit on the image canvas is 1.9:1 on the white Worklist, which is no
+     focus indicator at all for anyone tabbing through the list. */
+  --focus-ring: #2383e2;
   --field-bg: #ffffff;
 
   --label-fg: #6b6a66;
@@ -160,6 +164,7 @@ button { cursor: pointer; }
   --brand-mark-border: #385164;
   --brand-mark-bg: #14232e;
   --brand-sub-fg: #91a7b6;
+  --focus-ring: #49c7ff;
   --list-border: #263541;
   --statusbar-border: #263541;
   --statusbar-bg: #0b1218;
@@ -756,35 +761,55 @@ button { cursor: pointer; }
 .field-row { display: flex; align-items: center; gap: 6px; margin: 12px 0 10px; }
 .field-row > .boxed-field { flex: 1; margin: 0; }
 
-/* Every push button in the download panel. One rule, so a button can never
-   again end up a few pixels taller than the field it sits next to. */
+/* Every push button in the download panel is the same shape. One rule, so a
+   button can never again end up a few pixels taller than the field it sits
+   next to. Shape only — colour is set below, otherwise this selector outranks
+   `button.primary` / `button.danger` and paints them like everything else. */
 .download-panel button:not(.icon-button):not(.clear-field):not(.panel-title button),
 .empty-state button {
   height: var(--control-height);
   padding: var(--control-pad);
-  color: var(--control-fg);
-  border: 1px solid var(--control-border);
   border-radius: var(--control-radius);
-  background: var(--control-bg);
   white-space: nowrap;
 }
-.download-panel button:not(.icon-button):not(.clear-field):not(.panel-title button):hover:not(:disabled),
-.empty-state button:hover:not(:disabled) { background: var(--control-bg-hover); }
+/* The default, secondary look. `.primary` and `.danger` opt out so the panel's
+   main action and its Stop button read as what they are: both used to arrive
+   here as plain white buttons indistinguishable from "Chuyển Dcom → JPG". */
+.download-panel button:not(.icon-button):not(.clear-field):not(.panel-title button):not(.primary):not(.danger),
+.empty-state button:not(.primary):not(.danger) {
+  color: var(--control-fg);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+}
+.download-panel button:not(.icon-button):not(.clear-field):not(.panel-title button):not(.primary):not(.danger):hover:not(:disabled),
+.empty-state button:not(.primary):not(.danger):hover:not(:disabled) { background: var(--control-bg-hover); }
+button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-bg) 82%, var(--accent-fg) 18%);
+}
+button.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger-bg) 84%, var(--danger-fg) 16%);
+}
+/* Full `border` shorthand, not just `border-color`: the shape rule above no
+   longer declares one, so a colour on its own would leave these two with
+   `border-style: none` and no outline at all. */
 button.primary {
   color: var(--accent-fg, #0f4c81);
-  border-color: var(--accent-border);
+  border: 1px solid var(--accent-border);
   background: var(--accent-bg);
   font-weight: 700;
 }
 button.danger {
   color: var(--danger-fg);
-  border-color: var(--danger-border);
+  border: 1px solid var(--danger-border);
   background: var(--danger-bg);
 }
+/* The filled state for a Stop button while a job is running. It asked for white
+   text over the same pale `--danger-bg` the resting state uses, which is 1.3:1
+   — the label would have vanished the first time anything set the class. */
 button.danger.active {
   color: #fff !important;
-  border-color: var(--danger-border) !important;
-  background: var(--danger-bg) !important;
+  border-color: var(--danger-fg) !important;
+  background: var(--danger-fg) !important;
 }
 button:disabled { opacity: .35; cursor: default; }
 .study-list {
@@ -1480,7 +1505,7 @@ button:disabled { opacity: .35; cursor: default; }
 
 .series-card { position: relative; }
 .icon-button:focus-visible, .soft-button:focus-visible, .series-card:focus-visible {
-  outline: 2px solid #49c7ff;
+  outline: 2px solid var(--focus-ring, #49c7ff);
   outline-offset: 1px;
 }
 .viewport { width: 100%; height: 100%; cursor: crosshair; }
