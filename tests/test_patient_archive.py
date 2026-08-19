@@ -678,6 +678,20 @@ class PatientDemographicsTests(unittest.TestCase):
         dcom_pipeline.merge_manifest_metadata(dicom_meta, {"PatientName": "LE VAN E"})
         self.assertEqual({"PatientName": "KHONG_RO_TEN"}, dicom_meta)
 
+    def test_repeated_manifest_merge_preserves_existing_field_provenance(self):
+        first = dcom_pipeline.merge_manifest_metadata(
+            {"PatientName": "KHONG_RO_TEN"},
+            {"PatientName": "LE VAN E"},
+        )
+        second = dcom_pipeline.merge_manifest_metadata(
+            first,
+            {"StudyDescription": "MR BRAIN"},
+        )
+        self.assertEqual(
+            ("PatientName", "StudyDescription"),
+            second[dcom_pipeline.MANIFEST_SOURCED_FIELDS],
+        )
+
     def test_an_empty_manifest_field_never_overwrites_nor_invents_one(self):
         """Rule: a field the PACS did not send stays as it was, blank included."""
         merged = dcom_pipeline.merge_manifest_metadata(

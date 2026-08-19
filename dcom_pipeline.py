@@ -705,7 +705,9 @@ def _extract_vrad_series_info_meta(body: bytes, cap: ViewerCapture) -> None:
     """Read full patient & study identity from StudyData/GetDicomSeriesInfo."""
     try:
         payload = json.loads(body.decode("utf-8", "replace"))
-        data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        data = payload.get("data", payload) if isinstance(payload, dict) else payload
+        if isinstance(data, list):
+            data = data[0] if data else {}
         if isinstance(data, dict):
             _record_study_meta(
                 cap,
@@ -1688,7 +1690,14 @@ class VradAdapter(PacsAdapter):
         # a field is still missing: the first manifest to report one wins anyway,
         # and this endpoint answers more than once per study.
         if ("StudyData/GetDicomSeriesInfo" in url
-                and not (cap.patient_name and cap.patient_id and cap.study_date)):
+                and not all((
+                    cap.patient_name,
+                    cap.patient_id,
+                    cap.study_date,
+                    cap.study_description,
+                    cap.study_uid,
+                    cap.accession_number,
+                ))):
             try:
                 _extract_vrad_series_info_meta(response.body(), cap)
             except Exception:
@@ -5987,7 +5996,7 @@ def merge_manifest_metadata(metadata: dict, manifest_meta: dict) -> dict:
     came from the DICOM tags.
     """
     merged = dict(metadata or {})
-    borrowed: list[str] = []
+    borrowed = set(merged.get(MANIFEST_SOURCED_FIELDS) or ())
     for key, value in (manifest_meta or {}).items():
         if not value or key == MANIFEST_SOURCED_FIELDS:
             continue
@@ -5995,7 +6004,7 @@ def merge_manifest_metadata(metadata: dict, manifest_meta: dict) -> dict:
         if current and current not in UNKNOWN_IDENTITY_PLACEHOLDERS:
             continue
         merged[key] = value
-        borrowed.append(key)
+        borrowed.add(key)
     if borrowed:
         merged[MANIFEST_SOURCED_FIELDS] = tuple(sorted(borrowed))
     return merged

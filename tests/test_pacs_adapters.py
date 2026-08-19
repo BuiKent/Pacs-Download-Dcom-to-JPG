@@ -1128,6 +1128,17 @@ class TestEarlyMetadataExtraction(unittest.TestCase):
         self.assertEqual(cap.study_uid, "1.2.3.4.28")
         self.assertEqual(cap.accession_number, "ACC-28")
 
+    def test_vrad_series_info_accepts_a_top_level_list_payload(self):
+        cap = dcom_pipeline.ViewerCapture()
+        dcom_pipeline._extract_vrad_series_info_meta(json.dumps([{
+            "patientName": "LE VAN E^50T",
+            "patientId": "PT-50",
+            "studyUid": "1.2.50",
+        }]).encode("utf-8"), cap)
+        self.assertEqual(cap.patient_name, "LE VAN E")
+        self.assertEqual(cap.patient_id, "PT-50")
+        self.assertEqual(cap.study_uid, "1.2.50")
+
     def test_vrad_series_info_never_renames_a_study_already_identified(self):
         cap = dcom_pipeline.ViewerCapture()
         dcom_pipeline._extract_vrad_patient_meta(
@@ -1162,6 +1173,9 @@ class TestEarlyMetadataExtraction(unittest.TestCase):
             "patientName": "LE VAN E",
             "patientId": "PT-77",
             "studyDate": "20250310",
+            "studyDescription": "MR BRAIN",
+            "studyUid": "1.2.77",
+            "accessionNumber": "ACC-77",
         }}).encode("utf-8")
         cap = dcom_pipeline.ViewerCapture()
         dcom_pipeline._observe_response(
@@ -1177,6 +1191,25 @@ class TestEarlyMetadataExtraction(unittest.TestCase):
         repeat.body = lambda: (reads.append(1), payload)[1]
         dcom_pipeline._observe_response(repeat, cap)
         self.assertEqual([], reads)
+
+    def test_vrad_adapter_keeps_reading_until_study_identity_is_complete(self):
+        cap = dcom_pipeline.ViewerCapture(
+            patient_name="LE VAN E", patient_id="PT-77", study_date="2025-03-10",
+        )
+        payload = json.dumps({"data": {
+            "studyDescription": "MR BRAIN",
+            "studyUid": "1.2.77",
+            "accessionNumber": "ACC-77",
+        }}).encode("utf-8")
+        response = FakeResponse(
+            "https://pacs.test/StudyData/GetDicomSeriesInfo?id=1", payload,
+        )
+
+        dcom_pipeline._observe_response(response, cap)
+
+        self.assertEqual(cap.study_description, "MR BRAIN")
+        self.assertEqual(cap.study_uid, "1.2.77")
+        self.assertEqual(cap.accession_number, "ACC-77")
 
     def test_vrad_download_via_manifest_preserves_weburl_params(self):
         vrad_json = json.dumps({

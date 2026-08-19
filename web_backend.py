@@ -9,6 +9,7 @@ from the browser.
 from __future__ import annotations
 
 import datetime
+import copy
 import hashlib
 import json
 import math
@@ -1914,6 +1915,21 @@ class ArchiveCatalog:
                 "series": [record.public_dict() for record in self._series.values()],
             }
 
+    def clone(self) -> "ArchiveCatalog":
+        """Copy the current catalog so one viewer tab owns a stable patient.
+
+        Download jobs open their result in the shared catalog. Giving that same
+        object to a tab would let the next download replace every series below
+        the first patient. Records are copied as well as the maps because lazy
+        thumbnails and manifests are mutable runtime state.
+        """
+        cloned = ArchiveCatalog()
+        with self._lock:
+            cloned.root = self.root
+            cloned._patient = copy.deepcopy(self._patient)
+            cloned._series = copy.deepcopy(self._series)
+        return cloned
+
     def get(self, series_id: str) -> SeriesRecord:
         with self._lock:
             record = self._series.get(series_id)
@@ -1962,6 +1978,26 @@ class ViewerSessionRegistry:
         )
         with self._lock:
             self._sessions[session_id] = session
+        return session
+
+    def create_session_from_catalog(
+        self,
+        source: ArchiveCatalog,
+        session_id: Optional[str] = None,
+        *,
+        folder: str = "",
+    ) -> ViewerSession:
+        """Pin an already-scanned catalog to a tab without scanning it again."""
+        sid = session_id or secrets.token_hex(8)
+        catalog = source.clone()
+        resolved_folder = folder or (str(catalog.root) if catalog.root else "")
+        session = ViewerSession(
+            session_id=sid,
+            catalog=catalog,
+            folder=resolved_folder,
+        )
+        with self._lock:
+            self._sessions[sid] = session
         return session
 
     def get_session(self, session_id: Optional[str]) -> Optional[ViewerSession]:
@@ -2361,6 +2397,7 @@ class WorklistScanner:
             "gender": {"M": "Nam", "F": "Nữ"}.get(sex, ""),
             "birthYear": birth[:4] if len(birth) >= 4 else "",
             "hospital": str(data.get("hospitalName") or "").strip(),
+            "hospitalKey": str(data.get("hospitalKey") or "").strip(),
         }
 
     def _manifest_studies_for(self, patient_dir: Path) -> dict[str, dict]:
@@ -2435,20 +2472,43 @@ class WorklistScanner:
         return ""
 
     def _patient_meta_for(self, patient_dir: Path) -> dict:
-        """Manifest identity when the folder has one, folder-name guess otherwise.
+        """Use the manifest identity, or cautiously parse a legacy folder.
 
-        Fields the manifest leaves blank fall back to the guess rather than
-        overwriting it with an empty string, so a partial manifest still helps.
+        Once patient-index.json exists it is the source of truth. A blank field
+        in that file means unknown; filling it from a plausible folder name can
+        fabricate demographics beside clinical images.
         """
         guessed = self._parse_patient_meta(patient_dir.name)
         recorded = self._manifest_patient_meta(patient_dir)
         if not recorded:
             return guessed
-        return {key: (recorded.get(key) or guessed.get(key, "")) for key in guessed}
+        return {
+            key: str(recorded.get(key) or "").strip()
+            for key in guessed
+        }
 
     def _parse_patient_meta(self, folder_name: str) -> dict:
         name_clean = folder_name.replace("\\", "/").rstrip("/").split("/")[-1]
         primary_chunks = [c.strip() for c in re.split(r"[_|]|\s+-\s+|\s+·\s+", name_clean) if c.strip()]
+
+        # Current direct-download folders are
+        #   <name> - <age> - <patient id> - <download date>.
+        # Recognise that exact shape before the legacy parser treats the name as
+        # the ID. The age is not a birth year and the download date is not a
+        # clinical demographic, so neither is inferred here.
+        if (
+            len(primary_chunks) >= 4
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", primary_chunks[-1])
+            and primary_chunks[-2]
+        ):
+            return {
+                "patientId": primary_chunks[-2],
+                "patientName": " - ".join(primary_chunks[:-3]).strip(),
+                "gender": "",
+                "birthYear": "",
+                "hospital": "",
+                "hospitalKey": "",
+            }
         patient_id = primary_chunks[0] if primary_chunks else name_clean
 
         remaining = " ".join(primary_chunks[1:]) if len(primary_chunks) > 1 else ""
@@ -2500,6 +2560,7 @@ class WorklistScanner:
             "gender": gender,
             "birthYear": birth_year,
             "hospital": hospital,
+            "hospitalKey": "",
         }
 
     def _scan_study(
@@ -2687,50 +2748,64 @@ class WorklistScanner:
 
         patient_map: dict[str, dict] = {}
 
+        def archive_key(patient_dir: Path) -> str:
+            """One Worklist patient row per archive root, never per bare ID."""
+            try:
+                return str(patient_dir.resolve()).casefold()
+            except OSError:
+                return str(patient_dir).casefold()
+
         for root in roots_to_scan:
             try:
-                for child in root.iterdir():
-                    if child.is_dir() and not child.name.startswith("."):
-                        meta = self._patient_meta_for(child)
-                        pid = meta["patientId"]
-                        if pid not in patient_map:
-                            patient_map[pid] = {
-                                "id": f"p_{hashlib.sha256(pid.encode()).hexdigest()[:12]}",
-                                **meta,
-                                "folder": str(child),
-                                "exists": True,
-                                "studies": [],
-                            }
-                        records = self._manifest_studies_for(child)
-                        subdirs = [s for s in child.iterdir() if s.is_dir() and not s.name.startswith(".")]
-                        study_subdirs = [s for s in subdirs if not s.name.upper() in {"DICOM", "JPG", "VIDEO", "PHOTO"}]
-                        if study_subdirs:
-                            for sdir in study_subdirs:
-                                st = self._scan_study(sdir, meta, self._lookup_record(records, sdir))
-                                patient_map[pid]["studies"].append(st)
-                        else:
-                            st = self._scan_study(child, meta, self._lookup_record(records, child))
-                            patient_map[pid]["studies"].append(st)
-            except Exception:
-                pass
+                children = list(root.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                if not child.is_dir() or child.name.startswith("."):
+                    continue
+                try:
+                    key = archive_key(child)
+                    meta = self._patient_meta_for(child)
+                    if key not in patient_map:
+                        patient_map[key] = {
+                            "id": f"p_{hashlib.sha256(key.encode()).hexdigest()[:12]}",
+                            **meta,
+                            "folder": str(child),
+                            "exists": True,
+                            "studies": [],
+                        }
+                    records = self._manifest_studies_for(child)
+                    subdirs = [s for s in child.iterdir() if s.is_dir() and not s.name.startswith(".")]
+                    study_subdirs = [s for s in subdirs if not s.name.upper() in {"DICOM", "JPG", "VIDEO", "PHOTO"}]
+                    if study_subdirs:
+                        for sdir in study_subdirs:
+                            st = self._scan_study(sdir, meta, self._lookup_record(records, sdir))
+                            patient_map[key]["studies"].append(st)
+                    else:
+                        st = self._scan_study(child, meta, self._lookup_record(records, child))
+                        patient_map[key]["studies"].append(st)
+                except (OSError, ValueError, TypeError):
+                    # A half-copied or unreadable patient archive must not hide
+                    # every later record in the same output folder.
+                    continue
 
         for hpath in history_folders:
             patient_dir = hpath.parent if hpath.name.casefold() in {"dicom", "jpg"} else hpath
+            key = archive_key(patient_dir)
             meta = self._patient_meta_for(patient_dir)
-            pid = meta["patientId"]
-            if pid not in patient_map:
-                patient_map[pid] = {
-                    "id": f"p_{hashlib.sha256(pid.encode()).hexdigest()[:12]}",
+            if key not in patient_map:
+                patient_map[key] = {
+                    "id": f"p_{hashlib.sha256(key.encode()).hexdigest()[:12]}",
                     **meta,
                     "folder": str(hpath),
                     "exists": hpath.is_dir(),
                     "studies": [],
                 }
-            existing_folders = {s["folder"].casefold() for s in patient_map[pid]["studies"]}
+            existing_folders = {s["folder"].casefold() for s in patient_map[key]["studies"]}
             if str(hpath).casefold() not in existing_folders:
                 records = self._manifest_studies_for(patient_dir)
                 st = self._scan_study(hpath, meta, self._lookup_record(records, hpath))
-                patient_map[pid]["studies"].append(st)
+                patient_map[key]["studies"].append(st)
 
         patients = []
         for p in patient_map.values():
@@ -2837,14 +2912,26 @@ class WebController:
         # double the work on a large archive for no gain.
         catalog = self.sessions.get_catalog(session_id)
         archive = catalog.snapshot()
+        archive_session_id = str(session_id or "")
+        if not archive_session_id and archive.get("root") and archive.get("series"):
+            session = self.sessions.create_session_from_catalog(
+                catalog,
+                folder=str(archive.get("root") or ""),
+            )
+            archive_session_id = session.session_id
+            archive = session.catalog.snapshot()
         return {
             "version": APP_VERSION,
             "archive": archive,
+            "archiveSessionId": archive_session_id,
             "job": self.job.snapshot(),
             "outputRoot": str(self.output_root),
             "language": self.language,
             "history": self.history_snapshot(),
-            "worklist": self.get_worklist(),
+            # Disk scanning can walk thousands of image files. The shell paints
+            # first and /api/worklist performs the scan asynchronously, with an
+            # explicit loading/error state in the UI.
+            "worklist": {"patients": [], "deferred": True},
             "lastDirectUrl": self.history.url_for(archive.get("root", "")),
             "hospitals": [
                 {
@@ -2978,8 +3065,13 @@ class WebController:
                 should_stop=self.job.stop_event.is_set,
             )
             self.history.add(open_path)
+            session = self.sessions.create_session_from_catalog(
+                self.catalog,
+                folder=str(open_path),
+            )
             return {
                 "archive": archive,
+                "sessionId": session.session_id,
                 "source": str(source),
                 "output": str(open_path),
                 "converted": total_stats.converted,
@@ -3354,6 +3446,10 @@ class WebController:
             if patient_folder is None:
                 raise ValueError("Không tìm thấy folder bệnh nhân sau khi tải.")
             archive = self.catalog.open(patient_folder)
+            session = self.sessions.create_session_from_catalog(
+                self.catalog,
+                folder=str(patient_folder),
+            )
             self.history.add(patient_folder)
             patient = dcom_pipeline.patient_archive_status(
                 output_root,
@@ -3382,6 +3478,7 @@ class WebController:
                 "cancelled": result_status == "cancelled",
                 "downloaded": total,
                 "archive": archive,
+                "sessionId": session.session_id,
                 "patient": patient,
                 "patientFolder": str(patient_folder),
                 "studies": all_studies,
@@ -3518,6 +3615,13 @@ class WebController:
             archive = None
             if dl_status not in {"rendered_only", "cancelled"}:
                 archive = self.catalog.open(jpg_dir if Path(jpg_dir).exists() else direct_root)
+            session_id = ""
+            if archive:
+                session = self.sessions.create_session_from_catalog(
+                    self.catalog,
+                    folder=str(direct_root),
+                )
+                session_id = session.session_id
             # The link is stored with the folder so a later retry from history
             # can reuse it. We use the updated direct_root.
             self._write_direct_download_marker(direct_root, url)
@@ -3533,6 +3637,7 @@ class WebController:
                     "failed": getattr(dl, "failed", 0),
                 },
                 "archive": archive,
+                "sessionId": session_id,
                 "output": str(direct_root),
                 "resumed": resumed,
             }

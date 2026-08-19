@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import shutil
 import tempfile
 import time
@@ -1785,6 +1786,14 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
             self.assertEqual(meta["birthYear"], "", f"{folder} invented a birth year")
             self.assertEqual(meta["hospital"], "", f"{folder} invented a hospital")
 
+        current = scanner._parse_patient_meta(
+            "PHAN THI YEN LY - 26T - 2607053993 - 2026-08-10"
+        )
+        self.assertEqual(current["patientName"], "PHAN THI YEN LY")
+        self.assertEqual(current["patientId"], "2607053993")
+        self.assertEqual(current["gender"], "")
+        self.assertEqual(current["birthYear"], "")
+
     def test_worklist_prefers_patient_index_over_folder_name(self) -> None:
         """patient-index.json records the real DICOM tags, so it wins."""
         from web_backend import WorklistScanner
@@ -1807,6 +1816,23 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertEqual(meta["gender"], "Nữ")
         self.assertEqual(meta["birthYear"], "1988")
         self.assertEqual(meta["hospital"], "BV Bạch Mai")
+
+    def test_partial_patient_index_does_not_borrow_identity_from_folder(self) -> None:
+        from web_backend import WorklistScanner
+
+        patient_dir = self.temp_dir / "FOLDER-ID_NGUYEN VAN DOAN - Nam - 1974"
+        patient_dir.mkdir(parents=True)
+        (patient_dir / "patient-index.json").write_text(json.dumps({
+            "format": "dcom-patient-index-v1",
+            "patientId": "RECORDED-ID",
+            "studies": {},
+        }), encoding="utf-8")
+
+        meta = WorklistScanner(self.controller)._patient_meta_for(patient_dir)
+        self.assertEqual(meta["patientId"], "RECORDED-ID")
+        self.assertEqual(meta["patientName"], "")
+        self.assertEqual(meta["gender"], "")
+        self.assertEqual(meta["birthYear"], "")
 
     def test_a_patient_code_is_not_read_as_a_study_date(self) -> None:
         """Found by running the app: `2607063527_...` displayed as 35/06/2607.
@@ -1892,6 +1918,39 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             sessions.get_catalog(one.session_id).get(id_two)
 
+    def test_cloned_download_session_survives_default_catalog_reuse(self) -> None:
+        first = self.temp_dir / "BN-CLONE-1"
+        (first / "VIDEO").mkdir(parents=True)
+        self._write_video(first / "VIDEO" / "a.mp4")
+        second = self.temp_dir / "BN-CLONE-2"
+        (second / "BAO-CAO").mkdir(parents=True)
+        (second / "BAO-CAO" / "b.txt").write_text("x", encoding="utf-8")
+
+        self.controller.catalog.open(first)
+        pinned = self.controller.sessions.create_session_from_catalog(
+            self.controller.catalog, folder=str(first),
+        )
+        first_id = pinned.catalog.snapshot()["series"][0]["id"]
+        self.controller.catalog.open(second)
+
+        self.assertEqual(pinned.catalog.get(first_id).series_id, first_id)
+        self.assertTrue(os.path.samefile(pinned.catalog.snapshot()["root"], first))
+
+    def test_bootstrap_defers_worklist_scan_and_pins_open_archive(self) -> None:
+        patient = self.temp_dir / "BN-BOOT"
+        (patient / "VIDEO").mkdir(parents=True)
+        self._write_video(patient / "VIDEO" / "a.mp4")
+        self.controller.catalog.open(patient)
+
+        payload = self.controller.bootstrap()
+
+        self.assertTrue(payload["worklist"]["deferred"])
+        self.assertEqual(payload["worklist"]["patients"], [])
+        self.assertTrue(payload["archiveSessionId"])
+        self.assertIsNotNone(
+            self.controller.sessions.get_session(payload["archiveSessionId"])
+        )
+
     def test_creating_a_session_records_the_folder_in_history(self) -> None:
         """Opening through a session is still opening; the worklist needs it."""
         folder = self.temp_dir / "BN-S3"
@@ -1947,6 +2006,52 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         ids = {p["patientId"] for p in WorklistScanner(self.controller).scan()}
         self.assertIn("BN-TRONG-KHO", ids)
         self.assertNotIn("BN-NGOAI-KHO", ids)
+
+    def test_worklist_keeps_two_archive_folders_with_the_same_patient_id_separate(self) -> None:
+        from web_backend import WorklistScanner
+
+        for suffix in ("A", "B"):
+            patient = self.temp_dir / f"ARCHIVE-{suffix}"
+            patient.mkdir()
+            (patient / "patient-index.json").write_text(json.dumps({
+                "format": "dcom-patient-index-v1",
+                "patientId": "SHARED-ID",
+                "patientName": f"PATIENT {suffix}",
+                "studies": {},
+            }), encoding="utf-8")
+            (patient / "VIDEO").mkdir()
+            self._write_video(patient / "VIDEO" / f"{suffix}.mp4")
+        self.controller.output_root = self.temp_dir
+
+        matches = [
+            patient for patient in WorklistScanner(self.controller).scan()
+            if patient["patientId"] == "SHARED-ID"
+        ]
+
+        self.assertEqual(len(matches), 2)
+        self.assertEqual({item["patientName"] for item in matches}, {"PATIENT A", "PATIENT B"})
+
+    def test_one_unreadable_patient_does_not_abort_later_worklist_rows(self) -> None:
+        from web_backend import WorklistScanner
+
+        broken = self.temp_dir / "BROKEN"
+        broken.mkdir()
+        valid = self.temp_dir / "VALID"
+        (valid / "VIDEO").mkdir(parents=True)
+        self._write_video(valid / "VIDEO" / "ok.mp4")
+        self.controller.output_root = self.temp_dir
+        scanner = WorklistScanner(self.controller)
+        original = scanner._patient_meta_for
+
+        def patient_meta(folder):
+            if folder.name == "BROKEN":
+                raise OSError("simulated unreadable archive")
+            return original(folder)
+
+        with mock.patch.object(scanner, "_patient_meta_for", side_effect=patient_meta):
+            patients = scanner.scan()
+
+        self.assertIn("VALID", {item["patientId"] for item in patients})
 
     def test_saving_an_edit_writes_beside_the_original_without_touching_it(self) -> None:
         """Edits used to live only in %TEMP% and vanish on the next tab switch."""
