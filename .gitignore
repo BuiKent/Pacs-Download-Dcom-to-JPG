@@ -33,6 +33,7 @@ env/
 !webui/package-lock.json
 !webui/index.html
 !web_dist/index.html
+!tools/ui-states.json
 
 # OS Files
 .DS_Store

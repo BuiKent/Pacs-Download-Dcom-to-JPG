@@ -1,0 +1,53 @@
+[
+  {
+    "label": "empty archive",
+    "actions": [
+      { "mock": { "url": "**/api/worklist", "body": { "patients": [] } } },
+      { "goto": true },
+      { "waitFor": ".worklist-tree" },
+      { "wait": 2000 }
+    ]
+  },
+  {
+    "label": "scan failed",
+    "actions": [
+      { "unroute": "**/api/worklist" },
+      { "abort": "**/api/worklist" },
+      { "goto": true },
+      { "waitFor": ".worklist-tree" },
+      { "wait": 2000 }
+    ]
+  },
+  {
+    "label": "worklist with records",
+    "actions": [
+      { "unroute": "**/api/worklist" },
+      { "goto": true },
+      { "waitFor": "[data-action=\"open-patient-record\"]" },
+      { "wait": 1500 }
+    ]
+  },
+  {
+    "label": "download fields filled",
+    "actions": [
+      { "fill": ["#patient-id", "BN123456"] },
+      { "fill": ["#direct-url", "https://viewer.example/study/1"] }
+    ]
+  },
+  {
+    "label": "activity and queue tab",
+    "actions": [
+      { "click": "[data-worklist-tab='activity']" },
+      { "wait": 1200 }
+    ]
+  },
+  {
+    "label": "patient tab, dark shell",
+    "actions": [
+      { "click": "[data-worklist-tab='studies']" },
+      { "wait": 800 },
+      { "click": "[data-action=\"open-patient-record\"] >> nth=2" },
+      { "wait": 9000 }
+    ]
+  }
+]

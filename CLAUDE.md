@@ -113,6 +113,19 @@ Mọi cặp chữ/nền phải đạt **4.5:1**. `webui/src/color-contrast.test.
 tỉ lệ cho các cặp token và sẽ fail nếu tụt xuống dưới — thêm token màu mới thì
 thêm cặp vào danh sách `PAIRS` trong đó.
 
+Test đó chỉ thấy token. Muốn thấy thứ trình duyệt thật sự tô — cascade thật, màu
+mặc định của UA, các trạng thái rỗng/lỗi — thì dựng app rồi đo:
+
+```bash
+python tools/run_web_preview.py --static web_dist   # in ra URL kèm token
+python ~/.claude/skills/contrast-audit/audit.py <URL> --steps tools/ui-states.json
+```
+
+`tools/ui-states.json` lái app qua 6 trạng thái đáng kiểm: kho rỗng, quét lỗi,
+danh sách có hồ sơ, hai ô nhập đã điền, tab Hoạt động, tab bệnh nhân nền tối.
+Dùng `goto` chứ đừng dùng `reload` — app xoá token khỏi URL lúc khởi động nên
+reload sẽ rơi vào màn hình lỗi.
+
 Hai lỗi hay gặp, đã sửa nhưng dễ tái diễn:
 
 - Chữ trắng trên `--accent-bg` (xanh nhạt) — nút trông như rỗng. Nhãn của
