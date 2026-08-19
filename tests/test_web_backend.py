@@ -1951,6 +1951,37 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
             self.controller.sessions.get_session(payload["archiveSessionId"])
         )
 
+    def test_bootstrap_reuses_its_session_until_the_archive_moves(self) -> None:
+        """A page reload must not leave a full copy of the archive behind.
+
+        Bootstrap runs again on every reload. Cloning the catalog each time
+        retained one deep copy of every series per reload, which on a 600-series
+        study is a large amount of memory for nothing.
+        """
+        first = self.temp_dir / "BN-BOOT-REUSE"
+        (first / "VIDEO").mkdir(parents=True)
+        self._write_video(first / "VIDEO" / "a.mp4")
+        self.controller.catalog.open(first)
+
+        initial = self.controller.bootstrap()["archiveSessionId"]
+        repeated = [self.controller.bootstrap()["archiveSessionId"] for _ in range(3)]
+
+        self.assertTrue(initial)
+        self.assertEqual(repeated, [initial] * 3)
+
+        second = self.temp_dir / "BN-BOOT-MOVED"
+        (second / "VIDEO").mkdir(parents=True)
+        self._write_video(second / "VIDEO" / "b.mp4")
+        self.controller.catalog.open(second)
+
+        moved = self.controller.bootstrap()["archiveSessionId"]
+        self.assertNotEqual(moved, initial)
+        self.assertTrue(
+            os.path.samefile(
+                self.controller.sessions.get_session(moved).catalog.root, second
+            )
+        )
+
     def test_creating_a_session_records_the_folder_in_history(self) -> None:
         """Opening through a session is still opening; the worklist needs it."""
         folder = self.temp_dir / "BN-S3"

@@ -2836,6 +2836,9 @@ class WebController:
     def __init__(self) -> None:
         self.catalog = ArchiveCatalog()
         self.sessions = ViewerSessionRegistry(self.catalog)
+        # The session bootstrap pins the shared catalog to, so a reload reuses
+        # it instead of cloning the whole archive again.
+        self._bootstrap_session_id = ""
         self.job = JobState()
         app_data = Path(os.environ.get("LOCALAPPDATA") or Path.home())
         self.annotation_root = app_data / "DCom JPG PACS" / "viewer-annotations"
@@ -2914,12 +2917,19 @@ class WebController:
         archive = catalog.snapshot()
         archive_session_id = str(session_id or "")
         if not archive_session_id and archive.get("root") and archive.get("series"):
-            session = self.sessions.create_session_from_catalog(
-                catalog,
-                folder=str(archive.get("root") or ""),
-            )
+            root = str(archive.get("root") or "")
+            # Bootstrap runs again on every page reload. Cloning the catalog
+            # each time would retain one full copy of every series per reload,
+            # so the session already pinned to this root is reused and a new
+            # one is minted only when the shared catalog has moved elsewhere.
+            session = self.sessions.get_session(self._bootstrap_session_id)
+            if session is None or str(session.catalog.root or "") != root:
+                session = self.sessions.create_session_from_catalog(catalog, folder=root)
+                self._bootstrap_session_id = session.session_id
             archive_session_id = session.session_id
-            archive = session.catalog.snapshot()
+            # The clone holds the same records, so its snapshot is the one
+            # already built above; serialising all of them twice is the exact
+            # cost the comment at the top of this method exists to avoid.
         return {
             "version": APP_VERSION,
             "archive": archive,
