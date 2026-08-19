@@ -1107,6 +1107,77 @@ class TestEarlyMetadataExtraction(unittest.TestCase):
         self.assertEqual(cap.patient_name, "NGUYEN VAN C")
         self.assertEqual(cap.patient_id, "X1")
 
+    def test_vrad_series_info_fills_the_identity_in_camelcase(self):
+        """VRAD repeats the study identity under StudyData/GetDicomSeriesInfo."""
+        series_info_json = json.dumps({
+            "data": {
+                "patientName": "NGUYEN QUOC DUY^34T",
+                "patientId": "S001PT24100002133",
+                "studyDate": "20241025",
+                "studyDescription": "CT BUNG",
+                "studyUid": "1.2.3.4.28",
+                "accessionNumber": "ACC-28",
+            }
+        }).encode("utf-8")
+        cap = dcom_pipeline.ViewerCapture()
+        dcom_pipeline._extract_vrad_series_info_meta(series_info_json, cap)
+        self.assertEqual(cap.patient_name, "NGUYEN QUOC DUY")
+        self.assertEqual(cap.patient_id, "S001PT24100002133")
+        self.assertEqual(cap.study_date, "2024-10-25")
+        self.assertEqual(cap.study_description, "CT BUNG")
+        self.assertEqual(cap.study_uid, "1.2.3.4.28")
+        self.assertEqual(cap.accession_number, "ACC-28")
+
+    def test_vrad_series_info_never_renames_a_study_already_identified(self):
+        cap = dcom_pipeline.ViewerCapture()
+        dcom_pipeline._extract_vrad_patient_meta(
+            json.dumps({"data": [{
+                "PatientName": "NGO THI NHIEU",
+                "PatientID": "24C000117",
+            }]}).encode("utf-8"), cap)
+        dcom_pipeline._extract_vrad_series_info_meta(
+            json.dumps({"data": {
+                "patientName": "AI DO KHAC",
+                "patientId": "X9",
+                "studyDate": "20241025",
+            }}).encode("utf-8"), cap)
+        self.assertEqual(cap.patient_name, "NGO THI NHIEU")
+        self.assertEqual(cap.patient_id, "24C000117")
+        # A field the study list never reported may still arrive later.
+        self.assertEqual(cap.study_date, "2024-10-25")
+
+    def test_vrad_series_info_leaves_the_capture_blank_on_an_unreadable_payload(self):
+        cap = dcom_pipeline.ViewerCapture()
+        for body in (b"", b"not json",
+                     json.dumps({"data": []}).encode("utf-8"),
+                     json.dumps({"data": "nope"}).encode("utf-8"),
+                     json.dumps(["list at top level"]).encode("utf-8")):
+            dcom_pipeline._extract_vrad_series_info_meta(body, cap)
+        self.assertIsNone(cap.patient_name)
+        self.assertIsNone(cap.patient_id)
+        self.assertIsNone(cap.study_date)
+
+    def test_vrad_adapter_reads_series_info_only_until_the_identity_is_known(self):
+        payload = json.dumps({"data": {
+            "patientName": "LE VAN E",
+            "patientId": "PT-77",
+            "studyDate": "20250310",
+        }}).encode("utf-8")
+        cap = dcom_pipeline.ViewerCapture()
+        dcom_pipeline._observe_response(
+            FakeResponse("https://pacs.test/StudyData/GetDicomSeriesInfo?id=1", payload), cap)
+        self.assertEqual(cap.patient_name, "LE VAN E")
+        self.assertEqual(cap.patient_id, "PT-77")
+        self.assertEqual(cap.study_date, "2025-03-10")
+
+        # The endpoint answers once per series; with the identity already known
+        # the body is not downloaded again.
+        reads = []
+        repeat = FakeResponse("https://pacs.test/StudyData/GetDicomSeriesInfo?id=2", payload)
+        repeat.body = lambda: (reads.append(1), payload)[1]
+        dcom_pipeline._observe_response(repeat, cap)
+        self.assertEqual([], reads)
+
     def test_vrad_download_via_manifest_preserves_weburl_params(self):
         vrad_json = json.dumps({
             "data": [{

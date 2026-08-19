@@ -638,6 +638,118 @@ class PatientDemographicsTests(unittest.TestCase):
                 expected_birth_date="2003-04-02",
             )
 
+    def test_manifest_only_fills_identity_the_dicom_tags_left_unknown(self):
+        dicom_meta = {
+            "PatientName": "NGUYEN THI CAM TU",
+            "PatientID": "2606033997",
+            "StudyDate": "2026-01-05",
+        }
+        manifest_meta = {
+            "PatientName": "AI DO KHAC",
+            "PatientID": "S001PT24100002133",
+            "StudyDate": "2024-10-25",
+            "StudyDescription": "CT BUNG",
+        }
+        merged = dcom_pipeline.merge_manifest_metadata(dicom_meta, manifest_meta)
+        self.assertEqual("NGUYEN THI CAM TU", merged["PatientName"])
+        self.assertEqual("2606033997", merged["PatientID"])
+        self.assertEqual("2026-01-05", merged["StudyDate"])
+        # Only the field the DICOM tags never carried comes from the manifest.
+        self.assertEqual("CT BUNG", merged["StudyDescription"])
+        self.assertEqual(
+            ("StudyDescription",),
+            merged[dcom_pipeline.MANIFEST_SOURCED_FIELDS],
+        )
+
+    def test_manifest_replaces_a_redacted_identity_placeholder(self):
+        merged = dcom_pipeline.merge_manifest_metadata(
+            {"PatientName": "KHONG_RO_TEN", "PatientID": "KHONG_RO_ID"},
+            {"PatientName": "NGO THI NHIEU", "PatientID": "24C000117"},
+        )
+        self.assertEqual("NGO THI NHIEU", merged["PatientName"])
+        self.assertEqual("24C000117", merged["PatientID"])
+        self.assertEqual(
+            ("PatientID", "PatientName"),
+            merged[dcom_pipeline.MANIFEST_SOURCED_FIELDS],
+        )
+
+    def test_merge_leaves_the_metadata_it_was_given_untouched(self):
+        dicom_meta = {"PatientName": "KHONG_RO_TEN"}
+        dcom_pipeline.merge_manifest_metadata(dicom_meta, {"PatientName": "LE VAN E"})
+        self.assertEqual({"PatientName": "KHONG_RO_TEN"}, dicom_meta)
+
+    def test_an_empty_manifest_field_never_overwrites_nor_invents_one(self):
+        """Rule: a field the PACS did not send stays as it was, blank included."""
+        merged = dcom_pipeline.merge_manifest_metadata(
+            {"PatientID": "KHONG_RO_ID"},
+            {"PatientID": "", "PatientName": ""},
+        )
+        self.assertEqual("KHONG_RO_ID", merged["PatientID"])
+        self.assertNotIn("PatientName", merged)
+        self.assertNotIn(dcom_pipeline.MANIFEST_SOURCED_FIELDS, merged)
+
+    def test_a_manifest_sourced_id_is_not_cross_checked_against_the_ris(self):
+        """A PACS viewer numbers patients its own way; that is not a conflict.
+
+        A redacted DICOM ID stays "KHONG_RO_ID" and the cross-check skips it.
+        Once the viewer manifest fills that field in, the value must still be
+        skipped, or a RIS download aborts over two ID schemes that in fact
+        describe the same patient.
+        """
+        merged = dcom_pipeline.merge_manifest_metadata(
+            {"PatientID": "KHONG_RO_ID", "PatientName": "KHONG_RO_TEN"},
+            {"PatientID": "S001PT24100002133", "PatientName": "NGUYEN QUOC DUY"},
+        )
+        dcom_pipeline._assert_patient_metadata_matches(
+            "2606033997",
+            "NGUYEN THI CAM TU",
+            merged,
+        )
+
+    def test_a_dicom_sourced_id_is_still_cross_checked_against_the_ris(self):
+        merged = dcom_pipeline.merge_manifest_metadata(
+            {"PatientID": "9999999999", "PatientName": "NGUYEN THI CAM TU"},
+            {"PatientID": "S001PT24100002133"},
+        )
+        self.assertNotIn(dcom_pipeline.MANIFEST_SOURCED_FIELDS, merged)
+        with self.assertRaises(dcom_pipeline.PatientIdentityConflictError):
+            dcom_pipeline._assert_patient_metadata_matches(
+                "2606033997",
+                "NGUYEN THI CAM TU",
+                merged,
+            )
+
+    def test_the_provenance_key_never_reaches_the_patient_manifest(self):
+        """Provenance is bookkeeping for the cross-check, not archive content."""
+        with tempfile.TemporaryDirectory() as tmp:
+            patient_root, _manifest, _created = dcom_pipeline.ensure_patient_archive(
+                Path(tmp) / "archive",
+                patient_id="24C000117",
+                patient_name="",
+                hospital_key="direct",
+                hospital_name="",
+            )
+            metadata = dcom_pipeline.merge_manifest_metadata(
+                {"PatientName": "KHONG_RO_TEN", "PatientID": "KHONG_RO_ID"},
+                {
+                    "PatientName": "NGO THI NHIEU",
+                    "PatientID": "24C000117",
+                    "StudyDate": "2024-12-24",
+                    "StudyInstanceUID": "1.2.3.4.5",
+                },
+            )
+            dcom_pipeline.write_direct_patient_manifest(
+                patient_root,
+                patient_root / "JPG",
+                metadata,
+                image_count=1,
+                complete=True,
+            )
+            raw = (patient_root / dcom_pipeline.PATIENT_MANIFEST_NAME).read_text(
+                encoding="utf-8")
+            self.assertNotIn(dcom_pipeline.MANIFEST_SOURCED_FIELDS, raw)
+            self.assertEqual("NGO THI NHIEU", json.loads(raw)["patientName"])
+
     def test_manifest_upgrades_placeholder_birth_date_within_the_same_year(self):
         manifest = {"patientBirthDate": "2003-01-01"}
         dcom_pipeline._merge_manifest_demographics(

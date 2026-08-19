@@ -687,16 +687,35 @@ def _extract_vrad_patient_meta(body: bytes, cap: ViewerCapture) -> None:
     try:
         payload = json.loads(body.decode("utf-8", "replace"))
         data = payload.get("data", payload) if isinstance(payload, dict) else payload
-        study = data[0] if isinstance(data, list) and data else data
+        study = data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else {})
         _record_study_meta(
             cap,
-            name=_first_str(study, "PatientName", "PatName"),
-            pid=_first_str(study, "PatientID", "PatID"),
-            study_date=_first_str(study, "StudyDate", "StuDate"),
-            description=_first_str(study, "StudyDescription", "Description"),
-            study_uid=_first_str(study, "StuInsUID", "StudyInstanceUID"),
-            accession=_first_str(study, "AccessionNumber", "AccNum"),
+            name=_first_str(study, "PatientName", "PatName", "patientName", "patName"),
+            pid=_first_str(study, "PatientId", "PatientID", "patientId", "patientID", "PatID", "patId", "PatCode", "patCode"),
+            study_date=_first_str(study, "StudyDate", "StuDate", "studyDate", "stuDate", "StudyDateTime", "stuDateTime"),
+            description=_first_str(study, "StudyDescription", "Description", "studyDescription", "description"),
+            study_uid=_first_str(study, "StuInsUID", "StudyInstanceUID", "studyInstanceUid", "studyUid"),
+            accession=_first_str(study, "AccessionNumber", "AccNum", "accessionNumber", "accNum"),
         )
+    except Exception:
+        pass
+
+
+def _extract_vrad_series_info_meta(body: bytes, cap: ViewerCapture) -> None:
+    """Read full patient & study identity from StudyData/GetDicomSeriesInfo."""
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+        data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        if isinstance(data, dict):
+            _record_study_meta(
+                cap,
+                name=_first_str(data, "patientName", "PatientName", "patName"),
+                pid=_first_str(data, "patientId", "PatientID", "PatientId", "patId", "PatID"),
+                study_date=_first_str(data, "studyDate", "StudyDate", "stuDate", "StuDate"),
+                description=_first_str(data, "studyDescription", "StudyDescription", "description"),
+                study_uid=_first_str(data, "studyUid", "studyUID", "studyInstanceUid", "StudyInstanceUID"),
+                accession=_first_str(data, "accessionNumber", "AccessionNumber", "accNum"),
+            )
     except Exception:
         pass
 
@@ -1665,6 +1684,15 @@ class VradAdapter(PacsAdapter):
             cap.getstudies = body
             _extract_vrad_patient_meta(body, cap)
             return True
+        # Series info repeats the same identity in camelCase.  Read it only while
+        # a field is still missing: the first manifest to report one wins anyway,
+        # and this endpoint answers more than once per study.
+        if ("StudyData/GetDicomSeriesInfo" in url
+                and not (cap.patient_name and cap.patient_id and cap.study_date)):
+            try:
+                _extract_vrad_series_info_meta(response.body(), cap)
+            except Exception:
+                pass
         # Real image URL used as template for remaining image URLs.
         if (cap.template_url is None
                 and "GetImage" in url and "Jpeg" not in url):
@@ -5937,6 +5965,42 @@ def _patient_manifest_naming_metadata(manifest: dict) -> dict:
     return {}
 
 
+# Identities extract_patient_metadata writes when the DICOM tag was empty or the
+# PACS redacted it.  They name the absence of a value, so a real value coming
+# from the viewer manifest is allowed to replace them.
+UNKNOWN_IDENTITY_PLACEHOLDERS = frozenset({"KHONG_RO_TEN", "KHONG_RO_ID"})
+
+# Key listing the metadata fields that were borrowed from the viewer manifest
+# instead of read from a DICOM tag.  Consumers that cross-check DICOM against a
+# RIS record read it to know which values are not DICOM evidence.
+MANIFEST_SOURCED_FIELDS = "_manifestSourcedFields"
+
+
+def merge_manifest_metadata(metadata: dict, manifest_meta: dict) -> dict:
+    """Fill identity fields the DICOM tags left unknown from the viewer manifest.
+
+    A DICOM value always wins: the manifest only fills a field that is empty or
+    still holds a `KHONG_RO_*` placeholder, so a study is never renamed after its
+    own tags identified it.  Fields taken from the manifest are listed under
+    `MANIFEST_SOURCED_FIELDS`, because a PACS viewer may number patients
+    differently from the RIS and such a value must not be cross-checked as if it
+    came from the DICOM tags.
+    """
+    merged = dict(metadata or {})
+    borrowed: list[str] = []
+    for key, value in (manifest_meta or {}).items():
+        if not value or key == MANIFEST_SOURCED_FIELDS:
+            continue
+        current = str(merged.get(key) or "").strip()
+        if current and current not in UNKNOWN_IDENTITY_PLACEHOLDERS:
+            continue
+        merged[key] = value
+        borrowed.append(key)
+    if borrowed:
+        merged[MANIFEST_SOURCED_FIELDS] = tuple(sorted(borrowed))
+    return merged
+
+
 def _assert_patient_metadata_matches(
     expected_id: str,
     expected_name: str,
@@ -5944,21 +6008,29 @@ def _assert_patient_metadata_matches(
     expected_birth_date: str = "",
     expected_sex: str = "",
 ) -> None:
+    # A field the viewer manifest supplied says nothing about whether the DICOM
+    # and the RIS record describe the same patient, so it is left out of the
+    # comparison rather than reported as a conflict.
+    borrowed = metadata.get(MANIFEST_SOURCED_FIELDS) or ()
     actual_id = str(metadata.get("PatientID") or "")
     actual_name = str(metadata.get("PatientName") or "")
-    if actual_id and actual_id != "KHONG_RO_ID" and expected_id:
+    if (actual_id and actual_id != "KHONG_RO_ID" and expected_id
+            and "PatientID" not in borrowed):
         if _identity_token(actual_id) != _identity_token(expected_id):
             raise PatientIdentityConflictError(
                 f"PatientID DICOM '{actual_id}' không khớp mã RIS '{expected_id}'."
             )
-    if actual_name and actual_name != "KHONG_RO_TEN" and expected_name:
+    if (actual_name and actual_name != "KHONG_RO_TEN" and expected_name
+            and "PatientName" not in borrowed):
         if _patient_name_conflicts(actual_name, expected_name):
             raise PatientIdentityConflictError(
                 f"PatientName DICOM '{actual_name}' không khớp tên RIS '{expected_name}'."
             )
     actual_birth_date = _normalise_dicom_date(metadata.get("PatientBirthDate"))
     expected_birth_date = _normalise_dicom_date(expected_birth_date)
-    if actual_birth_date and expected_birth_date and actual_birth_date != expected_birth_date:
+    if (actual_birth_date and expected_birth_date
+            and actual_birth_date != expected_birth_date
+            and "PatientBirthDate" not in borrowed):
         # RIS record with placeholder YYYY-01-01 vs full DICOM birth date is allowed
         # within the same year, but different birth years indicate conflicting patient identities.
         placeholder_gap = (
@@ -5974,7 +6046,8 @@ def _assert_patient_metadata_matches(
             )
     actual_sex = str(metadata.get("PatientSex") or "").strip().upper()
     expected_sex = str(expected_sex or "").strip().upper()
-    if actual_sex and expected_sex and actual_sex != expected_sex:
+    if (actual_sex and expected_sex and actual_sex != expected_sex
+            and "PatientSex" not in borrowed):
         raise PatientIdentityConflictError(
             f"Giới DICOM '{actual_sex}' không khớp hồ sơ '{expected_sex}'."
         )
@@ -6236,22 +6309,24 @@ def run_pipeline(
 
     summarize_dicom(dicom_dir, log=log)
 
+    manifest_meta = getattr(dl, "manifest_metadata", {}) or {}
     try:
-        manifest_meta = getattr(dl, "manifest_metadata", {}) or {}
-        metadata = (
+        dicom_meta = (
             extract_patient_metadata(dicom_dir, manual_info=manual_info, allow_mixed=True)
             or first_metadata
-            or manifest_meta
             if rename_patient_root or after_dicom_download is not None
             else {}
         )
     except PatientIdentityConflictError as e:
         log(f"⚠ Phát hiện nhiều định danh bệnh nhân trong folder DICOM ({e}); "
             f"sử dụng thông tin DICOM đầu tiên để tạo tên thư mục và tiếp tục chuyển đổi JPG.")
-        metadata = first_metadata or getattr(dl, "manifest_metadata", {}) or {}
+        dicom_meta = first_metadata
     except Exception as e:
         log(f"⚠ Lỗi trích xuất metadata ({e}); sử dụng thông tin DICOM đầu tiên.")
-        metadata = first_metadata or getattr(dl, "manifest_metadata", {}) or {}
+        dicom_meta = first_metadata
+    # The viewer manifest only fills what the DICOM tags left unknown, so a study
+    # whose own tags identify it keeps that identity.
+    metadata = merge_manifest_metadata(dicom_meta, manifest_meta)
     if metadata and after_dicom_download is not None:
         out_base = Path(after_dicom_download(out_base, metadata))
         dicom_dir = out_base / "DICOM"
