@@ -129,6 +129,10 @@ const state = {
   tabs: [],
   activeTabId: "worklist",
   worklistSearch: "",
+  worklistPatients: [],
+  worklistLoaded: false,
+  worklistLoading: false,
+  worklistError: "",
   // Which Worklist tab is showing: the patient/study list or the queue+history.
   worklistTab: "studies",
   // Latest /api/job snapshot, kept so the Activity panel can draw it.
@@ -1282,55 +1286,9 @@ function filteredHistoryEntries() {
   });
 }
 
-/**
- * The scanned patient tree, or bare history rows until the scan lands.
- *
- * `state.worklistPatients` comes from `/api/worklist`, the only code that has
- * actually walked the disk and read `patient-index.json`. The fallback exists
- * so a folder opened seconds ago is still reachable before that answers — it
- * carries only what a history row really holds, a path and the time it was
- * opened, and leaves every count null so the tree prints "—" instead of
- * claiming a series or a slice nobody counted.
- */
+/** The patient tree from the disk scan — history belongs to Activity only. */
 function getEffectiveWorklistPatients() {
-  if (Array.isArray(state.worklistPatients) && state.worklistPatients.length > 0) {
-    return state.worklistPatients;
-  }
-  const history = state.history || [];
-  return history.map((entry, idx) => {
-    const folderName = entry.folder ? entry.folder.split(/[\\/]/).pop() : "";
-    return {
-      id: `p_hist_${idx}`,
-      // The folder name is the only identifier on hand. It is a real string off
-      // the disk, but it is not a patient name: sex, birth year and hospital
-      // stay blank rather than being guessed out of it.
-      patientId: folderName,
-      patientName: "",
-      gender: "",
-      birthYear: "",
-      hospital: "",
-      folder: entry.folder,
-      totalSizeFormatted: "",
-      mediaSummary: null,
-      studies: [
-        {
-          id: `s_hist_${idx}`,
-          // `entry.time` is when the folder was opened, not when the scan was
-          // taken — printing it as a study date would misdate the images.
-          studyDate: "",
-          studyName: folderName,
-          modality: "",
-          seriesCount: null,
-          sliceCount: null,
-          folder: entry.folder,
-          status: entry.exists === false ? "miss" : "new",
-          statusLabel: entry.exists === false ? t("Thiếu folder") : t("Chưa quét"),
-          mediaCounts: null,
-          primaryMediaType: "",
-        },
-      ],
-    };
-  });
+  return Array.isArray(state.worklistPatients) ? state.worklistPatients : [];
 }
 
 /**
@@ -1340,13 +1298,20 @@ function getEffectiveWorklistPatients() {
  * folder: it runs when something on disk may have changed, not on every poll.
  */
 async function refreshWorklist({ repaint = true } = {}) {
+  if (state.worklistLoading) return;
+  state.worklistLoading = true;
+  state.worklistError = "";
+  if (repaint) refreshStudyListPanel();
   try {
     const result = await api("/api/worklist");
     state.worklistPatients = Array.isArray(result?.patients) ? result.patients : [];
-  } catch (_) {
+    state.worklistLoaded = true;
+  } catch (error) {
     // A failed scan leaves the previous list in place; blanking the tree the
     // doctor is reading would be worse than showing a slightly stale one.
-    return;
+    state.worklistError = humanError(error);
+  } finally {
+    state.worklistLoading = false;
   }
   if (repaint) refreshStudyListPanel();
 }
@@ -1365,6 +1330,18 @@ function refreshStudyListPanel() {
 
   const count = root.querySelector(".worklist-tab[data-worklist-tab='studies'] .worklist-tab-count");
   if (count) count.textContent = String(filteredPatientList().length);
+
+  const syncState = root.querySelector(".worklist-sync-state");
+  if (syncState) {
+    syncState.textContent = state.worklistLoading
+      ? t("Đang tải danh sách bệnh nhân…")
+      : state.worklistError
+        ? t("Không đồng bộ được danh sách")
+        : t("Danh sách đã cập nhật");
+    syncState.classList.toggle("error", Boolean(state.worklistError));
+  }
+  const refreshButton = root.querySelector("[data-action='refresh-worklist']");
+  if (refreshButton) refreshButton.disabled = state.worklistLoading;
 }
 
 /** Patients matching the search box. */
@@ -1443,7 +1420,17 @@ function mediaTags(counts, labels = {}) {
  */
 function renderWorklistTreeInner() {
   const patients = filteredPatientList();
+  if (state.worklistLoading && !state.worklistLoaded && patients.length === 0) {
+    return `<div class="worklist-loading" role="status"><i></i><span>${escapeHtml(t("Đang tải danh sách bệnh nhân…"))}</span></div>`;
+  }
   if (patients.length === 0) {
+    if (state.worklistError) {
+      return `<div class="empty-state error">
+        <b>${escapeHtml(t("Không tải được danh sách bệnh nhân"))}</b>
+        <span>${escapeHtml(state.worklistError)}</span>
+        <button class="primary" data-action="refresh-worklist">${escapeHtml(t("Thử quét lại"))}</button>
+      </div>`;
+    }
     return `
       <div class="empty-state">
         <b>${escapeHtml(t("Chưa có hồ sơ nào trong danh sách"))}</b>
@@ -1457,6 +1444,10 @@ function renderWorklistTreeInner() {
   state.expandedPatients = state.expandedPatients || {};
 
   return `
+    ${state.worklistError ? `<div class="worklist-scan-alert" role="status">
+      <span>${escapeHtml(t("Đang hiển thị dữ liệu lần quét trước."))} ${escapeHtml(state.worklistError)}</span>
+      <button class="soft-button" data-action="refresh-worklist">${escapeHtml(t("Thử quét lại"))}</button>
+    </div>` : ""}
     <div class="plist">
       ${patients.map((p) => {
         const isExpanded = state.expandedPatients[p.id] !== false;
@@ -1467,13 +1458,13 @@ function renderWorklistTreeInner() {
               <b>${escapeHtml(p.patientId || t("Chưa rõ mã BN"))}</b>
               <small>${escapeHtml(patientIdentityLine(p))}</small>
             </span>
-            <span class="meta">${escapeHtml(p.hospital || "—")}</span>
-            <span class="media">
+            <span class="meta hospital-col">${escapeHtml(p.hospital || "—")}</span>
+            <span class="media media-col">
               ${mediaTags(p.mediaSummary, {
                 dicom: t("series"), photo: t("ảnh"), video: t("video"), doc: t("trang"),
               })}
             </span>
-            <span class="meta">${escapeHtml(p.totalSizeFormatted || "—")}</span>
+            <span class="meta size-col">${escapeHtml(p.totalSizeFormatted || "—")}</span>
             <span class="rowacts">
               <button class="soft-button" type="button" data-action="open-patient-record" data-patient-id="${escapeHtml(p.id)}">
                 ${escapeHtml(t("Mở hồ sơ"))}
@@ -1489,9 +1480,9 @@ function renderWorklistTreeInner() {
                     <b>${escapeHtml(studyHeadingLine(s))}</b>
                     <small>${escapeHtml(studyCountLine(s))}</small>
                   </span>
-                  <span class="meta">${escapeHtml(s.modality ? t(s.modality) : "—")}</span>
-                  <span class="media">${mediaTags(s.mediaCounts)}</span>
-                  <span class="badge ${s.status || "done"}">${escapeHtml(t(s.statusLabel || "Đã tải"))}</span>
+                  <span class="meta modality-col">${escapeHtml(s.modality ? t(s.modality) : "—")}</span>
+                  <span class="media media-col">${mediaTags(s.mediaCounts)}</span>
+                  <span class="badge status-col ${s.status || "done"}">${escapeHtml(t(s.statusLabel || "Đã tải"))}</span>
                   <span class="rowacts">
                     ${s.status === "part" && s.viewerUrl ? `
                       <button class="soft-button" type="button" data-action="resume-study-download" data-url="${escapeHtml(s.viewerUrl)}">
@@ -1668,6 +1659,14 @@ function renderStudyListPanel() {
   return `
     <div class="worklist-filter-bar filters">
       <input type="search" data-field="worklist-search" placeholder="${escapeHtml(t("Tìm theo tên hoặc mã bệnh nhân, đợt khám…"))}" value="${escapeHtml(state.worklistSearch || "")}">
+      <span class="worklist-sync-state${state.worklistError ? " error" : ""}" role="status">${escapeHtml(
+    state.worklistLoading
+      ? t("Đang tải danh sách bệnh nhân…")
+      : state.worklistError
+        ? t("Không đồng bộ được danh sách")
+        : t("Danh sách đã cập nhật"),
+  )}</span>
+      <button class="soft-button" data-action="refresh-worklist" ${state.worklistLoading ? "disabled" : ""}>${escapeHtml(t("Quét lại"))}</button>
     </div>
 
     <div class="worklist-summary activity-summary">${renderWorklistSummaryInner()}</div>
@@ -1768,7 +1767,7 @@ function renderWorklistView() {
     <main class="worklist-view">
       <div class="worklist-header">
         <div class="worklist-title-group">
-          <h2>${escapeHtml(t("Worklist & Danh Sách Ca Chụp"))}</h2>
+          <h2>${escapeHtml(t("Danh sách bệnh nhân & ca chụp"))}</h2>
         </div>
       </div>
 
@@ -1776,13 +1775,13 @@ function renderWorklistView() {
         <button class="worklist-tab${tab === "studies" ? " active" : ""}" role="tab"
           aria-selected="${tab === "studies"}"
           data-action="worklist-tab" data-worklist-tab="studies">
-          ${escapeHtml(t("Study List"))}
+          ${escapeHtml(t("Danh sách bệnh nhân"))}
           <span class="worklist-tab-count">${filteredPatientList().length}</span>
         </button>
         <button class="worklist-tab${tab === "activity" ? " active" : ""}" role="tab"
           aria-selected="${tab === "activity"}"
           data-action="worklist-tab" data-worklist-tab="activity">
-          ${escapeHtml(t("Activity & Queue"))}
+          ${escapeHtml(t("Hoạt động & hàng đợi"))}
           ${activityCount ? `<span class="worklist-tab-count running">${activityCount}</span>` : ""}
         </button>
       </div>
@@ -1812,7 +1811,7 @@ function render() {
   if (!app && typeof document !== "undefined") app = document.querySelector("#app");
   if (!app) return;
   app.innerHTML = `
-    <div class="app-shell ${downloadPanelVisible() ? "" : "download-collapsed"}">
+    <div class="app-shell ${downloadPanelVisible() ? "" : "download-collapsed"} ${state.activeTabId === "worklist" ? "worklist-active" : "viewer-active"}">
       <header class="app-header">
         <div class="brand">
           <span class="brand-mark">D</span>
@@ -3177,6 +3176,10 @@ async function action(name, element = null) {
       if (next === "studies") refreshWorklist();
       return;
     }
+    if (name === "refresh-worklist") {
+      await refreshWorklist();
+      return;
+    }
     if (name === "choose-archive") {
       if (!window.pywebview?.api) throw new Error(t("Chọn thư mục cần chạy trong ứng dụng WebView2."));
       const job = await window.pywebview.api.choose_archive();
@@ -4536,7 +4539,16 @@ async function pollJob() {
     if (archive) {
       window.clearInterval(jobPoll);
       jobPoll = null;
-      applyArchive(archive);
+      const folder = job.result?.patientFolder || job.result?.output || archive.root || "";
+      const sessionId = job.result?.sessionId || "";
+      if (!sessionId) {
+        setStatus(t("Không tạo được phiên riêng cho hồ sơ vừa tải."), true);
+        refreshHistory();
+        refreshWorklist();
+        return;
+      }
+      setApiSession(sessionId);
+      applyArchive(archive, sessionId, folder);
       refreshHistory();
       return;
     }
@@ -4577,9 +4589,10 @@ async function pollJob() {
   }
 }
 
-// The two fields that accept a clipboard value, each with the only shape it
-// takes. WebView2 refuses `navigator.clipboard.readText()` without a user
-// gesture, so the native bridge reports those shapes and nothing else.
+// The native bridge classifies the clipboard as a patient ID or viewer URL, so
+// each field receives only its own shape. Clipboard refresh is tied to the app
+// window regaining focus, never to input mouse events: the fields retain normal
+// caret placement, drag selection, Ctrl+V and manual editing.
 const CLIPBOARD_FIELDS = [
   { id: "patient-id", kind: "patientId" },
   { id: "direct-url", kind: "url" },
@@ -4590,7 +4603,8 @@ async function clipboardValueFor(kind) {
   try {
     return (await window.pywebview.api.read_clipboard())?.[kind] || "";
   } catch (_) {
-    // Another process can hold the clipboard open; auto-paste simply skips.
+    // Another process can briefly hold the clipboard open; this refresh simply
+    // skips and the next app-focus event tries again.
     return "";
   }
 }
@@ -4600,17 +4614,9 @@ function syncClearButton(field) {
   if (button) button.hidden = !field.value;
 }
 
-/** Put a matching clipboard value into `field`.
- *
- * The classic app replaced the field whenever the clipboard differed, which is
- * what makes copy-then-click feel immediate; that behaviour is kept here. The
- * one refusal is a value the user just cleared with ×, which would otherwise
- * come straight back and make the button look broken.
- */
 async function fillFromClipboard(field, kind) {
   const value = await clipboardValueFor(kind);
   if (!value || value === field.value.trim()) return false;
-  if (field.dataset.dismissed === value) return false;
   field.value = value;
   if (kind === "url") {
     state.lastDirectUrl = value;
@@ -4626,55 +4632,12 @@ async function clearClipboardField(field, kind) {
     state.lastDirectUrl = "";
     syncManualInfoVisibility("");
   }
-  // Record what the clipboard holds before focusing, otherwise the focus
-  // handler would immediately paste back the value just cleared.
-  const clip = await clipboardValueFor(kind);
-  if (clip) field.dataset.dismissed = clip;
   syncClearButton(field);
   field.focus();
 }
 
 function installClipboardField(field, kind) {
-  // Only a click that *caused* the focus may keep its selection. Arming this on
-  // every focus would swallow the next click after the field was focused by Tab
-  // or by ×, and the caret would refuse to move until a second click.
-  let selectOnRelease = false;
-  let pressPoint = null;
-  const acceptClipboard = async (alwaysSelect) => {
-    const pasted = await fillFromClipboard(field, kind);
-    // Select after a paste so the value can be replaced by typing; on focus,
-    // select even without one so leftover content is highlighted.
-    if ((pasted || alwaysSelect) && document.activeElement === field) field.select();
-  };
-  field.addEventListener("focus", () => {
-    selectOnRelease = pressPoint !== null;
-    field.select();
-    acceptClipboard(true);
-  });
-  field.addEventListener("mousedown", (event) => {
-    pressPoint = { x: event.clientX, y: event.clientY };
-    // The classic app re-read the clipboard on every click, not only on the
-    // first focus. Clicking an already-focused field keeps the caret where the
-    // user put it unless a new value actually arrived.
-    if (document.activeElement === field) acceptClipboard(false);
-  });
-  field.addEventListener("mouseup", (event) => {
-    const dragged = pressPoint !== null
-      && (Math.abs(event.clientX - pressPoint.x) > 3 || Math.abs(event.clientY - pressPoint.y) > 3);
-    pressPoint = null;
-    if (!selectOnRelease) return;
-    selectOnRelease = false;
-    // A click focuses the field and then places the caret, which would drop the
-    // selection made on focus. Keeping it means the leftover value can be
-    // replaced by typing straight away — but a drag is the user selecting a
-    // range by hand, so that one is left alone.
-    if (!dragged) event.preventDefault();
-  });
-  field.addEventListener("blur", () => { selectOnRelease = false; pressPoint = null; });
   field.addEventListener("input", () => {
-    // Typing makes the value the user's own, so a value dismissed earlier stops
-    // being relevant and the clipboard may fill this field again.
-    delete field.dataset.dismissed;
     if (kind === "url") state.lastDirectUrl = field.value;
     syncClearButton(field);
   });
@@ -4688,7 +4651,6 @@ function installClipboardFields() {
   }
 }
 
-/** Fill both fields on window focus, as the classic app does. */
 async function autoPasteFromClipboard() {
   for (const { id, kind } of CLIPBOARD_FIELDS) {
     const field = app.querySelector(`#${id}`);
@@ -4712,10 +4674,19 @@ async function boot() {
   setLanguage(state.bootstrap.language || "en");
   applyTextPromptLanguage();
   state.history = Array.isArray(state.bootstrap.history) ? state.bootstrap.history : [];
+  const bootstrapWorklist = state.bootstrap.worklist || {};
+  state.worklistPatients = Array.isArray(bootstrapWorklist.patients)
+    ? bootstrapWorklist.patients
+    : [];
+  state.worklistLoaded = !bootstrapWorklist.deferred;
+  state.worklistLoading = false;
+  state.worklistError = "";
   state.lastDirectUrl = state.bootstrap.lastDirectUrl || "";
   state.showManualInfo = Boolean(state.lastDirectUrl.trim());
   state.status = "Đang khởi động...";
   state.archive = state.bootstrap.archive;
+  const initialSessionId = state.bootstrap.archiveSessionId || "";
+  if (initialSessionId) setApiSession(initialSessionId);
   state.selectedId = state.archive.series[0]?.id || "";
   state.compareIds = [
     state.archive.series[1]?.id || state.selectedId,
@@ -4725,7 +4696,7 @@ async function boot() {
     const tabName = state.archive.root ? state.archive.root.split(/[\\/]/).pop() : (state.archive.patient?.patientName || "Bệnh nhân 1");
     const initialTab = {
       id: "tab-init",
-      sessionId: "",
+      sessionId: initialSessionId,
       // Without this the boot tab matches no folder, so opening the same
       // record from the worklist added a second tab on top of it.
       folder: state.archive.root || "",
@@ -4766,14 +4737,12 @@ async function boot() {
   // Releasing the GPU contexts on close keeps a WebView2 restart from
   // inheriting a page that still holds them.
   window.addEventListener("pagehide", disposeViewer);
-  // Copying a viewer link or patient code in another window and coming back is
-  // the normal workflow, so returning focus is when the paste is wanted.
   window.addEventListener("focus", autoPasteFromClipboard);
   state.status = t("Sẵn sàng. Nhấn ⌨ trên thanh công cụ để xem phím tắt.");
   render();
   autoPasteFromClipboard();
-  // The scan walks every study folder, so it is not awaited: the shell paints
-  // from history first and the tree swaps to real counts when they land.
+  // The scan walks every study folder, so it is not awaited: the Worklist shows
+  // its loading state and swaps to real rows only when the disk scan lands.
   refreshWorklist();
   await renderViewer();
 }

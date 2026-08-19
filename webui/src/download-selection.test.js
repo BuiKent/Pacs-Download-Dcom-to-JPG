@@ -30,6 +30,19 @@ describe("download-all UI contract", () => {
   });
 });
 
+describe("editable patient code and viewer link", () => {
+  it("auto-classifies clipboard values without hijacking input mouse behavior", () => {
+    expect(mainSource).not.toContain('data-action="paste-patient-id"');
+    expect(mainSource).not.toContain('data-action="paste-direct-url"');
+    expect(cssSource).not.toContain(".paste-field");
+    expect(mainSource).toContain("async function fillFromClipboard");
+    expect(mainSource).toContain('window.addEventListener("focus", autoPasteFromClipboard)');
+    expect(mainSource).toContain("autoPasteFromClipboard();");
+    expect(mainSource).not.toContain('field.addEventListener("mousedown"');
+    expect(mainSource).not.toContain('field.addEventListener("mouseup"');
+  });
+});
+
 describe("patient study selection", () => {
   it("defaults new/incomplete studies once and then preserves user edits", () => {
     const initial = initialiseStudySelections(studies);

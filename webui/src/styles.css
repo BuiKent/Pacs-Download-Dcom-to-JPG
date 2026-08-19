@@ -1,21 +1,33 @@
 /* ============================================================
-   Notion palette — warm white, flat, small radii, Inter.
-   This is the app's ONLY skin; the theme switcher is gone.
+   Notion palette — warm white, flat, small radii.
 
-   Only the CHROME (header, winbar, worklist, download panel,
-   badges, alerts, log, status bar) uses these tokens. The reading
-   area — viewer toolbar, series thumbnails, image canvas — keeps a
-   dark background from hardcoded values further down, the way a
-   clinical workstation stays dark regardless of the shell, so the
-   grey scale (Window/Level, HU) is not misread.
+   The app has exactly two skins and the open tab picks one: the
+   Worklist keeps this light chrome, a patient tab swaps the whole
+   shell to the dark set in `.app-shell.viewer-active`. There is no
+   user-facing theme switcher.
+
+   The CHROME (header, winbar, worklist, download panel, badges,
+   alerts, log, status bar) is what these tokens paint. The reading
+   area — viewer toolbar, series thumbnails, image canvas, patient
+   rail — keeps a dark background from hardcoded values further
+   down, the way a clinical workstation stays dark regardless of
+   the shell, so the grey scale (Window/Level, HU) is not misread.
+
+   Every foreground here is measured against the surface it lands
+   on; `color-contrast.test.js` fails the build under 4.5:1.
    ============================================================ */
 :root {
   font-family: var(--app-font);
   color: var(--body-fg);
   background: var(--shell-bg);
   font-synthesis: none;
+  /* Native controls -- input text, caret, checkbox, radio, scrollbars -- take
+     their colours from here, not from the tokens below. The chrome is a light
+     surface, so a dark scheme painted white text on the white field cards and
+     drew unchecked boxes as solid dark squares that read as ticked. */
+  color-scheme: light;
 
-  --app-font: "Inter", "Segoe UI", system-ui, sans-serif;
+  --app-font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
 
   /* Form & General Control Tokens */
   --control-height: 34px;
@@ -42,12 +54,15 @@
   --field-bg: #ffffff;
 
   --label-fg: #6b6a66;
-  --label-muted: #9b9a97;
+  --label-muted: #73716c;
   --panel-bg: #fbfbfa;
 
   --accent-border: #8fc4ea;
   --accent-bg: #cfe6fa;
-  --danger-fg: #e03e3e;
+  /* The accent chip is a pale blue, so its label has to be dark: white on it
+     is 1.28:1 and the button reads as empty. */
+  --accent-fg: #0f4c81;
+  --danger-fg: #c62828;
   --danger-border: #f2b0a4;
   --danger-bg: #ffe2dd;
 
@@ -58,16 +73,16 @@
   --brand-fg: #37352f;
   --brand-mark-border: #d8d8d5;
   --brand-mark-bg: #f1f1ef;
-  --brand-sub-fg: #9b9a97;
+  --brand-sub-fg: #73716c;
   --panel-title-fg: #37352f;
   --list-border: #e9e9e7;
   --list-bg: #ffffff;
   --list-item-border: #f1f1ef;
-  --pill-new-fg: #448361;
+  --pill-new-fg: #356a4c;
   --pill-new-bg: #dbeddb;
-  --pill-downloaded-fg: #6b6a66;
+  --pill-downloaded-fg: #63615d;
   --pill-downloaded-bg: #e9e9e7;
-  --pill-incomplete-fg: #d9730d;
+  --pill-incomplete-fg: #9a4c00;
   --pill-incomplete-bg: #fadec9;
   --alert-fg: #6b6a66;
   --alert-border: #cfe6fa;
@@ -78,11 +93,12 @@
   --alert-warning-bg: #fdf3e3;
   --alert-danger-border: #f2b0a4;
   --alert-danger-bg: #ffe2dd;
-  --alert-danger-fg: #e03e3e;
-  --muted-fg: #9b9a97;
-  --credit-fg: #9b9a97;
-  --log-fg: #37352f;
-  --log-border: #e9e9e7;
+  --alert-danger-fg: #c62828;
+  --muted-fg: #73716c;
+  --credit-fg: #73716c;
+  --log-bg: #101820;
+  --log-fg: #d8e6ef;
+  --log-border: #2a3b48;
   --statusbar-border: #e9e9e7;
   --statusbar-bg: #ffffff;
   --status-dot-bg: #188038;
@@ -96,11 +112,11 @@
   /* Worklist Status Badges */
   --done-fg: #2e7d32;
   --done-bg: #e8f5e9;
-  --ok-fg: #1976d2;
+  --ok-fg: #1565c0;
   --ok-bg: #e3f2fd;
-  --warn-fg: #d9730d;
+  --warn-fg: #9a4c00;
   --warn-bg: #fadec9;
-  --bad-fg: #e03e3e;
+  --bad-fg: #c62828;
   --bad-bg: #ffe2dd;
 }
 
@@ -119,6 +135,35 @@ button { cursor: pointer; }
 
 .app-shell.download-collapsed { grid-template-columns: 0 1fr; }
 .app-shell.download-collapsed .download-panel { transform: translateX(-100%); }
+
+/* Worklist is a bright administrative surface; opening a patient switches the
+   complete reading shell to a low-glare diagnostic palette. The class follows
+   the active tab, so the two modes never leak colours into each other. */
+.app-shell.viewer-active {
+  color-scheme: dark;
+  --body-fg: #e7eef3;
+  --control-fg: #dce8f0;
+  --control-border: #2b3c4a;
+  --control-bg: #111c25;
+  --control-bg-hover: #182a37;
+  --field-fg: #edf5fa;
+  --field-border: #2b3c4a;
+  --field-bg: #0d171f;
+  --label-fg: #b8c8d3;
+  --label-muted: #94a8b6;
+  --panel-bg: #0b1218;
+  --shell-bg: #05080c;
+  --header-bg: #0b1218;
+  --chrome-border: #263541;
+  --header-shadow: none;
+  --brand-fg: #f1f6f9;
+  --brand-mark-border: #385164;
+  --brand-mark-bg: #14232e;
+  --brand-sub-fg: #91a7b6;
+  --list-border: #263541;
+  --statusbar-border: #263541;
+  --statusbar-bg: #0b1218;
+}
 
 .app-header {
   grid-row: 1;
@@ -275,11 +320,59 @@ button { cursor: pointer; }
   background: var(--field-bg);
   color: var(--field-fg);
 }
+.worklist-sync-state {
+  margin-left: auto;
+  color: var(--label-muted);
+  font-size: 12px;
+}
+.worklist-sync-state.error { color: var(--danger-fg); }
+.worklist-loading,
+.worklist-scan-alert {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 88px;
+  padding: 16px;
+  color: var(--label-fg);
+  border: 1px dashed var(--list-border);
+  border-radius: var(--control-radius);
+  background: var(--panel-bg);
+  font-size: 13px;
+}
+.worklist-loading i {
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--control-border);
+  border-top-color: var(--field-border-focus);
+  border-radius: 50%;
+  animation: viewer-spin .8s linear infinite;
+}
+.worklist-scan-alert { flex-wrap: wrap; color: var(--danger-fg); }
+.worklist-scan-alert.stale { color: var(--label-fg); background: var(--alert-warning-bg); border-style: solid; }
 .worklist-tree {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
+/* `.empty-state` is written for the reading workspace: absolutely positioned
+   and dark, so it fills whatever positioned box it lands in. Dropped into the
+   Worklist it escaped to `inset: 0` on the shell and painted the entire window
+   black, hiding the download panel and the list behind it. Inside the tree it
+   has to be an ordinary block on the light surface. */
+.worklist-tree .empty-state {
+  position: static;
+  inset: auto;
+  gap: 8px;
+  padding: 28px 16px;
+  color: var(--label-fg);
+  border: 1px dashed var(--list-border);
+  border-radius: var(--control-radius);
+  background: var(--panel-bg);
+}
+.worklist-tree .empty-state b { color: var(--body-fg); font-size: 14px; }
+.worklist-tree .empty-state.error b { color: var(--danger-fg); }
+.worklist-tree .empty-state.error span { color: var(--label-fg); }
 .worklist-patient-card {
   border: 1px solid var(--list-border, #1c2a36);
   border-radius: 8px;
@@ -389,6 +482,9 @@ button { cursor: pointer; }
   background: var(--warn-bg, #fadec9);
 }
 .activity-stat.alert b { color: var(--warn-fg, #d9730d); }
+/* The muted grey is tuned for the white panel and drops to 3.8:1 on the amber
+   tile, so the caption follows the tile's own colour instead. */
+.activity-stat.alert small { color: var(--warn-fg, #9a4c00); }
 .activity-stat b { font-size: 19px; color: var(--field-fg); }
 .activity-stat small {
   color: var(--label-muted);
@@ -615,16 +711,21 @@ button { cursor: pointer; }
   margin-bottom: -2px;
   padding: 0 4px;
   color: var(--label-muted, #8fa6b8);
-  font-size: 9px;
+  font-size: 10.5px;
   line-height: 1;
 }
 .boxed-field:focus-within { border-color: var(--field-border-focus); }
+/* Clearing the border and background leaves no colour of its own, and an input
+   does not inherit one, so the value and the caret were painted in the UA's
+   system colour instead of the field token. */
 .boxed-field input {
   height: auto;
   margin-top: 0;
   padding: 0;
   border: 0;
   background: transparent;
+  color: var(--field-fg);
+  caret-color: var(--field-fg);
 }
 .boxed-field input:focus { outline: none; }
 
@@ -670,7 +771,7 @@ button { cursor: pointer; }
 .download-panel button:not(.icon-button):not(.clear-field):not(.panel-title button):hover:not(:disabled),
 .empty-state button:hover:not(:disabled) { background: var(--control-bg-hover); }
 button.primary {
-  color: #fff;
+  color: var(--accent-fg, #0f4c81);
   border-color: var(--accent-border);
   background: var(--accent-bg);
   font-weight: 700;
@@ -815,7 +916,7 @@ button:disabled { opacity: .35; cursor: default; }
   border: 1px solid var(--log-border, #1d2a35);
   border-radius: 6px;
   background: var(--log-bg, #05090d);
-  font: 10px/1.45 Consolas, monospace;
+  font: 11.5px/1.5 Consolas, "Cascadia Mono", monospace;
   white-space: pre-wrap;
   user-select: text;
   -webkit-user-select: text;
@@ -847,9 +948,9 @@ button:disabled { opacity: .35; cursor: default; }
 .viewer-main > .series-strip { grid-row: 3; grid-column: 3; }
 .viewer-main > .status-bar { grid-row: 4; grid-column: 2 / -1; }
 
-/* The rail navigates the record, it never displays an image, so it belongs to
-   the app chrome and keeps the light Notion palette (CLAUDE.md §5 reserves the
-   dark surface for toolbar, thumbnails and canvas). */
+/* The patient rail is part of diagnostic navigation. Keeping it dark prevents
+   a bright 246px strip beside the image and gives the timeline enough contrast
+   to remain readable during prolonged review. */
 .rec-rail {
   display: flex;
   flex-direction: column;
@@ -864,14 +965,14 @@ button:disabled { opacity: .35; cursor: default; }
 }
 .rec-id b {
   display: block;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.3;
   color: var(--field-fg, #e7f1f8);
 }
 .rec-id small {
   display: block;
   margin-top: 3px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--label-muted, #7890a2);
 }
 .rec-facts {
@@ -879,7 +980,7 @@ button:disabled { opacity: .35; cursor: default; }
   padding: 10px 14px;
   border-bottom: 1px solid var(--list-border, #1c2a36);
 }
-.rfact { display: flex; gap: 8px; padding: 3px 0; font-size: 11px; }
+.rfact { display: flex; gap: 8px; padding: 4px 0; font-size: 12px; }
 .rfact dt { flex: 0 0 74px; color: var(--label-muted, #7890a2); }
 .rfact dd { margin: 0; flex: 1; color: var(--body-fg, #dce7f2); word-break: break-word; }
 /* Reads as text until hovered: the diagnosis is a note the reader writes, not
@@ -901,7 +1002,7 @@ button:disabled { opacity: .35; cursor: default; }
 }
 .rec-timeline-head {
   padding: 10px 14px 6px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.5px;
   text-transform: uppercase;
@@ -910,7 +1011,7 @@ button:disabled { opacity: .35; cursor: default; }
 .tl { padding: 0 8px 12px; }
 .tl-empty {
   padding: 12px 6px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--label-muted, #7890a2);
 }
 .tl-item {
@@ -923,7 +1024,7 @@ button:disabled { opacity: .35; cursor: default; }
   background: none;
   color: var(--body-fg, #dce7f2);
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
 }
 .tl-item:hover { background: var(--list-hover, #16202b); }
 .tl-item.on {
@@ -1491,6 +1592,17 @@ button:disabled { opacity: .35; cursor: default; }
   .app-shell { grid-template-columns: 280px 1fr; }
   .icon-button { min-width: 24px; }
   .series-strip { width: 145px; min-width: 130px; }
+}
+
+@media (max-width: 1450px) {
+  .prow,
+  .srow {
+    grid-template-columns: 20px minmax(190px, 1fr) 94px minmax(190px, auto);
+  }
+  .prow .hospital-col,
+  .prow .media-col,
+  .srow .modality-col,
+  .srow .media-col { display: none; }
 }
 
 .manual-info-toggle {
@@ -2386,7 +2498,7 @@ button:disabled { opacity: .35; cursor: default; }
 
 .who b {
   display: block;
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--body-fg, #37352f);
 }
@@ -2394,13 +2506,13 @@ button:disabled { opacity: .35; cursor: default; }
 .who small {
   display: block;
   color: var(--label-muted, #9b9a97);
-  font-size: 11px;
+  font-size: 12px;
   margin-top: 2px;
 }
 
 .meta {
   color: var(--label-fg, #6b6a66);
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2416,7 +2528,7 @@ button:disabled { opacity: .35; cursor: default; }
   gap: 5px;
   align-items: center;
   color: var(--label-fg, #6b6a66);
-  font-size: 10.5px;
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -2437,7 +2549,7 @@ button:disabled { opacity: .35; cursor: default; }
   justify-self: start;
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   white-space: nowrap;
 }
@@ -2446,7 +2558,7 @@ button:disabled { opacity: .35; cursor: default; }
 .badge.new  { color: var(--ok-fg, #1976d2);   background: var(--ok-bg, #e3f2fd); }
 .badge.part { color: var(--warn-fg, #d9730d); background: var(--warn-bg, #fadec9); }
 .badge.miss { color: var(--bad-fg, #e03e3e);  background: var(--bad-bg, #ffe2dd); }
-.badge.busy { color: #2383e2; background: #e8f3fc; }
+.badge.busy { color: #1565c0; background: #e8f3fc; }
 
 .rowacts {
   display: flex;

@@ -78,9 +78,45 @@ Riêng `patient-index.json`: `studies` là **dict khoá theo studyUid**, tên kh
 **camelCase**, `status` nhận `complete` / `selected` / `incomplete`. Chỉ được
 THÊM khoá mới, không đổi cấu trúc, không bump `PATIENT_MANIFEST_FORMAT`.
 
-## 5. Vùng đọc phim luôn nền tối
+## 5. Hai theme, chọn theo tab đang mở
 
-Vỏ app (header, winbar, worklist, khu tải phim) dùng bảng màu Notion nền trắng.
-**Vùng chẩn đoán — toolbar viewer, thumbnail series, canvas ảnh, Video/Photo
-Studio — phải giữ nền tối bằng mã màu hardcode**, không lấy token chrome. Nền
-sáng làm sai lệch cảm nhận thang xám (Window/Level, Hounsfield Unit).
+App có đúng hai bảng màu, và tab đang mở quyết định dùng bảng nào. Lớp
+`worklist-active` / `viewer-active` trên `.app-shell` là công tắc duy nhất.
+
+| Tab đang mở | Vỏ app (header, winbar, khu tải phim, status bar) | Vùng chẩn đoán |
+| :--- | :--- | :--- |
+| **Worklist** | Notion nền trắng | không hiển thị |
+| **Bệnh nhân** | nền tối, đổi qua token trong `.app-shell.viewer-active` | nền tối |
+
+**Vùng chẩn đoán — toolbar viewer, thumbnail series, canvas ảnh, rail bệnh nhân,
+Video/Photo Studio — luôn nền tối bằng mã màu hardcode**, không lấy token
+chrome, kể cả khi vỏ app đang sáng. Nền sáng làm sai lệch cảm nhận thang xám
+(Window/Level, Hounsfield Unit).
+
+Đổi theme là đổi token, không phải đổi mã màu trong từng rule. Vỏ tối lấy trọn
+bộ token từ `.app-shell.viewer-active`; vỏ sáng dùng token gốc ở `:root`.
+
+### `color-scheme` phải đi cùng nền
+
+`:root` khai `color-scheme: light`, `.app-shell.viewer-active` khai
+`color-scheme: dark`. Trình duyệt dùng cờ này để tô **những thứ CSS không nói
+tới**: chữ trong `<input>`, con trỏ nháy, ô checkbox, nút radio, thanh cuộn.
+
+Đã từng để cờ này là `dark` toàn cục trong khi vỏ app nền trắng: hai ô "Mã bệnh
+nhân" và "Link viewer" hiện chữ trắng trên card trắng (1.00:1), checkbox chưa
+tick bị vẽ thành ô đen đặc nhìn như đang tick. Thêm một control mới mà quên đặt
+`color` là lỗi quay lại ngay.
+
+### Ngưỡng tương phản
+
+Mọi cặp chữ/nền phải đạt **4.5:1**. `webui/src/color-contrast.test.js` tự tính
+tỉ lệ cho các cặp token và sẽ fail nếu tụt xuống dưới — thêm token màu mới thì
+thêm cặp vào danh sách `PAIRS` trong đó.
+
+Hai lỗi hay gặp, đã sửa nhưng dễ tái diễn:
+
+- Chữ trắng trên `--accent-bg` (xanh nhạt) — nút trông như rỗng. Nhãn của
+  `button.primary` dùng `--accent-fg`, không dùng `#fff`.
+- `.empty-state` được viết cho canvas đọc phim: `position: absolute; inset: 0`
+  và nền `#05080c`. Thả nó vào Worklist thì nó phủ đen cả cửa sổ. Trong Worklist
+  phải dùng bản đã scope lại `.worklist-tree .empty-state`.

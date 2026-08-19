@@ -115,7 +115,39 @@ def main() -> int:
                     and state.get("canvases", 0) >= 1
                     and state.get("readyMode") == "single"
                 ):
-                    state["litPixels"] = _assert_panes_drawn(window, "single", 1)
+                    try:
+                        state["litPixels"] = _assert_panes_drawn(window, "single", 1)
+                    except RuntimeError:
+                        # The ready-mode flag changes before WebGL presents its
+                        # first frame on a cold WebView2 start. Keep polling the
+                        # pixels instead of turning that short gap into a flaky
+                        # blank-viewer failure.
+                        time.sleep(0.25)
+                        continue
+                    state["viewerTheme"] = window.evaluate_js(
+                        """(() => {
+                          const shell = document.querySelector('.app-shell');
+                          const style = selector => {
+                            const element = document.querySelector(selector);
+                            return element ? getComputedStyle(element) : null;
+                          };
+                          return {
+                            shellClass: shell?.className || '',
+                            headerBg: style('.app-header')?.backgroundColor || '',
+                            railBg: style('.rec-rail')?.backgroundColor || '',
+                            railTitle: style('.rec-id b')?.color || '',
+                            railFontSize: style('.rec-id b')?.fontSize || '',
+                            statusBg: style('.status-bar')?.backgroundColor || ''
+                          };
+                        })()"""
+                    )
+                    theme = state["viewerTheme"]
+                    if (
+                        "viewer-active" not in theme.get("shellClass", "")
+                        or theme.get("headerBg") in {"rgb(255, 255, 255)", "rgba(0, 0, 0, 0)"}
+                        or theme.get("railBg") in {"rgb(255, 255, 255)", "rgba(0, 0, 0, 0)"}
+                    ):
+                        raise RuntimeError(f"Viewer chưa chuyển sang palette tối: {theme}")
                     result["single"] = state
                     break
                 time.sleep(0.5)
@@ -177,10 +209,13 @@ def main() -> int:
                     )
                     if compare.get("error"):
                         raise RuntimeError(compare["error"])
+                    # A valid one-image DX/CR series has no slice slider. The
+                    # two canvases and Cornerstone pair diagnostics are the
+                    # compare gate; requiring two sliders rejects that real
+                    # clinical layout after it has rendered successfully.
                     if (
                         compare.get("readyMode") == "compare"
                         and compare.get("canvases", 0) >= 2
-                        and len(compare.get("sliders", [])) == 2
                         and (compare.get("diagnostics") or {})
                         .get("referenceLines", {})
                         .get("pairModes")
@@ -423,38 +458,49 @@ def main() -> int:
 
                 before = compare["sliders"]
                 result["compareReferenceLines"] = compare
-                window.evaluate_js(
-                    """(() => {
-                      const sliders = [...document.querySelectorAll(
-                        '#workspace .slice-control input'
-                      )];
-                      sliders[0].value = String(Math.min(
-                        Number(sliders[0].max), Number(sliders[0].value) + 1
-                      ));
-                      sliders[0].dispatchEvent(new Event('input', { bubbles: true }));
-                      return true;
-                    })()"""
-                )
-                time.sleep(0.5)
-                after_values = window.evaluate_js(
-                    """[...document.querySelectorAll(
-                      '#workspace .slice-control input'
-                    )].map(input => Number(input.value))"""
-                )
-                if after_values[0] == before[0]:
-                    raise RuntimeError(
-                        f"Pane nguồn không cuộn được: {before} -> {after_values}"
+                if before:
+                    window.evaluate_js(
+                        """(() => {
+                          const slider = document.querySelector(
+                            '#workspace .slice-control input'
+                          );
+                          const current = Number(slider.value);
+                          const maximum = Number(slider.max);
+                          const minimum = Number(slider.min);
+                          slider.value = String(
+                            current < maximum ? current + 1 : Math.max(minimum, current - 1)
+                          );
+                          slider.dispatchEvent(new Event('input', { bubbles: true }));
+                          return true;
+                        })()"""
                     )
-                followed = after_values[1] != before[1]
-                # spatial/index pairs must follow; reference/blocked pairs must
-                # stay put and rely on the reference line instead.
-                should_follow = pair_mode in ("spatial", "index")
-                if followed != should_follow:
-                    raise RuntimeError(
-                        f"Cặp '{pair_mode}' đồng bộ sai: {before} -> {after_values} "
-                        f"(mong đợi pane 2 {'đi theo' if should_follow else 'giữ nguyên'})"
+                    time.sleep(0.5)
+                    after_values = window.evaluate_js(
+                        """[...document.querySelectorAll(
+                          '#workspace .slice-control input'
+                        )].map(input => Number(input.value))"""
                     )
-                compare["slidersAfter"] = after_values
+                    if after_values[0] == before[0]:
+                        raise RuntimeError(
+                            f"Pane nguồn không cuộn được: {before} -> {after_values}"
+                        )
+                    if len(before) >= 2 and len(after_values) >= 2:
+                        followed = after_values[1] != before[1]
+                        # spatial/index pairs must follow; reference/blocked pairs
+                        # stay put and rely on the reference line instead.
+                        should_follow = pair_mode in ("spatial", "index")
+                        if followed != should_follow:
+                            raise RuntimeError(
+                                f"Cặp '{pair_mode}' đồng bộ sai: {before} -> {after_values} "
+                                f"(mong đợi pane 2 {'đi theo' if should_follow else 'giữ nguyên'})"
+                            )
+                    else:
+                        compare["scrollSync"] = (
+                            "skipped: one compare pane contains a single image"
+                        )
+                    compare["slidersAfter"] = after_values
+                else:
+                    compare["scrollSync"] = "skipped: both compare panes contain one image"
                 compare["referenceLinesAfter"] = window.evaluate_js(
                     "document.querySelectorAll('#workspace svg line[data-id]').length"
                 )
@@ -623,6 +669,47 @@ def main() -> int:
                 time.sleep(0.5)
             else:
                 raise TimeoutError(f"Không dựng được 3D: {volume}")
+
+            # Finish on the administrative tab and verify the deliberate split:
+            # Worklist stays bright, while the console log remains readable and
+            # the patient/link controls are ordinary editable inputs.
+            window.evaluate_js(
+                "document.querySelector('.winbar-tab[data-tab-id=\"worklist\"]')?.click()"
+            )
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                if window.evaluate_js("Boolean(document.querySelector('.worklist-view'))"):
+                    break
+                time.sleep(0.2)
+            worklist_theme = window.evaluate_js(
+                """(() => {
+                  const style = selector => {
+                    const element = document.querySelector(selector);
+                    return element ? getComputedStyle(element) : null;
+                  };
+                  const patient = document.querySelector('#patient-id');
+                  const link = document.querySelector('#direct-url');
+                  return {
+                    shellClass: document.querySelector('.app-shell')?.className || '',
+                    worklistBg: style('.worklist-view')?.backgroundColor || '',
+                    logBg: style('.job-log')?.backgroundColor || '',
+                    logFg: style('.job-log')?.color || '',
+                    patientEditable: Boolean(patient && !patient.disabled && !patient.readOnly),
+                    linkEditable: Boolean(link && !link.disabled && !link.readOnly),
+                    pasteButtons: document.querySelectorAll('.paste-field').length
+                  };
+                })()"""
+            ) or {}
+            result["worklistTheme"] = worklist_theme
+            if (
+                "worklist-active" not in worklist_theme.get("shellClass", "")
+                or worklist_theme.get("worklistBg") != "rgb(255, 255, 255)"
+                or not worklist_theme.get("patientEditable")
+                or not worklist_theme.get("linkEditable")
+                or worklist_theme.get("pasteButtons") != 0
+                or worklist_theme.get("logBg") == worklist_theme.get("logFg")
+            ):
+                raise RuntimeError(f"Worklist/UI input contract sai: {worklist_theme}")
         except Exception as exc:
             result["error"] = str(exc)
             result["traceback"] = traceback.format_exc()

@@ -97,6 +97,9 @@ describe("Worklist: Study List / Activity & Queue tabs", () => {
     state.worklistTab = "studies";
     state.worklistSearch = "";
     state.worklistPatients = PATIENTS.map((p) => ({ ...p }));
+    state.worklistLoaded = true;
+    state.worklistLoading = false;
+    state.worklistError = "";
     state.expandedPatients = {};
     state.history = HISTORY.map((entry) => ({ ...entry }));
     state.tabs = [];
@@ -131,7 +134,7 @@ describe("Worklist: Study List / Activity & Queue tabs", () => {
     expect(html).toContain('class="srow"');
     expect(html).toContain("06/08/2026 · MR sọ não có tiêm");
     expect(html).toContain("12 series · 1412 lát");
-    expect(html).toContain("class=\"badge done\"");
+    expect(html).toContain("class=\"badge status-col done\"");
     expect(html).toContain('data-action="open-study-viewer"');
     expect(html).toContain('data-action="reveal-study-folder"');
 
@@ -225,6 +228,9 @@ describe("Worklist: Study List / Activity & Queue tabs", () => {
   it("says so plainly when there is no history yet", () => {
     state.history = [];
     state.worklistPatients = [];
+    state.worklistLoaded = false;
+    state.worklistLoading = false;
+    state.worklistError = "";
     expect(renderActivityPanelInner()).toContain("Chưa có thư mục nào được mở hoặc tải.");
     expect(renderWorklistTreeInner()).toContain("Chưa có hồ sơ nào trong danh sách");
   });
@@ -264,6 +270,9 @@ describe("Worklist: scanned data replaces the history fallback", () => {
     state.worklistTab = "studies";
     state.worklistSearch = "";
     state.worklistPatients = [];
+    state.worklistLoaded = false;
+    state.worklistLoading = false;
+    state.worklistError = "";
     state.expandedPatients = {};
     state.history = HISTORY.map((entry) => ({ ...entry }));
     state.activeTabId = "worklist";
@@ -282,6 +291,15 @@ describe("Worklist: scanned data replaces the history fallback", () => {
     expect(filteredPatientList()[0].patientId).toBe("TEST-0001");
   });
 
+  it("keeps an authoritative empty scan empty instead of showing history as patients", async () => {
+    global.fetch = vi.fn().mockResolvedValue(jsonResponse({ patients: [] }));
+
+    await refreshWorklist({ repaint: false });
+
+    expect(state.worklistLoaded).toBe(true);
+    expect(getEffectiveWorklistPatients()).toEqual([]);
+  });
+
   it("keeps the list it already had when the scan fails", async () => {
     state.worklistPatients = PATIENTS.map((p) => ({ ...p }));
     global.fetch = vi.fn().mockRejectedValue(new Error("scan exploded"));
@@ -291,27 +309,16 @@ describe("Worklist: scanned data replaces the history fallback", () => {
     expect(state.worklistPatients).toHaveLength(2);
   });
 
-  it("never invents counts, dates or a modality for an unscanned history row", () => {
-    const [patient] = getEffectiveWorklistPatients();
-    const [study] = patient.studies;
-
-    expect(patient.patientName).toBe("");
-    expect(patient.gender).toBe("");
-    expect(patient.mediaSummary).toBeNull();
-    expect(study.seriesCount).toBeNull();
-    expect(study.sliceCount).toBeNull();
-    expect(study.modality).toBe("");
-    expect(study.mediaCounts).toBeNull();
-    // The history timestamp is when the folder was opened, not a study date.
-    expect(study.studyDate).toBe("");
+  it("never presents history folders as patients before the scan completes", () => {
+    expect(state.history).toHaveLength(2);
+    expect(getEffectiveWorklistPatients()).toEqual([]);
   });
 
-  it("prints the unscanned row as not-counted instead of a fabricated 1 series", () => {
+  it("shows a loading state rather than fabricated history-derived counts", () => {
+    state.worklistLoading = true;
     const html = renderWorklistTreeInner();
-    expect(html).toContain("Chưa đếm");
-    expect(html).toContain("Chưa quét");
+    expect(html).toContain("Đang tải danh sách bệnh nhân");
     expect(html).not.toContain("1 series · 1 lát");
-    // No media chip may appear for a folder nothing has counted.
     expect(html).not.toContain('class="mtag');
   });
 
