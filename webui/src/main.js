@@ -2772,9 +2772,14 @@ function bindEvents() {
     const counter = app.querySelector("[data-field='dicom-tag-count']");
     if (counter) counter.textContent = String(tags.length);
   });
+  let _dblClickMaxBusy = false;
   app.querySelector(".app-header")?.addEventListener("dblclick", (e) => {
     if (e.target.closest("button, select, input, a, .brand")) return;
-    action("window-maximize");
+    if (_dblClickMaxBusy) return;
+    _dblClickMaxBusy = true;
+    action("window-maximize").finally(() => {
+      setTimeout(() => { _dblClickMaxBusy = false; }, 300);
+    });
   });
   app.querySelector(".app-header [data-action='toggle-download']")
     ?.setAttribute("aria-expanded", state.downloadOpen ? "true" : "false");
@@ -3277,7 +3282,14 @@ async function action(name, element = null) {
     }
     if (name === "window-maximize") {
       if (window.pywebview?.api?.window_toggle_maximize) {
-        await window.pywebview.api.window_toggle_maximize();
+        const isMaximized = await window.pywebview.api.window_toggle_maximize();
+        // Update the maximize button icon: overlapping rects for restore, single rect for maximize
+        const maxBtn = document.querySelector(".win-max svg");
+        if (maxBtn) {
+          maxBtn.innerHTML = isMaximized
+            ? '<path d="M3 1h6v6H3z" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M1 3h6v6H1z" fill="none" stroke="currentColor" stroke-width="1.2"/>'
+            : '<rect x="1" y="1" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1.2"/>';
+        }
       }
       return;
     }

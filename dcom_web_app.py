@@ -222,7 +222,22 @@ class NativeApi:
         os.startfile(str(target))  # type: ignore[attr-defined]
         return True
 
+    def _get_hwnd(self):
+        """Return the native Win32 HWND for the pywebview window, or 0."""
+        try:
+            native = getattr(self._window, "native", None)
+            if native and hasattr(native, "Handle"):
+                return int(native.Handle.ToInt64())
+        except Exception:
+            pass
+        return 0
+
     def window_minimize(self):
+        hwnd = self._get_hwnd()
+        if hwnd:
+            # SW_MINIMIZE = 6
+            ctypes.windll.user32.ShowWindow(hwnd, 6)
+            return True
         if self._window:
             try:
                 self._window.minimize()
@@ -232,25 +247,31 @@ class NativeApi:
         return False
 
     def window_toggle_maximize(self):
+        hwnd = self._get_hwnd()
+        if hwnd:
+            user32 = ctypes.windll.user32
+            if user32.IsZoomed(hwnd):
+                # SW_RESTORE = 9
+                user32.ShowWindow(hwnd, 9)
+                return False
+            else:
+                # Ensure MaximizedBounds is set so maximize doesn't cover taskbar
+                try:
+                    native = self._window.native
+                    from System.Windows.Forms import Screen
+                    native.MaximizedBounds = Screen.FromHandle(
+                        native.Handle
+                    ).WorkingArea
+                except Exception:
+                    pass
+                # SW_MAXIMIZE = 3
+                user32.ShowWindow(hwnd, 3)
+                return True
+        # Fallback for non-Windows or no native handle
         if self._window:
             try:
-                native = getattr(self._window, "native", None)
-                if native is not None:
-                    # FormWindowState: 0=Normal, 1=Minimized, 2=Maximized
-                    if int(native.WindowState) == 2:
-                        self._window.restore()
-                        return False
-                    else:
-                        try:
-                            from System.Windows.Forms import Screen
-                            native.MaximizedBounds = Screen.FromHandle(native.Handle).WorkingArea
-                        except Exception:
-                            pass
-                        self._window.maximize()
-                        return True
-                else:
-                    self._window.maximize()
-                    return True
+                self._window.maximize()
+                return True
             except Exception:
                 pass
         return False
@@ -849,9 +870,14 @@ def launch_web(
             if native and hasattr(native, "Handle"):
                 hwnd = int(native.Handle.ToInt64())
                 user32 = ctypes.windll.user32
-                # WS_THICKFRAME (0x00040000) enables native resize borders and snap
+                # WS_THICKFRAME   0x00040000 – native resize borders + snap
+                # WS_MAXIMIZEBOX  0x00010000 – proper maximize/restore via OS
+                # WS_MINIMIZEBOX  0x00020000 – proper minimize via taskbar
                 style = user32.GetWindowLongW(hwnd, -16)
-                user32.SetWindowLongW(hwnd, -16, style | 0x00040000)
+                user32.SetWindowLongW(
+                    hwnd, -16,
+                    style | 0x00040000 | 0x00010000 | 0x00020000,
+                )
 
                 # Set MaximizedBounds so Maximized fits Screen.WorkingArea exactly
                 from System.Windows.Forms import Screen
