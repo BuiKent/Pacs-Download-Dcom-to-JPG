@@ -222,6 +222,48 @@ class NativeApi:
         os.startfile(str(target))  # type: ignore[attr-defined]
         return True
 
+    def window_minimize(self):
+        if self._window:
+            try:
+                self._window.minimize()
+                return True
+            except Exception:
+                pass
+        return False
+
+    def window_toggle_maximize(self):
+        if self._window:
+            try:
+                native = getattr(self._window, "native", None)
+                if native is not None:
+                    # FormWindowState: 0=Normal, 1=Minimized, 2=Maximized
+                    if int(native.WindowState) == 2:
+                        self._window.restore()
+                        return False
+                    else:
+                        try:
+                            from System.Windows.Forms import Screen
+                            native.MaximizedBounds = Screen.FromHandle(native.Handle).WorkingArea
+                        except Exception:
+                            pass
+                        self._window.maximize()
+                        return True
+                else:
+                    self._window.maximize()
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def window_close(self):
+        if self._window:
+            try:
+                self._window.destroy()
+                return True
+            except Exception:
+                pass
+        return False
+
 
 def _run_smoke(window, result: dict, result_path: str) -> None:
     try:
@@ -788,6 +830,8 @@ def launch_web(
         url=url,
         js_api=native_api,
         min_size=(1100, 700),
+        frameless=True,
+        easy_drag=False,
         # WebView2 can defer navigation for a minimized top-level window on
         # some Windows builds. The smoke gate must exercise the same visible
         # window lifecycle as the real application.
@@ -799,6 +843,24 @@ def launch_web(
     _write_smoke_stage(smoke_result, result, "window-created")
     closed_event = threading.Event()
 
+    def on_shown() -> None:
+        try:
+            native = getattr(window, "native", None)
+            if native and hasattr(native, "Handle"):
+                hwnd = int(native.Handle.ToInt64())
+                user32 = ctypes.windll.user32
+                # WS_THICKFRAME (0x00040000) enables native resize borders and snap
+                style = user32.GetWindowLongW(hwnd, -16)
+                user32.SetWindowLongW(hwnd, -16, style | 0x00040000)
+
+                # Set MaximizedBounds so Maximized fits Screen.WorkingArea exactly
+                from System.Windows.Forms import Screen
+                native.MaximizedBounds = Screen.FromHandle(native.Handle).WorkingArea
+
+                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)
+        except Exception:
+            pass
+
     def persist_geometry() -> None:
         geom = get_window_geometry(window)
         if geom:
@@ -807,6 +869,7 @@ def launch_web(
     def on_closed() -> None:
         closed_event.set()
 
+    window.events.shown += on_shown
     window.events.closing += persist_geometry
     window.events.closed += on_closed
 

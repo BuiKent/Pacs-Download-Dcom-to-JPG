@@ -1900,12 +1900,6 @@ function renderWorklistView() {
 
   return `
     <main class="worklist-view">
-      <div class="worklist-header">
-        <div class="worklist-title-group">
-          <h2>${escapeHtml(t("Danh sách bệnh nhân & ca chụp"))}</h2>
-        </div>
-      </div>
-
       <div class="worklist-tabs" role="tablist">
         <button class="worklist-tab${tab === "studies" ? " active" : ""}" role="tab"
           aria-selected="${tab === "studies"}"
@@ -1947,29 +1941,53 @@ function render() {
   if (!app) return;
   app.innerHTML = `
     <div class="app-shell ${downloadPanelVisible() ? "" : "download-collapsed"} ${state.activeTabId === "worklist" ? "worklist-active" : "viewer-active"}">
-      <header class="app-header">
-        <div class="brand">
-          <span class="brand-mark">D</span>
-          <span><b>DICOM/JPG Downloader & Viewer</b><small>OFFLINE · v1.1</small></span>
+      <header class="app-header pywebview-drag-region">
+        <div class="header-left">
+          <div class="brand">
+            <span class="brand-mark">D</span>
+            <div class="brand-text">
+              <b>DICOM/JPG Downloader & Viewer</b>
+              <small>OFFLINE · v1.1</small>
+            </div>
+          </div>
         </div>
-        <div class="series-selects">
-          <label>${escapeHtml(t("Series"))}
-            <select data-field="series">${renderSeriesOptions(state.archive, state.selectedId)}</select>
-          </label>
+
+        <div class="header-center">
+          ${state.activeTabId !== "worklist" && state.archive?.series?.length ? `
+          <div class="series-selects">
+            <label>${escapeHtml(t("Series"))}
+              <select data-field="series">${renderSeriesOptions(state.archive, state.selectedId)}</select>
+            </label>
+          </div>
+          ` : `<div class="header-center-spacer"></div>`}
         </div>
-        <div class="header-actions">
-          ${state.activeTabId === "worklist" ? iconButton(
-      "toggle-download",
-      state.downloadOpen ? "⇤" : "⇥",
-      t(state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim"),
-      state.downloadOpen,
-      false,
-      t("Tải phim"),
-    ) : ""}
-          ${iconButton("choose-archive", icons.folder, t("Mở folder hồ sơ: phim, ảnh, video và văn bản đều được nhận diện"))}
-          ${iconButton("refresh-archive", "⟳", t("Quét lại thư mục hiện tại"), false, !state.archive.root)}
-          <button class="soft-button" data-action="toggle-language"
-            title="${escapeHtml(t("Chuyển sang tiếng Anh"))}">${getLanguage() === "en" ? "VI" : "EN"}</button>
+
+        <div class="header-right">
+          <div class="header-actions">
+            ${state.activeTabId === "worklist" ? iconButton(
+              "toggle-download",
+              state.downloadOpen ? "⇤" : "⇥",
+              t(state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim"),
+              state.downloadOpen,
+              false,
+              t("Tải phim"),
+            ) : ""}
+            ${iconButton("choose-archive", icons.folder, t("Mở folder hồ sơ: phim, ảnh, video và văn bản đều được nhận diện"))}
+            ${iconButton("refresh-archive", "⟳", t("Quét lại thư mục hiện tại"), false, !state.archive.root)}
+            <button class="soft-button" data-action="toggle-language"
+              title="${escapeHtml(t("Chuyển sang tiếng Anh"))}">${getLanguage() === "en" ? "VI" : "EN"}</button>
+          </div>
+          <div class="window-controls">
+            <button class="win-btn win-min" type="button" data-action="window-minimize" title="${escapeHtml(t("Thu nhỏ"))}">
+              <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.2"/></svg>
+            </button>
+            <button class="win-btn win-max" type="button" data-action="window-maximize" title="${escapeHtml(t("Phóng to / Khôi phục"))}">
+              <svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+            </button>
+            <button class="win-btn win-close" type="button" data-action="window-close" title="${escapeHtml(t("Đóng ứng dụng"))}">
+              <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.2"/></svg>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -2754,6 +2772,10 @@ function bindEvents() {
     const counter = app.querySelector("[data-field='dicom-tag-count']");
     if (counter) counter.textContent = String(tags.length);
   });
+  app.querySelector(".app-header")?.addEventListener("dblclick", (e) => {
+    if (e.target.closest("button, select, input, a, .brand")) return;
+    action("window-maximize");
+  });
   app.querySelector(".app-header [data-action='toggle-download']")
     ?.setAttribute("aria-expanded", state.downloadOpen ? "true" : "false");
   app.querySelector("[data-field='series']")?.addEventListener("change", (event) => {
@@ -3247,17 +3269,30 @@ async function action(name, element = null) {
       return action(retryAction);
     }
     
+    if (name === "window-minimize") {
+      if (window.pywebview?.api?.window_minimize) {
+        await window.pywebview.api.window_minimize();
+      }
+      return;
+    }
+    if (name === "window-maximize") {
+      if (window.pywebview?.api?.window_toggle_maximize) {
+        await window.pywebview.api.window_toggle_maximize();
+      }
+      return;
+    }
+    if (name === "window-close") {
+      if (window.pywebview?.api?.window_close) {
+        await window.pywebview.api.window_close();
+      } else {
+        window.close();
+      }
+      return;
+    }
+
     if (name === "toggle-download") {
       state.downloadOpen = !state.downloadOpen;
-      app.querySelector(".app-shell")?.classList.toggle("download-collapsed", !state.downloadOpen);
-      const toggle = app.querySelector(".app-header [data-action='toggle-download']");
-      if (toggle) {
-        toggle.classList.toggle("active", state.downloadOpen);
-        toggle.setAttribute("aria-expanded", state.downloadOpen ? "true" : "false");
-        toggle.title = t(state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim");
-        const icon = toggle.querySelector("span");
-        if (icon) icon.textContent = state.downloadOpen ? "⇤" : "⇥";
-      }
+      render();
       return;
     }
     if (name === "toggle-language") {

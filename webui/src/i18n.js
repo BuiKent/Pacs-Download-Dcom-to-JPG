@@ -57,6 +57,9 @@ const EN = {
   "Sắp xếp theo Họ và tên": "Sort by Patient Name",
   "Sắp xếp theo Mã BN": "Sort by Patient ID",
   "Sắp xếp theo Ngày chụp": "Sort by Study Date",
+  "Thu nhỏ": "Minimize",
+  "Phóng to / Khôi phục": "Maximize / Restore",
+  "Đóng ứng dụng": "Close",
 
   // One "open" entry point: the archive classifies whatever is in the folder
   // rather than asking the reader to pick the right button first.
