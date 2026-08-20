@@ -3301,6 +3301,14 @@ async function action(name, element = null) {
       }
       return;
     }
+    if (name === "window-fullscreen") {
+      if (window.pywebview?.api?.window_toggle_fullscreen) {
+        const isFs = await window.pywebview.api.window_toggle_fullscreen();
+        const shell = document.querySelector(".app-shell");
+        if (shell) shell.classList.toggle("zen-mode", isFs);
+      }
+      return;
+    }
 
     if (name === "toggle-download") {
       state.downloadOpen = !state.downloadOpen;
@@ -4616,6 +4624,17 @@ function isTypingTarget(target) {
 
 function installKeyboardShortcuts() {
   window.addEventListener("keydown", (event) => {
+    // F11 / Esc zen mode — works even in text fields
+    if (event.key === "F11") {
+      event.preventDefault();
+      action("window-fullscreen");
+      return;
+    }
+    if (event.key === "Escape" && document.querySelector(".app-shell.zen-mode")) {
+      event.preventDefault();
+      action("window-fullscreen");
+      return;
+    }
     if (isTypingTarget(event.target)) return;
     
     if (event.key === "Tab" && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {

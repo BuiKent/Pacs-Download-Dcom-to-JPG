@@ -140,6 +140,11 @@ button { cursor: pointer; }
 .app-shell.download-collapsed { grid-template-columns: 0 1fr; }
 .app-shell.download-collapsed .download-panel { transform: translateX(-100%); }
 
+/* ── Zen mode (F11 fullscreen) ── */
+.app-shell.zen-mode { grid-template-rows: 0 0 1fr; }
+.app-shell.zen-mode .app-header,
+.app-shell.zen-mode .winbar { overflow: hidden; height: 0; min-height: 0; opacity: 0; pointer-events: none; }
+
 /* Worklist is a bright administrative surface; opening a patient switches the
    complete reading shell to a low-glare diagnostic palette. The class follows
    the active tab, so the two modes never leak colours into each other. */
