@@ -1619,15 +1619,14 @@ button:disabled { opacity: .35; cursor: default; }
   .series-strip { width: 145px; min-width: 130px; }
 }
 
-@media (max-width: 1450px) {
+@media (max-width: 1200px) {
+  .plist-header,
   .prow,
   .srow {
-    grid-template-columns: 20px minmax(190px, 1fr) 94px minmax(190px, auto);
+    grid-template-columns: 20px minmax(180px, 1fr) 110px 105px minmax(190px, auto);
+    gap: 8px;
+    padding: 8px 10px;
   }
-  .prow .hospital-col,
-  .prow .media-col,
-  .srow .modality-col,
-  .srow .media-col { display: none; }
 }
 
 .manual-info-toggle {
@@ -2484,24 +2483,123 @@ button:disabled { opacity: .35; cursor: default; }
 }
 
 /* ================= Multi-level Study List tree ================= */
-.plist {
-  min-height: 0;
-  overflow-y: auto;
-  border-top: 1px solid var(--chrome-border, #e9e9e7);
-}
-
+.plist-header,
 .prow, .srow {
   display: grid;
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
-  border-bottom: 1px solid var(--chrome-border, #f1f1ef);
+  grid-template-columns: 52px minmax(220px, 1fr) 130px 120px 120px minmax(210px, 230px);
+}
+
+.plist-header {
+  background: var(--control-bg, #f7f7f5);
+  border-top: 1px solid var(--chrome-border, #e9e9e7);
+  border-bottom: 1px solid var(--chrome-border, #e9e9e7);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--label-muted, #8a8880);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  user-select: none;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.plist-header .col-stt {
+  text-align: left;
+  padding-left: 2px;
+}
+
+.plist-header .col-acts {
+  text-align: right;
+  padding-right: 4px;
+}
+
+.col-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--label-muted, #8a8880);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  user-select: none;
+  text-align: left;
+  transition: color 120ms ease;
+}
+
+.col-sort-btn:hover {
+  color: var(--body-fg, #37352f);
+}
+
+.col-sort-btn.sorted {
+  color: var(--primary-accent, #2383e2);
+  font-weight: 700;
+}
+
+.col-sort-btn .sort-icon {
+  font-style: normal;
+  font-size: 10px;
+  opacity: 0.55;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.col-sort-btn:hover .sort-icon,
+.col-sort-btn.sorted .sort-icon {
+  opacity: 1;
+}
+
+.stt-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--label-muted, #9b9a97);
+}
+
+.stt-num {
+  font-weight: 600;
+  min-width: 16px;
+  color: var(--label-fg, #6b6a66);
+}
+
+.stt-subnum {
+  font-size: 11px;
+  color: var(--label-muted, #9b9a97);
+}
+
+.pid-col {
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--body-fg, #37352f);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pid-col.sub {
+  font-weight: 400;
+  color: var(--label-muted, #9b9a97);
+}
+
+.plist {
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .prow {
-  grid-template-columns: 20px minmax(200px, 1.4fr) 96px 160px 116px minmax(224px, auto);
   cursor: pointer;
   background: var(--shell-bg, #ffffff);
+  border-bottom: 1px solid var(--chrome-border, #f1f1ef);
   transition: background 120ms ease;
   user-select: none;
 }
@@ -2539,6 +2637,15 @@ button:disabled { opacity: .35; cursor: default; }
   color: var(--label-fg, #6b6a66);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+.date-col {
+  white-space: nowrap;
+}
+
+.meta.status-col.count {
+  font-size: 11.5px;
+  color: var(--label-muted, #9b9a97);
 }
 
 .media {
@@ -2612,11 +2719,6 @@ button:disabled { opacity: .35; cursor: default; }
 }
 
 .srow {
-  /* The last two tracks hold the status badge and up to three buttons — a
-     resumable study adds "Tải tiếp" beside "Mở viewer" and "Thư mục". At the
-     old 96px/132px they overlapped and clipped their own labels. */
-  grid-template-columns: 20px minmax(200px, 1.4fr) 96px 160px 116px minmax(224px, auto);
-  padding-left: 14px;
   border-bottom: 1px solid var(--chrome-border, #f1f1ef);
   background: transparent;
 }

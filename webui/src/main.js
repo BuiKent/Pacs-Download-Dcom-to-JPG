@@ -157,6 +157,8 @@ const state = {
   worklistLoaded: false,
   worklistLoading: false,
   worklistError: "",
+  worklistSortColumn: "date",
+  worklistSortOrder: "desc",
   // Which Worklist tab is showing: the patient/study list or the queue+history.
   worklistTab: "studies",
   // Latest /api/job snapshot, kept so the Activity panel can draw it.
@@ -1368,19 +1370,88 @@ function refreshStudyListPanel() {
   if (refreshButton) refreshButton.disabled = state.worklistLoading;
 }
 
-/** Patients matching the search box. */
+function parseStudyDateToTime(dateStr) {
+  if (!dateStr || typeof dateStr !== "string") return 0;
+  const clean = dateStr.trim();
+  const ddmmyyyy = clean.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})/);
+  if (ddmmyyyy) {
+    const d = Number(ddmmyyyy[1]);
+    const m = Number(ddmmyyyy[2]);
+    let y = Number(ddmmyyyy[3]);
+    if (y < 100) y += 2000;
+    return new Date(y, m - 1, d).getTime() || 0;
+  }
+  const yyyymmdd = clean.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
+  if (yyyymmdd) {
+    const y = Number(yyyymmdd[1]);
+    const m = Number(yyyymmdd[2]);
+    const d = Number(yyyymmdd[3]);
+    return new Date(y, m - 1, d).getTime() || 0;
+  }
+  const parsed = Date.parse(clean);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function patientLatestStudyDate(patient) {
+  const studies = patient.studies || [];
+  let latest = 0;
+  for (const s of studies) {
+    const t = parseStudyDateToTime(s.studyDate);
+    if (t > latest) latest = t;
+  }
+  return latest;
+}
+
+function patientLatestStudyDateString(patient) {
+  const studies = patient.studies || [];
+  if (!studies.length) return "—";
+  let latestTime = 0;
+  let latestStr = "";
+  for (const s of studies) {
+    const t = parseStudyDateToTime(s.studyDate);
+    if (t >= latestTime && s.studyDate) {
+      latestTime = t;
+      latestStr = s.studyDate;
+    }
+  }
+  return latestStr || studies[0]?.studyDate || "—";
+}
+
+/** Patients matching the search box, sorted by the active sort column. */
 function filteredPatientList() {
   const search = (state.worklistSearch || "").toLowerCase().trim();
-  const patients = getEffectiveWorklistPatients();
-  if (!search) return patients;
-
-  return patients.filter((p) => {
-    const pText = `${p.patientId || ""} ${p.patientName || ""} ${p.hospital || ""} ${p.gender || ""} ${p.birthYear || ""}`.toLowerCase();
-    if (pText.includes(search)) return true;
-    return (p.studies || []).some((s) => {
-      const sText = `${s.studyDate || ""} ${s.studyName || ""} ${s.modality || ""} ${s.folder || ""}`.toLowerCase();
-      return sText.includes(search);
+  let patients = getEffectiveWorklistPatients();
+  if (search) {
+    patients = patients.filter((p) => {
+      const pText = `${p.patientId || ""} ${p.patientName || ""} ${p.hospital || ""} ${p.gender || ""} ${p.birthYear || ""}`.toLowerCase();
+      if (pText.includes(search)) return true;
+      return (p.studies || []).some((s) => {
+        const sText = `${s.studyDate || ""} ${s.studyName || ""} ${s.modality || ""} ${s.folder || ""}`.toLowerCase();
+        return sText.includes(search);
+      });
     });
+  }
+
+  const sortCol = state.worklistSortColumn;
+  const sortOrder = state.worklistSortOrder || "asc";
+  if (!sortCol) return patients;
+
+  return [...patients].sort((a, b) => {
+    let cmp = 0;
+    if (sortCol === "name") {
+      const nameA = String(a.patientName || a.patientId || "").trim();
+      const nameB = String(b.patientName || b.patientId || "").trim();
+      cmp = nameA.localeCompare(nameB, "vi", { sensitivity: "base", numeric: true });
+    } else if (sortCol === "id") {
+      const idA = String(a.patientId || "").trim();
+      const idB = String(b.patientId || "").trim();
+      cmp = idA.localeCompare(idB, undefined, { numeric: true, sensitivity: "base" });
+    } else if (sortCol === "date") {
+      const dateA = patientLatestStudyDate(a);
+      const dateB = patientLatestStudyDate(b);
+      cmp = dateA - dateB;
+    }
+    return sortOrder === "desc" ? -cmp : cmp;
   });
 }
 
@@ -1392,8 +1463,17 @@ function filteredPatientList() {
  * patient's images is exactly the kind of detail a clinician trusts to confirm
  * they opened the right chart.
  */
+function patientDemographicsLine(patient) {
+  const parts = [
+    patient.gender,
+    patient.birthYear ? (String(patient.birthYear).toLowerCase().includes("t") ? patient.birthYear : `${patient.birthYear}`) : "",
+    patient.hospital
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  return parts.length ? parts.join(" · ") : "";
+}
+
 function patientIdentityLine(patient) {
-  const parts = [patient.patientName, patient.gender, patient.birthYear]
+  const parts = [patient.patientName, patient.gender, patient.birthYear, patient.hospital]
     .map((value) => String(value || "").trim())
     .filter(Boolean);
   return parts.length ? parts.join(" · ") : t("Chưa có thông tin hành chính");
@@ -1472,23 +1552,47 @@ function renderWorklistTreeInner() {
       <span>${escapeHtml(t("Đang hiển thị dữ liệu lần quét trước."))} ${escapeHtml(state.worklistError)}</span>
       <button class="soft-button" data-action="refresh-worklist">${escapeHtml(t("Thử quét lại"))}</button>
     </div>` : ""}
+    <div class="plist-header">
+      <span class="col-stt">${escapeHtml(t("STT"))}</span>
+      <button class="col-sort-btn col-who ${state.worklistSortColumn === "name" ? "sorted " + state.worklistSortOrder : ""}" type="button" data-action="sort-worklist" data-sort-col="name" title="${escapeHtml(t("Sắp xếp theo Họ và tên"))}">
+        <span>${escapeHtml(t("Họ và tên"))}</span>
+        <i class="sort-icon">${state.worklistSortColumn === "name" ? (state.worklistSortOrder === "desc" ? "▼" : "▲") : "↕"}</i>
+      </button>
+      <button class="col-sort-btn col-pid ${state.worklistSortColumn === "id" ? "sorted " + state.worklistSortOrder : ""}" type="button" data-action="sort-worklist" data-sort-col="id" title="${escapeHtml(t("Sắp xếp theo Mã BN"))}">
+        <span>${escapeHtml(t("Mã BN"))}</span>
+        <i class="sort-icon">${state.worklistSortColumn === "id" ? (state.worklistSortOrder === "desc" ? "▼" : "▲") : "↕"}</i>
+      </button>
+      <button class="col-sort-btn col-date ${state.worklistSortColumn === "date" ? "sorted " + state.worklistSortOrder : ""}" type="button" data-action="sort-worklist" data-sort-col="date" title="${escapeHtml(t("Sắp xếp theo Ngày chụp"))}">
+        <span>${escapeHtml(t("Ngày chụp"))}</span>
+        <i class="sort-icon">${state.worklistSortColumn === "date" ? (state.worklistSortOrder === "desc" ? "▼" : "▲") : "↕"}</i>
+      </button>
+      <span class="col-status">${escapeHtml(t("Trạng thái"))}</span>
+      <span class="col-acts">${escapeHtml(t("Action"))}</span>
+    </div>
     <div class="plist">
-      ${patients.map((p) => {
+      ${patients.map((p, pIdx) => {
         const isExpanded = state.expandedPatients[p.id] !== false;
+        const rawStudies = p.studies || [];
+        const studyCount = rawStudies.length;
+        const demoLine = patientDemographicsLine(p);
+        const studies = rawStudies.slice().sort((s1, s2) => {
+          if (state.worklistSortColumn === "date") {
+            const d1 = parseStudyDateToTime(s1.studyDate);
+            const d2 = parseStudyDateToTime(s2.studyDate);
+            return state.worklistSortOrder === "desc" ? d2 - d1 : d1 - d2;
+          }
+          return 0;
+        });
         return `
           <div class="prow" role="button" tabindex="0" aria-expanded="${isExpanded}" data-toggle-patient="${escapeHtml(p.id)}">
-            <span class="twist">▶</span>
+            <span class="stt-cell"><i class="twist">▶</i><span class="stt-num">${pIdx + 1}</span></span>
             <span class="who">
-              <b>${escapeHtml(p.patientId || t("Chưa rõ mã BN"))}</b>
-              <small>${escapeHtml(patientIdentityLine(p))}</small>
+              <b>${escapeHtml(p.patientName || p.patientId || t("Chưa rõ tên BN"))}</b>
+              ${demoLine ? `<small>${escapeHtml(demoLine)}</small>` : ""}
             </span>
-            <span class="meta hospital-col">${escapeHtml(p.hospital || "—")}</span>
-            <span class="media media-col">
-              ${mediaTags(p.mediaSummary, {
-                dicom: t("series"), photo: t("ảnh"), video: t("video"), doc: t("trang"),
-              })}
-            </span>
-            <span class="meta size-col">${escapeHtml(p.totalSizeFormatted || "—")}</span>
+            <span class="meta pid-col"><b>${escapeHtml(p.patientId || "—")}</b></span>
+            <span class="meta date-col">${escapeHtml(patientLatestStudyDateString(p))}</span>
+            <span class="meta status-col count">${escapeHtml(tf("{} đợt khám", studyCount))}</span>
             <span class="rowacts">
               <button class="soft-button" type="button" data-action="open-patient-record" data-patient-id="${escapeHtml(p.id)}">
                 ${escapeHtml(t("Mở hồ sơ"))}
@@ -1497,15 +1601,15 @@ function renderWorklistTreeInner() {
           </div>
 
           <div class="studies${isExpanded ? " on" : ""}" data-studies="${escapeHtml(p.id)}">
-            ${(p.studies || []).map((s) => `
+            ${studies.map((s, sIdx) => `
                 <div class="srow">
-                  <span class="rail"></span>
+                  <span class="stt-cell"><span class="rail"></span><span class="stt-subnum">${pIdx + 1}.${sIdx + 1}</span></span>
                   <span class="who">
                     <b>${escapeHtml(studyHeadingLine(s))}</b>
                     <small>${escapeHtml(studyCountLine(s))}</small>
                   </span>
-                  <span class="meta modality-col">${escapeHtml(s.modality ? t(s.modality) : "—")}</span>
-                  <span class="media media-col">${mediaTags(s.mediaCounts)}</span>
+                  <span class="meta pid-col sub">—</span>
+                  <span class="meta date-col">${escapeHtml(s.studyDate || "—")}</span>
                   <span class="badge status-col ${s.status || "done"}">${escapeHtml(t(s.statusLabel || "Đã tải"))}</span>
                   <span class="rowacts">
                     ${s.status === "part" && s.viewerUrl ? `
@@ -1532,6 +1636,13 @@ function renderWorklistTreeInner() {
 /** Attach tree accordion and button listeners to worklist markup. */
 function bindWorklistOpenButtons(host) {
   if (!host) return;
+
+  host.querySelectorAll("[data-action='sort-worklist']").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      action("sort-worklist", btn);
+    });
+  });
 
   host.querySelectorAll("[data-toggle-patient]").forEach((prow) => {
     prow.addEventListener("click", (e) => {
@@ -3202,6 +3313,18 @@ async function action(name, element = null) {
     }
     if (name === "refresh-worklist") {
       await refreshWorklist();
+      return;
+    }
+    if (name === "sort-worklist") {
+      const col = element?.dataset?.sortCol;
+      if (!col) return;
+      if (state.worklistSortColumn === col) {
+        state.worklistSortOrder = state.worklistSortOrder === "asc" ? "desc" : "asc";
+      } else {
+        state.worklistSortColumn = col;
+        state.worklistSortOrder = col === "date" ? "desc" : "asc";
+      }
+      refreshStudyListPanel();
       return;
     }
     if (name === "choose-archive") {

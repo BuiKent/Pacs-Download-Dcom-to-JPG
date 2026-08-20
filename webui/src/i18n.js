@@ -45,6 +45,18 @@ const EN = {
   "Đóng tab": "Close tab",
   "Chưa rõ mã BN": "Patient ID unknown",
   "Chưa có thông tin hành chính": "No demographics recorded",
+  "STT": "No.",
+  "Họ và tên": "Patient Name",
+  "Mã BN": "Patient ID",
+  "Bệnh nhân / Đợt khám": "Patient / Studies",
+  "Ngày chụp": "Study date",
+  "Trạng thái": "Status",
+  "Thao tác": "Actions",
+  "Action": "Actions",
+  "{} đợt khám": "{} studies",
+  "Sắp xếp theo Họ và tên": "Sort by Patient Name",
+  "Sắp xếp theo Mã BN": "Sort by Patient ID",
+  "Sắp xếp theo Ngày chụp": "Sort by Study Date",
 
   // One "open" entry point: the archive classifies whatever is in the folder
   // rather than asking the reader to pick the right button first.

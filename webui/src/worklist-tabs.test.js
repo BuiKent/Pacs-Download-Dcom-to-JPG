@@ -118,31 +118,29 @@ describe("Worklist: Study List / Activity & Queue tabs", () => {
     expect(html).not.toContain('id="activity-panel"');
   });
 
-  it("renders multi-level Patient -> Study hierarchy with clinical media tags and status badges", () => {
+  it("renders multi-level Patient -> Study hierarchy with clinical table header and status badges", () => {
     const html = renderWorklistTreeInner();
+    expect(html).toContain('class="plist-header"');
     expect(html).toContain('class="plist"');
     expect(html).toContain('class="prow"');
     expect(html).toContain("TEST-0001");
-    expect(html).toContain("NGUYỄN VĂN MẪU · Nam · 1974");
-    expect(html).toContain("BV A");
-    expect(html).toContain("22 series");
-    expect(html).toContain("4 ảnh");
-    expect(html).toContain("3,8 GB");
+    expect(html).toContain("NGUYỄN VĂN MẪU");
+    expect(html).toContain("Nam · 1974 · BV A");
     expect(html).toContain('data-action="open-patient-record"');
 
     // Studies inside patient 1
     expect(html).toContain('class="srow"');
     expect(html).toContain("06/08/2026 · MR sọ não có tiêm");
     expect(html).toContain("12 series · 1412 lát");
+    expect(html).toContain("06/08/2026");
     expect(html).toContain("class=\"badge status-col done\"");
     expect(html).toContain('data-action="open-study-viewer"');
     expect(html).toContain('data-action="reveal-study-folder"');
 
-    // Patient 2 with video and photo media tags
+    // Patient 2
     expect(html).toContain("TEST-0002");
-    expect(html).toContain("TRẦN THỊ MẪU · Nữ · 1988");
-    expect(html).toContain("2 video");
-    expect(html).toContain("16 ảnh");
+    expect(html).toContain("TRẦN THỊ MẪU");
+    expect(html).toContain("Nữ · 1988");
   });
 
   it("shows the match count on the Study List tab and follows the search box", () => {
@@ -394,5 +392,64 @@ describe("Worklist: scanned data replaces the history fallback", () => {
 
     expect(row).toContain('data-action="open-study-viewer"');
     expect((row.match(/disabled/g) || []).length).toBe(2);
+  });
+
+  it("sorts patients by date (newest/oldest), name (A-Z/Z-A), and patient ID", () => {
+    state.worklistPatients = [PATIENTS[0], PATIENTS[1]];
+
+    // Sort by Date Descending (Default) -> TEST-0001 (06/08) then TEST-0002 (05/08)
+    state.worklistSortColumn = "date";
+    state.worklistSortOrder = "desc";
+    let list = filteredPatientList();
+    expect(list[0].patientId).toBe("TEST-0001");
+    expect(list[1].patientId).toBe("TEST-0002");
+
+    // Sort by Date Ascending -> TEST-0002 (05/08) then TEST-0001 (06/08)
+    state.worklistSortOrder = "asc";
+    list = filteredPatientList();
+    expect(list[0].patientId).toBe("TEST-0002");
+    expect(list[1].patientId).toBe("TEST-0001");
+
+    // Sort by Name Ascending -> NGUYỄN then TRẦN
+    state.worklistSortColumn = "name";
+    state.worklistSortOrder = "asc";
+    list = filteredPatientList();
+    expect(list[0].patientName).toBe("NGUYỄN VĂN MẪU");
+    expect(list[1].patientName).toBe("TRẦN THỊ MẪU");
+
+    // Sort by Name Descending -> TRẦN then NGUYỄN
+    state.worklistSortOrder = "desc";
+    list = filteredPatientList();
+    expect(list[0].patientName).toBe("TRẦN THỊ MẪU");
+    expect(list[1].patientName).toBe("NGUYỄN VĂN MẪU");
+
+    // Sort by ID Descending -> TEST-0002 then TEST-0001
+    state.worklistSortColumn = "id";
+    state.worklistSortOrder = "desc";
+    list = filteredPatientList();
+    expect(list[0].patientId).toBe("TEST-0002");
+    expect(list[1].patientId).toBe("TEST-0001");
+  });
+
+  it("toggles sorting order and updates active column via sort-worklist action", async () => {
+    document.body.innerHTML = `<div id="app"><div class="worklist-tree"></div></div>`;
+    state.worklistPatients = [PATIENTS[0], PATIENTS[1]];
+    state.worklistSortColumn = "name";
+    state.worklistSortOrder = "asc";
+
+    // Toggle same column -> flips to desc
+    await action("sort-worklist", { dataset: { sortCol: "name" } });
+    expect(state.worklistSortColumn).toBe("name");
+    expect(state.worklistSortOrder).toBe("desc");
+
+    // Click new column (id) -> sets id with asc
+    await action("sort-worklist", { dataset: { sortCol: "id" } });
+    expect(state.worklistSortColumn).toBe("id");
+    expect(state.worklistSortOrder).toBe("asc");
+
+    // Click date column -> sets date with default desc
+    await action("sort-worklist", { dataset: { sortCol: "date" } });
+    expect(state.worklistSortColumn).toBe("date");
+    expect(state.worklistSortOrder).toBe("desc");
   });
 });
