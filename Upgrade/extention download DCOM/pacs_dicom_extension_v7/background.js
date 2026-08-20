@@ -117,8 +117,46 @@ function adapterScore(ad){
 }
 function candidateDisplay(raw){try{const u=new URL(raw),keys=[...u.searchParams.keys()].filter(Boolean);return`${u.host}${u.pathname}${keys.length?`?${keys.join('&')}`:''}`;}catch{return String(raw||'');}}
 
-async function getSession(key,fallback=null){const o=await chrome.storage.session.get(key);return o[key]??fallback;}
-async function setSession(key,value){await chrome.storage.session.set({[key]:value});}
+const tabMemory=new Map();
+const invMemory=new Map();
+
+function pruneStateForStorage(s){
+  if(!s||typeof s!=='object')return s;
+  return{
+    ...s,
+    pacsRequests:(s.pacsRequests||[]).slice(-30).map(r=>({
+      type:r.type,url:r.url,method:r.method,requestId:r.requestId,score:r.score,contentType:r.contentType,time:r.time,_id:r._id,
+      requestBody:r.requestBody?.kind==='form'?r.requestBody:null
+    })),
+    learnCandidates:(s.learnCandidates||[]).slice(-20).map(r=>({
+      url:r.url,display:r.display,method:r.method,requestId:r.requestId,type:r.type,contentType:r.contentType,status:r.status,contentLength:r.contentLength,time:r.time
+    })),
+    binaryCandidates:(s.binaryCandidates||[]).slice(-20),
+    genericDirectUrls:(s.genericDirectUrls||[]).slice(-300),
+    genericEntries:(s.genericEntries||[]).slice(-80).map(e=>({
+      url:e.url,method:e.method,contentType:e.contentType,shape:e.shape,source:e.source,declared:e.declared,meta:e.meta
+    }))
+  };
+}
+
+async function getSession(key,fallback=null){
+  if(key.startsWith('tab|')){const tabId=Number(key.slice(4));if(tabMemory.has(tabId))return tabMemory.get(tabId);}
+  else if(key.startsWith('inv|')){const tabId=Number(key.slice(4));if(invMemory.has(tabId))return invMemory.get(tabId);}
+  try{const o=await chrome.storage.session.get(key);return o[key]??fallback;}catch{return fallback;}
+}
+async function setSession(key,value){
+  if(key.startsWith('tab|')){
+    const tabId=Number(key.slice(4));tabMemory.set(tabId,value);
+    try{const pruned=pruneStateForStorage(value);await chrome.storage.session.set({[key]:pruned});}catch{try{await chrome.storage.session.remove(key);}catch{}}
+    return;
+  }
+  if(key.startsWith('inv|')){
+    const tabId=Number(key.slice(4));invMemory.set(tabId,value);
+    try{await chrome.storage.session.set({[key]:value});}catch{try{await chrome.storage.session.remove(key);}catch{}}
+    return;
+  }
+  try{await chrome.storage.session.set({[key]:value});}catch{try{await chrome.storage.session.remove(key);}catch{}}
+}
 function defaultState(tabId){return{tabId,navUrls:[],pendingNavUrls:[],frameUrls:[],pacsRequests:[],headersByOrigin:{},currentUrl:'',mainDocumentId:'',studyHint:'',tracking:'idle',confidence:0,pageHintScore:0,pageHintReasons:[],genericDirectUrls:[],genericDirectMeta:{},genericEntries:[],genericProfile:{},binaryCandidates:[],binaryProbed:[],lastDeepProbeAt:0,learning:{active:false,startedAt:0},learnCandidates:[],vietmyRecaptureDone:false,zfpViewer:false,zfpReloadDone:false,genericHookActive:false,updatedAt:Date.now()};}
 async function getTabState(tabId){return getSession(tabKey(tabId),defaultState(tabId));}
 async function saveTabState(tabId,s){s.updatedAt=Date.now();await setSession(tabKey(tabId),s);}
@@ -170,7 +208,7 @@ async function startTracking(tabId,manual=false){const s=await getTabState(tabId
 async function stopTracking(tabId){const s=await getTabState(tabId);s.tracking='stopped';await saveTabState(tabId,s);await setBadge(tabId);return s;}
 
 async function rememberBeforeNavigate(tabId,raw){if(tabId<0)return;const u=cleanUrl(raw);if(!u)return;const s=await getTabState(tabId);pushUnique(s.pendingNavUrls,u);s.currentUrl=u;await saveTabState(tabId,s);markCandidate(tabId,u).catch(()=>{});}
-async function invalidate(tabId,reason){await chrome.storage.session.remove(invKey(tabId));chrome.runtime.sendMessage({type:'TAB_CONTEXT_CHANGED',tabId,reason}).catch(()=>{});}
+async function invalidate(tabId,reason){invMemory.delete(tabId);await chrome.storage.session.remove(invKey(tabId)).catch(()=>{});chrome.runtime.sendMessage({type:'TAB_CONTEXT_CHANGED',tabId,reason}).catch(()=>{});}
 async function rememberCommitted(d){if(d.tabId<0)return;const u=cleanUrl(d.url);if(!u)return;if(d.frameId!==0){const s=await getTabState(d.tabId);pushUnique(s.frameUrls,u);await saveTabState(d.tabId,s);markCandidate(d.tabId,u).catch(()=>{});if(await hasOrigin(u))setTimeout(()=>{injectContent(d.tabId);getTabState(d.tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(d.tabId);});},100);return;}const s=await getTabState(d.tabId);const changed=Boolean(s.mainDocumentId&&d.documentId&&s.mainDocumentId!==d.documentId);if(changed){s.navUrls=[...(s.pendingNavUrls||[])];s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.pageHintScore=0;s.pageHintReasons=[];s.confidence=0;s.studyHint=viewerStudyHint(u)||'';s.vietmyRecaptureDone=false;if(s.tracking==='stopped')s.tracking='idle';await invalidate(d.tabId,'document');}pushUnique(s.navUrls,u);s.pendingNavUrls=[];s.currentUrl=u;s.mainDocumentId=d.documentId||s.mainDocumentId||'';if(!s.studyHint)s.studyHint=viewerStudyHint(u)||'';await saveTabState(d.tabId,s);await markCandidate(d.tabId,u);if(await hasOrigin(u))setTimeout(()=>{injectContent(d.tabId);getTabState(d.tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(d.tabId);});},100);}
 async function rememberSameDocument(tabId,raw){if(tabId<0)return;const u=cleanUrl(raw);if(!u)return;const s=await getTabState(tabId);const old=s.studyHint||'',next=viewerStudyHint(u)||'';if(old&&next&&old!==next){s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.studyHint=next;await invalidate(tabId,'study');}else if(!old&&next)s.studyHint=next;pushUnique(s.navUrls,u);s.currentUrl=u;await saveTabState(tabId,s);await markCandidate(tabId,u);}
 chrome.webNavigation.onBeforeNavigate.addListener(d=>{if(d.frameId===0)rememberBeforeNavigate(d.tabId,d.url).catch(()=>{});});
@@ -214,7 +252,25 @@ async function startLearning(tabId){const s=await startTracking(tabId,true);s.le
 async function stopLearning(tabId){const s=await getTabState(tabId);s.learning={active:false,startedAt:s.learning?.startedAt||0};await saveTabState(tabId,s);chrome.runtime.sendMessage({type:'LEARN_UPDATED',tabId}).catch(()=>{});return s;}
 async function markLearnCandidate(tabId,url,role){const s=await getTabState(tabId),row=[...(s.learnCandidates||[])].reverse().find(x=>x.url===cleanUrl(url));if(!row)throw new Error('Request is no longer in learning session.');if(role==='dicom'){await ensureOffscreen();const task=probeTaskFromRow(s,row);const r=await chrome.runtime.sendMessage({target:'offscreen',type:'PROBE_DICOM_URLS',probes:[task]});if(!r?.valid?.includes(row.url))throw new Error('This request does not return DICOM Part-10.');const inspected=await chrome.runtime.sendMessage({target:'offscreen',type:'INSPECT_DICOM_URLS',probes:[task]}).catch(()=>null),detail=inspected?.details?.find(x=>x.ok)||null;await learnUrl(row.url,'dicom');s.genericEntries=mergeGenericEntry(s.genericEntries,{url:row.url,method:row.method||'GET',requestBody:row.requestBody||null,contentType:row.contentType||detail?.contentType||'',declared:{},meta:detail?.meta||null,shape:pathSignature(row.url),source:'manual-learn'});pushUnique(s.genericDirectUrls,row.url,6000);s.genericDirectMeta[row.url]={contentType:row.contentType||'application/octet-stream',learned:true};if(detail?.meta)s.genericProfile={...(s.genericProfile||{}),...studyProfileFromProbeDetails([detail])};await saveTabState(tabId,s);scheduleAnalyze(tabId,80);return{role,valid:1};}if(role==='manifest'){await learnUrl(row.url,'manifest');const r=await materializeLearnedManifest(tabId,row.url,row);return{role,...r};}throw new Error('Invalid learning role.');}
 function encodePageBody(body){if(typeof body!=='string'||!body)return null;const bytes=new TextEncoder().encode(body),chunks=[];let bin='';for(let i=0;i<bytes.length;i+=0x8000){bin='';for(const b of bytes.subarray(i,i+0x8000))bin+=String.fromCharCode(b);chunks.push(btoa(bin));}return{kind:'raw',chunks};}
-async function handleGenericJsonCapture(tabId,row){if(tabId<0||!row?.url)return;const s=await getTabState(tabId);if(s.tracking!=='watching')return;if(/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(row.url))return;const recorded=requestMetaForObserved(s,row.url,row.method);if(!recorded)return;let payload;try{payload=JSON.parse(String(row.text||''));}catch{return;}const r=await processGenericManifestPayload(tabId,row.url,recorded,payload,'main-world');if(r?.valid?.length)recordCapabilities(row.url,{mainWorldJson:true}).catch(()=>{});}
+async function handleGenericJsonCapture(tabId,row){
+  if(tabId<0||!row?.url)return;
+  const s=await getTabState(tabId);
+  if(s.tracking!=='watching')return;
+  if(/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(row.url))return;
+  const recorded=requestMetaForObserved(s,row.url,row.method);
+  let payload;
+  try{payload=JSON.parse(String(row.text||''));}catch{return;}
+  if(Array.isArray(payload)||looksLikeDicomJson(payload)||/\/studies\/[^/]+\/(?:series|metadata)/i.test(row.url)){
+    s.dicomwebPayloads=s.dicomwebPayloads||{};
+    s.dicomwebPayloads[cleanUrl(row.url)]=payload;
+    try{s.dicomwebPayloads[new URL(row.url).pathname]=payload;}catch{}
+    await saveTabState(tabId,s);
+    scheduleAnalyze(tabId,100);
+  }
+  if(!recorded)return;
+  const r=await processGenericManifestPayload(tabId,row.url,recorded,payload,'main-world');
+  if(r?.valid?.length)recordCapabilities(row.url,{mainWorldJson:true}).catch(()=>{});
+}
 async function rememberRequest(tabId,raw,extra={}){if(tabId<0)return;const hit=classifyPacsUrl(raw);const learnedManifest=isLearnedManifestUrl(raw);const s=await getTabState(tabId);if(!hit&&s.tracking!=='watching'&&!learnedManifest)return;const generic=hit||(/\/(?:api|rest|services?)\//i.test(raw)&&/(study|series|instance|image|dicom|exam|patient)/i.test(raw)?{type:'PACS_GENERIC_API',url:cleanUrl(raw),score:35}:null)||(learnedManifest?{type:'LEARNED_MANIFEST',url:cleanUrl(raw),score:72}:null)||(s.tracking==='watching'&&learnCandidateAllowed(raw,extra.resourceType||extra.type)?{type:'PACS_OBSERVED_API',url:cleanUrl(raw),score:12}:null);if(!generic)return;const method=String(extra.method||'GET').toUpperCase(),bodySig=storedBodySignature(extra.requestBody),id=extra.requestId?`${generic.type}|req:${extra.requestId}`:`${generic.type}|${generic.url}|${method}|${bodySig}`;const i=s.pacsRequests.findIndex(x=>x._id===id);if(i>=0)s.pacsRequests.splice(i,1);s.pacsRequests.push({...generic,...extra,_id:id,time:Date.now()});if(s.pacsRequests.length>MAX_REQUESTS)s.pacsRequests.splice(0,s.pacsRequests.length-MAX_REQUESTS);s.confidence=Math.max(Number(s.confidence)||0,Math.min(100,Number(generic.score)||0));if(s.tracking!=='stopped')s.tracking='watching';await saveTabState(tabId,s);await setBadge(tabId);if(Number(generic.score||0)>=80||['PACS_GENERIC_API','DICOM_IMAGE_API'].includes(generic.type))scheduleAnalyze(tabId,450);if(learnedManifest)scheduleLearnedManifest(tabId,generic.url,extra,450);chrome.runtime.sendMessage({type:'PACS_SIGNAL',tabId,signal:generic.type}).catch(()=>{});}
 async function rememberHeaders(tabId,url,rawHeaders,requestId=''){if(/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(url))return;const s=await getTabState(tabId);if(!['watching','candidate'].includes(s.tracking))return;const h={};for(const x of(rawHeaders||[]))if(x.name&&x.value!=null)h[x.name]=x.value;const safe=safeHeaders(h);if(!Object.keys(safe).length)return;let ct='';for(const[k,v]of Object.entries(safe))if(k.toLowerCase()==='content-type'&&v){ct=String(v);break;}
 if(ct){const u=cleanUrl(url);for(const r of(s.pacsRequests||[]))if(((requestId&&String(r.requestId||'')===String(requestId))||(!requestId&&r.url===u))&&!r.contentType)r.contentType=ct;}

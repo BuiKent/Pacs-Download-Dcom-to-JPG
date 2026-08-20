@@ -136,9 +136,19 @@ export function studyProfileFromProbeDetails(details){
 export function groupGenericEntries(entries){
   const groups=new Map();
   for(const entry of entries||[]){
-    const m=entry.meta||{},seriesUid=text(m.seriesUid)||text(entry.declared?.seriesUid),number=text(m.seriesNumber)||text(entry.declared?.seriesNumber),description=text(m.seriesDescription)||text(entry.declared?.seriesDescription)||'DICOM',modality=text(m.modality)||text(entry.declared?.modality);
-    const key=seriesUid||`${number}|${description}|${modality}`||'unknown';
-    if(!groups.has(key))groups.set(key,{seriesUid,number,description,modality,entries:[]});groups.get(key).entries.push(entry);
+    let urlSeriesUid='';
+    try{
+      const u=new URL(entry.url);
+      urlSeriesUid=text(u.searchParams.get('seriesUID')||u.searchParams.get('seriesUid')||u.searchParams.get('series')||'');
+    }catch{}
+    const m=entry.meta||{},
+          seriesUid=text(m.seriesUid)||text(entry.declared?.seriesUid)||urlSeriesUid,
+          number=text(m.seriesNumber)||text(entry.declared?.seriesNumber),
+          description=text(m.seriesDescription)||text(entry.declared?.seriesDescription)||'DICOM',
+          modality=text(m.modality)||text(entry.declared?.modality);
+    const key=seriesUid||(number?`Series ${number}|${description}|${modality}`:`${description}|${modality}`)||'unknown';
+    if(!groups.has(key))groups.set(key,{seriesUid,number,description,modality,entries:[]});
+    groups.get(key).entries.push(entry);
   }
   return [...groups.values()];
 }

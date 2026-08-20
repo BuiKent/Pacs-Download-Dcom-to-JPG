@@ -224,16 +224,17 @@ export function parseVrpacsManifest(payload) {
 }
 
 export function parseDicomwebSeries(payload) {
-  if (!Array.isArray(payload)) return [];
+  const list = Array.isArray(payload) ? payload : (Array.isArray(payload?.data) ? payload.data : (Array.isArray(payload?.seriesList) ? payload.seriesList : []));
+  if (!list.length) return [];
   const out = [];
-  for (let i = 0; i < payload.length; i++) {
-    const item = payload[i];
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
     const raw = {
-      SeriesInstanceUID: dicomJsonValue(item, '0020000E'),
-      SeriesNumber: dicomJsonValue(item, '00200011'),
-      SeriesDescription: dicomJsonValue(item, '0008103E'),
-      Modality: dicomJsonValue(item, '00080060'),
-      ImageCount: dicomJsonValue(item, '00201209')
+      SeriesInstanceUID: dicomJsonValue(item, '0020000E') || item?.SeriesInstanceUID || item?.seriesInstanceUID || item?.seriesUid,
+      SeriesNumber: dicomJsonValue(item, '00200011') || item?.SeriesNumber || item?.seriesNumber || item?.seriesNo,
+      SeriesDescription: dicomJsonValue(item, '0008103E') || item?.SeriesDescription || item?.seriesDescription || item?.description,
+      Modality: dicomJsonValue(item, '00080060') || item?.Modality || item?.modality,
+      ImageCount: dicomJsonValue(item, '00201209') || item?.ImageCount || item?.imageCount || item?.numberOfFrames
     };
     if (raw.SeriesInstanceUID && !NON_IMAGE_MODALITIES.has(String(raw.Modality || '').toUpperCase())) out.push(normalizeSeries(raw, 'dicomweb', i));
   }
@@ -245,8 +246,21 @@ export function deriveDicomweb(rawUrl) {
   if (!url) return null;
   const u = new URL(url);
   const m = u.pathname.match(/^(.*)\/studies\/([^/]+)(?:\/.*)?$/i);
-  if (!m) return null;
-  return { rsBase: `${u.protocol}//${u.host}${m[1]}`, studyUid: decodeURIComponent(m[2]) };
+  if (m) {
+    return { rsBase: `${u.protocol}//${u.host}${m[1]}`, studyUid: decodeURIComponent(m[2]) };
+  }
+  for (const key of ['StudyInstanceUIDs','studyInstanceUIDs','StudyInstanceUID','studyInstanceUID','studyUID','studyuid','studies','study']) {
+    const v = u.searchParams.get(key);
+    if (v && /^\d+(\.\d+)+$/.test(v.trim())) {
+      let rsBase = `${u.protocol}//${u.host}`;
+      if (u.pathname.includes('/dicom-web') || u.pathname.includes('/dicomweb') || u.pathname.includes('/rs')) {
+        const sub = u.pathname.match(/^(.*?\/(?:dicom-web|dicomweb|rs|wado-rs))/i);
+        if (sub) rsBase = `${u.protocol}//${u.host}${sub[1]}`;
+      }
+      return { rsBase, studyUid: v.trim() };
+    }
+  }
+  return null;
 }
 
 export function bestDetectedRequest(requests, types) {
