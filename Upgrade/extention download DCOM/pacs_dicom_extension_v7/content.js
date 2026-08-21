@@ -47,8 +47,32 @@
       window.postMessage({__zfp:'req',id,kind,args},'*');
     });
   }
+  async function scanPageForQr(){
+    const found=new Set();
+    if(typeof globalThis.BarcodeDetector==='function'){
+      try{
+        const detector=new globalThis.BarcodeDetector({formats:['qr_code']});
+        for(const c of document.querySelectorAll('canvas')){
+          if((c.width||0)>20&&(c.height||0)>20){
+            try{const r=await detector.detect(c);for(const x of r)if(x.rawValue)found.add(x.rawValue);}catch(_){}
+          }
+        }
+        for(const img of document.querySelectorAll('img')){
+          if(img.src&&((img.naturalWidth||img.width||0)>20)){
+            try{const r=await detector.detect(img);for(const x of r)if(x.rawValue)found.add(x.rawValue);}catch(_){}
+          }
+        }
+      }catch(_){}
+    }
+    return Array.from(found);
+  }
+
   const ZFP_KINDS={ZFP_INFO:'info',ZFP_TAKE:'take',ZFP_STATS:'stats'};
   chrome.runtime.onMessage.addListener((m,_s,sendResponse)=>{
+    if(m?.type==='SCAN_PAGE_QR'){
+      scanPageForQr().then(results=>sendResponse({ok:true,results})).catch(e=>sendResponse({ok:false,error:String(e?.message||e)}));
+      return true;
+    }
     const kind=ZFP_KINDS[m?.type];if(!kind)return false;
     zfpAsk(kind,m.args,m.timeoutMs).then(sendResponse);
     return true;

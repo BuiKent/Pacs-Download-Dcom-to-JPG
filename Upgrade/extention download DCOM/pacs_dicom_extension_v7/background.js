@@ -712,6 +712,7 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
     if(m?.type==='GET_JOB')return{ok:true,job:await getJob(Number(m.tabId))};
     if(m?.type==='CANCEL_JOB'){await cancelJob(Number(m.tabId));return{ok:true};}
     if(m?.type==='GET_HISTORY')return{ok:true,history:await getHistory()};
+    if(m?.type==='CAPTURE_TAB_FOR_QR'){try{const dataUrl=await chrome.tabs.captureVisibleTab(null,{format:'png'});return{ok:true,dataUrl};}catch(e){return{ok:false,error:String(e?.message||e)};}}
     if(m?.type==='CLEAR_HISTORY'){await chrome.storage.local.set({[HISTORY_KEY]:[]});chrome.runtime.sendMessage({type:'HISTORY_UPDATED',history:[]}).catch(()=>{});return{ok:true};}
     return{ok:false,error:'Unknown message'};
   })().then(sendResponse).catch(e=>sendResponse({ok:false,error:String(e?.message||e)}));return true;

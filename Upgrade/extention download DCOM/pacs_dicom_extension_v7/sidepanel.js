@@ -1,6 +1,7 @@
 'use strict';
+import { decodeQrFromBlob, decodeQrFromDataUrl, parseQrResult, isLikelyPacsViewerUrl } from './lib/qr_decoder.js';
 const $=id=>document.getElementById(id),show=(id,on)=>$(id).classList.toggle('hidden',!on);const TERMINAL=new Set(['done','partial','done_with_errors','error','cancelled']);
-let tabId=null,summary=null,state=null,inventory=null,job=null,history=[],revealDownloaded=false,refreshTimer=null,activeTabUrl='',isStartingDownload=false;
+let tabId=null,summary=null,state=null,inventory=null,job=null,history=[],revealDownloaded=false,refreshTimer=null,activeTabUrl='',isStartingDownload=false,currentQrUrl='';
 function setTopLoader(on){const e=$('topLoader');if(e)e.classList.toggle('active',Boolean(on));}
 const FS_DB='pacs_dicom_fs_v1',FS_STORE='handles',FS_KEY='download-root',SAVE_MODE_KEY='pacs6_save_mode';
 
@@ -245,6 +246,21 @@ async function startDownload(){
   }
 }
 
+function setQrResult(raw,sourceLabel='Found QR'){if(!raw){toast('No QR code detected.',true);return;}const parsed=parseQrResult(raw);currentQrUrl=parsed.url||parsed.text;show('qrCard',true);$('qrTitle').textContent=isLikelyPacsViewerUrl(currentQrUrl)?'PACS QR':'QR Code';$('qrStatusText').textContent=sourceLabel;$('qrUrlText').textContent=currentQrUrl;$('qrUrlText').title=currentQrUrl;$('qrOpenBtn').textContent=parsed.isUrl?'Open ↗':'Search ↗';toast('QR Code detected!');}
+async function handleQrFileUpload(file){if(!file)return;setTopLoader(true);try{const raw=await decodeQrFromBlob(file);if(raw)setQrResult(raw,`File: ${file.name}`);else toast('No QR code found in image.',true);}catch(e){toast(e?.message||'Failed to scan image',true);}finally{setTopLoader(false);}}
+async function scanActivePageQr(){if(tabId==null)return;setTopLoader(true);try{let r=await chrome.tabs.sendMessage(tabId,{type:'SCAN_PAGE_QR'}).catch(()=>null);if(r?.ok&&r?.results?.length){setQrResult(r.results[0],'Page QR');return;}const cap=await send('CAPTURE_TAB_FOR_QR');if(cap?.ok&&cap?.dataUrl){const raw=await decodeQrFromDataUrl(cap.dataUrl);if(raw){setQrResult(raw,'Page screenshot');return;}}toast('No QR code found on active tab.',true);}catch(e){toast(e?.message||'Page scan failed',true);}finally{setTopLoader(false);}}
+async function handleClipboardPaste(e){const items=e?.clipboardData?.items||[];for(const item of items){if(item.type&&item.type.startsWith('image/')){const blob=item.getAsFile();if(blob){setTopLoader(true);try{const raw=await decodeQrFromBlob(blob);if(raw){setQrResult(raw,'Clipboard image');return;}else toast('No QR code found in pasted image.',true);}catch(err){toast(err?.message||'Paste scan failed',true);}finally{setTopLoader(false);}}}}}
+async function handlePasteBtnClick(){try{if(navigator.clipboard?.read){const items=await navigator.clipboard.read().catch(()=>null);if(items&&items.length){for(const item of items){const imageType=item.types.find(t=>t.startsWith('image/'));if(imageType){const blob=await item.getType(imageType);setTopLoader(true);try{const raw=await decodeQrFromBlob(blob);if(raw){setQrResult(raw,'Clipboard image');return;}}finally{setTopLoader(false);}}}}}}catch(_){}toast('Paste image containing QR (Ctrl+V)');}
+
+$('qrUploadBtn').addEventListener('click',()=>$('qrFileInput').click());
+$('qrFileInput').addEventListener('change',e=>{const f=e.target.files?.[0];if(f)handleQrFileUpload(f);e.target.value='';});
+$('qrScanPageBtn').addEventListener('click',scanActivePageQr);
+$('qrPasteBtn').addEventListener('click',handlePasteBtnClick);
+$('qrCloseBtn').addEventListener('click',()=>show('qrCard',false));
+$('qrCopyBtn').addEventListener('click',async()=>{if(!currentQrUrl)return;try{await navigator.clipboard.writeText(currentQrUrl);toast('QR content copied.');}catch(e){toast('Copy failed.',true);}});
+$('qrOpenBtn').addEventListener('click',async()=>{if(!currentQrUrl)return;const parsed=parseQrResult(currentQrUrl);if(parsed.isUrl)await chrome.tabs.create({url:parsed.url});else await chrome.tabs.create({url:`https://www.google.com/search?q=${encodeURIComponent(parsed.text)}`});});
+window.addEventListener('paste',handleClipboardPaste);
+
 $('grantBtn').addEventListener('click',async()=>{if($('grantBtn').disabled)return;$('grantBtn').disabled=true;try{await grantAccess();}catch(e){toast(e.message||String(e),true);}finally{$('grantBtn').disabled=false;}});
 $('folderBtn').addEventListener('click',async()=>{try{const h=await window.showDirectoryPicker({id:'pacs-dicom',startIn:'downloads',mode:'readwrite'});await fsSet(h);await chrome.storage.local.set({[SAVE_MODE_KEY]:'filesystem'});await renderFolder();toast('Fast download folder selected.');}catch(e){if(e?.name!=='AbortError')toast(e.message||String(e),true);}});
 $('copyLinkBtn').addEventListener('click',async()=>{const t=$('viewerUrl').textContent||'';if(!t||t==='—')return;try{await navigator.clipboard.writeText(t);toast('Viewer link copied to clipboard.');}catch(e){toast('Copy failed; select URL to copy manually.',true);}});
@@ -266,3 +282,4 @@ $('clearHistoryBtn').addEventListener('click',async()=>{await send('CLEAR_HISTOR
 chrome.tabs.onActivated.addListener(()=>bindActive().catch(()=>{}));chrome.tabs.onUpdated.addListener((id,change,tab)=>{if(id===tabId&&(change.url||change.title||change.status==='complete')){activeTabUrl=tab.url||activeTabUrl;$('tabLabel').textContent=tab.title||tab.url||`Tab ${id}`;scheduleRefresh(150);}});
 chrome.runtime.onMessage.addListener(m=>{if(['JOB_UPDATED','INVENTORY_UPDATED','PACS_SIGNAL','TAB_CONTEXT_CHANGED','LEARN_UPDATED'].includes(m?.type)&&Number(m.tabId)!==Number(tabId))return;if(m?.type==='JOB_UPDATED'){job=m.job;renderJob();}else if(m?.type==='INVENTORY_UPDATED'){inventory=m.inventory;renderInventory();scheduleRefresh(80);}else if(['PACS_SIGNAL','TAB_CONTEXT_CHANGED','LEARN_UPDATED'].includes(m?.type))scheduleRefresh(180);else if(m?.type==='HISTORY_UPDATED'){history=m.history||[];if(!$('historyCard').classList.contains('hidden'))renderHistory();}});
 bindActive().then(refreshHistory).catch(e=>toast(e.message||String(e),true));
+
