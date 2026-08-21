@@ -29,6 +29,18 @@
 
   --app-font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
 
+  /* Shell metrics. The title bar row and the element inside it read the same
+     number: when they drifted apart, a 14px band of bare shell background
+     showed between the title bar and the tab strip. */
+  --titlebar-h: 40px;
+  --winbar-h: 34px;
+
+  /* One motion scale for the whole shell, so the panel, the tabs and the
+     buttons do not each ease at a speed of their own. */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+
   /* Form & General Control Tokens */
   --control-height: 34px;
   --control-height-sm: 30px;
@@ -77,7 +89,17 @@
   --brand-fg: #37352f;
   --brand-mark-border: #d8d8d5;
   --brand-mark-bg: #f1f1ef;
+  /* The mark's letter and its glow follow the skin. A fixed cyan looked right
+     on the dark reading shell and left a 1.89:1 "D" on the white chrome. */
+  --brand-mark-fg: #0f4c81;
+  --brand-mark-glow: none;
   --brand-sub-fg: #73716c;
+  /* The minimise/maximise/close glyphs. Close keeps the shell's own red in
+     both skins, so it is hardcoded on the rule rather than tokenised. */
+  --titlebar-btn-fg: #5f5e5a;
+  --titlebar-btn-hover-bg: #ececea;
+  --titlebar-btn-hover-fg: #37352f;
+  --titlebar-btn-active-bg: #e0e0dd;
   --panel-title-fg: #37352f;
   --list-border: #e9e9e7;
   --list-bg: #ffffff;
@@ -106,6 +128,9 @@
   --statusbar-border: #e9e9e7;
   --statusbar-bg: #ffffff;
   --status-dot-bg: #188038;
+  /* The column the list is sorted by. #2383e2 is the focus-ring blue and reads
+     at 3.88:1 on white, which is under the bar for 11px uppercase. */
+  --sort-active-fg: #1565c0;
 
   /* Clinical Media Type Colors */
   --m-dicom: #2383e2;
@@ -131,19 +156,37 @@ button { cursor: pointer; }
 
 .app-shell {
   display: grid;
-  grid-template: 54px 34px 1fr / 318px 1fr;
+  grid-template: var(--titlebar-h) var(--winbar-h) 1fr / 318px 1fr;
   width: 100%;
   height: 100%;
   background: var(--shell-bg, #060a10);
+  /* The column and the panel's own transform have to run on the same clock.
+     While only the panel animated, the layout snapped shut underneath it and
+     the slide tore down the middle. */
+  transition:
+    grid-template-columns var(--motion-base) var(--ease-standard),
+    grid-template-rows var(--motion-base) var(--ease-standard);
 }
 
 .app-shell.download-collapsed { grid-template-columns: 0 1fr; }
 .app-shell.download-collapsed .download-panel { transform: translateX(-100%); }
 
-/* ── Zen mode (F11 fullscreen) ── */
+/* ── Zen mode (F11) ──
+   The shell keeps the whole monitor for the image: the title bar and the tab
+   strip collapse to nothing rather than being hidden, so the reading area
+   actually gains their height. */
 .app-shell.zen-mode { grid-template-rows: 0 0 1fr; }
 .app-shell.zen-mode .app-header,
-.app-shell.zen-mode .winbar { overflow: hidden; height: 0; min-height: 0; opacity: 0; pointer-events: none; }
+.app-shell.zen-mode .winbar {
+  overflow: hidden;
+  height: 0;
+  min-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  /* The bottom rule is 1px of chrome in its own right: left in place it drew a
+     hairline across the top of a fullscreen image. */
+  border-bottom-width: 0;
+}
 
 /* Worklist is a bright administrative surface; opening a patient switches the
    complete reading shell to a low-glare diagnostic palette. The class follows
@@ -168,11 +211,18 @@ button { cursor: pointer; }
   --brand-fg: #f1f6f9;
   --brand-mark-border: #385164;
   --brand-mark-bg: #14232e;
+  --brand-mark-fg: #7dd3fc;
+  --brand-mark-glow: 0 0 8px rgba(56, 189, 248, 0.25);
   --brand-sub-fg: #91a7b6;
+  --titlebar-btn-fg: #a8bccb;
+  --titlebar-btn-hover-bg: #1b2b39;
+  --titlebar-btn-hover-fg: #edf5fa;
+  --titlebar-btn-active-bg: #24384a;
   --focus-ring: #49c7ff;
   --list-border: #263541;
   --statusbar-border: #263541;
   --statusbar-bg: #0b1218;
+  --sort-active-fg: #7cc4ff;
 }
 
 .app-header {
@@ -181,15 +231,28 @@ button { cursor: pointer; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 40px;
-  min-height: 40px;
+  height: var(--titlebar-h);
+  min-height: var(--titlebar-h);
+  /* No right padding: the close button has to reach the last pixel, which is
+     where Windows puts the screen-corner target for it. */
   padding: 0 0 0 12px;
   background: var(--header-bg, #090e15);
   border-bottom: 1px solid var(--chrome-border, #1a2634);
   box-shadow: var(--header-shadow, 0 2px 8px rgba(0, 0, 0, 0.2));
+  /* The strip is a title bar, not a document: a drag across it moves the
+     window, so nothing in it should start a text selection. `-webkit-app-region`
+     would be the Electron way of saying that and does nothing in WebView2 —
+     the drag is handed to the shell from installTitlebarChrome() instead. */
   user-select: none;
+  cursor: default;
   z-index: 5;
-  -webkit-app-region: drag;
+  /* On the base rule, not on `.zen-mode`: a transition declared inside the
+     state rule disappears with the class, so the chrome eased away on F11 and
+     snapped back on Esc. */
+  transition:
+    height var(--motion-base) var(--ease-standard),
+    min-height var(--motion-base) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard);
 }
 
 .header-left {
@@ -197,7 +260,6 @@ button { cursor: pointer; }
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
-  -webkit-app-region: no-drag;
 }
 
 .brand {
@@ -218,10 +280,10 @@ button { cursor: pointer; }
   border-radius: 6px;
   border: 1px solid var(--brand-mark-border, #1d5f8c);
   background: var(--brand-mark-bg, #123a55);
-  color: #38bdf8;
+  color: var(--brand-mark-fg, #7dd3fc);
   font-weight: 800;
   font-size: 13px;
-  box-shadow: 0 0 8px rgba(56, 189, 248, 0.25);
+  box-shadow: var(--brand-mark-glow, none);
 }
 
 .brand-text b {
@@ -257,11 +319,10 @@ button { cursor: pointer; }
 
 .header-right {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 6px;
   flex-shrink: 0;
   height: 100%;
-  -webkit-app-region: no-drag;
 }
 
 .header-actions {
@@ -273,45 +334,58 @@ button { cursor: pointer; }
 
 .window-controls {
   display: flex;
-  align-items: center;
-  height: 100%;
+  align-items: stretch;
   margin-left: 6px;
-  border-left: 1px solid var(--chrome-border, rgba(125, 125, 125, 0.2));
+  border-left: 1px solid var(--chrome-border);
 }
 
+/* Windows metrics: a 46px hit area running the full height of the bar, so the
+   pointer finds close in the screen corner without aiming. */
 .win-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 100%;
+  width: 46px;
   border: none;
   border-radius: 0;
   background: transparent;
-  color: var(--label-muted, #94a3b8);
-  cursor: pointer;
+  color: var(--titlebar-btn-fg);
   padding: 0;
-  transition: background-color 100ms ease, color 100ms ease;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
 }
 
 .win-btn svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
   stroke: currentColor;
-  fill: currentColor;
+  stroke-width: 1;
 }
 
 .win-btn:hover {
-  background: var(--control-bg-hover, rgba(125, 125, 125, 0.15));
-  color: var(--field-fg, #ffffff);
+  background: var(--titlebar-btn-hover-bg);
+  color: var(--titlebar-btn-hover-fg);
 }
 
-.win-btn.win-close:hover {
-  background: #e81123 !important;
-  color: #ffffff !important;
+.win-btn:active { background: var(--titlebar-btn-active-bg); }
+
+.win-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -3px;
 }
 
-.win-btn.win-close:active {
-  background: #bf0f1d !important;
-}
+/* Windows 11 close red, the one colour that is the same in both skins. */
+.win-btn.win-close:hover { background: #c42b1c; color: #ffffff; }
+.win-btn.win-close:active { background: #b02a1a; color: #ffffff; }
+
+/* Both maximise glyphs ship in the markup and CSS picks one, so keeping the
+   button in step with the window is a class on the shell rather than a rewrite
+   of the button's contents. */
+.win-btn .glyph-restore { display: none; }
+.app-shell.window-maximized .win-btn .glyph-maximize { display: none; }
+.app-shell.window-maximized .win-btn .glyph-restore { display: block; }
 
 .winbar {
   grid-row: 2;
@@ -321,8 +395,11 @@ button { cursor: pointer; }
   gap: 4px;
   overflow-x: auto;
   overflow-y: hidden;
-  height: 34px;
+  height: var(--winbar-h);
   padding: 0 8px;
+  transition:
+    height var(--motion-base) var(--ease-standard),
+    opacity var(--motion-fast) var(--ease-standard);
   background: var(--panel-bg, #0b1119);
   border-bottom: 1px solid var(--chrome-border, #223040);
   user-select: none;
@@ -344,7 +421,12 @@ button { cursor: pointer; }
   font-size: 11px;
   cursor: pointer;
   white-space: nowrap;
-  transition: all 120ms ease;
+  /* Named properties, not `all`: `all` also animates the border and the width,
+     so every hover re-ran layout for the whole tab strip. */
+  transition:
+    color var(--motion-fast) var(--ease-standard),
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard);
 }
 .winbar-tab:hover {
   color: var(--field-fg, #e7f1f8);
@@ -684,6 +766,14 @@ button { cursor: pointer; }
 }
 @media (prefers-reduced-motion: reduce) {
   .activity-bar.indeterminate i { animation: none; width: 100%; opacity: 0.5; }
+  /* A reader who has turned motion off in Windows still gets every state
+     change — the panel opens and the tab highlights, they just arrive rather
+     than travel. */
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
 }
 
 .activity-history {
@@ -751,7 +841,6 @@ button { cursor: pointer; }
   background: var(--field-bg, #111b26);
 }
 
-.header-actions { display: flex; gap: 7px; align-items: center; }
 .soft-button, .header-actions button {
   height: var(--control-height);
   border: 1px solid var(--control-border, #2b3d4e);
@@ -770,7 +859,7 @@ button { cursor: pointer; }
   overflow: auto;
   background: var(--panel-bg, #0b1119);
   border-right: 1px solid var(--chrome-border, #223040);
-  transition: transform 160ms ease;
+  transition: transform var(--motion-base) var(--ease-standard);
 }
 
 .panel-title { display: flex; justify-content: space-between; align-items: center; color: var(--panel-title-fg, #8fd3ff); }
@@ -2644,7 +2733,7 @@ button:disabled { opacity: .35; cursor: default; }
 }
 
 .col-sort-btn.sorted {
-  color: var(--primary-accent, #2383e2);
+  color: var(--sort-active-fg, #7cc4ff);
   font-weight: 700;
 }
 

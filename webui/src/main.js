@@ -163,6 +163,11 @@ const state = {
   worklistTab: "studies",
   // Latest /api/job snapshot, kept so the Activity panel can draw it.
   job: null,
+  // What the shell has done to the window. Mirrored here because render()
+  // rewrites the whole shell: a class toggled straight onto the element is
+  // gone the next time anything else re-renders.
+  windowMaximized: false,
+  zenMode: false,
 };
 let viewerQueue = Promise.resolve();
 let viewerRequestId = 0;
@@ -1922,6 +1927,140 @@ function renderWorklistView() {
   `;
 }
 
+/* ── The title bar ─────────────────────────────────────────────────────────
+   The window is frameless, so this strip of HTML *is* the title bar. Anything
+   a real one would do for free — drag, snap, maximise, resize — has to be
+   asked of the shell through NativeApi.window_* in dcom_web_app.py. In a plain
+   browser preview there is no window to command, so every call here is a
+   no-op rather than an error. */
+
+function nativeWindowApi() {
+  return typeof window !== "undefined" ? window.pywebview?.api : undefined;
+}
+
+/** True when the pointer went down on something that handles its own clicks. */
+function isTitlebarControl(target) {
+  return Boolean(target?.closest?.("button, select, input, textarea, a, [data-no-drag]"));
+}
+
+// Windows order and metrics: minimise, maximise/restore, close — close being
+// the only one that turns red. Both maximise glyphs are drawn and CSS picks
+// one, so syncing the state never means rewriting markup.
+function renderWindowControls() {
+  const minimize = escapeHtml(t("Thu nhỏ"));
+  const maximize = escapeHtml(t("Phóng to / Khôi phục"));
+  const close = escapeHtml(t("Đóng ứng dụng"));
+  return `
+    <div class="window-controls">
+      <button class="win-btn win-min" type="button" data-action="window-minimize"
+        title="${minimize}" aria-label="${minimize}">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10"/></svg>
+      </button>
+      <button class="win-btn win-max" type="button" data-action="window-maximize"
+        title="${maximize}" aria-label="${maximize}">
+        <svg class="glyph-maximize" viewBox="0 0 10 10" aria-hidden="true">
+          <rect x="0.5" y="0.5" width="9" height="9" rx="1"/></svg>
+        <svg class="glyph-restore" viewBox="0 0 10 10" aria-hidden="true">
+          <path d="M2.5 2.5V1.5a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-1"/>
+          <rect x="0.5" y="2.5" width="7" height="7" rx="1"/></svg>
+      </button>
+      <button class="win-btn win-close" type="button" data-action="window-close"
+        title="${close}" aria-label="${close}">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0.5 0.5l9 9M9.5 0.5l-9 9"/></svg>
+      </button>
+    </div>`;
+}
+
+// How far the pointer travels before a press on the title bar counts as a
+// drag rather than a click.
+const TITLEBAR_DRAG_THRESHOLD_PX = 3;
+
+function installTitlebarChrome() {
+  const header = getDomRoot()?.querySelector(".app-header");
+  if (!header) return;
+
+  header.addEventListener("mousedown", (event) => {
+    if (event.button !== 0 || isTitlebarControl(event.target)) return;
+    const api = nativeWindowApi();
+    if (!api?.window_begin_drag) return;
+
+    const origin = { x: event.screenX, y: event.screenY };
+
+    const stop = () => {
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", stop, true);
+    };
+
+    const onMove = (move) => {
+      // Waiting for real travel keeps a plain click from nudging the window,
+      // and means the button is still down by the time the shell is asked —
+      // its drag loop only ends on the button coming up, so one started after
+      // the release would leave the window glued to the cursor.
+      if (!(move.buttons & 1)) return stop();
+      if (Math.abs(move.screenX - origin.x) < TITLEBAR_DRAG_THRESHOLD_PX
+        && Math.abs(move.screenY - origin.y) < TITLEBAR_DRAG_THRESHOLD_PX) return;
+      stop();
+      // One call for the whole gesture. pywebview's own drag region sends the
+      // window a new position on every mousemove, which trails the cursor and
+      // gives up Aero Snap; the shell's own loop does neither. It settles when
+      // the reader lets go, and a drag to the top edge maximises, so the
+      // glyphs are read back afterwards.
+      Promise.resolve(api.window_begin_drag()).then(syncWindowState).catch(() => {});
+    };
+
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", stop, true);
+  });
+
+  header.addEventListener("dblclick", (event) => {
+    if (isTitlebarControl(event.target)) return;
+    action("window-maximize");
+  });
+}
+
+let pendingWindowStateRead = null;
+
+/** Re-read the window state; the shell changes it without telling the page. */
+function syncWindowState() {
+  const api = nativeWindowApi();
+  if (!api?.window_state) return Promise.resolve();
+  if (pendingWindowStateRead) return pendingWindowStateRead;
+  pendingWindowStateRead = Promise.resolve(api.window_state())
+    .then((info) => {
+      state.windowMaximized = Boolean(info?.maximized);
+      state.zenMode = Boolean(info?.fullscreen);
+      applyWindowState();
+    })
+    // The bridge is already gone while the window is closing, and there is
+    // nothing left to update by then.
+    .catch(() => {})
+    .finally(() => { pendingWindowStateRead = null; });
+  return pendingWindowStateRead;
+}
+
+/** Mirror the window state onto the shell without a full re-render. */
+function applyWindowState() {
+  const shell = getDomRoot()?.querySelector(".app-shell");
+  if (!shell) return;
+  shell.classList.toggle("window-maximized", state.windowMaximized);
+  shell.classList.toggle("zen-mode", state.zenMode);
+}
+
+function installWindowStateWatcher() {
+  let queued = false;
+  window.addEventListener("resize", () => {
+    // Snap layouts and Win+Arrow resize the window many times per gesture; one
+    // read per frame keeps the glyphs honest without flooding the bridge.
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      syncWindowState();
+    });
+  });
+  syncWindowState();
+}
+
 function render() {
   const series = selectedSeries();
   // Switching from a CT to an MR series strands any Hounsfield preset, which
@@ -1940,8 +2079,8 @@ function render() {
   if (!app && typeof document !== "undefined") app = document.querySelector("#app");
   if (!app) return;
   app.innerHTML = `
-    <div class="app-shell ${downloadPanelVisible() ? "" : "download-collapsed"} ${state.activeTabId === "worklist" ? "worklist-active" : "viewer-active"}">
-      <header class="app-header pywebview-drag-region">
+    <div class="app-shell ${downloadPanelVisible() ? "" : "download-collapsed"} ${state.activeTabId === "worklist" ? "worklist-active" : "viewer-active"}${state.windowMaximized ? " window-maximized" : ""}${state.zenMode ? " zen-mode" : ""}">
+      <header class="app-header">
         <div class="header-left">
           <div class="brand">
             <span class="brand-mark">D</span>
@@ -1977,17 +2116,7 @@ function render() {
             <button class="soft-button" data-action="toggle-language"
               title="${escapeHtml(t("Chuyển sang tiếng Anh"))}">${getLanguage() === "en" ? "VI" : "EN"}</button>
           </div>
-          <div class="window-controls">
-            <button class="win-btn win-min" type="button" data-action="window-minimize" title="${escapeHtml(t("Thu nhỏ"))}">
-              <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.2"/></svg>
-            </button>
-            <button class="win-btn win-max" type="button" data-action="window-maximize" title="${escapeHtml(t("Phóng to / Khôi phục"))}">
-              <svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
-            </button>
-            <button class="win-btn win-close" type="button" data-action="window-close" title="${escapeHtml(t("Đóng ứng dụng"))}">
-              <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.2"/></svg>
-            </button>
-          </div>
+          ${renderWindowControls()}
         </div>
       </header>
 
@@ -2772,15 +2901,7 @@ function bindEvents() {
     const counter = app.querySelector("[data-field='dicom-tag-count']");
     if (counter) counter.textContent = String(tags.length);
   });
-  let _dblClickMaxBusy = false;
-  app.querySelector(".app-header")?.addEventListener("dblclick", (e) => {
-    if (e.target.closest("button, select, input, a, .brand")) return;
-    if (_dblClickMaxBusy) return;
-    _dblClickMaxBusy = true;
-    action("window-maximize").finally(() => {
-      setTimeout(() => { _dblClickMaxBusy = false; }, 300);
-    });
-  });
+  installTitlebarChrome();
   app.querySelector(".app-header [data-action='toggle-download']")
     ?.setAttribute("aria-expanded", state.downloadOpen ? "true" : "false");
   app.querySelector("[data-field='series']")?.addEventListener("change", (event) => {
@@ -3275,44 +3396,43 @@ async function action(name, element = null) {
     }
     
     if (name === "window-minimize") {
-      if (window.pywebview?.api?.window_minimize) {
-        await window.pywebview.api.window_minimize();
-      }
+      await nativeWindowApi()?.window_minimize?.();
       return;
     }
     if (name === "window-maximize") {
-      if (window.pywebview?.api?.window_toggle_maximize) {
-        const isMaximized = await window.pywebview.api.window_toggle_maximize();
-        // Update the maximize button icon: overlapping rects for restore, single rect for maximize
-        const maxBtn = document.querySelector(".win-max svg");
-        if (maxBtn) {
-          maxBtn.innerHTML = isMaximized
-            ? '<path d="M3 1h6v6H3z" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M1 3h6v6H1z" fill="none" stroke="currentColor" stroke-width="1.2"/>'
-            : '<rect x="1" y="1" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1.2"/>';
-        }
-      }
+      const toggle = nativeWindowApi()?.window_toggle_maximize;
+      if (!toggle) return;
+      state.windowMaximized = Boolean(await toggle());
+      applyWindowState();
       return;
     }
     if (name === "window-close") {
-      if (window.pywebview?.api?.window_close) {
-        await window.pywebview.api.window_close();
-      } else {
-        window.close();
-      }
+      const close = nativeWindowApi()?.window_close;
+      if (close) await close(); else window.close();
       return;
     }
     if (name === "window-fullscreen") {
-      if (window.pywebview?.api?.window_toggle_fullscreen) {
-        const isFs = await window.pywebview.api.window_toggle_fullscreen();
-        const shell = document.querySelector(".app-shell");
-        if (shell) shell.classList.toggle("zen-mode", isFs);
-      }
+      const toggle = nativeWindowApi()?.window_toggle_fullscreen;
+      if (!toggle) return;
+      state.zenMode = Boolean(await toggle());
+      applyWindowState();
       return;
     }
 
     if (name === "toggle-download") {
+      // Swap the class, never re-render: render() rewrites the whole shell, so
+      // collapsing the panel would drop the reader's place in the patient list
+      // and restart the slide halfway through.
       state.downloadOpen = !state.downloadOpen;
-      render();
+      app.querySelector(".app-shell")?.classList.toggle("download-collapsed", !state.downloadOpen);
+      const toggle = app.querySelector(".app-header [data-action='toggle-download']");
+      if (toggle) {
+        toggle.classList.toggle("active", state.downloadOpen);
+        toggle.setAttribute("aria-expanded", state.downloadOpen ? "true" : "false");
+        toggle.title = t(state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim");
+        const icon = toggle.querySelector("span");
+        if (icon) icon.textContent = state.downloadOpen ? "⇤" : "⇥";
+      }
       return;
     }
     if (name === "toggle-language") {
@@ -4947,6 +5067,7 @@ async function boot() {
     if (event.detail?.plane) state.mprPrimary = event.detail.plane;
   });
   installKeyboardShortcuts();
+  installWindowStateWatcher();
   // Releasing the GPU contexts on close keeps a WebView2 restart from
   // inheriting a page that still holds them.
   window.addEventListener("pagehide", disposeViewer);
@@ -4979,6 +5100,8 @@ if (!isRunningInTest) {
 export {
   state,
   action,
+  renderWindowControls,
+  applyWindowState,
   renderWorklistView,
   renderActivityPanelInner,
   filteredHistoryEntries,

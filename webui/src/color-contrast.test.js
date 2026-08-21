@@ -59,6 +59,10 @@ const PAIRS = [
   ["--danger-fg", "--danger-bg", "Dừng button"],
   ["--alert-danger-fg", "--alert-danger-bg", "patient alert"],
   ["--log-fg", "--log-bg", "job log"],
+  ["--titlebar-btn-fg", "--header-bg", "minimise/maximise/close glyphs"],
+  ["--titlebar-btn-hover-fg", "--titlebar-btn-hover-bg", "title bar button under the pointer"],
+  ["--brand-mark-fg", "--brand-mark-bg", "the letter inside the brand mark"],
+  ["--sort-active-fg", "--list-bg", "the column the worklist is sorted by"],
 ];
 
 describe("light chrome palette contrast", () => {

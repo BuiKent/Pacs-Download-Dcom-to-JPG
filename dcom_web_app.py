@@ -30,6 +30,40 @@ def resource_path(relative: str) -> Path:
 CF_UNICODETEXT = 13
 CLIPBOARD_TEXT_LIMIT = 4096
 
+# ── Win32 window management ─────────────────────────────────────────────────
+# The reading window is frameless, so its title bar is HTML. Every gesture a
+# real title bar gives for free — drag, snap, maximise, resize — has to be
+# asked of the shell by hand, which is what these constants are for.
+GWL_STYLE = -16
+WS_MINIMIZEBOX = 0x00020000
+WS_MAXIMIZEBOX = 0x00010000
+WS_THICKFRAME = 0x00040000
+WS_CAPTION = 0x00C00000
+
+SW_MAXIMIZE = 3
+SW_MINIMIZE = 6
+SW_RESTORE = 9
+
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
+SWP_FRAMECHANGED = 0x0020
+SWP_SHOWWINDOW = 0x0040
+# Re-read the window styles without touching where the window is or sits.
+SWP_REFRESH_FRAME = SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED
+
+HWND_TOP = 0
+HWND_NOTOPMOST = -2
+
+WM_NCLBUTTONDOWN = 0x00A1
+HTCAPTION = 2
+
+VK_LBUTTON = 0x01
+VK_RBUTTON = 0x02
+SM_SWAPBUTTON = 23
+
+MONITOR_DEFAULTTONEAREST = 2
+
 
 def _clipboard_text() -> str:
     """Read the Windows clipboard as text, or "" when it holds none.
@@ -136,6 +170,11 @@ class NativeApi:
         # WinForms/Accessibility graph and can freeze startup.
         self._controller = controller
         self._window = None
+        # Style and placement saved while F11 zen mode is on; None when it is off.
+        self._fullscreen_state = None
+        # True while the shell runs its own title-bar drag loop, so a second
+        # mousedown cannot stack a second modal loop on the UI thread.
+        self._dragging = False
 
     def _safe_folder_dialog(self) -> str:
         import webview
@@ -222,23 +261,135 @@ class NativeApi:
         os.startfile(str(target))  # type: ignore[attr-defined]
         return True
 
-    def _get_hwnd(self):
+    def _get_hwnd(self) -> int:
         """Return the native Win32 HWND for the pywebview window, or 0."""
         try:
             native = getattr(self._window, "native", None)
-            if native and hasattr(native, "Handle"):
+            if native is not None and hasattr(native, "Handle"):
                 return int(native.Handle.ToInt64())
         except Exception:
             pass
         return 0
 
+    def _prepare_window_chrome(self) -> bool:
+        """Give the frameless window back the styles the shell needs.
+
+        ``frameless=True`` drops WS_THICKFRAME along with the title bar, and
+        with it every resize border, Aero Snap target and taskbar gesture.
+        Putting the three styles back — while leaving WS_CAPTION off, because
+        that would draw a second title bar above the HTML one — keeps the
+        custom chrome and the native window behaviour at the same time.
+        """
+        hwnd = self._get_hwnd()
+        user32 = _user32()
+        if not (hwnd and user32):
+            return False
+        style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+        user32.SetWindowLongW(
+            hwnd,
+            GWL_STYLE,
+            style | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX,
+        )
+        self._pin_maximized_bounds()
+        user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_REFRESH_FRAME)
+        return True
+
+    def _pin_maximized_bounds(self) -> None:
+        """Hold a maximised frameless window inside the monitor's work area.
+
+        A window without a frame maximises over the whole monitor, taskbar
+        included. ``MaximizedBounds`` is the WinForms hook into
+        ``WM_GETMINMAXINFO`` that holds it back — but it stores one rectangle,
+        so it goes stale as soon as the window reaches a second monitor whose
+        taskbar sits elsewhere. Recompute it whenever the page asks for the
+        window state, which covers every move the reader can make.
+        """
+        try:
+            native = getattr(self._window, "native", None)
+            if native is None or not hasattr(native, "Handle"):
+                return
+            from System.Windows.Forms import Screen
+
+            work_area = Screen.FromHandle(native.Handle).WorkingArea
+            current = native.MaximizedBounds
+            # Assigning re-runs the WinForms maximise path, so a refresh driven
+            # by a resize would feed straight back into another resize. Write
+            # only when the window has actually changed monitors.
+            if (
+                current.X == work_area.X
+                and current.Y == work_area.Y
+                and current.Width == work_area.Width
+                and current.Height == work_area.Height
+            ):
+                return
+            native.MaximizedBounds = work_area
+        except Exception:
+            pass
+
+    def window_state(self):
+        """Report what the shell did to the window, for the HTML title bar.
+
+        Aero Snap, Win+Up, the taskbar and a double-click all change the
+        maximised state without passing through our buttons, so the page reads
+        the truth back on every resize instead of tracking it itself.
+        """
+        hwnd = self._get_hwnd()
+        user32 = _user32()
+        fullscreen = self._fullscreen_state is not None
+        if not (hwnd and user32):
+            return {"maximized": False, "fullscreen": fullscreen}
+        self._pin_maximized_bounds()
+        return {"maximized": bool(user32.IsZoomed(hwnd)), "fullscreen": fullscreen}
+
+    def window_begin_drag(self):
+        """Let the shell drag the window instead of moving it from JavaScript.
+
+        pywebview's own ``pywebview-drag-region`` repositions the window from a
+        JS ``mousemove`` handler: one bridge round trip per mouse event, so the
+        window trails the cursor and none of the shell gestures exist at all.
+        Handing ``DefWindowProc`` its own caption-drag loop costs a single call
+        and brings back Aero Snap, snap layouts and shake-to-minimise.
+
+        The call returns once the reader drops the window. Dragging to the top
+        edge maximises it, so the page re-reads ``window_state`` afterwards.
+        """
+        hwnd = self._get_hwnd()
+        user32 = _user32()
+        if not (hwnd and user32) or self._dragging:
+            return False
+        # The shell's drag loop ends on the button coming up, so starting one
+        # after the button is already up leaves the window stuck to the cursor.
+        # The page only asks once the pointer has actually moved under a held
+        # button, and this confirms it against the hardware before committing.
+        primary = VK_RBUTTON if user32.GetSystemMetrics(SM_SWAPBUTTON) else VK_LBUTTON
+        if not user32.GetAsyncKeyState(primary) & 0x8000:
+            return False
+        self._dragging = True
+        try:
+            self._pin_maximized_bounds()
+            cursor = POINT()
+            user32.GetCursorPos(ctypes.byref(cursor))
+            user32.ReleaseCapture()
+            # SendMessage blocks until the drag ends, which is wanted here:
+            # pywebview runs every bridge call on a thread of its own, so only
+            # this one call waits and the UI thread keeps drawing.
+            user32.SendMessageW(
+                hwnd,
+                WM_NCLBUTTONDOWN,
+                HTCAPTION,
+                (cursor.y << 16) | (cursor.x & 0xFFFF),
+            )
+        finally:
+            self._dragging = False
+        return True
+
     def window_minimize(self):
         hwnd = self._get_hwnd()
-        if hwnd:
-            # SW_MINIMIZE = 6
-            ctypes.windll.user32.ShowWindow(hwnd, 6)
+        user32 = _user32()
+        if hwnd and user32:
+            user32.ShowWindow(hwnd, SW_MINIMIZE)
             return True
-        if self._window:
+        if self._window is not None:
             try:
                 self._window.minimize()
                 return True
@@ -247,28 +398,17 @@ class NativeApi:
         return False
 
     def window_toggle_maximize(self):
+        """Toggle the maximised state and report the state the window ends in."""
         hwnd = self._get_hwnd()
-        if hwnd:
-            user32 = ctypes.windll.user32
+        user32 = _user32()
+        if hwnd and user32:
             if user32.IsZoomed(hwnd):
-                # SW_RESTORE = 9
-                user32.ShowWindow(hwnd, 9)
+                user32.ShowWindow(hwnd, SW_RESTORE)
                 return False
-            else:
-                # Ensure MaximizedBounds is set so maximize doesn't cover taskbar
-                try:
-                    native = self._window.native
-                    from System.Windows.Forms import Screen
-                    native.MaximizedBounds = Screen.FromHandle(
-                        native.Handle
-                    ).WorkingArea
-                except Exception:
-                    pass
-                # SW_MAXIMIZE = 3
-                user32.ShowWindow(hwnd, 3)
-                return True
-        # Fallback for non-Windows or no native handle
-        if self._window:
+            self._pin_maximized_bounds()
+            user32.ShowWindow(hwnd, SW_MAXIMIZE)
+            return True
+        if self._window is not None:
             try:
                 self._window.maximize()
                 return True
@@ -277,7 +417,7 @@ class NativeApi:
         return False
 
     def window_close(self):
-        if self._window:
+        if self._window is not None:
             try:
                 self._window.destroy()
                 return True
@@ -286,47 +426,65 @@ class NativeApi:
         return False
 
     def window_toggle_fullscreen(self):
-        """Toggle true fullscreen (F11 zen mode) — hides chrome, covers monitor."""
+        """Toggle borderless fullscreen — F11 zen mode for reading a study.
+
+        Returns True when fullscreen is now on and False when it is off, so the
+        page can collapse or restore the header and tab strip to match.
+        """
         hwnd = self._get_hwnd()
-        if not hwnd:
-            return False
-        user32 = ctypes.windll.user32
-
-        if hasattr(self, "_fs_state"):
-            # ── Restore from fullscreen ──
-            saved = self._fs_state
-            user32.SetWindowLongW(hwnd, -16, saved["style"])
-            wp = saved["wp"]
-            user32.SetWindowPlacement(hwnd, ctypes.byref(wp))
-            # Re-apply style change
-            user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)
-            del self._fs_state
+        user32 = _user32()
+        if not (hwnd and user32):
             return False
 
-        # ── Enter fullscreen ──
-        style = user32.GetWindowLongW(hwnd, -16)
-        wp = WINDOWPLACEMENT()
-        wp.length = ctypes.sizeof(WINDOWPLACEMENT)
-        user32.GetWindowPlacement(hwnd, ctypes.byref(wp))
-        self._fs_state = {"style": style, "wp": wp}
+        saved = self._fullscreen_state
+        if saved is not None:
+            user32.SetWindowLongW(hwnd, GWL_STYLE, saved["style"])
+            user32.SetWindowPlacement(hwnd, ctypes.byref(saved["placement"]))
+            # HWND_NOTOPMOST, and deliberately not SWP_NOZORDER: leaving the
+            # z-order alone here left the window pinned above every other
+            # application for the rest of the session.
+            user32.SetWindowPos(
+                hwnd,
+                ctypes.c_void_p(HWND_NOTOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_FRAMECHANGED,
+            )
+            self._fullscreen_state = None
+            return False
 
-        # Get full monitor rect (covers taskbar)
-        monitor = user32.MonitorFromWindow(hwnd, 1)   # MONITOR_DEFAULTTONEAREST
-        mi = MONITORINFO()
-        mi.cbSize = ctypes.sizeof(MONITORINFO)
-        user32.GetMonitorInfoW(monitor, ctypes.byref(mi))
+        # MONITOR_DEFAULTTONEAREST, so a window on the second screen goes
+        # fullscreen on that screen instead of jumping back to the primary one.
+        monitor = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return False
 
-        # Strip frame styles for borderless fullscreen
-        fs_style = (style & ~0x00040000 & ~0x00C00000) | 0x00010000 | 0x00020000
-        user32.SetWindowLongW(hwnd, -16, fs_style)
+        style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+        placement = WINDOWPLACEMENT()
+        placement.length = ctypes.sizeof(WINDOWPLACEMENT)
+        user32.GetWindowPlacement(hwnd, ctypes.byref(placement))
+        self._fullscreen_state = {"style": style, "placement": placement}
 
-        r = mi.rcMonitor
-        # HWND_TOPMOST (-1), SWP_SHOWWINDOW (0x0040)
+        user32.SetWindowLongW(
+            hwnd,
+            GWL_STYLE,
+            (style & ~WS_THICKFRAME & ~WS_CAPTION) | WS_MAXIMIZEBOX | WS_MINIMIZEBOX,
+        )
+        bounds = info.rcMonitor
+        # HWND_TOP, not HWND_TOPMOST: a file dialog or a second viewer window
+        # still has to be able to open in front of the image.
         user32.SetWindowPos(
-            hwnd, -1,
-            r.left, r.top,
-            r.right - r.left, r.bottom - r.top,
-            0x0040,
+            hwnd,
+            ctypes.c_void_p(HWND_TOP),
+            bounds.left,
+            bounds.top,
+            bounds.right - bounds.left,
+            bounds.bottom - bounds.top,
+            SWP_FRAMECHANGED | SWP_SHOWWINDOW,
         )
         return True
 
@@ -803,6 +961,67 @@ class MONITORINFO(ctypes.Structure):
     ]
 
 
+_USER32 = None
+
+
+def _user32():
+    """Return ``user32`` with the prototypes this module calls declared once.
+
+    An undeclared ctypes argument defaults to a 32-bit int, which truncates a
+    window handle or a packed screen coordinate on 64-bit Windows: the call
+    then fails quietly and the window simply does not move. Returns None off
+    Windows, where every caller falls back to pywebview's own methods.
+    """
+    global _USER32
+    if _USER32 is not None:
+        return _USER32
+    try:
+        lib = ctypes.windll.user32
+    except (AttributeError, OSError):
+        return None
+    lib.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
+    lib.GetCursorPos.restype = wintypes.BOOL
+    lib.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    lib.GetAsyncKeyState.restype = ctypes.c_short
+    lib.GetSystemMetrics.argtypes = [ctypes.c_int]
+    lib.GetSystemMetrics.restype = ctypes.c_int
+    lib.ReleaseCapture.argtypes = []
+    lib.ReleaseCapture.restype = wintypes.BOOL
+    lib.SendMessageW.argtypes = [
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    ]
+    lib.SendMessageW.restype = wintypes.LPARAM
+    lib.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    lib.GetWindowLongW.restype = wintypes.LONG
+    lib.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+    lib.SetWindowLongW.restype = wintypes.LONG
+    lib.SetWindowPos.argtypes = [
+        wintypes.HWND,
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+    ]
+    lib.SetWindowPos.restype = wintypes.BOOL
+    lib.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    lib.ShowWindow.restype = wintypes.BOOL
+    lib.IsZoomed.argtypes = [wintypes.HWND]
+    lib.IsZoomed.restype = wintypes.BOOL
+    lib.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    lib.MonitorFromWindow.restype = wintypes.HANDLE
+    lib.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MONITORINFO)]
+    lib.GetMonitorInfoW.restype = wintypes.BOOL
+    lib.GetWindowPlacement.argtypes = [wintypes.HWND, ctypes.POINTER(WINDOWPLACEMENT)]
+    lib.GetWindowPlacement.restype = wintypes.BOOL
+    lib.SetWindowPlacement.argtypes = [wintypes.HWND, ctypes.POINTER(WINDOWPLACEMENT)]
+    lib.SetWindowPlacement.restype = wintypes.BOOL
+    _USER32 = lib
+    return _USER32
 
 
 def get_window_geometry(window) -> dict | None:
@@ -921,27 +1140,10 @@ def launch_web(
     closed_event = threading.Event()
 
     def on_shown() -> None:
-        try:
-            native = getattr(window, "native", None)
-            if native and hasattr(native, "Handle"):
-                hwnd = int(native.Handle.ToInt64())
-                user32 = ctypes.windll.user32
-                # WS_THICKFRAME   0x00040000 – resize borders + Aero Snap
-                # WS_MAXIMIZEBOX  0x00010000 – maximize/restore via OS
-                # WS_MINIMIZEBOX  0x00020000 – minimize via taskbar
-                style = user32.GetWindowLongW(hwnd, -16)
-                user32.SetWindowLongW(
-                    hwnd, -16,
-                    style | 0x00040000 | 0x00010000 | 0x00020000,
-                )
-
-                # Set MaximizedBounds so Maximized fits Screen.WorkingArea exactly
-                from System.Windows.Forms import Screen
-                native.MaximizedBounds = Screen.FromHandle(native.Handle).WorkingArea
-
-                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)
-        except Exception:
-            pass
+        # The handle only exists once the form is on screen, so the frameless
+        # window gets its resize border and snap behaviour back here rather
+        # than at creation time.
+        native_api._prepare_window_chrome()
 
     def persist_geometry() -> None:
         geom = get_window_geometry(window)
