@@ -240,6 +240,12 @@ class NativeApi:
             return None
         return self._controller.set_output_root(path)
 
+    def choose_source_folder(self):
+        path = self._safe_folder_dialog()
+        if not path:
+            return None
+        return self._controller.add_source_folder(path)
+
     def read_clipboard(self):
         """Report clipboard text that matches a viewer link or a patient code.
 

@@ -717,6 +717,132 @@ button { cursor: pointer; }
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
+.activity-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+.activity-head-row .activity-head {
+  margin-top: 0;
+}
+.source-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  cursor: pointer;
+  background: rgba(47, 128, 237, 0.15);
+  color: #78b8fd;
+  border: 1px solid rgba(47, 128, 237, 0.35);
+  transition: all 0.15s ease;
+}
+.source-add-btn:hover {
+  background: rgba(47, 128, 237, 0.3);
+  color: #c4e4ff;
+  border-color: #2f80ed;
+}
+
+.activity-source-folders {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--list-border, #1c2a36);
+  border-radius: var(--control-radius, 6px);
+  background: var(--list-bg, #0b1119);
+  overflow: hidden;
+}
+.activity-folder-row {
+  display: grid;
+  grid-template-columns: 24px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--list-item-border, #172430);
+  font-size: 12px;
+  transition: background 0.12s ease;
+}
+.activity-folder-row:last-child {
+  border-bottom: 0;
+}
+.activity-folder-row:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+.activity-folder-row.missing {
+  opacity: 0.75;
+}
+.activity-folder-row .folder-icon {
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.activity-folder-row .folder-path {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--body-fg, #e7f1f8);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-folder-row .folder-badge {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+.activity-folder-row .folder-badge.default {
+  background: rgba(47, 128, 237, 0.2);
+  color: #70b4ff;
+  border: 1px solid rgba(47, 128, 237, 0.4);
+}
+.activity-folder-row .folder-badge.missing {
+  background: rgba(235, 87, 87, 0.2);
+  color: #ff8585;
+  border: 1px solid rgba(235, 87, 87, 0.4);
+}
+.activity-folder-row .folder-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.activity-folder-row .folder-actions .mini-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+  background: #15222e;
+  color: #e7f1f8;
+  border: 1px solid #223547;
+  transition: all 0.15s ease;
+}
+.activity-folder-row .folder-actions .mini-btn:hover {
+  background: #203447;
+  border-color: #35536e;
+}
+.activity-folder-row .folder-actions .mini-btn.danger {
+  color: #ff8b8b;
+  border-color: #4a2125;
+  background: #231215;
+}
+.activity-folder-row .folder-actions .mini-btn.danger:hover {
+  background: #3b171c;
+  color: #ffb4b4;
+  border-color: #eb5757;
+}
+
 .activity-idle {
   padding: 14px;
   color: var(--muted-fg);

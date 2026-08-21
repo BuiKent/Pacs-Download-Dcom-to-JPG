@@ -2727,8 +2727,14 @@ class WorklistScanner:
 
     def scan(self) -> list[dict]:
         roots_to_scan = []
-        if self.controller.output_root and self.controller.output_root.is_dir():
-            roots_to_scan.append(self.controller.output_root.resolve())
+        for r in self.controller.get_all_source_roots():
+            if r.is_dir():
+                try:
+                    resolved = r.resolve()
+                    if resolved not in roots_to_scan:
+                        roots_to_scan.append(resolved)
+                except OSError:
+                    pass
 
         # History spans every folder ever opened, including temp fixtures and
         # archives that have since moved. Folding all of it into the Study List
@@ -2849,6 +2855,13 @@ class WebController:
         settings = self._read_settings()
         self.language = settings.get("language", "en")
         self.output_root = Path(settings.get("outputRoot") or (Path.home() / "DCom JPG PACS"))
+        raw_sources = settings.get("sourceFolders")
+        if isinstance(raw_sources, list) and raw_sources:
+            self.source_folders = [str(f).strip() for f in raw_sources if str(f).strip()]
+        else:
+            self.source_folders = [str(self.output_root)]
+        if str(self.output_root) not in self.source_folders:
+            self.source_folders.insert(0, str(self.output_root))
         self.window_settings = settings.get("window")
 
     def _read_settings(self) -> dict:
@@ -2864,6 +2877,7 @@ class WebController:
         return {
             "language": language if language in SUPPORTED_LANGUAGES else "en",
             "outputRoot": str(value.get("outputRoot") or ""),
+            "sourceFolders": value.get("sourceFolders") if isinstance(value.get("sourceFolders"), list) else None,
             "window": window_settings,
         }
 
@@ -2875,6 +2889,7 @@ class WebController:
             payload = {
                 "language": self.language,
                 "outputRoot": str(self.output_root),
+                "sourceFolders": self.source_folders,
             }
             if isinstance(self.window_settings, dict):
                 payload["window"] = self.window_settings
@@ -2902,6 +2917,102 @@ class WebController:
         self.language = value
         self._write_settings()
         return {"language": self.language}
+
+    def get_all_source_roots(self) -> list[Path]:
+        """All unique folder paths configured as patient sources."""
+        seen = set()
+        roots: list[Path] = []
+        candidates = [self.output_root] + [Path(f) for f in self.source_folders]
+        for c in candidates:
+            try:
+                p = c.expanduser()
+                resolved = p.resolve()
+                key = str(resolved).casefold()
+                if key not in seen:
+                    seen.add(key)
+                    roots.append(p)
+            except OSError:
+                key = str(c).casefold()
+                if key not in seen:
+                    seen.add(key)
+                    roots.append(c)
+        return roots
+
+    def get_source_folders(self) -> list[dict]:
+        """Returns the list of source folders with existence and default flags."""
+        results = []
+        roots = self.get_all_source_roots()
+        for p in roots:
+            p_resolved = None
+            try:
+                p_resolved = p.resolve()
+            except OSError:
+                pass
+            is_default = False
+            if p_resolved and self.output_root.is_dir():
+                is_default = (p_resolved == self.output_root.resolve())
+            elif str(p) == str(self.output_root):
+                is_default = True
+
+            results.append({
+                "folder": str(p),
+                "exists": p.is_dir(),
+                "isDefault": is_default,
+            })
+        return results
+
+    def add_source_folder(self, path: str) -> dict:
+        folder_str = str(path or "").strip()
+        if not folder_str:
+            raise ValueError("Đường dẫn thư mục không được để trống.")
+        p = Path(folder_str).expanduser()
+        p.mkdir(parents=True, exist_ok=True)
+        try:
+            resolved_str = str(p.resolve())
+        except OSError:
+            resolved_str = str(p)
+
+        existing = []
+        for f in self.source_folders:
+            try:
+                existing.append(str(Path(f).expanduser().resolve()))
+            except OSError:
+                existing.append(str(f))
+
+        if resolved_str not in existing and folder_str not in self.source_folders:
+            self.source_folders.append(resolved_str)
+            self._write_settings()
+        return {"sourceFolders": self.get_source_folders(), "added": resolved_str}
+
+    def remove_source_folder(self, path: str) -> dict:
+        target = str(path or "").strip()
+        if not target:
+            raise ValueError("Đường dẫn thư mục không được để trống.")
+
+        target_p = None
+        try:
+            target_p = Path(target).expanduser().resolve()
+        except OSError:
+            pass
+
+        new_sources = []
+        for f in self.source_folders:
+            f_p = None
+            try:
+                f_p = Path(f).expanduser().resolve()
+            except OSError:
+                pass
+            if target_p and f_p and target_p == f_p:
+                continue
+            if f.casefold() == target.casefold():
+                continue
+            new_sources.append(f)
+
+        self.source_folders = new_sources
+        if not self.source_folders:
+            self.source_folders = [str(self.output_root)]
+        self._write_settings()
+        return {"sourceFolders": self.get_source_folders(), "removed": target}
 
     def history_snapshot(self) -> list[dict]:
         return self.history.snapshot()
@@ -2938,6 +3049,7 @@ class WebController:
             "archiveSessionId": archive_session_id,
             "job": self.job.snapshot(),
             "outputRoot": str(self.output_root),
+            "sourceFolders": self.get_source_folders(),
             "language": self.language,
             "history": self.history_snapshot(),
             # Disk scanning can walk thousands of image files. The shell paints
@@ -2963,8 +3075,12 @@ class WebController:
     def _reveal_roots(self) -> list[Path]:
         """Folders the UI is allowed to hand to the shell."""
         roots: list[Path] = []
-        if self.output_root:
-            roots.append(Path(self.output_root).resolve())
+        for r in self.get_all_source_roots():
+            if r.is_dir():
+                try:
+                    roots.append(r.resolve())
+                except OSError:
+                    roots.append(r)
         catalog_root = getattr(self.catalog, "root", "")
         if catalog_root:
             roots.append(Path(catalog_root).resolve())
@@ -3097,8 +3213,11 @@ class WebController:
         root = Path(path).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
         self.output_root = root
+        resolved_str = str(root)
+        if resolved_str not in self.source_folders:
+            self.source_folders.insert(0, resolved_str)
         self._write_settings()
-        return {"outputRoot": str(root)}
+        return {"outputRoot": str(root), "sourceFolders": self.get_source_folders()}
 
     def save_media_edit(
         self,
@@ -4218,6 +4337,8 @@ class LocalApiServer:
                     return {"history": owner.controller.history_snapshot()}
                 if path == "/api/worklist":
                     return owner.controller.get_worklist()
+                if path == "/api/source-folders":
+                    return {"sourceFolders": owner.controller.get_source_folders()}
                 if path == "/api/sessions":
                     return {"sessions": owner.controller.sessions.list_sessions()}
                 if path == "/api/media/video/status":
@@ -4328,6 +4449,10 @@ class LocalApiServer:
                     )
                 if path == "/api/worklist/reveal-folder":
                     return owner.controller.reveal_folder(str(payload.get("folder") or ""))
+                if path == "/api/source-folders/add":
+                    return owner.controller.add_source_folder(str(payload.get("folder") or ""))
+                if path == "/api/source-folders/remove":
+                    return owner.controller.remove_source_folder(str(payload.get("folder") or ""))
                 if path == "/api/settings/language":
                     return owner.controller.set_language(str(payload.get("language") or ""))
                 if path == "/api/media/photo/info":

@@ -218,6 +218,17 @@ const EN = {
 
   // Worklist tabs: Study List / Activity & Queue
   "Tổng quan kho & dữ liệu": "Archive & Data Overview",
+  "Thư mục nguồn bệnh nhân": "Patient Source Folders",
+  "Thêm thư mục nguồn": "Add source folder",
+  "Thêm thư mục": "Add folder",
+  "Mặc định": "Default",
+  "Không tồn tại": "Not found",
+  "Mở trong Explorer": "Open in Explorer",
+  "Xóa thư mục khỏi danh sách": "Remove folder from list",
+  "Nhập đường dẫn thư mục nguồn:": "Enter source folder path:",
+  "Đã thêm thư mục nguồn: {}": "Added source folder: {}",
+  "Đã xóa thư mục nguồn: {}": "Removed source folder: {}",
+  "Chưa có thư mục nguồn nào được cấu hình.": "No source folders configured.",
   "Hồ sơ gần đây": "Recent records",
   "Series trong kho": "Series in archive",
   "Ảnh & lát cắt": "Images & slices",

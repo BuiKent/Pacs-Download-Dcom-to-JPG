@@ -126,6 +126,7 @@ const state = {
   mprPrimary: "axial",
   windowPreset: "full",
   history: [],
+  sourceFolders: [],
   editingPatientInfo: false,
   // The last folder a direct link filled. A retry has to merge into it instead
   // of creating a second folder for the same study.
@@ -1917,11 +1918,41 @@ function renderActivityPanelInner() {
   const job = state.job || state.bootstrap?.job || {};
   const running = job.status === "running";
   const history = state.history || [];
+  const sourceFolders = state.sourceFolders?.length
+    ? state.sourceFolders
+    : (state.bootstrap?.sourceFolders || (state.bootstrap?.outputRoot ? [{ folder: state.bootstrap.outputRoot, exists: true, isDefault: true }] : []));
 
   return `
     <div class="activity-head">${escapeHtml(t("Tổng quan kho & dữ liệu"))}</div>
     <div class="activity-summary">
       ${renderWorklistSummaryInner()}
+    </div>
+
+    <div class="activity-head-row">
+      <div class="activity-head">${escapeHtml(t("Thư mục nguồn bệnh nhân"))}</div>
+      <button class="mini-btn primary source-add-btn" type="button" data-action="add-source-folder" title="${escapeHtml(t("Thêm thư mục nguồn"))}">
+        ➕ ${escapeHtml(t("Thêm thư mục"))}
+      </button>
+    </div>
+    <div class="activity-source-folders">
+      ${sourceFolders.length === 0 ? `
+        <div class="activity-idle">${escapeHtml(t("Chưa có thư mục nguồn nào được cấu hình."))}</div>
+      ` : sourceFolders.map((item) => `
+        <div class="activity-folder-row ${item.exists ? "" : "missing"}">
+          <span class="folder-icon">📁</span>
+          <span class="folder-path" title="${escapeHtml(item.folder || "")}">
+            ${escapeHtml(item.folder || "")}
+            ${item.isDefault ? `<span class="folder-badge default">${escapeHtml(t("Mặc định"))}</span>` : ""}
+            ${!item.exists ? `<span class="folder-badge missing">${escapeHtml(t("Không tồn tại"))}</span>` : ""}
+          </span>
+          <span class="folder-actions">
+            <button class="mini-btn icon-btn" type="button" data-action="open-folder-explorer" data-folder="${escapeHtml(item.folder || "")}" title="${escapeHtml(t("Mở trong Explorer"))}">📂</button>
+            ${item.isDefault ? "" : `
+              <button class="mini-btn danger icon-btn" type="button" data-action="remove-source-folder" data-folder="${escapeHtml(item.folder || "")}" title="${escapeHtml(t("Xóa thư mục khỏi danh sách"))}">🗑️</button>
+            `}
+          </span>
+        </div>
+      `).join("")}
     </div>
 
     <div class="activity-head">${escapeHtml(t("Đang xử lý"))}</div>
@@ -1962,8 +1993,9 @@ function refreshActivityPanel() {
   // innerHTML drops the old listeners with the old nodes, so the buttons this
   // panel owns have to be wired again on every repaint.
   bindWorklistOpenButtons(host);
-  host.querySelector("[data-action='stop-job']")
-    ?.addEventListener("click", () => action("stop-job"));
+  host.querySelectorAll("[data-action]").forEach((element) => {
+    element.addEventListener("click", () => action(element.dataset.action, element));
+  });
 }
 
 function renderWorklistView() {
@@ -3785,6 +3817,7 @@ async function action(name, element = null) {
       const result = await window.pywebview?.api?.choose_output();
       if (result) {
         state.bootstrap.outputRoot = result.outputRoot;
+        if (result.sourceFolders) state.sourceFolders = result.sourceFolders;
         state.studies = [];
         state.patient = null;
         state.seriesInventory = [];
@@ -3793,8 +3826,58 @@ async function action(name, element = null) {
         if (field) field.value = result.outputRoot;
         renderStudyList();
         renderSeriesPickerOnly();
+        refreshWorklist();
         setStatus(t("Đã đổi kho lưu; hãy tìm lại mã bệnh nhân để đối chiếu phim cũ/mới."));
       }
+      return;
+    }
+    if (name === "add-source-folder") {
+      if (window.pywebview?.api?.choose_source_folder) {
+        const res = await window.pywebview.api.choose_source_folder();
+        if (res?.sourceFolders) {
+          state.sourceFolders = res.sourceFolders;
+          render();
+          refreshWorklist();
+          setStatus(t("Đã thêm thư mục nguồn thành công."));
+        }
+        return;
+      }
+      const folderPath = window.prompt(t("Nhập đường dẫn thư mục nguồn:"));
+      if (!folderPath || !folderPath.trim()) return;
+      const res = await api("/api/source-folders/add", {
+        method: "POST",
+        body: JSON.stringify({ folder: folderPath.trim() }),
+      });
+      if (res?.sourceFolders) {
+        state.sourceFolders = res.sourceFolders;
+        render();
+        refreshWorklist();
+        setStatus(tf("Đã thêm thư mục nguồn: {}", folderPath.trim()));
+      }
+      return;
+    }
+    if (name === "remove-source-folder") {
+      const folder = element?.dataset?.folder;
+      if (!folder) return;
+      const res = await api("/api/source-folders/remove", {
+        method: "POST",
+        body: JSON.stringify({ folder }),
+      });
+      if (res?.sourceFolders) {
+        state.sourceFolders = res.sourceFolders;
+        render();
+        refreshWorklist();
+        setStatus(tf("Đã xóa thư mục nguồn: {}", folder));
+      }
+      return;
+    }
+    if (name === "open-folder-explorer") {
+      const folder = element?.dataset?.folder;
+      if (!folder) return;
+      await api("/api/worklist/reveal-folder", {
+        method: "POST",
+        body: JSON.stringify({ folder }),
+      });
       return;
     }
     if (name === "refresh-archive") {
@@ -5138,6 +5221,7 @@ async function boot() {
   setLanguage(state.bootstrap.language || "en");
   applyTextPromptLanguage();
   state.history = Array.isArray(state.bootstrap.history) ? state.bootstrap.history : [];
+  state.sourceFolders = Array.isArray(state.bootstrap.sourceFolders) ? state.bootstrap.sourceFolders : [];
   const bootstrapWorklist = state.bootstrap.worklist || {};
   state.worklistPatients = Array.isArray(bootstrapWorklist.patients)
     ? bootstrapWorklist.patients

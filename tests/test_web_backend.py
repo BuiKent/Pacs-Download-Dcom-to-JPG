@@ -2644,6 +2644,66 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         startfile.assert_called_once()
         self.assertTrue(result["revealed"])
 
+    def test_source_folders_management_and_multi_root_scan(self) -> None:
+        from web_backend import WorklistScanner
+
+        extra_root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, extra_root, True)
+
+        # Create a patient in output_root
+        p1 = self.temp_dir / "BN-001_P1"
+        p1.mkdir(parents=True, exist_ok=True)
+        s1 = p1 / "2026-08-01 - CT"
+        s1.mkdir(parents=True, exist_ok=True)
+        (s1 / "img1.jpg").write_bytes(b"\xff\xd8\xff" + b"\0" * 100)
+
+        # Create a patient in extra_root
+        p2 = extra_root / "BN-002_P2"
+        p2.mkdir(parents=True, exist_ok=True)
+        s2 = p2 / "2026-08-02 - MR"
+        s2.mkdir(parents=True, exist_ok=True)
+        (s2 / "img2.jpg").write_bytes(b"\xff\xd8\xff" + b"\0" * 100)
+
+        self.controller.output_root = self.temp_dir
+        self.controller.source_folders = [str(self.temp_dir)]
+
+        # Initial scan only finds p1
+        scanner = WorklistScanner(self.controller)
+        patients = scanner.scan()
+        ids = [p["patientId"] for p in patients]
+        self.assertIn("BN-001", ids)
+        self.assertNotIn("BN-002", ids)
+
+        # Add extra_root as source folder
+        res_add = self.controller.add_source_folder(str(extra_root))
+        sources = res_add["sourceFolders"]
+        self.assertEqual(len(sources), 2)
+        folder_paths = [Path(s["folder"]).resolve() for s in sources]
+        self.assertIn(extra_root.resolve(), folder_paths)
+
+        # Scan now finds both p1 and p2
+        patients = scanner.scan()
+        ids = [p["patientId"] for p in patients]
+        self.assertIn("BN-001", ids)
+        self.assertIn("BN-002", ids)
+
+        # Reveal folder in extra_root works
+        with mock.patch("web_backend.os.startfile", create=True) as startfile:
+            with mock.patch("web_backend.sys.platform", "win32"):
+                res_reveal = self.controller.reveal_folder(str(s2))
+                self.assertTrue(res_reveal["revealed"])
+                startfile.assert_called_once()
+
+        # Remove extra_root
+        res_rem = self.controller.remove_source_folder(str(extra_root))
+        self.assertEqual(len(res_rem["sourceFolders"]), 1)
+
+        # Scan after removal only finds p1 again
+        patients = scanner.scan()
+        ids = [p["patientId"] for p in patients]
+        self.assertIn("BN-001", ids)
+        self.assertNotIn("BN-002", ids)
+
 
 if __name__ == "__main__":
     unittest.main()

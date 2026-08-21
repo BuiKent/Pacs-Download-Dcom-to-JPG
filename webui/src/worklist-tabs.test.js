@@ -454,4 +454,26 @@ describe("Worklist: scanned data replaces the history fallback", () => {
     expect(state.worklistSortColumn).toBe("date");
     expect(state.worklistSortOrder).toBe("desc");
   });
+
+  it("renders patient source folders with badges, add button, and action icons in Activity panel", () => {
+    state.sourceFolders = [
+      { folder: "D:\\PACS\\Kho", exists: true, isDefault: true },
+      { folder: "E:\\External_PACS", exists: false, isDefault: false },
+      { folder: "D:\\Custom_Source", exists: true, isDefault: false },
+    ];
+
+    const html = renderActivityPanelInner();
+    expect(html).toContain("Thư mục nguồn bệnh nhân");
+    expect(html).toContain("data-action=\"add-source-folder\"");
+    expect(html).toContain("➕");
+    expect(html).toContain("D:\\PACS\\Kho");
+    expect(html).toContain("Mặc định");
+    expect(html).toContain("E:\\External_PACS");
+    expect(html).toContain("Không tồn tại");
+    expect(html).toContain("D:\\Custom_Source");
+    expect(html).toContain("data-action=\"open-folder-explorer\"");
+    expect(html).toContain("data-action=\"remove-source-folder\"");
+    expect(html).toContain("📂");
+    expect(html).toContain("🗑️");
+  });
 });
