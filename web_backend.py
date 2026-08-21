@@ -1869,7 +1869,12 @@ class ArchiveCatalog:
         if not isinstance(manifest, dict):
             return {}
         birth_digits = re.sub(r"\D", "", str(manifest.get("patientBirthDate") or ""))
-        birth_year = birth_digits[:4] if len(birth_digits) >= 4 else ""
+        stored_birth_year = re.sub(r"\D", "", str(manifest.get("birthYear") or ""))
+        birth_year = (
+            birth_digits[:4]
+            if len(birth_digits) >= 4
+            else stored_birth_year if len(stored_birth_year) == 4 else ""
+        )
         age = ""
         if len(birth_digits) == 8:
             try:
@@ -2392,12 +2397,17 @@ class WorklistScanner:
             return None
         # DICOM DA is YYYYMMDD; the worklist column only shows the year.
         birth = re.sub(r"\D", "", str(data.get("patientBirthDate") or ""))
+        stored_birth_year = re.sub(r"\D", "", str(data.get("birthYear") or ""))
         sex = str(data.get("patientSex") or "").strip().upper()
         return {
             "patientId": str(data.get("patientId") or "").strip(),
             "patientName": str(data.get("patientName") or "").strip(),
             "gender": {"M": "Nam", "F": "Nữ"}.get(sex, ""),
-            "birthYear": birth[:4] if len(birth) >= 4 else "",
+            "birthYear": (
+                birth[:4]
+                if len(birth) >= 4
+                else stored_birth_year if len(stored_birth_year) == 4 else ""
+            ),
             "hospital": str(data.get("hospitalName") or "").strip(),
             "hospitalKey": str(data.get("hospitalKey") or "").strip(),
         }
@@ -3385,7 +3395,12 @@ class WebController:
         if "patientName" in info:
             manifest["patientName"] = str(info["patientName"] or "").strip()
         if "patientId" in info:
-            manifest["patientId"] = str(info["patientId"] or "").strip()
+            patient_id = str(info["patientId"] or "").strip()
+            if not patient_id:
+                raise ValueError("Mã bệnh nhân không được để trống.")
+            if len(patient_id) > 128:
+                raise ValueError("Mã bệnh nhân không được dài quá 128 ký tự.")
+            manifest["patientId"] = patient_id
         if "gender" in info:
             g = str(info["gender"] or "").strip()
             manifest["gender"] = g
@@ -3395,17 +3410,40 @@ class WebController:
                 manifest["patientSex"] = "F"
             elif g:
                 manifest["patientSex"] = "O"
-        if "birthDate" in info and str(info["birthDate"]).strip():
+            else:
+                manifest["patientSex"] = ""
+        if "birthDate" in info:
             bd = re.sub(r"\D", "", str(info["birthDate"] or ""))
-            manifest["patientBirthDate"] = bd
-        elif "birthYear" in info and str(info["birthYear"]).strip():
-            by = re.sub(r"\D", "", str(info["birthYear"] or ""))
-            if len(by) == 4:
-                existing_bd = str(manifest.get("patientBirthDate") or "")
-                if len(existing_bd) == 8:
-                    manifest["patientBirthDate"] = f"{by}{existing_bd[4:]}"
+            if not bd:
+                manifest.pop("patientBirthDate", None)
+                manifest.pop("birthYear", None)
+            elif len(bd) != 8 or not _is_real_date(bd):
+                raise ValueError("Ngày sinh phải là một ngày hợp lệ theo định dạng YYYYMMDD.")
+            else:
+                manifest["patientBirthDate"] = bd
+                manifest.pop("birthYear", None)
+        elif "birthYear" in info:
+            raw_year = str(info["birthYear"] or "").strip()
+            if not raw_year:
+                manifest.pop("patientBirthDate", None)
+                manifest.pop("birthYear", None)
+            else:
+                by = re.sub(r"\D", "", raw_year)
+                current_year = datetime.date.today().year
+                if len(by) != 4 or not 1900 <= int(by) <= current_year:
+                    raise ValueError(f"Năm sinh phải nằm trong khoảng 1900–{current_year}.")
+                existing_bd = re.sub(
+                    r"\D", "", str(manifest.get("patientBirthDate") or "")
+                )
+                updated_bd = f"{by}{existing_bd[4:]}" if len(existing_bd) == 8 else ""
+                if updated_bd and _is_real_date(updated_bd):
+                    # Preserve a recorded month/day when the user corrects only
+                    # the year. Never manufacture 01/01 when no exact date exists.
+                    manifest["patientBirthDate"] = updated_bd
+                    manifest.pop("birthYear", None)
                 else:
-                    manifest["patientBirthDate"] = f"{by}0101"
+                    manifest.pop("patientBirthDate", None)
+                    manifest["birthYear"] = by
         if "phone" in info:
             manifest["phone"] = str(info["phone"] or "").strip()
         if "address" in info:
@@ -3418,7 +3456,11 @@ class WebController:
         dcom_pipeline._write_patient_manifest(folder, manifest)
         patient = ArchiveCatalog._patient_block(manifest)
         with target._lock:
-            target._patient = dict(patient)
+            # A caller that names a different archive must not replace the
+            # identity cached by this catalog. The session route normally makes
+            # these the same patient; this guard keeps the direct method safe.
+            if str(target._patient.get("patientId") or "") == recorded_id:
+                target._patient = dict(patient)
         return {"patient": patient}
 
     def set_timeline_label(

@@ -472,7 +472,8 @@ class NativeApi:
         style = user32.GetWindowLongW(hwnd, GWL_STYLE)
         placement = WINDOWPLACEMENT()
         placement.length = ctypes.sizeof(WINDOWPLACEMENT)
-        user32.GetWindowPlacement(hwnd, ctypes.byref(placement))
+        if not user32.GetWindowPlacement(hwnd, ctypes.byref(placement)):
+            return False
         self._fullscreen_state = {"style": style, "placement": placement}
 
         user32.SetWindowLongW(
@@ -670,8 +671,14 @@ def _run_smoke(window, result: dict, result_path: str) -> None:
                 time.sleep(0.5)
             else:
                 raise TimeoutError(f"Không dựng được {key}: {state}")
+        # Compare always starts with the selected volume in pane A, so it must
+        # expose at least one slider. Pane B may legitimately be a one-image
+        # scout/DX/CR series, in which case there is no second slider even
+        # though both canvases and the comparison itself are healthy.
+        compare_controls = result["compare"].get("sliceControls", 0)
+        if not 1 <= compare_controls <= 2:
+            raise RuntimeError(f"compare slice controls mismatch: {compare_controls}")
         for key, expected_controls in (
-            ("compare", 2),
             ("montage6", 6),
             ("montage8", 8),
             ("mpr", 3),
@@ -1033,9 +1040,12 @@ def _user32():
 def get_window_geometry(window) -> dict | None:
     """Extract current window location, size, and maximized state."""
     try:
-        user32 = ctypes.windll.user32
+        # Use the declared prototypes from `_user32`: passing a Python int to an
+        # undeclared ctypes function defaults to 32 bits and can truncate HWND
+        # on 64-bit Windows, silently dropping persisted window geometry.
+        user32 = _user32()
         native = getattr(window, "native", None)
-        if native and hasattr(native, "Handle"):
+        if user32 and native and hasattr(native, "Handle"):
             hwnd = int(native.Handle.ToInt64())
             wp = WINDOWPLACEMENT()
             wp.length = ctypes.sizeof(WINDOWPLACEMENT)

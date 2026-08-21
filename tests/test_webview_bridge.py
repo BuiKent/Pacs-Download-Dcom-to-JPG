@@ -59,10 +59,17 @@ class FakeUser32:
     MONITOR_RECT = (0, 0, 2560, 1440)
     WORK_RECT = (0, 0, 2560, 1400)
 
-    def __init__(self, style=0x00040000, zoomed=False, button_down=True):
+    def __init__(
+        self,
+        style=0x00040000,
+        zoomed=False,
+        button_down=True,
+        placement_ok=True,
+    ):
         self.style = style
         self.zoomed = zoomed
         self.button_down = button_down
+        self.placement_ok = placement_ok
         self.set_window_pos_calls = []
         self.messages = []
         self.monitor_from_window_flags = []
@@ -100,7 +107,13 @@ class FakeUser32:
         return True
 
     def GetWindowPlacement(self, hwnd, placement_ref):
+        if not self.placement_ok:
+            return False
         placement_ref._obj.showCmd = 1
+        placement_ref._obj.rcNormalPosition.left = 120
+        placement_ref._obj.rcNormalPosition.top = 80
+        placement_ref._obj.rcNormalPosition.right = 1420
+        placement_ref._obj.rcNormalPosition.bottom = 900
         return True
 
     def SetWindowPlacement(self, hwnd, placement_ref):
@@ -191,6 +204,12 @@ class WindowChromeTests(unittest.TestCase):
         api.window_toggle_fullscreen()
         self.assertFalse(api.window_state()["fullscreen"])
 
+    def test_fullscreen_is_not_entered_without_a_restorable_placement(self):
+        api, fake = self.bridge(placement_ok=False)
+        self.assertFalse(api.window_toggle_fullscreen())
+        self.assertIsNone(api._fullscreen_state)
+        self.assertEqual([], fake.set_window_pos_calls)
+
     def test_the_maximised_state_is_read_from_the_window_itself(self):
         # Aero Snap and Win+Up never touch our buttons, so the page has to be
         # able to ask rather than remember.
@@ -223,6 +242,19 @@ class WindowChromeTests(unittest.TestCase):
         self.assertTrue(fake.style & dcom_web_app.WS_MAXIMIZEBOX)
         self.assertTrue(fake.style & dcom_web_app.WS_MINIMIZEBOX)
         self.assertFalse(fake.style & dcom_web_app.WS_CAPTION)
+
+    def test_window_geometry_uses_the_typed_user32_bridge(self):
+        api, _ = self.bridge(zoomed=True)
+        self.assertEqual(
+            {
+                "x": 120,
+                "y": 80,
+                "width": 1300,
+                "height": 820,
+                "maximized": True,
+            },
+            dcom_web_app.get_window_geometry(api._window),
+        )
 
 
 class WindowGeometryResolutionTests(unittest.TestCase):

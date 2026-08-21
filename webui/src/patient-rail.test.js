@@ -35,8 +35,12 @@ const originalFetch = global.fetch;
 describe("Viewer tab: patient rail", () => {
   beforeEach(() => {
     setLanguage("vi");
+    if (!document.querySelector("#app")) document.body.innerHTML = '<div id="app"></div>';
     state.activeTabId = "tab-1";
     state.editingPatientInfo = false;
+    state.patientEditDraft = null;
+    state.tabs = [];
+    state.worklistPatients = [];
     state.selectedId = "s1";
     state.archive = { root: "D:\\PACS\\BN", patient: { ...PATIENT }, series: SERIES.map((s) => ({ ...s })) };
   });
@@ -281,6 +285,7 @@ describe("Viewer tab: patient rail", () => {
     await action("edit-patient-info");
     expect(state.editingPatientInfo).toBe(true);
     expect(tab1.editingPatientInfo).toBe(true);
+    document.querySelector('input[name="patientName"]').value = "Bản nháp tab 1";
 
     // Switch to tab-2: tab-2 should NOT be in edit mode
     await switchTab("tab-2");
@@ -292,11 +297,76 @@ describe("Viewer tab: patient rail", () => {
     await switchTab("tab-1");
     expect(state.activeTabId).toBe("tab-1");
     expect(state.editingPatientInfo).toBe(true);
+    expect(document.querySelector('input[name="patientName"]').value).toBe("Bản nháp tab 1");
 
     // Cancel edit mode on tab-1
     await action("cancel-patient-info");
     expect(state.editingPatientInfo).toBe(false);
     expect(tab1.editingPatientInfo).toBe(false);
+  });
+
+  it("applies a slow save response only to the tab that submitted it", async () => {
+    const tab1 = {
+      id: "tab-1",
+      patientId: "BN01",
+      patientName: "Bệnh nhân 1",
+      folder: "D:\\PACS\\BN01",
+      archive: { root: "D:\\PACS\\BN01", patient: { patientId: "BN01", patientName: "Bệnh nhân 1" }, series: [] },
+      selectedId: "", compareIds: [], mode: "single", tool: "window",
+      windowPreset: null, mprPrimary: "axial", status: "Sẵn sàng.",
+      editingPatientInfo: false, patientEditDraft: null,
+    };
+    const tab2 = {
+      id: "tab-2",
+      patientId: "BN02",
+      patientName: "Bệnh nhân 2",
+      folder: "D:\\PACS\\BN02",
+      archive: { root: "D:\\PACS\\BN02", patient: { patientId: "BN02", patientName: "Bệnh nhân 2" }, series: [] },
+      selectedId: "", compareIds: [], mode: "single", tool: "window",
+      windowPreset: null, mprPrimary: "axial", status: "Sẵn sàng.",
+      editingPatientInfo: false, patientEditDraft: null,
+    };
+    state.tabs = [tab1, tab2];
+    state.activeTabId = tab1.id;
+    state.archive = tab1.archive;
+    state.worklistPatients = [{
+      patientId: "BN01", patientName: "Bệnh nhân 1", folder: tab1.folder,
+    }];
+
+    await action("edit-patient-info");
+    document.querySelector('input[name="patientId"]').value = "BN01-NEW";
+    document.querySelector('input[name="patientName"]').value = "Bệnh nhân đã sửa";
+
+    let resolveFetch;
+    global.fetch = vi.fn(() => new Promise((resolve) => { resolveFetch = resolve; }));
+    const save = action(
+      "save-patient-info",
+      document.querySelector('[data-action="save-patient-info"]'),
+    );
+    await Promise.resolve();
+    await switchTab(tab2.id);
+
+    resolveFetch({
+      ok: true,
+      headers: { get: () => "application/json" },
+      json: async () => ({
+        patient: {
+          patientId: "BN01-NEW",
+          patientName: "Bệnh nhân đã sửa",
+          gender: "",
+          birthYear: "",
+          hospital: "",
+        },
+      }),
+    });
+    await save;
+
+    expect(state.activeTabId).toBe(tab2.id);
+    expect(state.archive.patient.patientId).toBe("BN02");
+    expect(tab2.archive.patient.patientName).toBe("Bệnh nhân 2");
+    expect(tab1.archive.patient.patientId).toBe("BN01-NEW");
+    expect(tab1.patientName).toBe("Bệnh nhân đã sửa");
+    expect(state.worklistPatients[0].patientId).toBe("BN01-NEW");
   });
 });
 

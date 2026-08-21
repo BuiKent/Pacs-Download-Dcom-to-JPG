@@ -1,3 +1,4 @@
+import datetime
 import io
 import json
 import os
@@ -24,6 +25,7 @@ from web_backend import (
     LocalApiServer,
     MEDIA_WORK_ROOT,
     WebController,
+    WorklistScanner,
     validate_mpr_manifest,
     _dicom_pixel_payload,
     _is_writable_dir,
@@ -1537,6 +1539,9 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.temp_dir = Path(tempfile.mkdtemp())
         self.controller = WebController()
         self.controller.output_root = self.temp_dir
+        # Tests that exercise source-folder persistence must never overwrite the
+        # real application's settings under %LOCALAPPDATA%.
+        self.controller.settings_path = self.temp_dir / "settings.json"
         self.server = LocalApiServer(self.controller, Path(tempfile.mkdtemp()))
         self.server.start()
 
@@ -2231,11 +2236,95 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         saved = json.loads((patient / "patient-index.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["patientName"], "NGUYỄN VĂN MỚI")
         self.assertEqual(saved["patientSex"], "F")
+        self.assertEqual(saved["patientBirthDate"], "19850515")
+        self.assertNotIn("birthYear", saved)
         self.assertEqual(saved["phone"], "0988776655")
         self.assertEqual(saved["address"], "123 Đường ABC, Hà Nội")
         self.assertEqual(saved["hospitalName"], "BV Đa khoa Mới")
         self.assertEqual(saved["diagnosis"], "U xơ tuyến vú")
         self.assertEqual(saved["studies"]["1.2.3"]["status"], "complete")
+
+    def test_birth_year_without_exact_date_does_not_fabricate_january_first(self) -> None:
+        patient = self.temp_dir / "BN-BIRTH-YEAR"
+        (patient / "VIDEO").mkdir(parents=True)
+        self._write_video(patient / "VIDEO" / "a.mp4")
+        manifest_path = patient / "patient-index.json"
+        manifest_path.write_text(json.dumps({
+            "format": "dcom-patient-index-v1",
+            "patientId": "BN-BIRTH-YEAR",
+            "patientName": "BỆNH NHÂN MẪU",
+            "studies": {},
+        }), encoding="utf-8")
+        catalog = ArchiveCatalog()
+        catalog.open(patient)
+
+        result = self.controller.update_patient_info(
+            {"patientId": "BN-BIRTH-YEAR", "birthYear": "1985"},
+            catalog=catalog,
+        )
+
+        saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual("1985", saved["birthYear"])
+        self.assertNotIn("patientBirthDate", saved)
+        self.assertEqual("1985", result["patient"]["birthYear"])
+        self.assertEqual("", result["patient"]["birthDate"])
+        self.assertEqual("", result["patient"]["age"])
+        self.assertEqual(
+            "1985", WorklistScanner(self.controller)._manifest_patient_meta(patient)["birthYear"]
+        )
+
+    def test_patient_editor_can_clear_gender_and_birth_year(self) -> None:
+        patient = self.temp_dir / "BN-CLEAR-INFO"
+        (patient / "VIDEO").mkdir(parents=True)
+        self._write_video(patient / "VIDEO" / "a.mp4")
+        manifest_path = patient / "patient-index.json"
+        manifest_path.write_text(json.dumps({
+            "format": "dcom-patient-index-v1",
+            "patientId": "BN-CLEAR-INFO",
+            "patientName": "BỆNH NHÂN MẪU",
+            "patientSex": "M",
+            "patientBirthDate": "19800515",
+            "studies": {},
+        }), encoding="utf-8")
+        catalog = ArchiveCatalog()
+        catalog.open(patient)
+
+        result = self.controller.update_patient_info(
+            {"patientId": "BN-CLEAR-INFO", "gender": "", "birthYear": ""},
+            catalog=catalog,
+        )
+
+        saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual("", saved["patientSex"])
+        self.assertNotIn("patientBirthDate", saved)
+        self.assertEqual("", result["patient"]["gender"])
+        self.assertEqual("", result["patient"]["birthYear"])
+
+    def test_patient_editor_rejects_an_empty_id_and_future_birth_year(self) -> None:
+        patient = self.temp_dir / "BN-INVALID-INFO"
+        (patient / "VIDEO").mkdir(parents=True)
+        self._write_video(patient / "VIDEO" / "a.mp4")
+        (patient / "patient-index.json").write_text(json.dumps({
+            "format": "dcom-patient-index-v1",
+            "patientId": "BN-INVALID-INFO",
+            "patientName": "BỆNH NHÂN MẪU",
+            "studies": {},
+        }), encoding="utf-8")
+        catalog = ArchiveCatalog()
+        catalog.open(patient)
+
+        with self.assertRaisesRegex(ValueError, "Mã bệnh nhân"):
+            self.controller.update_patient_info(
+                {"patientId": "", "birthYear": "1985"}, catalog=catalog,
+            )
+        with self.assertRaisesRegex(ValueError, "Năm sinh"):
+            self.controller.update_patient_info(
+                {
+                    "patientId": "BN-INVALID-INFO",
+                    "birthYear": str(datetime.date.today().year + 1),
+                },
+                catalog=catalog,
+            )
 
     def test_timeline_label_is_stored_without_overwriting_study_metadata(self) -> None:
         """A friendly local title is an overlay, not a rewritten DICOM field."""
@@ -2666,6 +2755,7 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
 
         self.controller.output_root = self.temp_dir
         self.controller.source_folders = [str(self.temp_dir)]
+        self.assertEqual(self.temp_dir / "settings.json", self.controller.settings_path)
 
         # Initial scan only finds p1
         scanner = WorklistScanner(self.controller)

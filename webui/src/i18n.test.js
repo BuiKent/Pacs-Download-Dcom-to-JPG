@@ -21,6 +21,9 @@ describe("language selection", () => {
     expect(t("Tải tất cả file")).toBe("Download all files");
     expect(t("Quét danh sách series")).toBe("Scan series list");
     expect(t("Đo chiều dài (mm)")).toBe("Measure length (mm)");
+    expect(t("Tải ca theo mã bệnh nhân")).toBe("Download by patient ID");
+    expect(t("Đã thêm thư mục nguồn thành công.")).toBe("Source folder added successfully.");
+    expect(t("Lỗi:")).toBe("Error:");
   });
 
   it("falls back to the Vietnamese text when a string is not translated", () => {
