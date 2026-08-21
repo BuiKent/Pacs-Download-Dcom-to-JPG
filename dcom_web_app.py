@@ -803,42 +803,6 @@ class MONITORINFO(ctypes.Structure):
     ]
 
 
-class _MARGINS(ctypes.Structure):
-    """MARGINS for DwmExtendFrameIntoClientArea."""
-    _fields_ = [
-        ("left", ctypes.c_int), ("right", ctypes.c_int),
-        ("top", ctypes.c_int), ("bottom", ctypes.c_int),
-    ]
-
-
-# ── WM_NCCALCSIZE subclass for frameless DWM animations ───────────
-# WS_CAPTION enables DWM minimize/maximize transitions, but creates
-# a visible title bar. This subclass returns 0 for WM_NCCALCSIZE to
-# collapse the non-client area (= no title bar drawn), while the
-# style flag still tells DWM to animate.  The callback is stored as
-# a module-level global so ctypes never garbage-collects it.
-
-_SUBCLASSPROC_T = ctypes.WINFUNCTYPE(
-    ctypes.c_ssize_t,    # LRESULT
-    ctypes.c_void_p,     # HWND
-    ctypes.c_uint,       # UINT msg
-    ctypes.c_size_t,     # WPARAM
-    ctypes.c_ssize_t,    # LPARAM
-    ctypes.c_size_t,     # UINT_PTR uIdSubclass
-    ctypes.c_size_t,     # DWORD_PTR dwRefData
-)
-
-
-def _nccalcsize_handler(hwnd, msg, wp, lp, uid, ref):
-    """Return 0 for WM_NCCALCSIZE to zero the non-client area."""
-    if msg == 0x0083 and wp:          # WM_NCCALCSIZE, wParam=TRUE
-        return 0
-    _dsp = ctypes.windll.comctl32.DefSubclassProc
-    _dsp.restype = ctypes.c_ssize_t
-    return _dsp(hwnd, msg, wp, lp)
-
-
-_frameless_subclass_cb = _SUBCLASSPROC_T(_nccalcsize_handler)
 
 
 def get_window_geometry(window) -> dict | None:
@@ -965,34 +929,11 @@ def launch_web(
                 # WS_THICKFRAME   0x00040000 – resize borders + Aero Snap
                 # WS_MAXIMIZEBOX  0x00010000 – maximize/restore via OS
                 # WS_MINIMIZEBOX  0x00020000 – minimize via taskbar
-                # WS_SYSMENU      0x00080000 – Alt+F4, system menu
-                # WS_CAPTION      0x00C00000 – enables DWM animations
                 style = user32.GetWindowLongW(hwnd, -16)
                 user32.SetWindowLongW(
                     hwnd, -16,
-                    style | 0x00040000 | 0x00010000 | 0x00020000
-                          | 0x00080000 | 0x00C00000,
+                    style | 0x00040000 | 0x00010000 | 0x00020000,
                 )
-
-                # Install subclass that zeros non-client area so the
-                # title bar from WS_CAPTION is invisible but DWM
-                # still provides smooth minimize/maximize animations.
-                try:
-                    ctypes.windll.comctl32.SetWindowSubclass(
-                        hwnd, _frameless_subclass_cb, 1, 0,
-                    )
-                except Exception:
-                    pass
-
-                # Extend DWM frame 1px into client area – signals DWM
-                # that this window participates in composition effects.
-                try:
-                    margins = _MARGINS(0, 0, 1, 0)
-                    ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(
-                        hwnd, ctypes.byref(margins),
-                    )
-                except Exception:
-                    pass
 
                 # Set MaximizedBounds so Maximized fits Screen.WorkingArea exactly
                 from System.Windows.Forms import Screen
