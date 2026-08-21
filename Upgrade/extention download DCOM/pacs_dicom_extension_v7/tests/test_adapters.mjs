@@ -2,6 +2,7 @@ import {VradAdapter} from '../lib/adapters/vrad.js';
 import {VrpacsAdapter} from '../lib/adapters/vrpacs.js';
 import {DicomwebAdapter} from '../lib/adapters/dicomweb.js';
 import {VietmyAdapter, parseVietmyManifest} from '../lib/adapters/vietmy.js';
+import {Mach7Adapter} from '../lib/adapters/mach7.js';
 const normalizeStudy=x=>x;
 const inheritQuery=(target,source)=>{const t=new URL(target),s=new URL(source);for(const[k,v]of s.searchParams)if(!t.searchParams.has(k))t.searchParams.append(k,v);return t.href};
 const headersForUrl=()=>({});
@@ -26,3 +27,37 @@ if(inv.patient.id!=='81T'||inv.series.length!==2||tasks.length!==2)throw new Err
 if(tasks.some(t=>!t.url.includes('/ws/getfile.ashx')||t.url.includes('getimagefile')))throw new Error('VietMy must use filePath/getfile only');
 if(tasks.some(t=>t.strategy!=='fetch-dicom'))throw new Error('VietMy task strategy');
 console.log('VietMy adapter tests OK');
+
+// Test Mach7 Adapter
+summary={detector:'MACH7',currentUrl:'http://cdha.benhviencuadong.vn/ClinicalStudio/Procedures/ProcedureComposite?ID=csyKbu5XEZv7awWCYleVbA%3d%3d',requests:[{type:'MACH7_MANIFEST',url:'http://cdha.benhviencuadong.vn/ClinicalStudio/Procedures/ProcedureComposite?ID=csyKbu5XEZv7awWCYleVbA%3d%3d',score:115}]};
+state={
+  domPatient:{
+    patientName:'HOANG THI HOAI THUONG TAM DAN 2011',
+    patientId:'26100659',
+    patientAge:'014Y',
+    studyDate:'7/2/2026 2:34 PM',
+    accessionNumber:'10742287',
+    studyDescription:'Chup cong huong tu cot song that lung',
+    modality:'MR',
+    isMach7:true
+  },
+  domSeries:[
+    {number:'1',description:'Series 1',imageCount:27},
+    {number:'2',description:'Series 2',imageCount:12},
+    {number:'3',description:'Series 3',imageCount:15},
+    {number:'4',description:'Series 4',imageCount:20},
+    {number:'5',description:'Series 5',imageCount:18}
+  ],
+  genericEntries:[
+    {url:'http://cdha.benhviencuadong.vn/ClinicalStudio/wado?study=1.2.3&series=1.2.3.1&object=1.2.3.1.1',method:'GET',meta:{studyUid:'1.2.3',seriesUid:'1.2.3.1',sopInstanceUid:'1.2.3.1.1',instanceNumber:'1',seriesDescription:'AX T2',modality:'MR'}}
+  ]
+};
+ctx={summary,state,normalizeStudy,headersForUrl,inheritQuery};
+if(!Mach7Adapter.match(summary,state))throw new Error('Mach7 match failed');
+inv=await Mach7Adapter.analyze(ctx);
+if(inv.adapter!=='MACH7')throw new Error('Mach7 adapter id');
+if(inv.patient.name!=='HOANG THI HOAI THUONG TAM DAN 2011'||inv.patient.id!=='26100659'||inv.patient.accession!=='10742287')throw new Error('Mach7 patient parse failed');
+if(inv.series.length!==5)throw new Error(`Expected 5 series from Mach7 DOM merging, got ${inv.series.length}`);
+tasks=await Mach7Adapter.enumerate(inv,[inv.series[0].id],ctx);
+if(tasks.length!==1||!tasks[0].url.includes('ClinicalStudio/wado')||tasks[0].strategy!=='fetch-dicom')throw new Error('Mach7 enumerate failed');
+console.log('Mach7 adapter tests OK');

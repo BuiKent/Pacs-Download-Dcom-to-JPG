@@ -65,8 +65,27 @@ function renderInventory(){
   const prev=inventory.previousDownload;
   show('partialBanner',Boolean(prev&&prev.status!=='done'&&prev.lastDownloadAt));
   if(prev&&prev.status!=='done'&&prev.lastDownloadAt)$('partialBanner').textContent=`Previous run: ${prev.completed||0}/${prev.total||'?'} images · retry will skip existing files.`;
-  show('adapterNote',inventory.adapter==='ZFP');
+  show('adapterNote',inventory.adapter==='ZFP'||inventory.adapter==='MACH7');
   if(inventory.adapter==='ZFP')$('adapterNote').textContent='GE viewer does not support on-demand image fetching. The extension captures images loaded by the viewer itself, so this tab will reload automatically — keep tab untouched during download.';
+  else if(inventory.adapter==='MACH7'){
+    const note=$('adapterNote');
+    note.innerHTML='Mach7 Diagnostic Studio: Nhấp hoặc kéo các series từ thanh thumbnail vào màn hình để extension nhận đủ toàn bộ các series. <button id="btnMach7Autofetch" style="margin-top:6px;display:block;width:100%;padding:5px 8px;font-size:12px;font-weight:600;cursor:pointer;background:#2563eb;color:#fff;border:none;border-radius:4px;">⚡ Tự động nạp toàn bộ Series</button>';
+    const btn = note.querySelector('#btnMach7Autofetch');
+    if(btn){
+      btn.onclick = async (e) => {
+        e.preventDefault();
+        btn.textContent = '⏳ Đang nạp các series...';
+        btn.disabled = true;
+        try {
+          const res = await chrome.tabs.sendMessage(activeTabId, {type: 'AUTOFETCH_MACH7_SERIES'});
+          btn.textContent = `✓ Đã nạp ${res?.count || ''} series`;
+        } catch(_) {
+          btn.textContent = '⚡ Thử lại nạp Series';
+          btn.disabled = false;
+        }
+      };
+    }
+  }
 
   const currentStudyKey=inventory.studyUid||`${inventory.patient?.id||''}_${inventory.patient?.studyDate||''}`;
   const isSameStudy=(currentStudyKey&&currentStudyKey===lastRenderedStudyKey);

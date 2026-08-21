@@ -27,6 +27,9 @@ export function classifyPacsUrl(raw) {
   let path = '';
   try { path = new URL(url).pathname.toLowerCase().replace(/\/+$/, ''); } catch {}
 
+  if (/\/ClinicalStudio\/Procedures\/ProcedureComposite/i.test(path) || (/\/ClinicalStudio/i.test(path) && url.includes('ID='))) return { type:'MACH7_MANIFEST', url, score:115 };
+  if (/\/ClinicalStudio\/(?:Procedures|Ajax|Chat|Worklists)\//i.test(path)) return { type:'MACH7_API', url, score:85 };
+  if (/\/ClinicalStudio\/.*(?:wado|dicom|getimage|image|frame)/i.test(lower)) return { type:'MACH7_DICOM', url, score:95 };
   if (/\/ws\/ws\.asmx\/getlistimagefileinfo$/i.test(path)) return { type:'VIETMY_MANIFEST', url, score:120 };
   if (/\/ws\/getfile\.ashx$/i.test(path)) return { type:'VIETMY_DICOM', url, score:112 };
   if (/\/ws\/getimagefile\.ashx$/i.test(path)) return { type:'RENDERED_JPEG', url, score:42 };
@@ -109,6 +112,7 @@ export function classifyViewerShell(raw) {
   try { u = new URL(url); } catch { return null; }
   const path = u.pathname.toLowerCase();
   const hash = (u.hash || '').toLowerCase();
+  if (/\/ClinicalStudio\/Procedures\/ProcedureComposite/i.test(path) || (/\/ClinicalStudio/i.test(path) && u.searchParams.has('ID'))) return { type:'MACH7_SHELL', url, score:96 };
   if (/\/ris\/vr_?viewer(?:\/|$)/i.test(path)) return { type:'RIS_VRVIEWER', url, score:82 };
   if (/\/pages\/sharestudy\.aspx$/i.test(path) && (u.searchParams.has('stoken') || u.searchParams.has('token') || Boolean(unnamedToken(u.searchParams)))) return { type:'SHARE_STUDY', url, score:92 };
   if (path.includes('/viewer/s') && /(?:^#|\/)view\?id=/.test(hash)) return { type:'VRAD_SHELL', url, score:78 };
