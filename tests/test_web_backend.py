@@ -2192,6 +2192,51 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertEqual(saved["patientName"], "LÊ VĂN MẪU")
         self.assertEqual(saved["studies"]["1.2.3"]["status"], "complete")
 
+    def test_update_patient_info_updates_all_fields_and_persists_to_disk(self) -> None:
+        """Editing patient administrative info updates patient-index.json cleanly."""
+        patient = self.temp_dir / "BN-UPDATE-INFO"
+        (patient / "VIDEO").mkdir(parents=True)
+        self._write_video(patient / "VIDEO" / "a.mp4")
+        (patient / "patient-index.json").write_text(json.dumps({
+            "format": "dcom-patient-index-v1",
+            "patientId": "BN-UPDATE-INFO",
+            "patientName": "NGUYỄN VĂN CŨ",
+            "patientSex": "M",
+            "patientBirthDate": "19800515",
+            "hospitalName": "BV Cũ",
+            "studies": {"1.2.3": {"studyUid": "1.2.3", "folder": "VIDEO", "status": "complete"}},
+        }), encoding="utf-8")
+
+        catalog = ArchiveCatalog()
+        catalog.open(patient)
+        result = self.controller.update_patient_info({
+            "patientName": "NGUYỄN VĂN MỚI",
+            "patientId": "BN-UPDATE-INFO",
+            "gender": "Nữ",
+            "birthYear": "1985",
+            "phone": "0988776655",
+            "address": "123 Đường ABC, Hà Nội",
+            "hospital": "BV Đa khoa Mới",
+            "diagnosis": "U xơ tuyến vú",
+        }, catalog=catalog)
+
+        self.assertEqual(result["patient"]["patientName"], "NGUYỄN VĂN MỚI")
+        self.assertEqual(result["patient"]["gender"], "Nữ")
+        self.assertEqual(result["patient"]["birthYear"], "1985")
+        self.assertEqual(result["patient"]["phone"], "0988776655")
+        self.assertEqual(result["patient"]["address"], "123 Đường ABC, Hà Nội")
+        self.assertEqual(result["patient"]["hospital"], "BV Đa khoa Mới")
+        self.assertEqual(result["patient"]["diagnosis"], "U xơ tuyến vú")
+
+        saved = json.loads((patient / "patient-index.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["patientName"], "NGUYỄN VĂN MỚI")
+        self.assertEqual(saved["patientSex"], "F")
+        self.assertEqual(saved["phone"], "0988776655")
+        self.assertEqual(saved["address"], "123 Đường ABC, Hà Nội")
+        self.assertEqual(saved["hospitalName"], "BV Đa khoa Mới")
+        self.assertEqual(saved["diagnosis"], "U xơ tuyến vú")
+        self.assertEqual(saved["studies"]["1.2.3"]["status"], "complete")
+
     def test_timeline_label_is_stored_without_overwriting_study_metadata(self) -> None:
         """A friendly local title is an overlay, not a rewritten DICOM field."""
         patient = self.temp_dir / "BN-TIMELINE"

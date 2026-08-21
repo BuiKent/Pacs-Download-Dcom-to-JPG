@@ -126,6 +126,7 @@ const state = {
   mprPrimary: "axial",
   windowPreset: "full",
   history: [],
+  editingPatientInfo: false,
   // The last folder a direct link filled. A retry has to merge into it instead
   // of creating a second folder for the same study.
   lastDirectUrl: "",
@@ -1255,23 +1256,105 @@ function renderPatientRail() {
 
   const timeline = buildMediaTimeline(series, patient.timelineLabels || {});
 
+  const renderInfoCard = () => {
+    if (state.editingPatientInfo) {
+      return `
+        <div class="rec-card rec-info-card editing">
+          <div class="rec-card-header">
+            <b>👤 ${escapeHtml(t("Sửa thông tin bệnh nhân"))}</b>
+            <div class="rec-card-actions">
+              <button class="mini-btn primary" type="button" data-action="save-patient-info" title="${escapeHtml(t("Lưu thay đổi"))}">✓</button>
+              <button class="mini-btn" type="button" data-action="cancel-patient-info" title="${escapeHtml(t("Hủy"))}">✕</button>
+            </div>
+          </div>
+          <form class="rec-edit-form" data-field="patient-edit-form" onsubmit="event.preventDefault();">
+            <label class="rec-form-field">
+              <span>${escapeHtml(t("Họ và tên"))}</span>
+              <input name="patientName" value="${escapeHtml(patient.patientName || "")}" placeholder="${escapeHtml(t("Nhập họ tên"))}">
+            </label>
+            <label class="rec-form-field">
+              <span>${escapeHtml(t("Mã bệnh nhân"))}</span>
+              <input name="patientId" value="${escapeHtml(patient.patientId || "")}" placeholder="${escapeHtml(t("Nhập mã BN"))}">
+            </label>
+            <div class="rec-form-row">
+              <label class="rec-form-field" style="flex:1;">
+                <span>${escapeHtml(t("Giới tính"))}</span>
+                <select name="gender">
+                  <option value="" ${!patient.gender ? "selected" : ""}>—</option>
+                  <option value="Nam" ${patient.gender === "Nam" ? "selected" : ""}>${escapeHtml(t("Nam"))}</option>
+                  <option value="Nữ" ${patient.gender === "Nữ" ? "selected" : ""}>${escapeHtml(t("Nữ"))}</option>
+                  <option value="Khác" ${patient.gender && patient.gender !== "Nam" && patient.gender !== "Nữ" ? "selected" : ""}>${escapeHtml(t("Khác"))}</option>
+                </select>
+              </label>
+              <label class="rec-form-field" style="flex:1;">
+                <span>${escapeHtml(t("Năm sinh"))}</span>
+                <input name="birthYear" type="number" min="1900" max="2099" value="${escapeHtml(patient.birthYear || "")}" placeholder="YYYY">
+              </label>
+            </div>
+            <label class="rec-form-field">
+              <span>${escapeHtml(t("Số điện thoại"))}</span>
+              <input name="phone" type="tel" value="${escapeHtml(patient.phone || "")}" placeholder="${escapeHtml(t("Nhập SĐT"))}">
+            </label>
+            <label class="rec-form-field">
+              <span>${escapeHtml(t("Địa chỉ"))}</span>
+              <input name="address" value="${escapeHtml(patient.address || "")}" placeholder="${escapeHtml(t("Nhập địa chỉ"))}">
+            </label>
+            <label class="rec-form-field">
+              <span>${escapeHtml(t("Bệnh viện"))}</span>
+              <input name="hospital" value="${escapeHtml(patient.hospital || "")}" placeholder="${escapeHtml(t("Tên bệnh viện"))}">
+            </label>
+            <label class="rec-form-field">
+              <span>${escapeHtml(t("Chẩn đoán"))}</span>
+              <textarea name="diagnosis" rows="2" placeholder="${escapeHtml(t("Chẩn đoán / Ghi chú"))}">${escapeHtml(patient.diagnosis || "")}</textarea>
+            </label>
+          </form>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="rec-card rec-info-card">
+        <div class="rec-card-header">
+          <b>👤 ${escapeHtml(t("Thông tin bệnh nhân"))}</b>
+          <button class="rec-edit-btn" type="button" data-action="edit-patient-info"
+            title="${escapeHtml(t("Chỉnh sửa thông tin bệnh nhân"))}">✎</button>
+        </div>
+        <div class="rec-id">
+          <b>${escapeHtml(dash(patient.patientName) === "—"
+            ? t("Chưa có tên bệnh nhân")
+            : patient.patientName)}</b>
+          <small>${escapeHtml(dash(patient.patientId))}${identity ? ` · ${escapeHtml(identity)}` : ""}</small>
+        </div>
+        <dl class="rec-facts">
+          <div class="rfact"><dt>${escapeHtml(t("Mã BN"))}</dt><dd>${escapeHtml(dash(patient.patientId))}</dd></div>
+          <div class="rfact"><dt>${escapeHtml(t("Giới tính"))}</dt><dd>${escapeHtml(dash(patient.gender))}</dd></div>
+          <div class="rfact"><dt>${escapeHtml(t("Năm sinh"))}</dt><dd>${escapeHtml(dash(patient.birthYear))}${patient.age ? ` (${tf("{} tuổi", patient.age)})` : ""}</dd></div>
+          <div class="rfact"><dt>${escapeHtml(t("Điện thoại"))}</dt><dd>${escapeHtml(dash(patient.phone))}</dd></div>
+          <div class="rfact"><dt>${escapeHtml(t("Địa chỉ"))}</dt><dd>${escapeHtml(dash(patient.address))}</dd></div>
+          <div class="rfact"><dt>${escapeHtml(t("Bệnh viện"))}</dt><dd>${escapeHtml(dash(patient.hospital))}</dd></div>
+          <div class="rfact">
+            <dt>${escapeHtml(t("Chẩn đoán"))}</dt>
+            <dd><button class="rfact-edit" type="button" data-action="edit-diagnosis"
+              title="${escapeHtml(t("Ghi chẩn đoán cho hồ sơ này"))}">${escapeHtml(dash(patient.diagnosis))}</button></dd>
+          </div>
+        </dl>
+      </div>
+    `;
+  };
+
   return `
     <aside class="rec-rail">
-      <div class="rec-id">
-        <b>${escapeHtml(dash(patient.patientName) === "—"
-          ? t("Chưa có tên bệnh nhân")
-          : patient.patientName)}</b>
-        <small>${escapeHtml(dash(patient.patientId))}${identity ? ` · ${escapeHtml(identity)}` : ""}</small>
+      <div class="rec-card rec-history-card">
+        <div class="rec-card-header">
+          <b>${icons.history} ${escapeHtml(t("Lịch sử mở gần đây"))}</b>
+        </div>
+        <label class="field history-field" style="margin:0;">
+          <select data-field="history" title="${escapeHtml(t("Mở lại thư mục đã tải hoặc đã xem"))}"
+            ${state.history.length ? "" : "disabled"}>${renderHistoryOptions()}</select>
+        </label>
       </div>
 
-      <dl class="rec-facts">
-        <div class="rfact"><dt>${escapeHtml(t("Bệnh viện"))}</dt><dd>${escapeHtml(dash(patient.hospital))}</dd></div>
-        <div class="rfact">
-          <dt>${escapeHtml(t("Chẩn đoán"))}</dt>
-          <dd><button class="rfact-edit" type="button" data-action="edit-diagnosis"
-            title="${escapeHtml(t("Ghi chẩn đoán cho hồ sơ này"))}">${escapeHtml(dash(patient.diagnosis))}</button></dd>
-        </div>
-      </dl>
+      ${renderInfoCard()}
 
       <div class="rec-timeline-head"><b>${escapeHtml(t("Lịch sử khám"))}</b></div>
       <div class="tl">
@@ -1809,8 +1892,6 @@ function renderStudyListPanel() {
       <button class="soft-button" data-action="refresh-worklist" ${state.worklistLoading ? "disabled" : ""}>${escapeHtml(t("Quét lại"))}</button>
     </div>
 
-    <div class="worklist-summary activity-summary">${renderWorklistSummaryInner()}</div>
-
     <div class="worklist-tree">${renderWorklistTreeInner()}</div>
   `;
 }
@@ -1835,25 +1916,12 @@ const JOB_KIND_LABELS = {
 function renderActivityPanelInner() {
   const job = state.job || state.bootstrap?.job || {};
   const running = job.status === "running";
-  const series = state.archive?.series || [];
-  const sliceTotal = series.reduce((sum, item) => sum + (Number(item.sliceCount) || 0), 0);
   const history = state.history || [];
 
-  const stats = [
-    { value: history.length, label: t("Hồ sơ gần đây") },
-    { value: state.tabs.length, label: t("Tab đang mở") },
-    { value: series.length, label: t("Series trong kho") },
-    { value: sliceTotal.toLocaleString("vi-VN"), label: t("Ảnh & lát cắt") },
-  ];
-
   return `
+    <div class="activity-head">${escapeHtml(t("Tổng quan kho & dữ liệu"))}</div>
     <div class="activity-summary">
-      ${stats.map((item) => `
-        <div class="activity-stat">
-          <b>${escapeHtml(String(item.value))}</b>
-          <small>${escapeHtml(item.label)}</small>
-        </div>
-      `).join("")}
+      ${renderWorklistSummaryInner()}
     </div>
 
     <div class="activity-head">${escapeHtml(t("Đang xử lý"))}</div>
@@ -2126,10 +2194,6 @@ function render() {
       <aside class="download-panel">
         <div class="panel-title"><b>${escapeHtml(t("TẢI MRI / CT"))}</b>
           <button data-action="toggle-download" title="${escapeHtml(t("Thu gọn khu tải phim"))}">×</button></div>
-        <label class="field history-field">
-          <select data-field="history" title="${escapeHtml(t("Mở lại thư mục đã tải hoặc đã xem"))}"
-            ${state.history.length ? "" : "disabled"}>${renderHistoryOptions()}</select>
-        </label>
         <section class="dicom-source-card">
           <button data-action="import-dicom-folder"
             title="${escapeHtml(t("Tính năng xuất JPG riêng; không dùng để mở DICOM trong viewer."))}">${escapeHtml(t("Chuyển Dcom → JPG"))}</button>
@@ -3143,11 +3207,11 @@ async function refreshHistory() {
   try {
     const result = await api("/api/history");
     state.history = Array.isArray(result?.history) ? result.history : [];
-    const select = app.querySelector("[data-field='history']");
-    if (select) {
+    const selects = app?.querySelectorAll("[data-field='history']") || [];
+    selects.forEach((select) => {
       select.innerHTML = renderHistoryOptions();
       select.disabled = !state.history.length;
-    }
+    });
   } catch (_) {
     // History is a convenience; a failed refresh must not disturb the session.
   }
@@ -3556,6 +3620,68 @@ async function action(name, element = null) {
     }
     if (name === "media-file-prev" || name === "media-file-next") {
       stepMediaFile(selectedSeries(), name === "media-file-next" ? 1 : -1);
+      return;
+    }
+    if (name === "edit-patient-info") {
+      state.editingPatientInfo = true;
+      const currentTab = state.tabs.find((t) => t.id === state.activeTabId);
+      if (currentTab) currentTab.editingPatientInfo = true;
+      render();
+      return;
+    }
+    if (name === "cancel-patient-info") {
+      state.editingPatientInfo = false;
+      const currentTab = state.tabs.find((t) => t.id === state.activeTabId);
+      if (currentTab) currentTab.editingPatientInfo = false;
+      render();
+      return;
+    }
+    if (name === "save-patient-info") {
+      const form = app.querySelector("[data-field='patient-edit-form']");
+      if (!form) return;
+      const formData = new FormData(form);
+      const info = {
+        patientName: formData.get("patientName") || "",
+        patientId: formData.get("patientId") || "",
+        gender: formData.get("gender") || "",
+        birthYear: formData.get("birthYear") || "",
+        phone: formData.get("phone") || "",
+        address: formData.get("address") || "",
+        hospital: formData.get("hospital") || "",
+        diagnosis: formData.get("diagnosis") || "",
+      };
+      try {
+        const result = await api("/api/patient/update", {
+          method: "POST",
+          body: JSON.stringify({
+            info,
+            archiveRoot: state.archive?.root || "",
+            patientId: state.archive?.patient?.patientId || "",
+          }),
+        });
+        if (result?.patient) {
+          state.archive.patient = result.patient;
+          const currentTab = state.tabs.find((t) => t.id === state.activeTabId);
+          if (currentTab) {
+            currentTab.patientName = result.patient.patientName || currentTab.patientName;
+            currentTab.patientId = result.patient.patientId || currentTab.patientId;
+            currentTab.editingPatientInfo = false;
+          }
+          const wp = state.worklistPatients.find((p) => p.patientId === state.archive.patient.patientId || (result.patient.patientId && p.patientId === result.patient.patientId));
+          if (wp) {
+            if (result.patient.patientName) wp.patientName = result.patient.patientName;
+            if (result.patient.patientId) wp.patientId = result.patient.patientId;
+            if (result.patient.hospital) wp.hospital = result.patient.hospital;
+          }
+        }
+        state.editingPatientInfo = false;
+        const currentTab = state.tabs.find((t) => t.id === state.activeTabId);
+        if (currentTab) currentTab.editingPatientInfo = false;
+        render();
+        setStatus(t("Đã lưu thông tin bệnh nhân."));
+      } catch (err) {
+        setStatus(`${t("Lỗi:")} ${err.message || err}`, true);
+      }
       return;
     }
     if (name === "edit-diagnosis") {
@@ -4450,12 +4576,14 @@ async function switchTab(tabId) {
     currentTab.windowPreset = state.windowPreset;
     currentTab.mprPrimary = state.mprPrimary;
     currentTab.status = state.status;
+    currentTab.editingPatientInfo = Boolean(state.editingPatientInfo);
     saveMediaWorkspaceToTab(currentTab);
   }
   clearViewer();
   state.activeTabId = tabId;
   if (tabId === "worklist") {
     // The worklist scans the shared archive, not one patient's session.
+    state.editingPatientInfo = false;
     setApiSession("");
     render();
     return;
@@ -4473,6 +4601,7 @@ async function switchTab(tabId) {
     state.windowPreset = targetTab.windowPreset;
     state.mprPrimary = targetTab.mprPrimary;
     state.status = targetTab.status;
+    state.editingPatientInfo = Boolean(targetTab.editingPatientInfo);
     restoreMediaWorkspaceFromTab(targetTab);
     for (const series of state.archive.series) registerSeries(series);
   }
@@ -4518,6 +4647,7 @@ function applyArchive(archive, sessionId = "", folder = "") {
   let currentTab = state.tabs.find((t) => t.id === state.activeTabId);
   if (!currentTab || state.activeTabId === "worklist") {
     resetMediaWorkspace();
+    state.editingPatientInfo = false;
     const newTab = {
       id: `tab-${Date.now()}`,
       sessionId: sessionId || "",
@@ -4535,6 +4665,7 @@ function applyArchive(archive, sessionId = "", folder = "") {
       mprPrimary: "axial",
       scrollLinked: false,
       status: "Sẵn sàng.",
+      editingPatientInfo: false,
       mediaIndex: state.mediaIndex,
       mediaEdits: state.mediaEdits,
       photoWorkingPath: null,
@@ -5136,4 +5267,6 @@ export {
   groupSeriesHierarchically,
   renderSeriesOptions,
   renderSeriesStripContent,
+  switchTab,
+  applyArchive,
 };

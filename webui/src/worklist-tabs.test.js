@@ -214,13 +214,15 @@ describe("Worklist: Study List / Activity & Queue tabs", () => {
     expect((html.match(/class="activity-hrow"/g) || []).length).toBe(2);
   });
 
-  it("counts real archive contents in the summary tiles", () => {
-    state.archive = { root: "D:\\Kho", series: [{ sliceCount: 120 }, { sliceCount: 80 }] };
-    state.tabs = [{ id: "p1" }];
+  it("counts real archive contents in the summary tiles in the Activity panel", () => {
+    state.worklistPatients = PATIENTS.map((p) => ({ ...p }));
     const html = renderActivityPanelInner();
-    expect(html).toContain("Series trong kho");
+    expect(html).toContain("bệnh nhân");
+    expect(html).toContain("hồ sơ");
+    expect(html).toContain("ảnh &amp; lát");
     expect(html).toContain("<b>2</b>");
-    expect(html).toContain("<b>200</b>");
+    expect(html).toContain("<b>3</b>");
+    expect(html).toContain("<b>1.742</b>");
   });
 
   it("says so plainly when there is no history yet", () => {

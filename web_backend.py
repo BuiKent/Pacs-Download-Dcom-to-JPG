@@ -1895,9 +1895,11 @@ class ArchiveCatalog:
             "birthDate": birth_digits,
             "birthYear": birth_year,
             "age": age,
-            "gender": {"M": "Nam", "F": "Nữ"}.get(sex, ""),
-            "hospital": str(manifest.get("hospitalName") or "").strip(),
+            "gender": {"M": "Nam", "F": "Nữ"}.get(sex, "") if sex in ("M", "F") else str(manifest.get("gender") or "").strip(),
+            "hospital": str(manifest.get("hospitalName") or manifest.get("hospital") or "").strip(),
             "hospitalKey": str(manifest.get("hospitalKey") or "").strip(),
+            "phone": str(manifest.get("phone") or manifest.get("phoneNumber") or "").strip(),
+            "address": str(manifest.get("address") or "").strip(),
             # Not a DICOM tag and not in the manifest schema: a local archive
             # has no RIS to read a clinical diagnosis from. Present so the UI
             # has one place to read it once a source exists.
@@ -3212,6 +3214,94 @@ class WebController:
                 target._patient = dict(patient)
         return {"patient": patient}
 
+    def update_patient_info(
+        self,
+        info: dict,
+        *,
+        archive_root: str = "",
+        expected_patient_id: str = "",
+        catalog: Optional[ArchiveCatalog] = None,
+    ) -> dict:
+        """Update patient administrative details directly in patient-index.json.
+
+        Allows editing patient name, ID, gender, birth date/year, phone, address,
+        hospital, and diagnosis notes while preserving studies and technical metadata.
+        """
+        target = catalog or self.catalog
+        root = str(archive_root or "").strip() or (str(target.root) if target.root else "")
+        if not root:
+            raise ValueError("Chưa mở hồ sơ nào để cập nhật thông tin bệnh nhân.")
+        start = Path(root).expanduser().resolve()
+        allowed = self._reveal_roots()
+        if allowed and not any(_is_within(start, base) for base in allowed):
+            raise PermissionError(
+                f"Truy cập bị từ chối: Đường dẫn nằm ngoài phạm vi cho phép ({root})"
+            )
+        folder = next(
+            (
+                candidate for candidate in (start, *start.parents)
+                if (not allowed or any(_is_within(candidate, base) for base in allowed))
+                and (candidate / "patient-index.json").is_file()
+            ),
+            None,
+        )
+        if folder is None:
+            raise ValueError(
+                "Hồ sơ này chưa có patient-index.json nên chưa cập nhật được thông tin."
+            )
+        manifest = dcom_pipeline._read_patient_manifest(folder)
+        if manifest is None:
+            raise ValueError("Không đọc được patient-index.json của hồ sơ này.")
+        recorded_id = str(manifest.get("patientId") or "").strip()
+        wanted_id = str(expected_patient_id or "").strip()
+        if wanted_id and recorded_id and wanted_id != recorded_id:
+            raise ValueError(
+                f"Từ chối ghi: hồ sơ trên màn hình là {wanted_id} nhưng thư mục "
+                f"{folder.name} thuộc bệnh nhân {recorded_id}."
+            )
+
+        if not isinstance(info, dict):
+            raise ValueError("Dữ liệu thông tin bệnh nhân không hợp lệ.")
+
+        if "patientName" in info:
+            manifest["patientName"] = str(info["patientName"] or "").strip()
+        if "patientId" in info:
+            manifest["patientId"] = str(info["patientId"] or "").strip()
+        if "gender" in info:
+            g = str(info["gender"] or "").strip()
+            manifest["gender"] = g
+            if g.lower() in ("nam", "m", "male"):
+                manifest["patientSex"] = "M"
+            elif g.lower() in ("nữ", "nu", "f", "female"):
+                manifest["patientSex"] = "F"
+            elif g:
+                manifest["patientSex"] = "O"
+        if "birthDate" in info and str(info["birthDate"]).strip():
+            bd = re.sub(r"\D", "", str(info["birthDate"] or ""))
+            manifest["patientBirthDate"] = bd
+        elif "birthYear" in info and str(info["birthYear"]).strip():
+            by = re.sub(r"\D", "", str(info["birthYear"] or ""))
+            if len(by) == 4:
+                existing_bd = str(manifest.get("patientBirthDate") or "")
+                if len(existing_bd) == 8:
+                    manifest["patientBirthDate"] = f"{by}{existing_bd[4:]}"
+                else:
+                    manifest["patientBirthDate"] = f"{by}0101"
+        if "phone" in info:
+            manifest["phone"] = str(info["phone"] or "").strip()
+        if "address" in info:
+            manifest["address"] = str(info["address"] or "").strip()
+        if "hospital" in info:
+            manifest["hospitalName"] = str(info["hospital"] or "").strip()
+        if "diagnosis" in info:
+            manifest["diagnosis"] = str(info["diagnosis"] or "").strip()
+
+        dcom_pipeline._write_patient_manifest(folder, manifest)
+        patient = ArchiveCatalog._patient_block(manifest)
+        with target._lock:
+            target._patient = dict(patient)
+        return {"patient": patient}
+
     def set_timeline_label(
         self,
         timeline_key: str,
@@ -4217,6 +4307,13 @@ class LocalApiServer:
                 if path == "/api/patient/diagnosis":
                     return owner.controller.set_patient_diagnosis(
                         str(payload.get("diagnosis") or ""),
+                        archive_root=str(payload.get("archiveRoot") or ""),
+                        expected_patient_id=str(payload.get("patientId") or ""),
+                        catalog=catalog,
+                    )
+                if path == "/api/patient/update":
+                    return owner.controller.update_patient_info(
+                        payload.get("info") if isinstance(payload.get("info"), dict) else payload,
                         archive_root=str(payload.get("archiveRoot") or ""),
                         expected_patient_id=str(payload.get("patientId") or ""),
                         catalog=catalog,

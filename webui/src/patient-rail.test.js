@@ -9,6 +9,7 @@ import {
   downloadPanelVisible,
   bindTextViewerButtons,
   action,
+  switchTab,
 } from "./main.js";
 
 const PATIENT = {
@@ -34,6 +35,8 @@ const originalFetch = global.fetch;
 describe("Viewer tab: patient rail", () => {
   beforeEach(() => {
     setLanguage("vi");
+    state.activeTabId = "tab-1";
+    state.editingPatientInfo = false;
     state.selectedId = "s1";
     state.archive = { root: "D:\\PACS\\BN", patient: { ...PATIENT }, series: SERIES.map((s) => ({ ...s })) };
   });
@@ -172,6 +175,128 @@ describe("Viewer tab: patient rail", () => {
   it("says so plainly when the record is empty", () => {
     state.archive.series = [];
     expect(renderPatientRail()).toContain("Chưa có dữ liệu nào trong hồ sơ này.");
+  });
+
+  it("renders the history card with history dropdown at the top of the rail", () => {
+    state.history = [{ folder: "D:\\PACS\\BN_01", time: "10/08 14:00", exists: true }];
+    const html = renderPatientRail();
+    expect(html).toContain("rec-history-card");
+    expect(html).toContain('data-field="history"');
+    expect(html).toContain("Lịch sử mở gần đây");
+  });
+
+  it("renders patient info card with phone, address, and icon-only edit button", () => {
+    state.archive.patient.phone = "0912345678";
+    state.archive.patient.address = "Hà Nội";
+    const html = renderPatientRail();
+    expect(html).toContain("rec-info-card");
+    expect(html).toContain("0912345678");
+    expect(html).toContain("Hà Nội");
+    expect(html).toContain('data-action="edit-patient-info"');
+    // Button should only contain the icon glyph '✎', not trailing text
+    expect(html).toContain('>✎</button>');
+  });
+
+  it("renders icon-only save and cancel buttons when editing", () => {
+    state.editingPatientInfo = true;
+    const html = renderPatientRail();
+    expect(html).toContain('data-action="save-patient-info"');
+    expect(html).toContain('>✓</button>');
+    expect(html).toContain('data-action="cancel-patient-info"');
+    expect(html).toContain('>✕</button>');
+  });
+
+  it("allows entering edit mode and saving updated patient information", async () => {
+    document.body.innerHTML = `<div id="app">${renderPatientRail()}</div>`;
+    await action("edit-patient-info", document.querySelector('[data-action="edit-patient-info"]'));
+    expect(state.editingPatientInfo).toBe(true);
+
+    const form = document.querySelector('[data-field="patient-edit-form"]');
+    expect(form).not.toBeNull();
+    form.querySelector('input[name="patientName"]').value = "NGUYỄN THỊ MỚI";
+    form.querySelector('input[name="phone"]').value = "0988112233";
+    form.querySelector('input[name="address"]').value = "TP. Hồ Chí Minh";
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => "application/json" },
+      json: async () => ({
+        patient: {
+          ...PATIENT,
+          patientName: "NGUYỄN THỊ MỚI",
+          phone: "0988112233",
+          address: "TP. Hồ Chí Minh",
+        },
+      }),
+    });
+
+    await action("save-patient-info", document.querySelector('[data-action="save-patient-info"]'));
+
+    expect(global.fetch).toHaveBeenCalled();
+    const [endpoint, req] = global.fetch.mock.calls[0];
+    expect(endpoint).toBe("/api/patient/update");
+    const payload = JSON.parse(req.body);
+    expect(payload.info.patientName).toBe("NGUYỄN THỊ MỚI");
+    expect(payload.info.phone).toBe("0988112233");
+    expect(payload.info.address).toBe("TP. Hồ Chí Minh");
+    expect(state.editingPatientInfo).toBe(false);
+    expect(state.archive.patient.patientName).toBe("NGUYỄN THỊ MỚI");
+    expect(state.archive.patient.phone).toBe("0988112233");
+  });
+
+  it("isolates patient edit state across multiple tabs", async () => {
+    const tab1 = {
+      id: "tab-1",
+      patientId: "BN01",
+      patientName: "Bệnh nhân 1",
+      archive: { root: "D:\\PACS\\BN01", patient: { patientId: "BN01", patientName: "Bệnh nhân 1" }, series: [] },
+      selectedId: "",
+      compareIds: [],
+      mode: "single",
+      tool: "window",
+      windowPreset: null,
+      mprPrimary: "axial",
+      status: "Sẵn sàng.",
+      editingPatientInfo: false,
+    };
+    const tab2 = {
+      id: "tab-2",
+      patientId: "BN02",
+      patientName: "Bệnh nhân 2",
+      archive: { root: "D:\\PACS\\BN02", patient: { patientId: "BN02", patientName: "Bệnh nhân 2" }, series: [] },
+      selectedId: "",
+      compareIds: [],
+      mode: "single",
+      tool: "window",
+      windowPreset: null,
+      mprPrimary: "axial",
+      status: "Sẵn sàng.",
+      editingPatientInfo: false,
+    };
+    state.tabs = [tab1, tab2];
+    state.activeTabId = "tab-1";
+    state.archive = tab1.archive;
+
+    // Enable edit mode on tab-1
+    await action("edit-patient-info");
+    expect(state.editingPatientInfo).toBe(true);
+    expect(tab1.editingPatientInfo).toBe(true);
+
+    // Switch to tab-2: tab-2 should NOT be in edit mode
+    await switchTab("tab-2");
+    expect(state.activeTabId).toBe("tab-2");
+    expect(state.editingPatientInfo).toBe(false);
+    expect(tab2.editingPatientInfo).toBe(false);
+
+    // Switch back to tab-1: tab-1 should still have edit mode preserved
+    await switchTab("tab-1");
+    expect(state.activeTabId).toBe("tab-1");
+    expect(state.editingPatientInfo).toBe(true);
+
+    // Cancel edit mode on tab-1
+    await action("cancel-patient-info");
+    expect(state.editingPatientInfo).toBe(false);
+    expect(tab1.editingPatientInfo).toBe(false);
   });
 });
 

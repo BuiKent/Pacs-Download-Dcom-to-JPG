@@ -1176,9 +1176,156 @@ button:disabled { opacity: .35; cursor: default; }
   overflow-y: auto;
   background: var(--panel-bg, #0b1119);
   border-right: 1px solid var(--chrome-border, #223040);
+  gap: 2px;
 }
+
+/* Patient Rail Cards */
+.rec-card {
+  margin: 6px 8px 0;
+  background: #0f1620;
+  border: 1px solid var(--list-border, #1c2a36);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.rec-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid var(--list-border, #1c2a36);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--label-fg, #8fa8bd);
+}
+
+.rec-history-card {
+  padding: 8px 10px 10px;
+}
+.rec-history-card .rec-card-header {
+  padding: 0 0 6px;
+  border-bottom: none;
+  background: transparent;
+}
+.rec-history-card select {
+  width: 100%;
+  height: 28px;
+  font-size: 12px;
+  background: #070b10;
+  color: #e7f1f8;
+  border: 1px solid #223244;
+  border-radius: 4px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+.rec-history-card select:focus {
+  border-color: #2f80ed;
+  outline: none;
+}
+
+.rec-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #78a2c8;
+  background: rgba(47, 128, 237, 0.1);
+  border: 1px solid rgba(47, 128, 237, 0.3);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.rec-edit-btn:hover {
+  background: rgba(47, 128, 237, 0.25);
+  color: #bce0fd;
+  border-color: #2f80ed;
+}
+
+.rec-card-actions {
+  display: flex;
+  gap: 4px;
+}
+.rec-card-actions .mini-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 4px;
+  cursor: pointer;
+  background: #1c2a36;
+  color: #e7f1f8;
+  border: 1px solid #2d3f50;
+  transition: all 0.15s ease;
+}
+.rec-card-actions .mini-btn:hover {
+  background: #253949;
+  border-color: #40586e;
+}
+.rec-card-actions .mini-btn.primary {
+  background: #2f80ed;
+  color: #fff;
+  border-color: #2f80ed;
+}
+.rec-card-actions .mini-btn.primary:hover {
+  background: #256ecc;
+  border-color: #256ecc;
+}
+
+.rec-edit-form {
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rec-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rec-form-field span {
+  font-size: 10px;
+  color: var(--label-muted, #7890a2);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.rec-form-field input,
+.rec-form-field select,
+.rec-form-field textarea {
+  width: 100%;
+  font-size: 12px;
+  background: #070b10;
+  color: #e7f1f8;
+  border: 1px solid #223244;
+  border-radius: 4px;
+  padding: 4px 6px;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+.rec-form-field input:focus,
+.rec-form-field select:focus,
+.rec-form-field textarea:focus {
+  border-color: #2f80ed;
+  outline: none;
+}
+.rec-form-row {
+  display: flex;
+  gap: 6px;
+}
+
 .rec-id {
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--list-border, #1c2a36);
 }
 .rec-id b {
@@ -1195,10 +1342,9 @@ button:disabled { opacity: .35; cursor: default; }
 }
 .rec-facts {
   margin: 0;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--list-border, #1c2a36);
+  padding: 8px 12px 10px;
 }
-.rfact { display: flex; gap: 8px; padding: 4px 0; font-size: 12px; }
+.rfact { display: flex; gap: 8px; padding: 3px 0; font-size: 12px; }
 .rfact dt { flex: 0 0 74px; color: var(--label-muted, #7890a2); }
 .rfact dd { margin: 0; flex: 1; color: var(--body-fg, #dce7f2); word-break: break-word; }
 /* Reads as text until hovered: the diagnosis is a note the reader writes, not
