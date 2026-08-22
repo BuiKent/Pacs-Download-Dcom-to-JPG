@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PACS DICOM Downloader</title><link rel="stylesheet" href="onboarding.css"></head>
+<body>
+<main class="wrap">
+  <div class="logo">D</div>
+  <h1>PACS DICOM Downloader</h1>
+  <p class="lead">Choose how to grant access to PACS. Tracking and analysis only run when enabled on a tab.</p>
+  <section class="card preferred">
+    <h2>Access all PACS sites</h2>
+    <p>Grant HTTP/HTTPS permissions once. You won't need to confirm each new PACS server.</p>
+    <button id="allSitesBtn" class="primary">Grant all sites</button>
+  </section>
+  <section class="card">
+    <h2>Per-site access</h2>
+    <p>No broad permissions. The extension will prompt whenever you track a new PACS site.</p>
+    <button id="perSiteBtn" class="secondary">Use per-site mode</button>
+  </section>
+  <p id="status" class="status"></p>
+</main>
+<script src="onboarding.js"></script>
+</body></html>

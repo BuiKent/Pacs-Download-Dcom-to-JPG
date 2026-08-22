@@ -219,7 +219,7 @@ function renderHistory(){const q=$('historySearch').value.trim().toLowerCase(),e
 async function refreshHistory(){try{history=(await send('GET_HISTORY')).history||[];renderHistory();}catch{}}
 
 async function refresh(){if(tabId==null)return;try{const r=await send('GET_OVERVIEW',{tabId});summary=r.summary;state=r.state;inventory=r.inventory;job=r.job;renderStatus();renderLink();renderInventory();renderJob();renderLearning();}catch(e){$('statusText').textContent=e.message||String(e);}await renderFolder();}
-async function bindActive(){const urlTab=new URLSearchParams(location.search).get('tabId');let t=urlTab?await chrome.tabs.get(Number(urlTab)).catch(()=>null):null;if(!t)t=(await chrome.tabs.query({active:true,currentWindow:true}))[0];if(!t?.id)return;tabId=t.id;activeTabUrl=t.url||'';$('tabLabel').textContent=t.title||t.url||`Tab ${tabId}`;revealDownloaded=false;await refresh();}
+async function bindActive(){const urlTab=new URLSearchParams(location.search).get('tabId');let t=urlTab?await chrome.tabs.get(Number(urlTab)).catch(()=>null):null;if(!t)t=(await chrome.tabs.query({active:true,currentWindow:true}))[0];if(!t?.id)return;tabId=t.id;activeTabUrl=t.url||'';revealDownloaded=false;await refresh();}
 function scheduleRefresh(ms=180){clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>refresh().catch(()=>{}),ms);}
 
 /**
@@ -298,7 +298,7 @@ $('historyOpenBtn').addEventListener('click',async()=>{show('historyCard',true);
 $('historyToggle').addEventListener('click',async()=>{const open=$('historyCard').classList.contains('hidden');show('historyCard',open);$('historyToggle').querySelector('span').textContent=open?'⌄':'›';if(open)await refreshHistory();});
 $('historySearch').addEventListener('input',renderHistory);
 $('clearHistoryBtn').addEventListener('click',async()=>{await send('CLEAR_HISTORY');await refreshHistory();});
-chrome.tabs.onActivated.addListener(()=>bindActive().catch(()=>{}));chrome.tabs.onUpdated.addListener((id,change,tab)=>{if(id===tabId&&(change.url||change.title||change.status==='complete')){activeTabUrl=tab.url||activeTabUrl;$('tabLabel').textContent=tab.title||tab.url||`Tab ${id}`;scheduleRefresh(150);}});
+chrome.tabs.onActivated.addListener(()=>bindActive().catch(()=>{}));chrome.tabs.onUpdated.addListener((id,change,tab)=>{if(id===tabId&&(change.url||change.title||change.status==='complete')){activeTabUrl=tab.url||activeTabUrl;scheduleRefresh(150);}});
 chrome.runtime.onMessage.addListener(m=>{if(['JOB_UPDATED','INVENTORY_UPDATED','PACS_SIGNAL','TAB_CONTEXT_CHANGED','LEARN_UPDATED'].includes(m?.type)&&Number(m.tabId)!==Number(tabId))return;if(m?.type==='JOB_UPDATED'){job=m.job;renderJob();}else if(m?.type==='INVENTORY_UPDATED'){inventory=m.inventory;renderInventory();scheduleRefresh(80);}else if(['PACS_SIGNAL','TAB_CONTEXT_CHANGED','LEARN_UPDATED'].includes(m?.type))scheduleRefresh(180);else if(m?.type==='HISTORY_UPDATED'){history=m.history||[];if(!$('historyCard').classList.contains('hidden'))renderHistory();}});
 bindActive().then(refreshHistory).catch(e=>toast(e.message||String(e),true));
 

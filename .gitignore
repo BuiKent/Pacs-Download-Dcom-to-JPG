@@ -34,6 +34,7 @@ env/
 !webui/index.html
 !web_dist/index.html
 !tools/ui-states.json
+!Upgrade/extention download DCOM/pacs_dicom_extension_v7/**
 
 # OS Files
 .DS_Store

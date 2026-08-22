@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DICOM Download & View</title><link rel="stylesheet" href="sidepanel.css"></head>
+<body>
+<main class="shell">
+  <div id="topLoader" class="top-loader"></div>
+  <header class="topbar">
+    <div class="topbar-actions">
+      <button id="qrUploadBtn" class="icon-btn" title="Upload QR image" aria-label="Upload QR"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg></button>
+      <button id="qrScanPageBtn" class="icon-btn" title="Scan QR on current page" aria-label="Scan page QR"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg></button>
+      <button id="qrPasteBtn" class="icon-btn" title="Paste QR from clipboard" aria-label="Paste QR"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg></button>
+      <input type="file" id="qrFileInput" accept="image/*" class="hidden">
+    </div>
+    <span id="siteChip" class="chip neutral">—</span>
+  </header>
+
+  <section id="qrCard" class="card hidden">
+    <div class="section-head"><div><h3 id="qrTitle">QR Code</h3><p id="qrStatusText">Result found</p></div><div class="qr-actions"><button id="qrOpenBtn" class="primary small">Open ↗</button><button id="qrCopyBtn" class="secondary small">Copy</button><button id="qrCloseBtn" class="icon-close-btn" title="Close">✕</button></div></div>
+    <p id="qrUrlText" class="url-line" title="">—</p>
+  </section>
+
+  <section class="card status-card">
+    <div class="status-line"><div class="status-info"><h2 id="statusTitle">Checking tab</h2><span id="statusText" class="status-text">—</span></div><span id="scoreText" class="score"></span></div>
+    <div id="permissionBox" class="permission-box hidden"><span id="permissionText">Site permission required</span><button id="grantBtn" class="primary small">Grant</button></div>
+    <div class="toolbar"><button id="trackBtn" class="secondary">Track tab</button><button id="scanBtn" class="secondary">Rescan</button><button id="deepScanBtn" class="secondary hidden">Deep scan</button></div>
+  </section>
+
+  <section id="linkCard" class="card hidden">
+    <div class="section-head link-head"><span id="linkNote" class="link-label">—</span><button id="copyLinkBtn" class="secondary small">Copy</button></div>
+    <p id="viewerUrl" class="url-line" title="">—</p>
+  </section>
+
+  <section id="learnCard" class="card hidden">
+    <div class="section-head"><div><h3>Learn site</h3><p id="learnText">Record viewer requests in this tab.</p></div><button id="learnToggleBtn" class="secondary small">Start</button></div>
+    <div id="learnList" class="learn-list"></div>
+  </section>
+
+  <section id="doneCard" class="card hidden">
+    <div class="done-row"><div class="done-mark">✓</div><div class="grow"><h3 id="doneTitle">Download complete</h3><p id="doneMeta">—</p></div><span id="doneBadge" class="chip neutral">—</span></div>
+    <div class="toolbar"><button id="revealDownloadedBtn" class="secondary">Show series</button><button id="historyOpenBtn" class="secondary">History</button></div>
+  </section>
+
+  <section id="studyCard" class="card hidden">
+    <div class="section-head"><div><h3 id="studyTitle">Study</h3><p id="studySub">—</p></div><span id="adapterChip" class="chip good">—</span></div>
+    <div id="partialBanner" class="partial-banner hidden"></div>
+    <div id="adapterNote" class="partial-banner hidden"></div>
+    <div class="study-grid">
+      <div><span>Patient</span><strong id="patientName">—</strong></div>
+      <div><span>Patient ID</span><strong id="patientId">—</strong></div>
+      <div><span>Study Date</span><strong id="studyDate">—</strong></div>
+      <div><span>Series</span><strong id="seriesCount">0</strong></div>
+    </div>
+  </section>
+
+  <section id="seriesCard" class="card hidden">
+    <div class="section-head series-head"><div><h3>Series</h3><p id="selectedSummary">0 series</p></div><div class="mini-actions"><button id="selectAllBtn">All</button><button id="selectNoneBtn">None</button></div></div>
+    <div id="seriesList" class="series-list"></div>
+  </section>
+
+  <section id="progressCard" class="card hidden">
+    <div class="section-head"><div><h3 id="jobTitle">Downloading</h3><p id="jobMeta">—</p></div><span id="jobBadge" class="chip neutral">—</span></div>
+    <div id="jobNote" class="partial-banner hidden"></div>
+    <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+    <div class="progress-numbers"><strong id="progressText">0 / 0</strong><span id="failedText">0 errors</span></div>
+    <div id="currentFile" class="current-file"></div>
+    <div class="toolbar"><button id="cancelBtn" class="danger">Cancel</button><button id="resumeBtn" class="primary hidden">Resume download</button></div>
+    <details id="errorDetails" class="errors hidden"><summary>Error details</summary><pre id="errorLog"></pre></details>
+  </section>
+
+  <button id="historyToggle" class="history-toggle">History <span>›</span></button>
+  <section id="historyCard" class="card hidden">
+    <div class="section-head"><div><h3>History</h3><p>Search by name, ID or date</p></div><button id="clearHistoryBtn" class="link-btn">Clear</button></div>
+    <input id="historySearch" class="search" type="search" placeholder="Name / Patient ID / Study Date">
+    <div id="historyList" class="history-list"></div>
+  </section>
+
+  <section class="card storage-card">
+    <div><h3>Save location</h3><p id="folderText">—</p></div><button id="folderResetBtn" class="secondary small hidden">Reset to Downloads</button><button id="folderBtn" class="secondary small">Change</button>
+  </section>
+
+  <div id="stickyBar" class="sticky hidden"><div><strong id="stickyTitle">0 series</strong><span id="stickySub">—</span></div><button id="downloadBtn" class="primary">Download DICOM</button></div>
+  <div id="toast" class="toast hidden"></div>
+</main>
+<script type="module" src="sidepanel.js"></script>
+</body></html>
