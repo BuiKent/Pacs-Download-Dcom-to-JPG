@@ -278,6 +278,14 @@ const EN = {
     "Scanned {} series groups; untick the series you do not want.",
   "Chưa quét hoặc chưa chọn series cho link viewer.":
     "The viewer link has not been scanned or no series is selected.",
+  "Hãy tích ít nhất một ngày chụp để tải.":
+    "Tick at least one study date to download.",
+  "Chưa quét series cho ca {}; hãy bấm Quét danh sách series.":
+    "No series scanned for {}; press Scan series list.",
+  "Ca {} chưa tích series nào.":
+    "{} has no series ticked.",
+  "Còn {} ca đang tích chưa chọn được series nào.":
+    "{} ticked studies still have no series selected.",
   ảnh: "images",
   Khác: "Other",
   "T1 sau tiêm": "Post-contrast T1",

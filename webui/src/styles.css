@@ -1130,7 +1130,7 @@ button.danger.active {
   border-color: var(--danger-fg) !important;
   background: var(--danger-fg) !important;
 }
-button:disabled { opacity: .35; cursor: default; }
+button:disabled { opacity: .45; cursor: not-allowed; }
 .study-list {
   max-height: 190px;
   overflow: auto;
@@ -1201,6 +1201,19 @@ button:disabled { opacity: .35; cursor: default; }
 .series-choice small { color: var(--label-muted); font-size: 9px; }
 /* The RIS download is the primary action; Stop stays narrow beside it. */
 .download-actions { display: grid; grid-template-columns: 1fr 72px; gap: 6px; margin: 10px 0; }
+/* Why the download button is off. It carries the warn badge's own background so
+   it stays legible on the light Worklist chrome and the dark reading shell. */
+.download-hint {
+  display: block;
+  margin: -4px 0 10px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.download-hint[hidden] { display: none; }
 /* Link download and its retry are peers, so they share the row evenly. */
 .link-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0 12px; }
 /* The viewer's own text-note dialog. Cornerstone would otherwise call

@@ -3616,11 +3616,20 @@ class WebController:
                         headless=not show_browser,
                         should_stop=self.job.stop_event.is_set,
                     )
+                    # The RIS identity is written last on purpose. The viewer
+                    # manifest carries its own studyUid/studyDate/studyDescription
+                    # and used to overwrite these: a viewer that reports no study
+                    # UID left the group keyed by "", so the series it returned
+                    # matched no study, the download button stayed off and the
+                    # attachments were filed under an empty uid.
                     groups.append({
-                        "studyUid": study_uid,
-                        "studyDate": study.get("date") or "",
-                        "studyDescription": study.get("desc") or "",
                         **inventory,
+                        "studyUid": study_uid,
+                        "studyDate": study.get("date") or inventory.get("studyDate") or "",
+                        "studyDescription": (
+                            study.get("desc") or inventory.get("studyDescription") or ""
+                        ),
+                        "viewerStudyUid": str(inventory.get("studyUid") or ""),
                     })
             else:
                 inventory = dcom_pipeline.discover_viewer_series(
@@ -3629,11 +3638,15 @@ class WebController:
                     headless=not show_browser,
                     should_stop=self.job.stop_event.is_set,
                 )
+                # A viewer link has no RIS row, so its own date and description
+                # are all there is; only the key has to stay "direct", which is
+                # what the UI reads the selected series back from.
                 groups.append({
-                    "studyUid": "direct",
-                    "studyDate": "",
-                    "studyDescription": "Link viewer",
                     **inventory,
+                    "studyUid": "direct",
+                    "studyDate": inventory.get("studyDate") or "",
+                    "studyDescription": inventory.get("studyDescription") or "Link viewer",
+                    "viewerStudyUid": str(inventory.get("studyUid") or ""),
                 })
             return {"groups": groups}
 
@@ -3664,10 +3677,22 @@ class WebController:
                 for uid, values in series_selections.items()
                 if isinstance(values, list)
             }
+            # Compare on the trimmed uid but keep the keys the pipeline looks
+            # each study up by. Skipping a study without a word is not an option
+            # here: the doctor would believe a date had been downloaded.
+            trimmed_selections = {
+                key.strip(): value for key, value in normalised_selections.items()
+            }
             for study in studies:
-                uid = str(study.get("study_uid") or "")
-                if not normalised_selections.get(uid):
-                    raise ValueError(f"Ca {uid or '?'} chưa có series nào được chọn.")
+                uid = str(study.get("study_uid") or "").strip()
+                if not trimmed_selections.get(uid):
+                    label = " · ".join(
+                        str(study.get(key)) for key in ("modality", "date") if study.get(key)
+                    )
+                    # The date reads like the study list the user was looking at;
+                    # the uid keeps the message traceable in a log.
+                    name = f"{label} ({uid})" if label and uid else (label or uid or "?")
+                    raise ValueError(f"Ca {name} chưa có series nào được chọn.")
         else:
             normalised_selections = None
         if not patient_id or not hospital:

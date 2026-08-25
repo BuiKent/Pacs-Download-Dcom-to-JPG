@@ -8,6 +8,7 @@ import {
   restoreSeriesSelections,
   selectedStudies as chosenStudies,
   seriesSelections as buildSeriesSelections,
+  studiesMissingSeries,
 } from "./download-selection.js";
 import {
   applyWindowPreset,
@@ -119,6 +120,9 @@ const state = {
   downloadAttachments: true,
   seriesInventory: [],
   rememberedSeriesSelections: {},
+  // Every group a scan returns, kept by studyUid. Unticking a date only hides
+  // its series now; the group comes back when the date is ticked again.
+  seriesGroupCache: {},
   status: "Đang khởi động...",
   isError: false,
   busyViewer: false,
@@ -2290,6 +2294,7 @@ function render() {
           <button class="danger" data-action="stop-job"
             title="${escapeHtml(t("Dừng an toàn tác vụ đang chạy"))}">${escapeHtml(t("Dừng"))}</button>
         </div>
+        <small class="download-hint" hidden></small>
         <fieldset class="boxed-field">
           <legend>${escapeHtml(t("Link viewer"))}</legend>
           <span class="clearable">
@@ -3153,7 +3158,9 @@ function bindEvents() {
     item.addEventListener("change", () => {
       state.seriesInventory = [];
       state.rememberedSeriesSelections = {};
+      state.seriesGroupCache = {};
       renderSeriesPickerOnly();
+      syncDownloadButton();
     });
   });
   app.querySelector("#manual-info-toggle")?.addEventListener("change", (e) => {
@@ -3198,27 +3205,89 @@ function selectedSeriesSelections() {
   return buildSeriesSelections(state.seriesInventory);
 }
 
-function updateStudySelection(element) {
+/** Lookup key shared by the study list and the scanned series inventory. */
+function studyKey(study) {
+  return String(study?.study_uid || "").trim();
+}
+
+/** How a study is named in a message: "MR · 2026-06-04 18:10:54". */
+function studyLabel(study) {
+  return [study?.modality, study?.date].filter(Boolean).join(" · ") || studyKey(study);
+}
+
+/** Keep every scanned group, so a date can be unticked without losing its scan. */
+function cacheSeriesGroups(groups) {
+  (groups || []).forEach((group) => {
+    const uid = String(group.studyUid || "").trim();
+    if (uid && uid !== "direct") state.seriesGroupCache[uid] = group;
+  });
+}
+
+/**
+ * Show the scanned series of exactly the studies that are ticked right now.
+ *
+ * Unticking a date used to drop its group from the inventory for good. Ticking
+ * it again left a chosen study with no series at all, which switched the
+ * download button off for good with a full series list still on screen and
+ * nothing saying why. The groups now live in the cache and are re-hydrated with
+ * whatever the user had ticked inside them.
+ */
+function syncSeriesInventoryWithStudies() {
   state.rememberedSeriesSelections = rememberSeriesSelections(
     state.seriesInventory,
     state.rememberedSeriesSelections,
   );
+  cacheSeriesGroups(state.seriesInventory);
+  const direct = state.seriesInventory.filter((group) => group.studyUid === "direct");
+  const chosen = chosenStudies(state.studies)
+    .map((study) => state.seriesGroupCache[studyKey(study)])
+    .filter(Boolean);
+  state.seriesInventory = restoreSeriesSelections(
+    [...direct, ...chosen],
+    state.rememberedSeriesSelections,
+  );
+}
+
+function updateStudySelection(element) {
   const study = state.studies[Number(element.dataset.studyIndex)];
   if (!study) return;
   study.selected = element.checked;
-  const selectedUids = new Set(chosenStudies(state.studies).map((item) => item.study_uid));
-  state.seriesInventory = state.seriesInventory.filter((group) => selectedUids.has(group.studyUid));
+  syncSeriesInventoryWithStudies();
   renderSeriesPickerOnly();
   syncDownloadButton();
 }
 
+/**
+ * Why the download button is off, in words the user can act on. Empty means
+ * nothing is blocking it.
+ */
+function downloadBlockReason() {
+  if (state.patient?.nameConflict) return t("Tên bệnh nhân không khớp; app đã chặn tự động gộp.");
+  if (!state.studies.length) return t("Chưa tìm ca chụp.");
+  if (!chosenStudies(state.studies).length) return t("Hãy tích ít nhất một ngày chụp để tải.");
+  if (state.downloadAllFiles) return "";
+  if (hasCompleteSeriesSelection(state.studies, state.seriesInventory)) return "";
+  const blocked = studiesMissingSeries(state.studies, state.seriesInventory);
+  // Naming six dates turns the line into a wall of text nobody reads.
+  if (blocked.length > 2) return tf("Còn {} ca đang tích chưa chọn được series nào.", blocked.length);
+  const names = blocked.map(studyLabel).join(", ");
+  return blocked.every((study) => !state.seriesGroupCache[studyKey(study)])
+    ? tf("Chưa quét series cho ca {}; hãy bấm Quét danh sách series.", names)
+    : tf("Ca {} chưa tích series nào.", names);
+}
+
 function syncDownloadButton() {
+  const reason = downloadBlockReason();
   const button = app.querySelector("[data-action='download-selected']");
-  const hasSeriesSelection = state.downloadAllFiles
-    || hasCompleteSeriesSelection(state.studies, state.seriesInventory);
-  if (button) button.disabled = Boolean(state.patient?.nameConflict)
-    || !chosenStudies(state.studies).length
-    || !hasSeriesSelection;
+  if (button) button.disabled = Boolean(reason);
+  const hint = app.querySelector(".download-hint");
+  if (hint) {
+    // Before a search there is nothing to explain, so the line stays out of the
+    // layout instead of nagging about a study list that does not exist yet.
+    const visible = Boolean(reason) && state.studies.length > 0;
+    hint.textContent = visible ? reason : "";
+    hint.hidden = !visible;
+  }
 }
 
 /** Whether two archive paths name the same folder, ignoring case and slashes. */
@@ -3874,6 +3943,7 @@ async function action(name, element = null) {
         state.patient = null;
         state.seriesInventory = [];
         state.rememberedSeriesSelections = {};
+        state.seriesGroupCache = {};
         const field = app.querySelector("#output-root");
         if (field) field.value = result.outputRoot;
         renderStudyList();
@@ -3948,6 +4018,7 @@ async function action(name, element = null) {
       state.patient = null;
       state.seriesInventory = [];
       state.rememberedSeriesSelections = {};
+      state.seriesGroupCache = {};
       renderStudyList();
       renderSeriesPickerOnly();
       await api("/api/search", { method: "POST", body: JSON.stringify({ 
@@ -3987,6 +4058,7 @@ async function action(name, element = null) {
       );
       state.seriesInventory = [];
       renderSeriesPickerOnly();
+      syncDownloadButton();
       await api("/api/series/discover", {
         method: "POST",
         body: JSON.stringify({
@@ -5129,6 +5201,7 @@ async function pollJob() {
       groups,
       state.rememberedSeriesSelections,
     );
+    cacheSeriesGroups(state.seriesInventory);
     window.clearInterval(jobPoll);
     jobPoll = null;
     renderSeriesPickerOnly();

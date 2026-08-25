@@ -8,6 +8,7 @@ import {
   restoreSeriesSelections,
   selectedStudies,
   seriesSelections,
+  studiesMissingSeries,
 } from "./download-selection.js";
 
 const studies = [
@@ -83,6 +84,40 @@ describe("patient study selection", () => {
     expect(hasCompleteSeriesSelection(chosen, bothGroups)).toBe(true);
     bothGroups[1].series[0].selected = false;
     expect(hasCompleteSeriesSelection(chosen, bothGroups)).toBe(false);
+  });
+
+  it("names the studies whose series are still missing", () => {
+    const chosen = initialiseStudySelections(studies);
+    const onlyFirstGroup = [{
+      studyUid: "study-a",
+      series: [{ id: "a-t1", selected: true }],
+    }];
+    expect(studiesMissingSeries(chosen, onlyFirstGroup).map((study) => study.study_uid))
+      .toEqual(["study-b"]);
+
+    const bothGroups = [...onlyFirstGroup, {
+      studyUid: "study-b",
+      series: [{ id: "b-t2", selected: true }],
+    }];
+    expect(studiesMissingSeries(chosen, bothGroups)).toEqual([]);
+  });
+
+  it("keeps a scanned group when its study is unticked and ticked again", () => {
+    // Unticking a date used to delete its scanned series outright. Ticking the
+    // date again then left a chosen study with no series, and the download
+    // button stayed off for good with a full series list still on screen.
+    expect(mainSource).toContain("seriesGroupCache: {}");
+    expect(mainSource).toContain("function cacheSeriesGroups");
+    expect(mainSource).toContain("function syncSeriesInventoryWithStudies");
+    expect(mainSource).toContain("cacheSeriesGroups(state.seriesInventory);");
+    expect(mainSource).not.toContain("selectedUids.has(group.studyUid)");
+  });
+
+  it("says out loud why the download button is off", () => {
+    expect(mainSource).toContain("function downloadBlockReason");
+    expect(mainSource).toContain('class="download-hint"');
+    expect(mainSource).toContain("studiesMissingSeries(state.studies, state.seriesInventory)");
+    expect(cssSource).toContain(".download-hint {");
   });
 
   it("restores per-study series edits after a fresh inventory scan", () => {

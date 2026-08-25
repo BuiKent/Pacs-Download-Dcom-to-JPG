@@ -470,6 +470,65 @@ class PatientArchiveTests(unittest.TestCase):
         self.assertEqual(item["study_uid"], result["result"]["groups"][0]["studyUid"])
         discover.assert_called_once()
 
+    def test_web_series_discovery_keeps_the_ris_identity_on_each_group(self):
+        # The viewer manifest carries a study identity of its own. It used to be
+        # merged last and overwrite the RIS one: a viewer that reports no study
+        # UID keyed the group by "", so its series belonged to no study, the
+        # download button stayed off and the reports were filed under "".
+        controller = WebController()
+        item = study(
+            "1.2.3.identity",
+            date="2026-06-04 18:10:54",
+            description="MR nao-mach nao + Gadovist",
+        )
+        inventory = {
+            "source": "dicomweb",
+            "selectable": True,
+            "series": [{"id": "series-t1", "description": "AX T1"}],
+            "studyUid": "",
+            "studyDate": "2026-06-04",
+            "studyDescription": "",
+        }
+        with patch(
+            "dcom_pipeline._viewer_url_for_study", return_value="https://viewer.test/fresh",
+        ), patch(
+            "dcom_pipeline.discover_viewer_series", return_value=inventory,
+        ):
+            controller.start_series_discovery({
+                "studies": [item],
+                "hospital": item["hospital_key"],
+            })
+            result = self.wait_for_job(controller)
+
+        self.assertEqual("complete", result["status"], result["logs"])
+        group = result["result"]["groups"][0]
+        self.assertEqual(item["study_uid"], group["studyUid"])
+        self.assertEqual(item["date"], group["studyDate"])
+        self.assertEqual(item["desc"], group["studyDescription"])
+        self.assertEqual("", group["viewerStudyUid"])
+
+    def test_web_series_discovery_keeps_a_viewer_link_keyed_direct(self):
+        # The link flow reads its selected series back under "direct"; a viewer
+        # that reports its own study UID must not rename that key.
+        controller = WebController()
+        inventory = {
+            "source": "dicomweb",
+            "selectable": True,
+            "series": [{"id": "series-t1", "description": "AX T1"}],
+            "studyUid": "1.2.3.from.viewer",
+            "studyDate": "2026-06-04",
+            "studyDescription": "MR BRAIN",
+        }
+        with patch("dcom_pipeline.discover_viewer_series", return_value=inventory):
+            controller.start_series_discovery({"url": "https://viewer.test/share/abc"})
+            result = self.wait_for_job(controller)
+
+        self.assertEqual("complete", result["status"], result["logs"])
+        group = result["result"]["groups"][0]
+        self.assertEqual("direct", group["studyUid"])
+        self.assertEqual("1.2.3.from.viewer", group["viewerStudyUid"])
+        self.assertEqual("MR BRAIN", group["studyDescription"])
+
     def test_opening_multi_patient_root_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

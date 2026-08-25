@@ -38,12 +38,23 @@ export function restoreSeriesSelections(groups, remembered = {}) {
   });
 }
 
-export function hasCompleteSeriesSelection(studies, groups) {
-  const chosenStudies = selectedStudies(studies);
-  if (!chosenStudies.length) return false;
+/**
+ * Chosen studies that have no series ticked yet.
+ *
+ * The download button reads this to name the date that is holding it back: a
+ * button that switches off without a word is what sent a user hunting through
+ * a full series list for a study that was never scanned.
+ */
+export function studiesMissingSeries(studies, groups) {
   const selections = seriesSelections(groups);
-  return chosenStudies.every((study) => {
-    const uid = String(study.study_uid || "");
-    return uid && Array.isArray(selections[uid]) && selections[uid].length > 0;
+  return selectedStudies(studies).filter((study) => {
+    const uid = String(study.study_uid || "").trim();
+    const chosen = selections[uid];
+    return !(Array.isArray(chosen) && chosen.length > 0);
   });
+}
+
+export function hasCompleteSeriesSelection(studies, groups) {
+  if (!selectedStudies(studies).length) return false;
+  return studiesMissingSeries(studies, groups).length === 0;
 }
