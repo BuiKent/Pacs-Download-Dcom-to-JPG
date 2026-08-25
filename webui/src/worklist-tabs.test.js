@@ -128,8 +128,9 @@ describe("Worklist: Study List / Activity & Queue tabs", () => {
     expect(html).toContain("Nam · 1974 · BV A");
     expect(html).toContain('data-action="open-patient-record"');
 
-    // Studies inside patient 1
-    expect(html).toContain('class="srow"');
+    // Studies inside patient 1. The row carries its read state as a second
+    // class, so the assertion matches the prefix rather than the whole value.
+    expect(html).toContain('class="srow unread"');
     expect(html).toContain("06/08/2026 · MR sọ não có tiêm");
     expect(html).toContain("12 series · 1412 lát");
     expect(html).toContain("06/08/2026");
@@ -390,7 +391,7 @@ describe("Worklist: scanned data replaces the history fallback", () => {
       studies: [{ ...PATIENTS[0].studies[0], status: "miss", statusLabel: "Thiếu folder" }],
     }];
     const html = renderWorklistTreeInner();
-    const row = html.slice(html.indexOf('class="srow"'));
+    const row = html.slice(html.indexOf('class="srow'));
 
     expect(row).toContain('data-action="open-study-viewer"');
     expect((row.match(/disabled/g) || []).length).toBe(2);

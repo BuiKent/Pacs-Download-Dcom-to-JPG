@@ -1763,6 +1763,47 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertEqual(p["mediaSummary"]["photo"], 1)
         self.assertEqual(len(p["studies"]), 2)
 
+    def test_opening_a_patient_folder_does_not_add_it_as_a_fifth_study(self) -> None:
+        """History must not list the archive beside the studies inside it.
+
+        Opening a patient folder records it in history. Adding it back as a
+        study showed the whole archive as one more row and counted every image
+        in it twice, so the totals disagreed with the studies listed under them.
+        """
+        from web_backend import WorklistScanner
+
+        p_dir = self.temp_dir / "TEST-0002_TRAN THI B - Nữ - 1980 - BV C"
+        study = p_dir / "2026-08-06 - MR - SO NAO"
+        study.mkdir(parents=True, exist_ok=True)
+        (study / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+
+        self.controller.output_root = self.temp_dir
+        self.controller.history.add(p_dir)
+
+        patients = WorklistScanner(self.controller).scan()
+        patient = next(item for item in patients if item["patientId"] == "TEST-0002")
+        self.assertEqual(len(patient["studies"]), 1)
+        # The temp root can come back as an 8.3 short path, so the folders are
+        # compared after resolution rather than as strings.
+        self.assertEqual(
+            Path(patient["studies"][0]["folder"]).resolve(), study.resolve(),
+        )
+
+    def test_a_flat_archive_from_history_is_still_listed(self) -> None:
+        """A folder with no study subfolders is itself the one study."""
+        from web_backend import WorklistScanner
+
+        flat = self.temp_dir / "TEST-0003_LE VAN C - Nam - 1990 - BV D"
+        (flat / "DICOM").mkdir(parents=True, exist_ok=True)
+        (flat / "DICOM" / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+
+        self.controller.output_root = self.temp_dir
+        self.controller.history.add(flat)
+
+        patients = WorklistScanner(self.controller).scan()
+        patient = next(item for item in patients if item["patientId"] == "TEST-0003")
+        self.assertEqual(len(patient["studies"]), 1)
+
     def test_api_worklist_endpoints(self) -> None:
         # Test GET /api/worklist
         req = urllib.request.Request(

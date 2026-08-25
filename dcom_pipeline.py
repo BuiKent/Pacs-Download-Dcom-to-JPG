@@ -43,7 +43,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 import unicodedata
+import warnings
 
+import dicom_io
 from dicom_io import discover_dicom_files
 
 # --------------------------------------------------------------------------- #
@@ -5077,6 +5079,63 @@ def ensure_patient_archive(
     return folder, manifest, created
 
 
+def set_study_read_state(study_folder: Path, read: bool) -> dict:
+    """Mark one study read or unread in the patient index that owns it.
+
+    Only the `readAt` key is written: the manifest keeps the same shape, and an
+    archive read by an older build simply ignores a key it does not know.
+
+    Nothing is created here. A folder no patient index describes cannot be
+    marked, because the mark would have nowhere to live and would silently
+    disappear on the next scan.
+    """
+    study_folder = Path(study_folder).expanduser().resolve()
+    # A study sits at most a couple of levels below its archive root; walking
+    # further would start marking studies in an unrelated archive above it.
+    candidates = [study_folder, *list(study_folder.parents)[:4]]
+    for candidate in candidates:
+        manifest = _read_patient_manifest(candidate)
+        if manifest is None:
+            continue
+        for record in (manifest.get("studies") or {}).values():
+            if not isinstance(record, dict):
+                continue
+            relative = str(record.get("folder") or "").strip()
+            if not relative:
+                continue
+            try:
+                resolved = (candidate / relative).resolve()
+            except OSError:
+                continue
+            if resolved != study_folder:
+                continue
+            record["readAt"] = _now_local() if read else ""
+            manifest["updatedAt"] = _now_local()
+            _write_patient_manifest(candidate, manifest)
+            return {
+                "folder": str(study_folder),
+                "readAt": record["readAt"],
+                "isRead": bool(record["readAt"]),
+            }
+        break
+    raise ValueError(
+        "Ca chụp này chưa có trong patient-index.json nên không lưu được trạng thái đã đọc."
+    )
+
+
+def _download_type_for(hospital_key: str) -> str:
+    """Where a study came from, as recorded in the patient index.
+
+    "ris" is a RIS/PACS download, "direct" a pasted viewer link, and "local" a
+    folder or patient disc read off this machine. The Worklist shows it, so a
+    reader can tell an imported disc from a study this app fetched itself.
+    """
+    key = str(hospital_key or "").strip().lower()
+    if key == LOCAL_IMPORT_HOSPITAL_KEY:
+        return "local"
+    return "ris" if key and key != "direct" else "direct"
+
+
 def record_patient_study(
     patient_folder: Path,
     study: dict,
@@ -5161,7 +5220,7 @@ def record_patient_study(
         "viewerUrl": viewer_url,
         "patientCode": patient_code,
         "accessionNumber": accession_no,
-        "downloadType": "ris" if (manifest.get("hospitalKey") and manifest.get("hospitalKey") != "direct") else "direct",
+        "downloadType": _download_type_for(str(manifest.get("hospitalKey") or "")),
         "hospitalKey": str(study.get("hospital_key") or manifest.get("hospitalKey") or ""),
         "hospitalName": str(study.get("hospital_name") or manifest.get("hospitalName") or ""),
         "patientAgeRaw": metadata.get("PatientAgeRaw") or previous.get("patientAgeRaw", ""),
@@ -5177,6 +5236,339 @@ def record_patient_study(
     }
     manifest["updatedAt"] = _now_local()
     _write_patient_manifest(patient_folder, manifest)
+
+
+# --------------------------------------------------------------------------- #
+#  Reading a folder or a patient disc that this app did not download
+# --------------------------------------------------------------------------- #
+
+LOCAL_IMPORT_HOSPITAL_KEY = "local"
+
+_LOCAL_INDEX_TAGS = [
+    "PatientID", "PatientName", "PatientBirthDate", "PatientSex",
+    "StudyInstanceUID", "StudyDate", "StudyDescription", "AccessionNumber",
+    "Modality", "InstitutionName",
+]
+
+
+@dataclass
+class LocalStudyGroup:
+    """One study found in a folder this app did not download, with its files.
+
+    Patient media hands us four studies in one directory tree. Converting them
+    as a single lump loses which slice belongs to which exam, so the importer
+    needs them separated before it writes anything.
+    """
+
+    study_uid: str
+    date: str
+    modality: str
+    description: str
+    accession_number: str
+    patient_id: str
+    patient_name: str
+    patient_birth_date: str
+    patient_sex: str
+    # The hospital that produced the images, straight from InstitutionName.
+    # A disc carries no RIS key, so this is the only truthful source for it.
+    institution: str = ""
+    files: list[Path] = field(default_factory=list)
+
+    def as_study(self) -> dict:
+        """The same shape `record_patient_study` reads from a RIS download."""
+        return {
+            "study_uid": self.study_uid,
+            "date": self.date,
+            "modality": self.modality,
+            "desc": self.description,
+            "accession_number": self.accession_number,
+            "patient_id": self.patient_id,
+            "patient_name": self.patient_name,
+            "hospital_key": LOCAL_IMPORT_HOSPITAL_KEY,
+            "hospital_name": self.institution,
+        }
+
+
+def _local_index_from_dicomdir(source: Path) -> dict[str, dict]:
+    """Study and patient fields for every image a `DICOMDIR` points at.
+
+    Keyed by casefolded absolute path. Reading the index costs about a second
+    for media that would otherwise take twenty to open file by file, and it
+    carries exactly the patient and study fields the importer needs.
+    """
+    dicomdir = dicom_io.find_dicomdir(source)
+    if dicomdir is None:
+        return {}
+    try:
+        import pydicom
+        from pydicom.fileset import FileSet
+
+        # An index that lists files no longer on the medium is normal — a disc
+        # copied folder by folder loses some. pydicom warns once per missing
+        # file, which buries the job log under thousands of lines; the index is
+        # advisory here, so those warnings carry no information for the reader.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            file_set = FileSet(pydicom.dcmread(str(dicomdir)))
+    except Exception:
+        return {}
+
+    root = Path(dicomdir).parent
+    indexed: dict[str, dict] = {}
+    for instance in file_set:
+        try:
+            path = Path(instance.path)
+        except Exception:
+            continue
+        if not path.is_absolute():
+            path = root / path
+        try:
+            key = str(path.resolve()).casefold()
+        except OSError:
+            key = str(path).casefold()
+        indexed[key] = {
+            tag: str(getattr(instance, tag, "") or "").strip()
+            for tag in _LOCAL_INDEX_TAGS
+        }
+    return indexed
+
+
+def _local_index_from_header(path: Path) -> dict:
+    """The same fields read straight from one file, for media with no index."""
+    try:
+        import pydicom
+
+        dataset = pydicom.dcmread(
+            str(path),
+            stop_before_pixels=True,
+            force=True,
+            specific_tags=_LOCAL_INDEX_TAGS,
+        )
+    except Exception:
+        return {}
+    return {
+        tag: str(getattr(dataset, tag, "") or "").strip()
+        for tag in _LOCAL_INDEX_TAGS
+    }
+
+
+def index_local_dicom_studies(
+    source: Path,
+    log: LogFn = _default_log,
+    files: Optional[list[Path]] = None,
+) -> list[LocalStudyGroup]:
+    """Group every DICOM below `source` into the studies it actually holds.
+
+    Reads `DICOMDIR` when the media carries one and falls back to the file
+    headers otherwise. Nothing is invented: a study with no StudyInstanceUID is
+    still returned, keyed by the fields it does have, so the caller can decide
+    whether it is safe to file it under a patient.
+    """
+    source = Path(source)
+    paths = list(files) if files is not None else discover_dicom_files(source)
+    if not paths:
+        return []
+
+    indexed = _local_index_from_dicomdir(source)
+    if indexed:
+        log(f"Đã đọc DICOMDIR: {len(indexed)} ảnh có sẵn thông tin ca chụp.")
+
+    groups: dict[str, LocalStudyGroup] = {}
+    misses = 0
+    for path in paths:
+        try:
+            key = str(path.resolve()).casefold()
+        except OSError:
+            key = str(path).casefold()
+        fields = indexed.get(key)
+        if not fields:
+            fields = _local_index_from_header(path)
+            misses += 1
+        if not fields:
+            continue
+
+        study_uid = fields.get("StudyInstanceUID", "")
+        raw_name = fields.get("PatientName", "")
+        raw_id = fields.get("PatientID", "")
+        group_key = study_uid or "nouid:{}|{}|{}".format(
+            fields.get("StudyDate", ""),
+            fields.get("Modality", ""),
+            fields.get("StudyDescription", ""),
+        )
+        group = groups.get(group_key)
+        if group is None:
+            group = LocalStudyGroup(
+                study_uid=study_uid,
+                date=_normalise_dicom_date(fields.get("StudyDate", "")),
+                modality=fields.get("Modality", "").upper(),
+                description=fields.get("StudyDescription", ""),
+                accession_number=fields.get("AccessionNumber", ""),
+                patient_id="" if _is_redacted_patient_value(raw_id) else raw_id,
+                patient_name=(
+                    "" if _is_redacted_patient_value(raw_name)
+                    else _patient_display_name(raw_name)
+                ),
+                patient_birth_date=(
+                    "" if _is_redacted_patient_value(fields.get("PatientBirthDate", ""))
+                    else _normalise_dicom_date(fields.get("PatientBirthDate", ""))
+                ),
+                patient_sex=fields.get("PatientSex", "").upper(),
+                institution=fields.get("InstitutionName", ""),
+            )
+            groups[group_key] = group
+        group.files.append(path)
+
+    if misses and indexed:
+        log("{} ảnh không có trong DICOMDIR; đã đọc thẳng từ header.".format(misses))
+
+    ordered = sorted(
+        groups.values(),
+        key=lambda item: (item.date or "", item.modality, item.description),
+    )
+    for group in ordered:
+        group.files.sort(key=lambda path: str(path).casefold())
+        _fill_demographics_from_first_file(group)
+    return ordered
+
+
+def _fill_demographics_from_first_file(group: LocalStudyGroup) -> None:
+    """Complete a group's demographics from the image itself.
+
+    A `DICOMDIR` patient record is only required to carry the name and the ID,
+    so date of birth and sex are routinely absent from it. Those two are what a
+    reader checks to confirm the right chart is open, so they are read from one
+    real file rather than left blank or guessed. Only empty fields are filled:
+    what the index recorded is never overwritten.
+    """
+    if (
+        group.patient_birth_date
+        and group.patient_sex
+        and group.patient_id
+        and group.institution
+    ):
+        return
+    if not group.files:
+        return
+    fields = _local_index_from_header(group.files[0])
+    if not fields:
+        return
+    if not group.patient_id:
+        raw_id = fields.get("PatientID", "")
+        group.patient_id = "" if _is_redacted_patient_value(raw_id) else raw_id
+    if not group.patient_name:
+        raw_name = fields.get("PatientName", "")
+        group.patient_name = (
+            "" if _is_redacted_patient_value(raw_name) else _patient_display_name(raw_name)
+        )
+    if not group.patient_birth_date:
+        raw_birth = fields.get("PatientBirthDate", "")
+        group.patient_birth_date = (
+            "" if _is_redacted_patient_value(raw_birth) else _normalise_dicom_date(raw_birth)
+        )
+    if not group.patient_sex:
+        group.patient_sex = fields.get("PatientSex", "").upper()
+    if not group.institution:
+        group.institution = fields.get("InstitutionName", "")
+
+
+def local_import_identity(groups: list[LocalStudyGroup]) -> Optional[dict]:
+    """The one patient every group belongs to, or None when that is not clear.
+
+    A folder holding two patients, or holding images with no PatientID at all,
+    gets no manifest: the archive would then claim an identity nobody recorded.
+    """
+    ids = {_identity_token(group.patient_id) for group in groups if group.patient_id}
+    if len(ids) != 1:
+        return None
+    names = {
+        _identity_token(group.patient_name)
+        for group in groups
+        if group.patient_name
+    }
+    if len(names) > 1:
+        return None
+    first_with_id = next(group for group in groups if group.patient_id)
+    birth_dates = {
+        group.patient_birth_date for group in groups if group.patient_birth_date
+    }
+    sexes = {group.patient_sex for group in groups if group.patient_sex} - {"O"}
+    return {
+        "patient_id": first_with_id.patient_id,
+        "patient_name": next(
+            (group.patient_name for group in groups if group.patient_name), "",
+        ),
+        # Left empty on disagreement rather than picking one: the reader checks
+        # these fields to confirm the right record is open.
+        "patient_birth_date": birth_dates.pop() if len(birth_dates) == 1 else "",
+        "patient_sex": sexes.pop() if len(sexes) == 1 else "",
+        "institution": next(
+            (group.institution for group in groups if group.institution), "",
+        ),
+    }
+
+
+def write_local_import_manifest(
+    patient_folder: Path,
+    identity: dict,
+    log: LogFn = _default_log,
+) -> dict:
+    """Create or reuse `patient-index.json` for a folder imported from disc.
+
+    Unlike `ensure_patient_archive` this never moves or renames anything: the
+    folder the reader chose stays exactly where it is, and only gains the index
+    that makes it a managed archive.
+    """
+    patient_folder = Path(patient_folder)
+    patient_folder.mkdir(parents=True, exist_ok=True)
+    manifest = _read_patient_manifest(patient_folder)
+    now = _now_local()
+    if manifest is None:
+        manifest = {
+            "format": PATIENT_MANIFEST_FORMAT,
+            "patientId": identity.get("patient_id", ""),
+            "patientName": identity.get("patient_name", ""),
+            "patientBirthDate": identity.get("patient_birth_date", ""),
+            "patientSex": identity.get("patient_sex", ""),
+            "hospitalKey": LOCAL_IMPORT_HOSPITAL_KEY,
+            # The hospital named in the files, or nothing. "Nhập từ thư mục/đĩa"
+            # is how the study got here, not where it was taken, and printing it
+            # in the hospital column would read as a hospital.
+            "hospitalName": identity.get("institution", ""),
+            "createdAt": now,
+            "updatedAt": now,
+            "studies": _legacy_study_index(patient_folder),
+        }
+        _write_patient_manifest(patient_folder, manifest)
+        log("Đã tạo hồ sơ bệnh nhân cho thư mục nhập: {}".format(patient_folder.name))
+        return manifest
+
+    stored_id = str(manifest.get("patientId") or "")
+    if stored_id and _identity_token(stored_id) != _identity_token(
+        identity.get("patient_id", "")
+    ):
+        raise PatientIdentityConflictError(
+            "Thư mục đã thuộc bệnh nhân mã '{}', không khớp mã '{}' trong file DICOM.".format(
+                stored_id, identity.get("patient_id", ""),
+            )
+        )
+    if _patient_name_conflicts(
+        str(manifest.get("patientName") or ""), identity.get("patient_name", ""),
+    ):
+        raise PatientIdentityConflictError(
+            "Thư mục đã lưu tên '{}', file DICOM ghi '{}'. Không tự động gộp.".format(
+                manifest.get("patientName"), identity.get("patient_name"),
+            )
+        )
+    for key, value in (
+        ("patientName", identity.get("patient_name", "")),
+        ("patientBirthDate", identity.get("patient_birth_date", "")),
+        ("patientSex", identity.get("patient_sex", "")),
+    ):
+        if value and not manifest.get(key):
+            manifest[key] = value
+    manifest["updatedAt"] = now
+    _write_patient_manifest(patient_folder, manifest)
+    return manifest
 
 
 # Contrast modes:
@@ -5466,8 +5858,14 @@ def convert_all(
     contrast_mode: str = CLINICAL,
     should_stop: Optional[Callable[[], bool]] = None,
     metadata: Optional[dict] = None,
+    files: Optional[list[Path]] = None,
 ) -> ConvertStats:
-    """Convert all DICOM files in dicom_dir to JPG (and optional PNG) in jpg_dir."""
+    """Convert all DICOM files in dicom_dir to JPG (and optional PNG) in jpg_dir.
+
+    `files` restricts the conversion to an explicit list of images below
+    `dicom_dir`. Patient media keeps several studies in one tree, so the
+    importer converts one study at a time into its own JPG folder.
+    """
     import pydicom
     from PIL import Image
     import mpr_engine
@@ -5477,7 +5875,7 @@ def convert_all(
     jpg_dir.mkdir(parents=True, exist_ok=True)
 
     mode_txt = "auto-contrast" if contrast_mode == AUTO else "chuẩn lâm sàng (VOI LUT)"
-    dcm_files = discover_dicom_files(dicom_dir)
+    dcm_files = list(files) if files is not None else discover_dicom_files(dicom_dir)
     log(f"Chuyển đổi: tìm thấy {len(dcm_files)} file DICOM. Chất lượng JPG={quality}"
         f"{' + PNG' if save_png else ''}, tương phản={mode_txt}.")
 
@@ -5494,7 +5892,7 @@ def convert_all(
     # namer keeps the folder names readable and only falls back to a
     # SeriesInstanceUID token when two series would otherwise collide.
     try:
-        mpr_candidates = mpr_engine.select_mpr_candidates(dicom_dir)
+        mpr_candidates = mpr_engine.select_mpr_candidates(dicom_dir, files=files)
     except Exception as e:
         log(f"MPR-JPG: kh\u00f4ng qu\u00e9t \u0111\u01b0\u1ee3c series T1 ({e}); ti\u1ebfp t\u1ee5c lu\u1ed3ng JPG th\u01b0\u1eddng.")
 
@@ -5621,6 +6019,12 @@ def convert_all(
                     "patient_sex": str(getattr(ds, "PatientSex", "") or "").strip().upper(),
                     "patient_age": str(getattr(ds, "PatientAge", "") or "").strip().upper(),
                     "series_instance_uid": series_uid,
+                    # Kept so a converted study still shows TR/TE, slice
+                    # thickness or kVp/mAs. JPG is the long-term store here, and
+                    # a reader confirms a sequence by these numbers.
+                    "acquisition": dicom_io.acquisition_parameters(
+                        ds, str(getattr(ds, "Modality", "") or ""),
+                    ),
                 }
                 generic_outputs[manifest_path] = []
                 generic_geometry[manifest_path] = []

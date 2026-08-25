@@ -21,6 +21,7 @@ from typing import Callable, Iterable, Optional
 
 import numpy as np
 
+import dicom_io
 from dicom_io import discover_dicom_files
 
 
@@ -471,10 +472,16 @@ def _candidate_from_group(headers: list[_Header], min_slices: int) -> Optional[M
 def discover_mpr_candidates(
     dicom_dir: Path,
     min_slices: int = DEFAULT_MIN_SLICES,
+    files: Optional[list[Path]] = None,
 ) -> list[MprCandidate]:
-    """Return eligible T1 candidates sorted from best to worst."""
+    """Return eligible T1 candidates sorted from best to worst.
+
+    `files` narrows the search to one study's images. Patient media holds
+    several studies in one tree, and a volume must never be built from slices
+    that belong to two different exams.
+    """
     groups: dict[str, list[_Header]] = {}
-    for path in _dicom_files(Path(dicom_dir)):
+    for path in (list(files) if files is not None else _dicom_files(Path(dicom_dir))):
         header = _read_header(path)
         if header is not None:
             groups.setdefault(header.series_uid, []).append(header)
@@ -494,9 +501,10 @@ def discover_mpr_candidates(
 def select_mpr_candidates(
     dicom_dir: Path,
     min_slices: int = DEFAULT_MIN_SLICES,
+    files: Optional[list[Path]] = None,
 ) -> list[MprCandidate]:
     """Return every eligible 3D T1 and CT volume series."""
-    return discover_mpr_candidates(dicom_dir, min_slices=min_slices)
+    return discover_mpr_candidates(dicom_dir, min_slices=min_slices, files=files)
 
 
 def select_mpr_candidate(
@@ -709,10 +717,26 @@ def convert_mpr_candidate(
         })
         written += 1
 
+    # Read once off the first slice: these are series-level parameters, and the
+    # JPG package is what the reader keeps long-term.
+    acquisition: dict = {}
+    try:
+        import pydicom
+
+        acquisition = dicom_io.acquisition_parameters(
+            pydicom.dcmread(
+                str(candidate.slices[0].path), stop_before_pixels=True, force=True,
+            ),
+            candidate.modality,
+        )
+    except Exception:
+        acquisition = {}
+
     manifest = {
         "format": MANIFEST_FORMAT,
         "version": MANIFEST_VERSION,
         "series_type": candidate.kind,
+        "acquisition": acquisition,
         "series_description": candidate.description,
         "modality": candidate.modality,
         "series_number": candidate.series_number,

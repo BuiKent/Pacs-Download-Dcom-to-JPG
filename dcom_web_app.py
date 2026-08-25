@@ -234,6 +234,16 @@ class NativeApi:
             path, options if isinstance(options, dict) else {},
         )
 
+    def choose_export_folder(self, folder=None):
+        """Pick where to write a patient's browsable copy, then start the job."""
+        source = str(folder or "").strip()
+        if not source:
+            return None
+        destination = self._safe_folder_dialog()
+        if not destination:
+            return None
+        return self._controller.start_portable_export(source, destination)
+
     def choose_output(self):
         path = self._safe_folder_dialog()
         if not path:

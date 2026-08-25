@@ -798,15 +798,18 @@ button { cursor: pointer; }
   letter-spacing: 0.3px;
   text-transform: uppercase;
 }
+/* Both badges were written light-on-dark (#70b4ff, #ff8585) while the Worklist
+   shell is the light palette, so "Mặc định" measured 1.71:1. Tokens follow the
+   shell in either theme; see CLAUDE.md §5. */
 .activity-folder-row .folder-badge.default {
-  background: rgba(47, 128, 237, 0.2);
-  color: #70b4ff;
-  border: 1px solid rgba(47, 128, 237, 0.4);
+  background: var(--accent-bg);
+  color: var(--accent-fg);
+  border: 1px solid var(--accent-fg);
 }
 .activity-folder-row .folder-badge.missing {
-  background: rgba(235, 87, 87, 0.2);
-  color: #ff8585;
-  border: 1px solid rgba(235, 87, 87, 0.4);
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  border: 1px solid var(--danger-border);
 }
 .activity-folder-row .folder-actions {
   display: inline-flex;
@@ -3219,6 +3222,52 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 
 .srow .who b {
   font-weight: 500;
+}
+
+/* An unread study carries a left marker rather than a colour wash: the row
+   already uses colour for its download status, and two colour codes in one row
+   compete. `.read` is styled too so the two states differ by more than the
+   presence of a mark. */
+.srow.unread {
+  box-shadow: inset 2px 0 0 var(--accent-fg, #0f4c81);
+}
+.srow.read .who b {
+  color: var(--label-muted);
+  font-weight: 400;
+}
+.srow .read-toggle {
+  min-width: 30px;
+  padding: 0 8px;
+  font-size: 13px;
+  line-height: 1;
+}
+.srow .read-toggle.on {
+  background: var(--accent-bg);
+  border-color: var(--accent-fg);
+  color: var(--accent-fg);
+}
+
+/* Second filter row: modality, period and read state. Sits under the search
+   box and uses the same field tokens, so it follows the shell theme. */
+.worklist-filter-bar.secondary {
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 8px;
+}
+.worklist-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--label-muted);
+}
+.worklist-filter select {
+  min-width: 118px;
+}
+.worklist-unread-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--label-fg);
 }
 
 

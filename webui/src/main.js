@@ -26,6 +26,7 @@ import {
   setCompareScrollSync,
   setReferenceCursor,
   setReferenceLines,
+  setScaleOverlay,
   flipActiveViewportHorizontal,
   flipActiveViewportVertical,
   initViewer,
@@ -37,6 +38,8 @@ import {
   roiVolumeMl,
   rotateActiveViewportClockwise,
   saveAnnotations,
+  scaleOverlayState,
+  seriesHasPhysicalSpacing,
   seriesSafetyNotice,
   seriesSupportsHounsfield,
   setTool,
@@ -111,6 +114,9 @@ const state = {
   scrollSync: true,
   referenceLines: true,
   referenceCursor: true,
+  // The mm scale bar. Off by default: it only means anything on a series whose
+  // real pixel spacing the archive recorded.
+  scaleOverlay: false,
   mode: "single",
   tool: "window",
   downloadOpen: true,
@@ -169,6 +175,12 @@ const state = {
   patientEditDraft: null,
   worklistSortColumn: "date",
   worklistSortOrder: "desc",
+  // Study-level filters. A radiologist works a list down by modality and by
+  // what is still unread, so these narrow the studies inside each patient row
+  // rather than only hiding whole patients.
+  worklistModality: "",
+  worklistPeriod: "all",
+  worklistRead: "all",
   // Which Worklist tab is showing: the patient/study list or the queue+history.
   worklistTab: "studies",
   // Latest /api/job snapshot, kept so the Activity panel can draw it.
@@ -207,6 +219,8 @@ const icons = {
   window: "◐",
   pan: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M14 7.5a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M10 8a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M6 9a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M18 11v1a8 8 0 1 1-16 0v-2.5"/></svg>`,
   zoom: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`,
+  magnify: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7"/><line x1="10" y1="7" x2="10" y2="13"/><line x1="7" y1="10" x2="13" y2="10"/><path d="m21 21-5.2-5.2"/></svg>`,
+  scaleBar: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 16h18"/><path d="M3 12v8"/><path d="M21 12v8"/><path d="M8 14v6"/><path d="M13 14v6"/><path d="M18 14v6"/></svg>`,
   length: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></svg>`,
   angle: "∠",
   ellipse: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/></svg>`,
@@ -309,7 +323,7 @@ function iconButton(id, icon, title, active = false, disabled = false, label = "
   // Mode, tool and cine buttons are stateful, so screen readers need the state
   // that the highlight conveys visually.
   const stateful = /^(mode-|tool-)/.test(id)
-    || ["cine", "scroll-sync", "reference-lines", "reference-cursor"].includes(id);
+    || ["cine", "scroll-sync", "reference-lines", "reference-cursor", "scale-overlay"].includes(id);
   return `<button class="icon-button ${active ? "active" : ""} ${label ? "with-label" : ""}" data-action="${id}"
     title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"
     ${stateful ? `aria-pressed="${active ? "true" : "false"}"` : ""} ${disabled ? "disabled" : ""}>
@@ -369,6 +383,16 @@ function renderToolbarGroups(series) {
     iconButton("tool-ellipse", icons.ellipse, t("ROI ellipse"), state.tool === "ellipse"),
     iconButton("tool-freehand", icons.freehand, t("ROI tự do"), state.tool === "freehand"),
     iconButton("tool-text", icons.text, t("Ghi chú chữ lên ảnh"), state.tool === "text"),
+    iconButton("tool-magnify", icons.magnify, t("Kính lúp"), state.tool === "magnify"),
+    // The scale bar is a measurement, so it is offered only where the archive
+    // recorded real millimetre spacing.
+    iconButton(
+      "scale-overlay",
+      icons.scaleBar,
+      t("Thước tỉ lệ (mm)"),
+      state.scaleOverlay,
+      !seriesHasPhysicalSpacing(series),
+    ),
   ].join("");
 
   const orientation = [
@@ -1477,6 +1501,12 @@ function refreshStudyListPanel() {
   tree.innerHTML = renderWorklistTreeInner();
   bindWorklistOpenButtons(tree);
 
+  const filters = root.querySelector(".worklist-filter-bar.secondary");
+  if (filters) {
+    filters.outerHTML = renderWorklistFilters();
+    bindWorklistFilters(root);
+  }
+
   const summary = root.querySelector(".worklist-summary");
   if (summary) summary.innerHTML = renderWorklistSummaryInner();
 
@@ -1544,9 +1574,55 @@ function patientLatestStudyDateString(patient) {
 }
 
 /** Patients matching the search box, sorted by the active sort column. */
+/** Oldest study date still inside the selected period, or null for "all". */
+function worklistPeriodCutoff() {
+  const days = { today: 0, week: 6, month: 29 }[state.worklistPeriod];
+  if (days === undefined) return null;
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - days);
+  return start.getTime();
+}
+
+/**
+ * Whether one study survives the modality, period and read filters.
+ *
+ * A study whose date the scan could not establish is kept whatever the period
+ * is: hiding it would quietly drop a record from the list the reader is
+ * working through, and "chưa rõ ngày" is not the same as "outside the range".
+ */
+export function studyMatchesWorklistFilters(study) {
+  const modality = (state.worklistModality || "").trim().toUpperCase();
+  if (modality && String(study.modality || "").trim().toUpperCase() !== modality) return false;
+
+  if (state.worklistRead === "unread" && study.isRead) return false;
+  if (state.worklistRead === "read" && !study.isRead) return false;
+
+  const cutoff = worklistPeriodCutoff();
+  if (cutoff !== null) {
+    const taken = parseStudyDateToTime(study.studyDate);
+    if (Number.isFinite(taken) && taken > 0 && taken < cutoff) return false;
+  }
+  return true;
+}
+
+/** True when any study filter is narrowing the list. */
+export function worklistFiltersActive() {
+  return Boolean(
+    (state.worklistModality || "").trim()
+    || (state.worklistPeriod && state.worklistPeriod !== "all")
+    || (state.worklistRead && state.worklistRead !== "all"),
+  );
+}
+
 function filteredPatientList() {
   const search = (state.worklistSearch || "").toLowerCase().trim();
   let patients = getEffectiveWorklistPatients();
+  if (worklistFiltersActive()) {
+    patients = patients
+      .map((p) => ({ ...p, studies: (p.studies || []).filter(studyMatchesWorklistFilters) }))
+      .filter((p) => p.studies.length > 0);
+  }
   if (search) {
     patients = patients.filter((p) => {
       const pText = `${p.patientId || ""} ${p.patientName || ""} ${p.hospital || ""} ${p.gender || ""} ${p.birthYear || ""}`.toLowerCase();
@@ -1723,12 +1799,17 @@ function renderWorklistTreeInner() {
               <button class="soft-button" type="button" data-action="open-patient-record" data-patient-id="${escapeHtml(p.id)}">
                 ${escapeHtml(t("Mở hồ sơ"))}
               </button>
+              <button class="soft-button" type="button" data-action="export-patient-record"
+                data-folder="${escapeHtml(p.folder || "")}"
+                title="${escapeHtml(t("Xuất ảnh JPG kèm trang index.html để bệnh nhân mở bằng trình duyệt"))}">
+                ${escapeHtml(t("Xuất hồ sơ"))}
+              </button>
             </span>
           </div>
 
           <div class="studies${isExpanded ? " on" : ""}" data-studies="${escapeHtml(p.id)}">
             ${studies.map((s, sIdx) => `
-                <div class="srow">
+                <div class="srow${s.isRead ? " read" : " unread"}">
                   <span class="stt-cell"><span class="rail"></span><span class="stt-subnum">${pIdx + 1}.${sIdx + 1}</span></span>
                   <span class="who">
                     <b>${escapeHtml(studyHeadingLine(s))}</b>
@@ -1749,6 +1830,13 @@ function renderWorklistTreeInner() {
                     <button class="soft-button" type="button" data-action="reveal-study-folder" data-folder="${escapeHtml(s.folder || "")}" ${s.status === "miss" ? "disabled" : ""}>
                       ${escapeHtml(t("Thư mục"))}
                     </button>
+                    <button class="soft-button read-toggle${s.isRead ? " on" : ""}" type="button"
+                      data-action="toggle-study-read"
+                      data-folder="${escapeHtml(s.folder || "")}"
+                      data-read="${s.isRead ? "1" : "0"}"
+                      title="${escapeHtml(s.isRead ? t("Bỏ đánh dấu đã đọc") : t("Đánh dấu đã đọc"))}">
+                      ${s.isRead ? "✓" : "○"}
+                    </button>
                   </span>
                 </div>
               `).join("")}
@@ -1757,6 +1845,44 @@ function renderWorklistTreeInner() {
       }).join("")}
     </div>
   `;
+}
+
+/**
+ * Actions the worklist tree wires up itself.
+ *
+ * `bindEvents` sweeps every `[data-action]` in the shell, and this binder runs
+ * over the same nodes afterwards. Without this list both listeners fired for
+ * one click, which made the first sort click after a full render toggle the
+ * order twice and appear to do nothing.
+ */
+const WORKLIST_OWNED_ACTIONS = new Set([
+  "sort-worklist",
+  "open-study-viewer",
+  "open-patient-record",
+  "reveal-study-folder",
+  "open-worklist-item",
+  "resume-study-download",
+  "toggle-study-read",
+  "clear-worklist-filters",
+  "export-patient-record",
+]);
+
+/** Wire the study filter selects and the "Bỏ lọc" button inside `host`. */
+function bindWorklistFilters(host) {
+  if (!host) return;
+  [
+    ["worklist-modality", "worklistModality"],
+    ["worklist-period", "worklistPeriod"],
+    ["worklist-read", "worklistRead"],
+  ].forEach(([field, key]) => {
+    host.querySelector(`[data-field='${field}']`)?.addEventListener("change", (event) => {
+      state[key] = event.target.value;
+      refreshStudyListPanel();
+    });
+  });
+  host.querySelector("[data-action='clear-worklist-filters']")?.addEventListener("click", () => {
+    action("clear-worklist-filters", null);
+  });
 }
 
 /** Attach tree accordion and button listeners to worklist markup. */
@@ -1803,6 +1929,20 @@ function bindWorklistOpenButtons(host) {
       // one — leaving the timeline showing a single visit out of four.
       const folder = patient.folder || patient.studies?.[0]?.folder;
       if (folder) openHistoryEntry({ folder });
+    });
+  });
+
+  host.querySelectorAll("[data-action='export-patient-record']").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      action("export-patient-record", btn);
+    });
+  });
+
+  host.querySelectorAll("[data-action='toggle-study-read']").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      action("toggle-study-read", btn);
     });
   });
 
@@ -1916,6 +2056,75 @@ function renderWorklistSummaryInner() {
   `).join("");
 }
 
+/**
+ * Modality labels present in the archive, so the filter offers only real ones.
+ *
+ * The scanner writes a DICOM code ("MR", "CT") when the tags carry one and a
+ * Vietnamese label ("X-Quang", "Bệnh án") when it had only the folder to go on.
+ * Both are shown as the scanner wrote them and matched case-insensitively.
+ */
+function worklistModalityOptions() {
+  const byKey = new Map();
+  getEffectiveWorklistPatients().forEach((patient) => {
+    (patient.studies || []).forEach((study) => {
+      const label = String(study.modality || "").trim();
+      if (label && !byKey.has(label.toUpperCase())) byKey.set(label.toUpperCase(), label);
+    });
+  });
+  return [...byKey.values()].sort((a, b) => a.localeCompare(b, "vi"));
+}
+
+/**
+ * The study filter row: modality, how recent, and what is still unread.
+ *
+ * Built from what the archive actually contains rather than a fixed list of
+ * modality codes, so the row never offers a filter that would empty the list.
+ */
+export function renderWorklistFilters() {
+  const modalities = worklistModalityOptions();
+  const unread = getEffectiveWorklistPatients()
+    .reduce((total, patient) => total + (patient.studies || []).filter((s) => !s.isRead).length, 0);
+  const periods = [
+    ["all", t("Mọi thời điểm")],
+    ["today", t("Hôm nay")],
+    ["week", t("7 ngày")],
+    ["month", t("30 ngày")],
+  ];
+  const readStates = [
+    ["all", t("Tất cả")],
+    ["unread", t("Chưa đọc")],
+    ["read", t("Đã đọc")],
+  ];
+  const option = ([value, label], current) =>
+    `<option value="${escapeHtml(value)}"${value === current ? " selected" : ""}>${escapeHtml(label)}</option>`;
+
+  return `
+    <div class="worklist-filter-bar secondary">
+      <label class="worklist-filter">
+        <span>${escapeHtml(t("Loại chụp"))}</span>
+        <select data-field="worklist-modality">
+          <option value=""${state.worklistModality ? "" : " selected"}>${escapeHtml(t("Tất cả"))}</option>
+          ${modalities.map((code) => option([code, code], state.worklistModality)).join("")}
+        </select>
+      </label>
+      <label class="worklist-filter">
+        <span>${escapeHtml(t("Ngày chụp"))}</span>
+        <select data-field="worklist-period">
+          ${periods.map((item) => option(item, state.worklistPeriod)).join("")}
+        </select>
+      </label>
+      <label class="worklist-filter">
+        <span>${escapeHtml(t("Trạng thái đọc"))}</span>
+        <select data-field="worklist-read">
+          ${readStates.map((item) => option(item, state.worklistRead)).join("")}
+        </select>
+      </label>
+      <span class="worklist-unread-count">${escapeHtml(tf("{} ca chưa đọc", unread))}</span>
+      ${worklistFiltersActive() ? `<button class="soft-button" type="button" data-action="clear-worklist-filters">${escapeHtml(t("Bỏ lọc"))}</button>` : ""}
+    </div>
+  `;
+}
+
 function renderStudyListPanel() {
   return `
     <div class="worklist-filter-bar filters">
@@ -1930,6 +2139,8 @@ function renderStudyListPanel() {
       <button class="soft-button" data-action="refresh-worklist" ${state.worklistLoading ? "disabled" : ""}>${escapeHtml(t("Quét lại"))}</button>
     </div>
 
+    ${renderWorklistFilters()}
+
     <div class="worklist-tree">${renderWorklistTreeInner()}</div>
   `;
 }
@@ -1942,6 +2153,7 @@ const JOB_KIND_LABELS = {
   "archive": "Quét lại kho",
   "search": "Tìm ca chụp",
   "series-discovery": "Dò danh sách series",
+  "export": "Xuất hồ sơ cho bệnh nhân",
 };
 
 /**
@@ -3000,6 +3212,7 @@ function bindEvents() {
   if (!app && typeof document !== "undefined") app = document.querySelector("#app");
   if (!app) return;
   app.querySelectorAll("[data-action]").forEach((element) => {
+    if (WORKLIST_OWNED_ACTIONS.has(element.dataset.action)) return;
     element.addEventListener("click", () => action(element.dataset.action, element));
   });
   // Backdrop click closes the dialog; a click that lands inside it must not,
@@ -3075,6 +3288,7 @@ function bindEvents() {
   });
   bindWorklistOpenButtons(app);
   bindTextViewerButtons(app);
+  bindWorklistFilters(app);
   app.querySelector("[data-field='worklist-search']")?.addEventListener("input", (event) => {
     state.worklistSearch = event.target.value;
     // Tree, summary tiles and tab count all read the filtered list, so they
@@ -3688,6 +3902,48 @@ async function action(name, element = null) {
       await refreshWorklist();
       return;
     }
+    if (name === "export-patient-record") {
+      const folder = element?.dataset?.folder;
+      if (!folder) throw new Error(t("Hồ sơ này chưa có thư mục trên đĩa."));
+      if (!window.pywebview?.api?.choose_export_folder) {
+        throw new Error(t("Chọn thư mục xuất cần chạy trong ứng dụng WebView2."));
+      }
+      const job = await window.pywebview.api.choose_export_folder(folder);
+      if (job) {
+        state.bootstrap.job = job;
+        setStatus(t("Đang xuất hồ sơ sang thư mục đã chọn…"));
+        startJobPolling();
+      }
+      return;
+    }
+    if (name === "clear-worklist-filters") {
+      state.worklistModality = "";
+      state.worklistPeriod = "all";
+      state.worklistRead = "all";
+      refreshStudyListPanel();
+      return;
+    }
+    if (name === "toggle-study-read") {
+      const folder = element?.dataset?.folder;
+      if (!folder) return;
+      const read = element.dataset.read !== "1";
+      const result = await api("/api/worklist/read", {
+        method: "POST",
+        body: JSON.stringify({ folder, read }),
+      });
+      // Patch the row in place: a full rescan would collapse the tree the
+      // reader has just expanded.
+      (state.worklistPatients || []).forEach((patient) => {
+        (patient.studies || []).forEach((study) => {
+          if (study.folder === folder) {
+            study.isRead = Boolean(result?.isRead);
+            study.readAt = String(result?.readAt || "");
+          }
+        });
+      });
+      refreshStudyListPanel();
+      return;
+    }
     if (name === "sort-worklist") {
       const col = element?.dataset?.sortCol;
       if (!col) return;
@@ -4138,6 +4394,15 @@ async function action(name, element = null) {
       }
       render();
       await renderViewer();
+      return;
+    }
+    if (name === "scale-overlay") {
+      state.scaleOverlay = setScaleOverlay(!state.scaleOverlay);
+      const button = app.querySelector("[data-action='scale-overlay']");
+      if (button) {
+        button.classList.toggle("active", state.scaleOverlay);
+        button.setAttribute("aria-pressed", state.scaleOverlay ? "true" : "false");
+      }
       return;
     }
     if (name?.startsWith("tool-")) {
@@ -4850,11 +5115,56 @@ async function closeTab(tabId) {
   }
 }
 
+/**
+ * Series names a study carries for the scanner's benefit, not the reader's.
+ *
+ * Every one of these is a real series in the archive and stays in the list —
+ * this only decides which series is *open* when a record is first shown.
+ */
+const NON_DIAGNOSTIC_SERIES = /screen\s*save|dose\s*report|scout|localiz|survey|patient\s*protocol|summary/i;
+
+/**
+ * Which series to show when a record opens.
+ *
+ * Opening `series[0]` meant a study whose first series is a three-image
+ * "Screen Save" — which is how several scanners order their output — opened on
+ * a screenshot instead of on the images. The choice here is mechanical and
+ * makes no clinical claim: the newest study, a real imaging series rather than
+ * a video or a document, boilerplate last, then the longest stack. Which
+ * sequence a reader wants first is protocol- and case-dependent, so it stays
+ * their decision.
+ */
+export function pickInitialSeries(seriesList) {
+  const list = (seriesList || []).filter(Boolean);
+  if (list.length === 0) return "";
+
+  const imaging = list.filter((item) => (item.mediaType || "dicom") === "dicom");
+  const pool = imaging.length ? imaging : list;
+
+  const newestDate = pool.reduce((latest, item) => {
+    const date = String(item.studyDate || "");
+    return date > latest ? date : latest;
+  }, "");
+  const sameStudy = newestDate
+    ? pool.filter((item) => String(item.studyDate || "") === newestDate)
+    : pool;
+
+  const boilerplate = (item) =>
+    NON_DIAGNOSTIC_SERIES.test(String(item.description || item.name || "")) ? 1 : 0;
+
+  const ranked = [...sameStudy].sort((a, b) => {
+    const rank = boilerplate(a) - boilerplate(b);
+    if (rank !== 0) return rank;
+    return (Number(b.sliceCount) || 0) - (Number(a.sliceCount) || 0);
+  });
+  return ranked[0]?.id || list[0].id;
+}
+
 function applyArchive(archive, sessionId = "", folder = "") {
   state.archive = archive;
   for (const series of archive.series) registerSeries(series);
   if (!archive.series.some((item) => item.id === state.selectedId)) {
-    state.selectedId = archive.series[0]?.id || "";
+    state.selectedId = pickInitialSeries(archive.series);
   }
   fillCompareSlots("compare3");
   state.mode = "single";
@@ -5008,6 +5318,18 @@ function renderViewer() {
       if (applied && applied !== state.tool) {
         state.tool = applied;
         syncToolHighlight();
+      }
+      // The scale bar only survives on a series with real spacing, so the
+      // button follows what the viewer actually turned on rather than what was
+      // last asked for.
+      const scaleBarOn = scaleOverlayState();
+      if (scaleBarOn !== state.scaleOverlay) {
+        state.scaleOverlay = scaleBarOn;
+        const scaleButton = app.querySelector("[data-action='scale-overlay']");
+        if (scaleButton) {
+          scaleButton.classList.toggle("active", scaleBarOn);
+          scaleButton.setAttribute("aria-pressed", scaleBarOn ? "true" : "false");
+        }
       }
       if (mode === "compare" || mode === "compare3") {
         const sync = compareScrollSyncState();
@@ -5373,7 +5695,7 @@ async function boot() {
   state.archive = state.bootstrap.archive;
   const initialSessionId = state.bootstrap.archiveSessionId || "";
   if (initialSessionId) setApiSession(initialSessionId);
-  state.selectedId = state.archive.series[0]?.id || "";
+  state.selectedId = pickInitialSeries(state.archive.series);
   state.compareIds = [
     state.archive.series[1]?.id || state.selectedId,
     state.archive.series[2]?.id || state.archive.series[1]?.id || state.selectedId,

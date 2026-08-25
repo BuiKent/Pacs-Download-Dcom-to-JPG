@@ -16,10 +16,12 @@ import {
   EllipticalROITool,
   Enums as ToolEnums,
   LengthTool,
+  MagnifyTool,
   PanTool,
   PlanarFreehandROITool,
   ReferenceCursors,
   ReferenceLinesTool,
+  ScaleOverlayTool,
   StackScrollTool,
   ToolGroupManager,
   TrackballRotateTool,
@@ -65,6 +67,8 @@ const toolClasses = [
   TrackballRotateTool,
   ReferenceLinesTool,
   ReferenceCursors,
+  MagnifyTool,
+  ScaleOverlayTool,
 ];
 
 const toolByMode = {
@@ -78,6 +82,7 @@ const toolByMode = {
   text: ArrowAnnotateTool.toolName,
   crosshair: CrosshairsTool.toolName,
   orbit3d: TrackballRotateTool.toolName,
+  magnify: MagnifyTool.toolName,
 };
 
 // What the "clear" button removes and what counts as user-made mark-up. Text
@@ -108,6 +113,10 @@ let mprPrimaryPlane = "axial";
 // missing from that set can never be activated, so toolFallback must know it.
 let toolGroupLayout = "stack";
 let referenceLinesEnabled = true;
+// The mm ruler. Off until a series proves it has real pixel spacing: a ruler
+// drawn over a JPG with no spacing would be a fabricated measurement, which is
+// worse than no ruler at all.
+let scaleOverlayEnabled = false;
 let referenceCursorEnabled = true;
 let cineTimer = null;
 let loadGeneration = 0;
@@ -911,6 +920,7 @@ function createToolGroup(viewportIds, mode = "stack") {
     toolGroup.setToolEnabled(ReferenceLinesTool.toolName);
     updateReferenceLineSource();
   }
+  updateScaleOverlay();
   updateReferenceCursor();
 }
 
@@ -954,6 +964,42 @@ function validOverlayDemographic(value) {
   return str;
 }
 
+/** One number for the overlay, with trailing zeros trimmed. "" when absent. */
+function overlayNumber(value, digits = 1) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "";
+  return String(Number(parsed.toFixed(digits)));
+}
+
+/**
+ * Acquisition parameters for the overlay, chosen by modality.
+ *
+ * This mirrors what a PACS text-overlay map prints, because that is what the
+ * reader checks the image against: TR/TE identify an MR sequence when the
+ * series description is wrong or ambiguous, kVp/mAs qualify a radiograph, and
+ * slice thickness qualifies both CT and MR. A parameter the file does not
+ * record is absent from the block entirely, so nothing here invents a value.
+ */
+export function acquisitionOverlayLines(series, manifest) {
+  const acquisition = series?.acquisition || manifest?.acquisition || {};
+  const modality = String(series?.modality || manifest?.modality || "").toUpperCase();
+  const lines = [];
+
+  if (modality === "MR" || modality === "MRI") {
+    const tr = overlayNumber(acquisition.repetitionTime);
+    const te = overlayNumber(acquisition.echoTime, 2);
+    if (tr || te) lines.push(`TR/TE: ${tr || "\u2014"} / ${te || "\u2014"} ms`);
+  }
+  const kvp = overlayNumber(acquisition.kvp);
+  const mas = overlayNumber(acquisition.exposure, 2);
+  if (kvp || mas) {
+    lines.push([kvp && `kVp: ${kvp}`, mas && `mAs: ${mas}`].filter(Boolean).join("  "));
+  }
+  const thickness = overlayNumber(acquisition.sliceThickness, 2);
+  if (thickness) lines.push(`ST: ${thickness} mm`);
+  return lines;
+}
+
 function updateViewportOverlays(viewportId, tl, tr, bl, br, ot, ob, ol, or) {
   const viewport = renderingEngine?.getViewport(viewportId);
   if (!viewport) return;
@@ -979,10 +1025,18 @@ function updateViewportOverlays(viewportId, tl, tr, bl, br, ot, ob, ol, or) {
     }
   }
 
-  const inst = manifest.institutionName || manifest.institution_name || "";
+  const acquisition = series.acquisition || manifest.acquisition || {};
+  const inst = manifest.institutionName
+    || manifest.institution_name
+    || acquisition.institutionName
+    || "";
   const desc = series.description || manifest.series_description || "";
   
-  tr.innerText = [studyDate, modality, desc, inst].filter(Boolean).join("\n");
+  // The accession number is how a study is looked up in the RIS, so it belongs
+  // beside the study identity rather than with the technical parameters.
+  const accession = acquisition.accessionNumber ? `Acc: ${acquisition.accessionNumber}` : "";
+
+  tr.innerText = [studyDate, modality, desc, accession, inst].filter(Boolean).join("\n");
   
   const zoom = Math.round((viewport.getZoom?.() || 1) * 100);
   const props = typeof viewport.getProperties === "function" ? viewport.getProperties() : {};
@@ -990,7 +1044,9 @@ function updateViewportOverlays(viewportId, tl, tr, bl, br, ot, ob, ol, or) {
   const wwText = range && Number.isFinite(range.lower) && Number.isFinite(range.upper)
     ? `WW/WL: ${Math.round(range.upper - range.lower)} / ${Math.round((range.upper + range.lower) / 2)}`
     : "";
-  bl.innerText = `Zoom: ${zoom}%\n${wwText}`.trim();
+  bl.innerText = [`Zoom: ${zoom}%`, wwText, ...acquisitionOverlayLines(series, manifest)]
+    .filter(Boolean)
+    .join("\n");
   
   let sliceInfo = "";
   if (typeof viewport.getCurrentImageIdIndex === "function") {
@@ -1758,6 +1814,51 @@ export function referenceLinesState() {
  * Passive rather than Active — mouseMove reaches both modes, so the cursor
  * costs no mouse binding and leaves the chosen tool on the primary button.
  */
+/**
+ * Whether a series carries real millimetre spacing.
+ *
+ * The scale bar is a measurement. Drawing one over a series whose spacing the
+ * archive never recorded — a plain JPG, a scanned document, a DICOM without
+ * PixelSpacing — would put a fabricated ruler on a diagnostic image, so the
+ * overlay stays off for those rather than guessing 1 mm per pixel.
+ */
+export function seriesHasPhysicalSpacing(series) {
+  const spacing = series?.geometry?.pixelSpacing
+    || series?.pixelData?.pixelSpacing
+    || null;
+  if (!Array.isArray(spacing) || spacing.length < 2) return false;
+  return spacing.slice(0, 2).every((value) => Number.isFinite(Number(value)) && Number(value) > 0);
+}
+
+/** Apply the scale-bar setting to the live tool group. */
+function updateScaleOverlay() {
+  if (!toolGroup || !toolGroup.hasTool(ScaleOverlayTool.toolName)) return;
+  const measurable = activeSeriesList.length
+    ? activeSeriesList.every(seriesHasPhysicalSpacing)
+    : seriesHasPhysicalSpacing(activeSeries);
+  if (scaleOverlayEnabled && measurable) {
+    toolGroup.setToolEnabled(ScaleOverlayTool.toolName);
+  } else {
+    toolGroup.setToolDisabled(ScaleOverlayTool.toolName);
+  }
+}
+
+/** Turn the mm scale bar on or off; returns the state actually in force. */
+export function setScaleOverlay(enabled) {
+  scaleOverlayEnabled = Boolean(enabled);
+  updateScaleOverlay();
+  renderingEngine?.render();
+  return scaleOverlayState();
+}
+
+/** True only when the bar is both requested and backed by real spacing. */
+export function scaleOverlayState() {
+  if (!scaleOverlayEnabled) return false;
+  return activeSeriesList.length
+    ? activeSeriesList.every(seriesHasPhysicalSpacing)
+    : seriesHasPhysicalSpacing(activeSeries);
+}
+
 function updateReferenceCursor() {
   if (!toolGroup || !toolGroup.hasTool(ReferenceCursors.toolName)) return;
   // Only meaningful when there is another pane to project the point onto.

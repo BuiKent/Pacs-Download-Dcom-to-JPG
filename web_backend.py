@@ -31,6 +31,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import unquote, urlparse
 
 import dcom_pipeline
+import dicom_io
 from dicom_io import discover_dicom_files
 import mpr_engine
 
@@ -259,6 +260,11 @@ class DicomHeader:
     patient_sex: str = ""
     patient_age: str = ""
     number_of_frames: int = 1
+    # Acquisition parameters the reader checks a sequence against: TR/TE on MR,
+    # slice thickness and position on CT, kVp/mAs on radiography. Empty for a
+    # file that records none of them — a missing parameter is shown as missing,
+    # never as a zero.
+    acquisition: dict = field(default_factory=dict)
     # Which frame inside `path` this header stands for. Always 0 for classic
     # single-frame files; an enhanced multi-frame file yields one header per
     # frame so the rest of the pipeline can treat frames as ordinary slices.
@@ -349,6 +355,15 @@ def _multiframe_attributes(ds: Any, frames: int) -> list[FrameAttributes]:
     return result
 
 
+def _acquisition_parameters(ds: Any, modality: str) -> dict:
+    """Technical parameters worth printing next to the image.
+
+    Shared with the JPG conversion so a converted study keeps the same fields
+    the DICOM carried — see `dicom_io.acquisition_parameters`.
+    """
+    return dicom_io.acquisition_parameters(ds, modality)
+
+
 def _read_dicom_header(path: Path) -> list[DicomHeader]:
     import pydicom
 
@@ -412,6 +427,9 @@ def _read_dicom_header(path: Path) -> list[DicomHeader]:
     # own values — lets ordering, manifest building and crosslinking treat
     # frames exactly like the slices of a classic series, and keeps a file
     # whose frames genuinely differ from being flattened into a false average.
+    modality_code = str(getattr(ds, "Modality", "UNKNOWN") or "UNKNOWN").upper()
+    acquisition = _acquisition_parameters(ds, modality_code)
+
     blank = FrameAttributes(None, None, None, None, None, None, None)
     per_frame: list[FrameAttributes] = [blank] * frames
     if frames > 1:
@@ -426,7 +444,7 @@ def _read_dicom_header(path: Path) -> list[DicomHeader]:
             frame_uid=str(getattr(ds, "FrameOfReferenceUID", "") or ""),
             series_number=series_number,
             description=description,
-            modality=str(getattr(ds, "Modality", "UNKNOWN") or "UNKNOWN").upper(),
+            modality=modality_code,
             rows=rows,
             columns=columns,
             samples_per_pixel=samples,
@@ -462,6 +480,7 @@ def _read_dicom_header(path: Path) -> list[DicomHeader]:
             patient_sex=patient_sex,
             patient_age=patient_age,
             number_of_frames=frames,
+            acquisition=acquisition,
             frame_index=frame_index,
         )
 
@@ -972,6 +991,10 @@ class SeriesRecord:
     pixel_data: Optional[dict] = None
     study_group: str = ""
     study_date: str = ""
+    # TR/TE, slice thickness, kVp/mAs and the other technical fields a reader
+    # confirms a sequence by. Read from DICOM, and carried into the JPG
+    # manifest so a converted study keeps them too.
+    acquisition: dict = field(default_factory=dict)
     # Parallel to `images`: which frame of that file each slice refers to.
     # Empty for series where every file holds exactly one frame.
     frame_indices: list[int] = field(default_factory=list)
@@ -1030,6 +1053,9 @@ class SeriesRecord:
             # DICOM series from one StudyInstanceUID therefore share this key.
             "timelineKey": self.timeline_key(),
         }
+        acquisition = self.acquisition or m.get("acquisition") or {}
+        if acquisition:
+            data["acquisition"] = acquisition
         if self.pixel_data:
             data["pixelData"] = self.pixel_data
         if self.manifest and all(
@@ -1483,7 +1509,13 @@ class ArchiveCatalog:
                 manifest=manifest,
                 mpr_ready=ready,
                 mpr_reason=reason,
-                modality=modality if modality in {"CT", "MR"} else "UNKNOWN",
+                # Any modality DICOM actually names is kept. Collapsing CR, DX,
+                # US, XA, PT, NM and MG into "UNKNOWN" lost the label on every
+                # X-ray and ultrasound arriving on a disc from another hospital,
+                # while the windowing rules key off "CT" alone and are unmoved
+                # by a truthful label here.
+                modality=modality if modality in DIAGNOSTIC_MODALITIES else "UNKNOWN",
+                acquisition=first.acquisition,
                 source_type="dicom",
                 study_group=study_group,
                 study_date=study_date,
@@ -1830,6 +1862,7 @@ class ArchiveCatalog:
                 mpr_ready=ready,
                 mpr_reason=reason,
                 modality=modality,
+                acquisition=(manifest or {}).get("acquisition") or {},
                 study_group=study_group,
                 study_date=study_date,
             )
@@ -2601,6 +2634,8 @@ class WorklistScanner:
                 "mediaCounts": {"dicom": 0, "photo": 0, "video": 0, "doc": 0},
                 "primaryMediaType": str(record.get("mediaType") or "dicom").strip().lower(),
                 "sizeBytes": 0,
+                "readAt": str(record.get("readAt") or ""),
+                "isRead": bool(str(record.get("readAt") or "").strip()),
             }
 
         # The manifest carries the StudyDate the pipeline read off the DICOM
@@ -2733,6 +2768,11 @@ class WorklistScanner:
             # Only the pipeline probes video length, so this stays None for a
             # folder that was merely copied in — the UI hides the stat then.
             "durationSeconds": record.get("durationSeconds"),
+            # When the reader marked this study read. Empty for a study nobody
+            # has marked, and for a folder no patient index describes — the
+            # Worklist then shows it as unread rather than inventing a state.
+            "readAt": str(record.get("readAt") or ""),
+            "isRead": bool(str(record.get("readAt") or "").strip()),
         }
 
     def scan(self) -> list[dict]:
@@ -2820,7 +2860,14 @@ class WorklistScanner:
                     "studies": [],
                 }
             existing_folders = {s["folder"].casefold() for s in patient_map[key]["studies"]}
-            if str(hpath).casefold() not in existing_folders:
+            # Opening a patient folder puts it in history, and adding it again
+            # here listed the whole archive as a fifth "study" beside its own
+            # four — with every image counted twice. A patient directory only
+            # stands in as a study when the scan found no study folders in it.
+            already_scanned = (
+                archive_key(hpath) == key and bool(patient_map[key]["studies"])
+            )
+            if not already_scanned and str(hpath).casefold() not in existing_folders:
                 records = self._manifest_studies_for(patient_dir)
                 st = self._scan_study(hpath, meta, self._lookup_record(records, hpath))
                 patient_map[key]["studies"].append(st)
@@ -3175,27 +3222,85 @@ class WebController:
                 )
 
             total_stats = dcom_pipeline.ConvertStats()
+            # (patient folder, [(study folder, study group)]) for every pair that
+            # carried readable DICOM identity. Written after the conversion so a
+            # half-finished import never leaves a manifest promising images that
+            # are not on disk yet.
+            archives: list[tuple[Path, list[tuple[Path, Any]]]] = []
             for src_dicom, dst_jpg in pairs:
                 if self.job.stop_event.is_set():
                     break
-                stats = dcom_pipeline.convert_all(
-                    src_dicom,
-                    dst_jpg,
-                    log=self.job.log,
-                    quality=quality,
-                    save_png=False,
-                    contrast_mode=dcom_pipeline.CLINICAL,
-                    should_stop=self.job.stop_event.is_set,
+                groups = dcom_pipeline.index_local_dicom_studies(
+                    src_dicom, log=self.job.log,
                 )
-                total_stats.converted += stats.converted
-                total_stats.failed += stats.failed
-                total_stats.skipped += stats.skipped
+                if len(groups) > 1:
+                    # Patient media routinely holds several exams in one tree.
+                    # Converting them into one folder would mix the studies, so
+                    # each gets the same `<date> - <modality> - <mô tả>/JPG`
+                    # layout a download produces.
+                    patient_folder = dst_jpg.parent
+                    self.job.log(
+                        f"Thư mục chứa {len(groups)} ca chụp; mỗi ca được tách "
+                        "sang folder riêng như khi tải phim."
+                    )
+                    study_dirs: list[tuple[Path, Any]] = []
+                    for group in groups:
+                        if self.job.stop_event.is_set():
+                            break
+                        study_dir = patient_folder / dcom_pipeline.study_folder_base_name(
+                            group.as_study()
+                        )
+                        self.job.log(
+                            f"Ca {group.date or '?'} - {group.modality or '?'} - "
+                            f"{group.description or 'chưa có mô tả'}: {len(group.files)} ảnh."
+                        )
+                        stats = dcom_pipeline.convert_all(
+                            src_dicom,
+                            study_dir / "JPG",
+                            log=self.job.log,
+                            quality=quality,
+                            save_png=False,
+                            contrast_mode=dcom_pipeline.CLINICAL,
+                            should_stop=self.job.stop_event.is_set,
+                            files=group.files,
+                        )
+                        total_stats.converted += stats.converted
+                        total_stats.failed += stats.failed
+                        total_stats.skipped += stats.skipped
+                        study_dirs.append((study_dir, group))
+                    archives.append((patient_folder, study_dirs))
+                    open_path = patient_folder
+                else:
+                    stats = dcom_pipeline.convert_all(
+                        src_dicom,
+                        dst_jpg,
+                        log=self.job.log,
+                        quality=quality,
+                        save_png=False,
+                        contrast_mode=dcom_pipeline.CLINICAL,
+                        should_stop=self.job.stop_event.is_set,
+                    )
+                    total_stats.converted += stats.converted
+                    total_stats.failed += stats.failed
+                    total_stats.skipped += stats.skipped
+                    if groups:
+                        study_dir = dst_jpg.parent
+                        # A study folder inside an archive this app already
+                        # manages belongs to that archive, not to a second index
+                        # nested one level down.
+                        parent_managed = dcom_pipeline._read_patient_manifest(
+                            study_dir.parent
+                        ) is not None
+                        patient_folder = study_dir.parent if parent_managed else study_dir
+                        archives.append((patient_folder, [(study_dir, groups[0])]))
 
             if not self.job.stop_event.is_set() and total_stats.converted <= 0:
                 raise ValueError(
                     "Không tìm thấy ảnh DICOM có PixelData "
                     "(.dcm, .dicom, .ima hoặc file DICOM không đuôi)."
                 )
+
+            indexed_studies = self._index_local_import(archives)
 
             archive = self.catalog.open(
                 open_path,
@@ -3214,10 +3319,96 @@ class WebController:
                 "output": str(open_path),
                 "converted": total_stats.converted,
                 "failed": total_stats.failed,
+                "indexedStudies": indexed_studies,
             }
 
         self.job.start("local-import", target)
         return self.job.snapshot()
+
+    def _index_local_import(
+        self,
+        archives: list[tuple[Path, list[tuple[Path, Any]]]],
+    ) -> int:
+        """Write `patient-index.json` for folders just imported from disc.
+
+        This is what turns a converted folder into the same managed archive a
+        download produces: the Worklist finds it, the patient rail shows the
+        demographics the DICOM actually carries, and the studies keep their own
+        dates and accession numbers.
+
+        Identity comes only from the files. A folder whose images name two
+        patients, or name none, is converted and left unindexed rather than
+        filed under a guess.
+        """
+        indexed = 0
+        for patient_folder, study_dirs in archives:
+            groups = [group for _, group in study_dirs]
+            identity = dcom_pipeline.local_import_identity(groups)
+            if not identity:
+                self.job.log(
+                    "Không xác định được một bệnh nhân duy nhất từ tag DICOM; "
+                    f"đã chuyển JPG nhưng không tạo hồ sơ cho {patient_folder.name}."
+                )
+                continue
+            try:
+                dcom_pipeline.write_local_import_manifest(
+                    patient_folder, identity, log=self.job.log,
+                )
+                for study_dir, group in study_dirs:
+                    if not study_dir.is_dir():
+                        continue
+                    image_count = sum(
+                        1 for _ in study_dir.rglob("*.jpg")
+                    )
+                    dcom_pipeline.record_patient_study(
+                        patient_folder,
+                        group.as_study(),
+                        study_dir,
+                        complete=True,
+                        image_count=image_count,
+                    )
+                    indexed += 1
+            except Exception as exc:
+                self.job.log(f"⚠ Không ghi được hồ sơ bệnh nhân: {exc}")
+        if indexed:
+            self.job.log(
+                f"Đã ghi patient-index.json cho {indexed} ca; "
+                "hồ sơ sẽ hiện trong Danh sách bệnh nhân."
+            )
+        return indexed
+
+    def start_portable_export(self, folder: str, destination: str) -> dict:
+        """Write a patient record to a folder any browser can open.
+
+        Runs as a queued job because it copies every JPG in the record, which
+        for a few studies is gigabytes.
+        """
+        import portable_export
+
+        patient_folder = Path(folder).expanduser().resolve(strict=True)
+        if not patient_folder.is_dir():
+            raise ValueError("Đường dẫn hồ sơ không phải thư mục.")
+        target = Path(destination).expanduser().resolve()
+
+        def run() -> dict:
+            self.job.log(f"Đang xuất hồ sơ {patient_folder.name} sang {target}…")
+            return portable_export.export_patient_record(
+                patient_folder,
+                target,
+                log=self.job.log,
+                should_stop=self.job.stop_event.is_set,
+            )
+
+        self.job.start("export", run)
+        return self.job.snapshot()
+
+    def set_study_read(self, folder: str, read: bool) -> dict:
+        """Mark a study read or unread, so a reader can see what is left to do.
+
+        Persisted in the patient index beside the study, not in this process:
+        the mark has to survive a restart to be worth anything.
+        """
+        return dcom_pipeline.set_study_read_state(Path(folder), bool(read))
 
     def set_output_root(self, path: str) -> dict:
         root = Path(path).expanduser().resolve()
@@ -4513,6 +4704,16 @@ class LocalApiServer:
                         archive_root=str(payload.get("archiveRoot") or ""),
                         expected_patient_id=str(payload.get("patientId") or ""),
                         catalog=catalog,
+                    )
+                if path == "/api/worklist/export":
+                    return owner.controller.start_portable_export(
+                        str(payload.get("folder") or ""),
+                        str(payload.get("destination") or ""),
+                    )
+                if path == "/api/worklist/read":
+                    return owner.controller.set_study_read(
+                        str(payload.get("folder") or ""),
+                        bool(payload.get("read")),
                     )
                 if path == "/api/worklist/reveal-folder":
                     return owner.controller.reveal_folder(str(payload.get("folder") or ""))
