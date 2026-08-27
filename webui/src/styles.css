@@ -150,16 +150,20 @@
 }
 
 * { box-sizing: border-box; }
+html, body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
 html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 button, input, select, textarea { font: inherit; }
-button { cursor: pointer; }
-
 .app-shell {
   display: grid;
-  grid-template: var(--titlebar-h) var(--winbar-h) 1fr / 318px 1fr;
+  grid-template: var(--titlebar-h) var(--winbar-h) 1fr / 318px minmax(0, 1fr);
   width: 100%;
   height: 100%;
   background: var(--shell-bg, #060a10);
+  overflow: hidden;
   /* The column and the panel's own transform have to run on the same clock.
      While only the panel animated, the layout snapped shut underneath it and
      the slide tore down the middle. */
@@ -168,7 +172,7 @@ button { cursor: pointer; }
     grid-template-rows var(--motion-base) var(--ease-standard);
 }
 
-.app-shell.download-collapsed { grid-template-columns: 0 1fr; }
+.app-shell.download-collapsed { grid-template-columns: 0 minmax(0, 1fr); }
 .app-shell.download-collapsed .download-panel { transform: translateX(-100%); }
 
 /* ── Zen mode (F11) ──
@@ -514,8 +518,11 @@ button { cursor: pointer; }
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: 16px 20px;
-  gap: 16px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 10px 14px;
+  gap: 10px;
+  overflow-x: hidden;
   overflow-y: auto;
   background: var(--shell-bg, #060a10);
   color: var(--body-fg, #dce7f2);
@@ -585,12 +592,33 @@ button { cursor: pointer; }
   border-radius: 50%;
   animation: viewer-spin .8s linear infinite;
 }
-.worklist-scan-alert { flex-wrap: wrap; color: var(--danger-fg); }
-.worklist-scan-alert.stale { color: var(--label-fg); background: var(--alert-warning-bg); border-style: solid; }
 .worklist-tree {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  min-width: 0;
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--chrome-border, #e9e9e7);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  scrollbar-width: thin;
+  scrollbar-color: var(--control-border, #cbd5e1) var(--control-bg, #f1f5f9);
+}
+.worklist-tree::-webkit-scrollbar {
+  height: 8px;
+}
+.worklist-tree::-webkit-scrollbar-track {
+  background: var(--control-bg, #f8fafc);
+  border-radius: 4px;
+}
+.worklist-tree::-webkit-scrollbar-thumb {
+  background: var(--control-border, #cbd5e1);
+  border-radius: 4px;
+}
+.worklist-tree::-webkit-scrollbar-thumb:hover {
+  background: var(--label-muted, #94a3b8);
 }
 /* `.empty-state` is written for the reading workspace: absolutely positioned
    and dark, so it fills whatever positioned box it lands in. Dropped into the
@@ -615,6 +643,7 @@ button { cursor: pointer; }
   border-radius: 8px;
   background: var(--panel-bg, #0b1119);
   overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 .worklist-patient-header {
   display: flex;
@@ -751,16 +780,19 @@ button { cursor: pointer; }
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 24px;
+  height: 26px;
   padding: 0 10px;
   font-size: 11px;
   font-weight: 600;
-  border-radius: 4px;
+  border-radius: 5px;
   cursor: pointer;
   background: rgba(47, 128, 237, 0.15);
   color: #78b8fd;
   border: 1px solid rgba(47, 128, 237, 0.35);
-  transition: all 0.15s ease;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
 }
 .source-add-btn:hover {
   background: rgba(47, 128, 237, 0.3);
@@ -845,12 +877,15 @@ button { cursor: pointer; }
   height: 24px;
   padding: 0;
   font-size: 13px;
-  border-radius: 4px;
+  border-radius: 5px;
   cursor: pointer;
   background: #15222e;
   color: #e7f1f8;
   border: 1px solid #223547;
-  transition: all 0.15s ease;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
 }
 .activity-folder-row .folder-actions .mini-btn:hover {
   background: #203447;
@@ -991,34 +1026,154 @@ button { cursor: pointer; }
   background: var(--field-bg, #111b26);
 }
 
-.soft-button, .header-actions button {
+.soft-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   height: var(--control-height);
-  border: 1px solid var(--control-border, #2b3d4e);
+  min-width: 52px;
+  padding: 0 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border: 1px solid var(--control-border);
   border-radius: var(--control-radius);
-  color: var(--control-fg, #bcd0df);
-  background: var(--control-bg, #14202b);
+  color: var(--control-fg);
+  background: var(--control-bg);
+  transition: all var(--motion-fast) var(--ease-standard);
 }
-/* A fixed width keeps the header from shifting when VI/EN swap places. */
-.soft-button { min-width: 62px; padding: 0 10px; }
-.soft-button:hover { color: var(--field-fg, #eaf4fb); background: var(--control-bg-hover, #1b2b39); }
+.soft-button:hover {
+  color: var(--field-fg);
+  background: var(--control-bg-hover);
+  border-color: var(--chrome-border);
+}
+
+.header-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-right: 6px;
+}
+.header-actions .icon-button {
+  height: var(--control-height);
+  min-width: var(--control-height);
+  padding: 0 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--control-radius);
+  color: var(--control-fg);
+  background: var(--control-bg);
+  transition: all var(--motion-fast) var(--ease-standard);
+}
+.header-actions .icon-button:hover {
+  background: var(--control-bg-hover);
+  color: var(--field-fg);
+  border-color: var(--chrome-border);
+}
+.header-actions .icon-button.with-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  min-width: max-content;
+  padding: 0 12px;
+  font-weight: 600;
+  font-size: 11.5px;
+}
+.header-actions .icon-button.with-label.active {
+  color: var(--accent-fg);
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
 
 .download-panel {
   position: relative;
   min-width: 0;
-  padding: 12px;
+  padding: 14px;
   overflow: auto;
   background: var(--panel-bg, #0b1119);
   border-right: 1px solid var(--chrome-border, #223040);
   transition: transform var(--motion-base) var(--ease-standard);
 }
 
-.panel-title { display: flex; justify-content: space-between; align-items: center; color: var(--panel-title-fg, #8fd3ff); }
-.panel-title button { color: var(--label-muted, #7890a2); border: 0; background: transparent; font-size: 22px; }
+.panel-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--panel-title-fg, #8fd3ff);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+.panel-title button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  color: var(--label-muted, #7890a2);
+  border: 0;
+  background: transparent;
+  font-size: 18px;
+  cursor: pointer;
+  transition: all var(--motion-fast) var(--ease-standard);
+}
+.panel-title button:hover {
+  color: var(--body-fg);
+  background: var(--control-bg-hover);
+}
+
 /* A secondary export tool, so it reads as a quiet panel rather than competing
    with the primary download action below it. */
-.dicom-source-card { display: grid; margin: 10px 0; }
-.hospital-row { display: flex; gap: 10px; margin: 12px 0; font-size: 12px; }
-.hospital-row label { flex: 1; }
+.dicom-source-card {
+  display: grid;
+  margin: 10px 0 12px;
+}
+
+.hospital-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 10px 0 12px;
+  padding: 3px;
+  background: var(--control-bg-hover);
+  border: 1px solid var(--control-border);
+  border-radius: var(--control-radius);
+}
+.hospital-row label {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  border-radius: calc(var(--control-radius) - 2px);
+  cursor: pointer;
+  color: var(--label-muted);
+  transition: all var(--motion-fast) var(--ease-standard);
+  text-align: center;
+  user-select: none;
+}
+.hospital-row label:hover {
+  color: var(--body-fg);
+}
+.hospital-row label:has(input:checked) {
+  background: var(--control-bg);
+  color: var(--accent-fg);
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+.hospital-row input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .field { display: block; margin: 10px 0; color: var(--label-fg); font-size: 11px; }
 
 /* Every text-entry control in the panel, however it is wrapped, is the same
@@ -1027,14 +1182,14 @@ button { cursor: pointer; }
 .field input, .field textarea, .field select {
   width: 100%;
   margin-top: 5px;
-  padding: 0 8px;
+  padding: 0 10px;
   color: var(--field-fg);
   border: 1px solid var(--field-border);
   border-radius: var(--control-radius);
   background: var(--field-bg);
 }
 .field input, .field select { height: var(--control-height); }
-.field textarea { padding: 7px 8px; resize: vertical; }
+.field textarea { padding: 7px 10px; resize: vertical; }
 .field select:disabled { color: var(--label-muted, #5d7385); }
 .history-field { margin-top: 8px; }
 
@@ -1045,41 +1200,69 @@ button { cursor: pointer; }
   display: flex;
   align-items: center;
   min-width: 0;
+  width: 100%;
   height: var(--control-height);
   margin: 12px 0 10px;
-  padding: 0 7px;
+  padding: 0 10px;
   border: 1px solid var(--field-border);
   border-radius: var(--control-radius);
   background: var(--field-bg);
+  box-sizing: border-box;
+  transition:
+    border-color var(--motion-fast) var(--ease-standard),
+    box-shadow var(--motion-fast) var(--ease-standard);
 }
 /* line-height and the negative margin stop the legend adding a whole text line
    to the card, which made it tower over every other control. */
 .boxed-field > legend {
-  margin-left: 2px;
+  margin-left: 3px;
   margin-bottom: -2px;
-  padding: 0 4px;
+  padding: 0 5px;
   color: var(--label-muted, #8fa6b8);
   font-size: 10.5px;
+  font-weight: 600;
   line-height: 1;
+  letter-spacing: 0.2px;
+  transition: color var(--motion-fast) var(--ease-standard);
 }
-.boxed-field:focus-within { border-color: var(--field-border-focus); }
+.boxed-field:focus-within {
+  border-color: var(--field-border-focus);
+  box-shadow: 0 0 0 1px var(--field-border-focus);
+}
+.boxed-field:focus-within > legend {
+  color: var(--field-border-focus);
+  font-weight: 700;
+}
 /* Clearing the border and background leaves no colour of its own, and an input
    does not inherit one, so the value and the caret were painted in the UA's
    system colour instead of the field token. */
 .boxed-field input {
-  height: auto;
+  width: 100%;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
   margin-top: 0;
-  padding: 0;
+  padding: 0 20px 0 0;
   border: 0;
   background: transparent;
   color: var(--field-fg);
   caret-color: var(--field-fg);
+  font-size: 12.5px;
+  font-weight: 500;
 }
 .boxed-field input:focus { outline: none; }
 
 /* Holds the inline × so it floats over the right edge of its own field. */
-.clearable { position: relative; display: block; flex: 1; min-width: 0; }
-.clearable > input { width: 100%; padding-right: 21px; }
+.clearable {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 100%;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+}
+.clearable > input { width: 100%; }
 .clear-field {
   position: absolute;
   top: 50%;
@@ -1087,8 +1270,8 @@ button { cursor: pointer; }
   transform: translateY(-50%);
   display: grid;
   place-items: center;
-  width: 17px;
-  height: 17px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: 0;
   border-radius: 4px;
@@ -1100,9 +1283,37 @@ button { cursor: pointer; }
 .clear-field:hover { color: var(--field-fg); background: var(--control-bg-hover); }
 .clear-field[hidden] { display: none; }
 .inline-field { display: flex; gap: 6px; }
+
 /* A bordered field with its action button beside it, not inside the card. */
-.field-row { display: flex; align-items: center; gap: 6px; margin: 12px 0 10px; }
-.field-row > .boxed-field { flex: 1; margin: 0; }
+.field-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin: 12px 0 10px;
+  width: 100%;
+}
+.field-row > .boxed-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  height: var(--control-height);
+  box-sizing: border-box;
+}
+.field-row > button {
+  height: var(--control-height);
+  max-height: var(--control-height);
+  padding: 0 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--control-radius);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  align-self: flex-end;
+  transition: all var(--motion-fast) var(--ease-standard);
+}
 
 /* Every push button in the download panel is the same shape. One rule, so a
    button can never again end up a few pixels taller than the field it sits
@@ -1114,6 +1325,9 @@ button { cursor: pointer; }
   padding: var(--control-pad);
   border-radius: var(--control-radius);
   white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all var(--motion-fast) var(--ease-standard);
 }
 /* The default, secondary look. `.primary` and `.danger` opt out so the panel's
    main action and its Stop button read as what they are: both used to arrive
@@ -1125,12 +1339,18 @@ button { cursor: pointer; }
   background: var(--control-bg);
 }
 .download-panel button:not(.icon-button):not(.clear-field):not(.panel-title button):not(.primary):not(.danger):hover:not(:disabled),
-.empty-state button:not(.primary):not(.danger):hover:not(:disabled) { background: var(--control-bg-hover); }
+.empty-state button:not(.primary):not(.danger):hover:not(:disabled) {
+  background: var(--control-bg-hover);
+  border-color: var(--chrome-border);
+}
 button.primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent-bg) 82%, var(--accent-fg) 18%);
+  border-color: var(--accent-fg);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
 }
 button.danger:hover:not(:disabled) {
   background: color-mix(in srgb, var(--danger-bg) 84%, var(--danger-fg) 16%);
+  border-color: var(--danger-fg);
 }
 /* Full `border` shorthand, not just `border-color`: the shape rule above no
    longer declares one, so a colour on its own would leave these two with
@@ -1145,6 +1365,7 @@ button.danger {
   color: var(--danger-fg);
   border: 1px solid var(--danger-border);
   background: var(--danger-bg);
+  font-weight: 600;
 }
 /* The filled state for a Stop button while a job is running. It asked for white
    text over the same pale `--danger-bg` the resting state uses, which is 1.3:1
@@ -1419,17 +1640,20 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 20px;
+  width: 24px;
+  height: 22px;
   padding: 0;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  border-radius: 4px;
+  border-radius: 5px;
   cursor: pointer;
   background: #1c2a36;
   color: #e7f1f8;
   border: 1px solid #2d3f50;
-  transition: all 0.15s ease;
+  transition:
+    background-color var(--motion-fast) var(--ease-standard),
+    border-color var(--motion-fast) var(--ease-standard),
+    color var(--motion-fast) var(--ease-standard);
 }
 .rec-card-actions .mini-btn:hover {
   background: #253949;
@@ -2116,7 +2340,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .fatal-error pre { max-width: 900px; overflow: auto; text-align: left; white-space: pre-wrap; }
 
 @media (max-width: 1200px) {
-  .app-shell { grid-template-columns: 280px 1fr; }
+  .app-shell { grid-template-columns: 280px minmax(0, 1fr); }
   .icon-button { min-width: 24px; }
   .series-strip { width: 145px; min-width: 130px; }
 }
@@ -2125,9 +2349,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .plist-header,
   .prow,
   .srow {
-    grid-template-columns: 20px minmax(180px, 1fr) 110px 105px minmax(190px, auto);
-    gap: 8px;
-    padding: 8px 10px;
+    grid-template-columns: 36px minmax(150px, 1fr) 100px 90px 120px 90px 170px;
+    min-width: 756px;
   }
 }
 
@@ -2988,68 +3211,91 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .plist-header,
 .prow, .srow {
   display: grid;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  grid-template-columns: 52px minmax(200px, 1fr) 130px 115px 95px 110px minmax(210px, 230px);
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  grid-template-columns: 38px minmax(160px, 1fr) 105px 95px 125px 95px 175px;
+  min-width: 793px;
+  border-bottom: 1px solid var(--chrome-border, #e9e9e7);
+  box-sizing: border-box;
+  width: 100%;
 }
 
 .plist-header {
-  background: var(--control-bg, #f7f7f5);
+  background: var(--control-bg, #f8fafc);
   border-top: 1px solid var(--chrome-border, #e9e9e7);
-  border-bottom: 1px solid var(--chrome-border, #e9e9e7);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--label-muted, #8a8880);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--label-muted, #64748b);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   user-select: none;
-  padding-top: 8px;
-  padding-bottom: 8px;
+}
+
+.plist-header > *,
+.prow > *,
+.srow > * {
+  display: flex;
+  align-items: center;
+  padding: 5px 6px;
+  min-width: 0;
+  border-right: 1px solid var(--chrome-border, #e9e9e7);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.plist-header > *:last-child,
+.prow > *:last-child,
+.srow > *:last-child {
+  border-right: none;
 }
 
 .plist-header .col-stt {
-  text-align: left;
-  padding-left: 2px;
+  justify-content: center;
+  text-align: center;
+  padding: 5px 2px;
 }
 
 .plist-header .col-acts {
+  justify-content: flex-end;
   text-align: right;
-  padding-right: 4px;
+  padding-right: 6px;
 }
 
 .col-sort-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   background: transparent;
   border: none;
   padding: 0;
   font: inherit;
   font-size: 11px;
-  font-weight: 600;
-  color: var(--label-muted, #8a8880);
-  letter-spacing: 0.04em;
+  font-weight: 700;
+  color: var(--label-muted, #64748b);
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   cursor: pointer;
   user-select: none;
   text-align: left;
   transition: color 120ms ease;
+  width: 100%;
+  height: 100%;
 }
 
 .col-sort-btn:hover {
-  color: var(--body-fg, #37352f);
+  color: var(--body-fg, #1e293b);
 }
 
 .col-sort-btn.sorted {
-  color: var(--sort-active-fg, #7cc4ff);
-  font-weight: 700;
+  color: var(--sort-active-fg, #0284c7);
+  font-weight: 800;
 }
 
 .col-sort-btn .sort-icon {
   font-style: normal;
   font-size: 10px;
-  opacity: 0.55;
+  opacity: 0.6;
   transition: opacity 120ms ease, transform 120ms ease;
 }
 
@@ -3059,27 +3305,27 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 
 .stt-cell {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  justify-content: center;
+  gap: 4px;
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
   color: var(--label-muted, #9b9a97);
+  padding: 6px 2px;
 }
 
 .stt-num {
   font-weight: 600;
-  min-width: 16px;
+  min-width: 14px;
   color: var(--label-fg, #6b6a66);
 }
 
 .stt-subnum {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--label-muted, #9b9a97);
 }
 
 .pid-col {
-  font-size: 12.5px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   color: var(--body-fg, #37352f);
@@ -3095,24 +3341,30 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 
 .plist {
   min-height: 0;
+  min-width: 0;
+  width: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
+  border: none;
+  background: var(--panel-bg);
 }
 
 .prow {
   cursor: pointer;
   background: var(--shell-bg, #ffffff);
-  border-bottom: 1px solid var(--chrome-border, #f1f1ef);
+  border-bottom: 1px solid var(--chrome-border, #f1f5f9);
   transition: background 120ms ease;
   user-select: none;
+  min-height: 38px;
 }
 
 .prow:hover {
-  background: var(--control-bg-hover, #f7f7f5);
+  background: var(--control-bg-hover, #f8fafc);
 }
 
 .prow .twist {
   color: var(--label-muted, #9b9a97);
-  font-size: 11px;
+  font-size: 10px;
   transition: transform 140ms ease;
   display: inline-block;
 }
@@ -3121,23 +3373,39 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   transform: rotate(90deg);
 }
 
+.who {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1px;
+}
+
 .who b {
   display: block;
-  font-size: 13.5px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--body-fg, #37352f);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .who small {
   display: block;
   color: var(--label-muted, #9b9a97);
-  font-size: 12px;
-  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .meta {
   color: var(--label-fg, #6b6a66);
-  font-size: 12px;
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -3145,9 +3413,21 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   white-space: nowrap;
 }
 
+.format-col {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
 .meta.status-col.count {
-  font-size: 11.5px;
-  color: var(--label-muted, #9b9a97);
+  font-size: 11px;
+  color: var(--label-muted, #64748b);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .media {
@@ -3183,14 +3463,15 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 2px 7px;
-  border-radius: 4px;
-  font-size: 10.5px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 9.5px;
   font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  width: fit-content;
+  letter-spacing: 0.02em;
+  line-height: 1;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .fmt-badge.dicom {
   background: rgba(35, 131, 226, 0.14);
@@ -3230,18 +3511,44 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 
 .rowacts {
   display: flex;
-  gap: 5px;
+  gap: 4px;
   justify-content: flex-end;
+  align-items: center;
+  padding-right: 4px;
 }
 
 .rowacts .btn, .rowacts .soft-button {
   flex: none;
-  font-size: 11px;
-  height: 26px;
-  padding: 0 9px;
-  border-radius: 6px;
-  /* Never let a label wrap onto a second line inside a 26px button. */
+  font-size: 10.5px;
+  font-weight: 600;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 4px;
   white-space: nowrap;
+  color: var(--accent-fg, #0f4c81);
+  border: 1px solid var(--accent-border, #8fc4ea);
+  background: var(--accent-bg, #cfe6fa);
+  transition: all var(--motion-fast) var(--ease-standard);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  cursor: pointer;
+}
+
+.rowacts .btn:hover, .rowacts .soft-button:hover {
+  background: color-mix(in srgb, var(--accent-bg) 80%, var(--accent-fg) 20%);
+  border-color: var(--accent-fg);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 5px rgba(0, 120, 212, 0.15);
+}
+
+.rowacts .read-toggle {
+  width: 24px;
+  min-width: 24px;
+  max-width: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
 }
 
 .studies {
@@ -3255,8 +3562,13 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 
 .srow {
-  border-bottom: 1px solid var(--chrome-border, #f1f1ef);
-  background: transparent;
+  border-bottom: 1px solid var(--chrome-border, #f1f5f9);
+  background: var(--control-bg-hover, #f8fafc);
+  min-height: 34px;
+}
+
+.srow:hover {
+  background: #f1f5f9;
 }
 
 .srow:last-child {
@@ -3574,12 +3886,15 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   box-shadow: none !important;
   cursor: pointer;
   opacity: 0.9;
-  transition: opacity 0.15s ease, transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.15s ease;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s cubic-bezier(0.16, 1, 0.3, 1),
+    filter 0.15s ease;
 }
 
 .job-log-icon-btn:hover {
   opacity: 1;
-  transform: scale(1.18);
+  transform: scale(1.12);
 }
 
 .job-log-icon-btn.btn-clear-log {
