@@ -2848,15 +2848,25 @@ class WorklistScanner:
                     continue
 
         for hpath in history_folders:
-            patient_dir = hpath.parent if hpath.name.casefold() in {"dicom", "jpg"} else hpath
+            # Walk up to find if hpath belongs to an existing patient archive folder
+            patient_dir = hpath
+            for candidate in (hpath, *hpath.parents):
+                if candidate.name.casefold() in {"dicom", "jpg"}:
+                    continue
+                if (candidate / "patient-index.json").is_file() or archive_key(candidate) in patient_map:
+                    patient_dir = candidate
+                    break
+            else:
+                if hpath.name.casefold() in {"dicom", "jpg"}:
+                    patient_dir = hpath.parent
             key = archive_key(patient_dir)
             meta = self._patient_meta_for(patient_dir)
             if key not in patient_map:
                 patient_map[key] = {
                     "id": f"p_{hashlib.sha256(key.encode()).hexdigest()[:12]}",
                     **meta,
-                    "folder": str(hpath),
-                    "exists": hpath.is_dir(),
+                    "folder": str(patient_dir),
+                    "exists": patient_dir.is_dir(),
                     "studies": [],
                 }
             existing_folders = {s["folder"].casefold() for s in patient_map[key]["studies"]}
