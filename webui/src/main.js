@@ -2578,7 +2578,17 @@ function render() {
           <div class="inline-field"><input id="output-root" value="${escapeHtml(state.bootstrap?.outputRoot || "")}" readonly>
             <button data-action="choose-output" title="${escapeHtml(t("Đổi thư mục lưu"))}">…</button></div>
         </label>
-        <pre class="job-log">${escapeHtml((state.bootstrap?.job?.logs || []).slice(-80).map(translateLog).join("\n"))}</pre>
+        <div class="job-log-wrap">
+          <pre class="job-log" id="job-log-pre">${escapeHtml((state.bootstrap?.job?.logs || []).map(translateLog).join("\n"))}</pre>
+          <div class="job-log-floating-actions">
+            <button type="button" class="job-log-icon-btn btn-clear-log" data-action="clear-job-log" title="${escapeHtml(t("Xoá hiển thị"))}">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+            <button type="button" class="job-log-icon-btn btn-copy-log" data-action="copy-job-log" title="${escapeHtml(t("Sao chép toàn bộ nhật ký"))}">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            </button>
+          </div>
+        </div>
         <div class="panel-credit">Superkent.bui@gmail.com</div>
       </aside>
       ` : ""}
@@ -4217,6 +4227,32 @@ async function action(name, element = null) {
       if (url) window.open(url, "_blank");
       return;
     }
+    if (name === "copy-job-log") {
+      const logEl = app.querySelector(".job-log");
+      const fullLogText = (state.bootstrap?.job?.logs || []).map(translateLog).join("\n") || logEl?.textContent || "";
+      if (!fullLogText.trim()) {
+        setStatus(t("Chưa có nội dung nhật ký để sao chép."));
+        return;
+      }
+      await copyTextToClipboard(fullLogText);
+      showCopyToast(t("Đã sao chép toàn bộ nhật ký (log)!"));
+      const btn = app.querySelector(".btn-copy-log");
+      if (btn) {
+        btn.classList.add("copied");
+        setTimeout(() => {
+          btn.classList.remove("copied");
+        }, 2000);
+      }
+      return;
+    }
+    if (name === "clear-job-log") {
+      if (state.bootstrap?.job) state.bootstrap.job.logs = [];
+      if (state.job) state.job.logs = [];
+      const logEl = app.querySelector(".job-log");
+      if (logEl) logEl.textContent = "";
+      setStatus(t("Đã xoá hiển thị nhật ký."));
+      return;
+    }
     if (name === "import-dicom-folder") {
       if (!window.pywebview?.api) throw new Error(t("Nhập DICOM local cần chạy trong ứng dụng WebView2."));
       const job = await window.pywebview.api.choose_dicom_folder(downloadOptions());
@@ -5606,8 +5642,14 @@ async function pollJob() {
   }
   const log = app.querySelector(".job-log");
   if (log) {
-    log.textContent = (job.logs || []).slice(-80).map(translateLog).join("\n");
-    log.scrollTop = log.scrollHeight;
+    const isAtBottom = (log.scrollHeight - log.scrollTop - log.clientHeight) <= 35;
+    const oldScrollTop = log.scrollTop;
+    log.textContent = (job.logs || []).map(translateLog).join("\n");
+    if (isAtBottom) {
+      log.scrollTop = log.scrollHeight;
+    } else {
+      log.scrollTop = oldScrollTop;
+    }
   }
   // The viewer owns the status bar while it is building a layout.
   if (!state.busyViewer) setStatus(translateLog(job.message || job.status));

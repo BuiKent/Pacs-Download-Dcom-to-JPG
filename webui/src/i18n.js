@@ -330,6 +330,11 @@ const EN = {
   "Đã tải": "Downloaded",
   "Tải chưa hoàn tất": "Incomplete",
   "Phim mới": "New study",
+  "Sao chép toàn bộ nhật ký": "Copy complete log to clipboard",
+  "Xoá hiển thị": "Clear display",
+  "Chưa có nội dung nhật ký để sao chép.": "No log contents to copy.",
+  "Đã sao chép toàn bộ nhật ký (log)!": "Copied complete log to clipboard!",
+  "Đã xoá hiển thị nhật ký.": "Log display cleared.",
 
   // Patient status
   "Không tự động gộp bệnh nhân": "Automatic patient merge blocked",

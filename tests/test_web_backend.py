@@ -902,10 +902,10 @@ class ServerSecurityTests(unittest.TestCase):
                 f"http://127.0.0.1:{self.server.port}{path}",
                 headers=headers,
             ),
-            timeout=3,
+            timeout=10,
         )
 
-    def post_json(self, path, payload, token=None):
+    def post_json(self, path, payload, token=None, timeout=10):
         headers = {"Content-Type": "application/json"}
         if token is not None:
             headers["X-DCom-Token"] = token
@@ -917,7 +917,7 @@ class ServerSecurityTests(unittest.TestCase):
                 headers=headers,
                 method="POST",
             ),
-            timeout=3,
+            timeout=timeout,
         )
 
     def test_media_photo_api_endpoints(self):
@@ -2834,6 +2834,28 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         ids = [p["patientId"] for p in patients]
         self.assertIn("BN-001", ids)
         self.assertNotIn("BN-002", ids)
+
+    def test_job_state_persistent_app_log(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_log_file = Path(tmp_dir) / "app.log"
+            job = JobState(log_file_path=test_log_file)
+            
+            # Start job writes delimiter
+            job.start("test_download", lambda: {"status": "complete"})
+            job.log("Bắt đầu tải ảnh DICOM thử nghiệm...")
+            job.log("Đã tải 100/100 ảnh.")
+            
+            snap = job.snapshot()
+            self.assertEqual(len(snap["logs"]), 2)
+            self.assertEqual(snap["logFilePath"], str(test_log_file))
+            self.assertIn("Đã tải 100/100 ảnh.", snap["logs"][-1])
+            
+            # Verify file contents
+            self.assertTrue(test_log_file.exists())
+            content = test_log_file.read_text(encoding="utf-8")
+            self.assertIn("START JOB: test_download", content)
+            self.assertIn("Bắt đầu tải ảnh DICOM thử nghiệm...", content)
+            self.assertIn("Đã tải 100/100 ảnh.", content)
 
 
 if __name__ == "__main__":

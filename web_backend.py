@@ -2083,6 +2083,16 @@ class JobState:
     result: Any = None
     started_at: float = 0
     finished_at: float = 0
+    log_file_path: Optional[Path] = None
+
+    def __post_init__(self) -> None:
+        if self.log_file_path is None:
+            app_data = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+            self.log_file_path = app_data / "DCom JPG PACS" / "app.log"
+        try:
+            self.log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -2090,19 +2100,25 @@ class JobState:
                 "status": self.status,
                 "kind": self.kind,
                 "message": self.message,
-                "logs": self.logs[-300:],
+                "logs": list(self.logs),
                 "result": self.result,
                 "startedAt": self.started_at,
                 "finishedAt": self.finished_at,
+                "logFilePath": str(self.log_file_path) if self.log_file_path else "",
             }
 
     def log(self, message: str) -> None:
         text = str(message)
         with self.lock:
             self.logs.append(text)
-            if len(self.logs) > 1000:
-                del self.logs[:500]
             self.message = text
+        if self.log_file_path:
+            try:
+                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with open(self.log_file_path, "a", encoding="utf-8") as f:
+                    f.write(f"[{now_str}] {text}\n")
+            except Exception:
+                pass
 
     def start(self, kind: str, target: Callable[[], Any]) -> None:
         with self.lock:
@@ -2116,6 +2132,14 @@ class JobState:
             self.result = None
             self.started_at = time.time()
             self.finished_at = 0
+
+        if self.log_file_path:
+            try:
+                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with open(self.log_file_path, "a", encoding="utf-8") as f:
+                    f.write(f"\n==================== [ {now_str} ] START JOB: {kind} ====================\n")
+            except Exception:
+                pass
 
         def run() -> None:
             try:
