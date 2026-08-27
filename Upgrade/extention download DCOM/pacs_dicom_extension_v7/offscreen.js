@@ -11,7 +11,7 @@ const sleep = sleepAbortable;
 
 function openFsDb(){return new Promise((resolve,reject)=>{const r=indexedDB.open(FS_DB,1);r.onupgradeneeded=()=>{if(!r.result.objectStoreNames.contains(FS_STORE))r.result.createObjectStore(FS_STORE);};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error||new Error('Unable to open directory configuration.'));});}
 async function getStoredRoot(){const db=await openFsDb();try{return await new Promise((resolve,reject)=>{const tx=db.transaction(FS_STORE,'readonly'),r=tx.objectStore(FS_STORE).get(FS_KEY);r.onsuccess=()=>resolve(r.result||null);r.onerror=()=>reject(r.error);});}finally{db.close();}}
-async function ensureWritableRoot(){const h=await getStoredRoot();if(!h)throw new Error('Save folder has not been selected.');if(typeof h.queryPermission==='function'){const p=await h.queryPermission({mode:'readwrite'});if(p!=='granted')throw new Error('Directory write permission needs to be re-granted.');}return h;}
+async function ensureWritableRoot(){const h=await getStoredRoot();if(!h)throw new Error('Save folder has not been selected.');return h;}
 
 function headers(task,accept=''){const h=new Headers();for(const[k,v]of Object.entries(task.headers||{})){const lk=k.toLowerCase();if(['cookie','host','content-length','origin','referer'].includes(lk))continue;try{h.set(k,String(v));}catch{}}if(task?.contentType&&!h.has('Content-Type'))h.set('Content-Type',String(task.contentType));if(accept)h.set('Accept',accept);return h;}
 function decodeRequestBody(stored){if(!stored)return undefined;if(stored instanceof Uint8Array||stored instanceof ArrayBuffer||typeof stored==='string'||stored instanceof URLSearchParams)return stored;if(stored.kind==='form'){const p=new URLSearchParams();for(const[k,vals]of Object.entries(stored.data||{}))for(const v of(Array.isArray(vals)?vals:[vals]))p.append(k,v);return p;}if(stored.kind==='raw'){const bins=(stored.chunks||[]).map(atob),len=bins.reduce((n,b)=>n+b.length,0),out=new Uint8Array(len);let off=0;for(const b of bins){for(let i=0;i<b.length;i++)out[off+i]=b.charCodeAt(i);off+=b.length;}return out;}return undefined;}
@@ -89,14 +89,25 @@ async function prepareTask(task,signal,frameConcurrency){
 }
 
 async function getDir(parent,name){return parent.getDirectoryHandle(name,{create:true});}
-async function getPathRoot(root,studyFolder){let d=await getDir(root,'PACS_DICOM');d=await getDir(d,studyFolder);return d;}
+async function getPathRoot(root,studyFolder,subfolder='DCom to JPG'){
+  let d=root;
+  const sub=String(subfolder||'').trim();
+  if(sub){
+    const segs=sub.split('/').filter(Boolean);
+    for(const s of segs)d=await getDir(d,s);
+  }
+  d=await getDir(d,studyFolder);
+  return d;
+}
 async function resolveDir(root,segments){let d=root;for(const s of segments)d=await getDir(d,s);return d;}
 async function existingValid(base,relativePath){const seg=relativePath.split('/').filter(Boolean),file=seg.pop();let d=base;try{for(const s of seg)d=await d.getDirectoryHandle(s,{create:false});const h=await d.getFileHandle(file,{create:false});const f=await h.getFile();if(f.size<256)return null;const b=new Uint8Array(await f.arrayBuffer()),check=validatePart10(b);return check.ok?check.meta:null;}catch{return null;}}
 async function writeFile(base,relativePath,bytes){const seg=relativePath.split('/').filter(Boolean),name=seg.pop();const d=await resolveDir(base,seg);const h=await d.getFileHandle(name,{create:true});const w=await h.createWritable({keepExistingData:false});try{await w.write(bytes);await w.close();}catch(e){try{await w.abort();}catch{}throw e;}}
-async function writeViaDownloads(studyFolder,relativePath,bytes,job){
+async function writeViaDownloads(subfolder,studyFolder,relativePath,bytes,job){
   const blob=new Blob([bytes],{type:'application/dicom'}),url=URL.createObjectURL(blob);
+  const prefix=String(subfolder||'DCom to JPG').trim().replace(/^[/\\]+|[/\\]+$/g,'');
+  const prefixPath=prefix?`${prefix}/`:'';
   try{
-    const r=await chrome.runtime.sendMessage({type:'DOWNLOAD_BLOB',jobId:job.id,url,filename:`PACS_DICOM/${studyFolder}/${relativePath}`});
+    const r=await chrome.runtime.sendMessage({type:'DOWNLOAD_BLOB',jobId:job.id,url,filename:`${prefixPath}${studyFolder}/${relativePath}`});
     if(!r?.ok)throw new Error(r?.error||'Failed to save via Chrome downloads.');
   }finally{URL.revokeObjectURL(url);}
 }
@@ -108,7 +119,7 @@ async function commit(job,task,got){
   const sopUid=String(got.meta?.sopInstanceUid||'').trim();
   if(sopUid&&job.completedSopUids?.has(sopUid)){job.skipped++;return false;}
   if(job.saveMode==='filesystem')await writeFile(job.studyRoot,task.relativePath,got.bytes);
-  else await writeViaDownloads(job.studyFolder,task.relativePath,got.bytes,job);
+  else await writeViaDownloads(job.subfolder,job.studyFolder,task.relativePath,got.bytes,job);
   job.completed++;job.bytesWritten+=got.bytes.byteLength;
   if(got.provenance==='reconstructed')job.reconstructed++;else job.original++;
   if(sopUid&&job.completedSopUids)job.completedSopUids.add(sopUid);
@@ -206,7 +217,9 @@ async function runJob(spec){
   const saveMode=spec.saveMode==='downloads'?'downloads':'filesystem',root=saveMode==='filesystem'?await ensureWritableRoot():null;const controller=new AbortController();const prefetched=new Map();const info={...(spec.folderInfo||{})};let resolvedMeta={};
   const isZfp=spec.tasks.some(t=>t.strategy==='zfp-image');
   if(!isZfp&&spec.tasks.length&&(!info.patientName||!info.patientId||!info.studyDate||!spec.studyUid)){try{const first=await prepareTask(spec.tasks[0],controller.signal,Math.min(6,Math.max(2,Number(spec.frameConcurrency)||6)));prefetched.set(0,first);const m=first.meta||{};resolvedMeta=m;if(!info.patientName&&m.patientName)info.patientName=m.patientName;if(!info.patientId&&m.patientId)info.patientId=m.patientId;if(!info.studyDate&&m.studyDate)info.studyDate=m.studyDate;}catch{}}
-  const studyFolder=studyFolderFromInfo(info)||spec.studyFolder;const studyRoot=saveMode==='filesystem'?await getPathRoot(root,studyFolder):null;
+  const subfolder=safeSegment(spec.subfolder||'DCom to JPG','DCom to JPG');
+  const studyFolder=studyFolderFromInfo(info)||spec.studyFolder;
+  const studyRoot=saveMode==='filesystem'?await getPathRoot(root,studyFolder,subfolder):null;
   const job={
     id:spec.jobId,
     tabId:spec.tabId,
@@ -227,6 +240,7 @@ async function runJob(spec){
     concurrency:Math.min(10,Math.max(2,Number(spec.concurrency)||6)),
     frameConcurrency:Math.min(10,Math.max(2,Number(spec.frameConcurrency)||6)),
     saveMode,
+    subfolder,
     studyFolder,
     studyRoot,
     prefetched,

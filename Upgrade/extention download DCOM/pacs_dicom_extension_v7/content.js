@@ -1,7 +1,12 @@
 (()=>{
-  if(globalThis.__PACS_DICOM_V7_CONTENT__)return;
-  globalThis.__PACS_DICOM_V7_CONTENT__=true;
-  let timer=null,last='';
+  if(globalThis.__PACS_DICOM_V7_CLEANUP__){try{globalThis.__PACS_DICOM_V7_CLEANUP__();}catch(_){}}
+  let timer=null,last='',intervalId=null,observer=null;
+  const cleanup=()=>{
+    if(timer)clearTimeout(timer);
+    if(intervalId)clearInterval(intervalId);
+    if(observer)try{observer.disconnect();}catch(_){}
+  };
+  globalThis.__PACS_DICOM_V7_CLEANUP__=cleanup;
   function extractPatientFromDom(){
     const p={};
     const isMach7=/ClinicalStudio/i.test(location.href)||/Diagnostic\s*Studio|MACH7/i.test(document.title)||Boolean(document.querySelector('#patientBanner, #appCrumbBanner, .m7t-app-container, .m7t-drk-body'));
@@ -182,15 +187,23 @@
     const domSeries=extractSeriesFromDom();
     return{score:Math.min(100,Math.max(0,score)),reasons:[...new Set(reasons)].slice(0,8),iframeUrls:[...new Set(iframeUrls)].slice(0,60),url,title,readyState:document.readyState,zfpViewer,domPatient,domSeries};
   }
-  function report(){const h=scorePage(),sig=`${h.score}|${h.reasons.join(',')}|${h.iframeUrls.join('|')}|${h.url}|${JSON.stringify(h.domPatient||{})}|${JSON.stringify(h.domSeries||[])}`;if(sig===last)return;last=sig;chrome.runtime.sendMessage({type:'PAGE_HINTS',hint:h}).catch(()=>{});}
-
+  function report(){
+    if(!chrome.runtime?.id){cleanup();return;}
+    try{
+      const h=scorePage(),sig=`${h.score}|${h.reasons.join(',')}|${h.iframeUrls.join('|')}|${h.url}|${JSON.stringify(h.domPatient||{})}|${JSON.stringify(h.domSeries||[])}`;
+      if(sig===last)return;
+      last=sig;
+      chrome.runtime.sendMessage({type:'PAGE_HINTS',hint:h}).catch(()=>{});
+    }catch(_){}
+  }
 
   // --- Bridge generic MAIN-world JSON observer --------------------------------
   // Only forward small JSON payloads; binary DICOM/pixel data never passes through postMessage.
   window.addEventListener('message',ev=>{
+    if(!chrome.runtime?.id){cleanup();return;}
     if(ev.source!==window)return;const m=ev.data;
     if(!m||m.__pacsGeneric!=='json'||!m.row)return;
-    chrome.runtime.sendMessage({type:'GENERIC_JSON_CAPTURE',row:m.row}).catch(()=>{});
+    try{chrome.runtime.sendMessage({type:'GENERIC_JSON_CAPTURE',row:m.row}).catch(()=>{});}catch(_){}
   });
 
   // --- Bridge to GE ZFP WebSocket hook (MAIN world) ----------------------------
@@ -244,7 +257,8 @@
     return true;
   });
   function schedule(){clearTimeout(timer);timer=setTimeout(report,300);}
-  const start=()=>{try{new MutationObserver(schedule).observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['src','href','class']});}catch{}schedule();};
+  const start=()=>{try{observer=new MutationObserver(schedule);observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['src','href','class']});}catch{}schedule();};
   if(document.documentElement)start();else document.addEventListener('DOMContentLoaded',start,{once:true});
-  window.addEventListener('load',schedule,{once:true});window.addEventListener('hashchange',schedule,true);window.addEventListener('popstate',schedule,true);setInterval(report,5000);
+  window.addEventListener('load',schedule,{once:true});window.addEventListener('hashchange',schedule,true);window.addEventListener('popstate',schedule,true);
+  intervalId=setInterval(report,5000);
 })();

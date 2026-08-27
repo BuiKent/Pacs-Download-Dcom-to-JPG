@@ -75,7 +75,20 @@
   </section>
 
   <section class="card storage-card">
-    <div><h3>Save location</h3><p id="folderText">—</p></div><button id="folderResetBtn" class="secondary small hidden">Reset to Downloads</button><button id="folderBtn" class="secondary small">Change</button>
+    <div class="storage-header">
+      <h3>Save location</h3>
+      <div class="storage-btns">
+        <button id="folderResetBtn" class="secondary small hidden" title="Reset to Downloads default">Reset</button>
+        <button id="folderBtn" class="secondary small" title="Choose specific folder on disk">📁 Change Folder</button>
+      </div>
+    </div>
+    <div class="storage-details">
+      <p id="folderText" class="storage-path" title="Downloads / DCom to JPG (default)">Downloads / DCom to JPG (default)</p>
+      <div class="subfolder-row">
+        <label for="subfolderInput">Subfolder:</label>
+        <input id="subfolderInput" type="text" class="subfolder-input" placeholder="DCom to JPG" value="DCom to JPG" title="Subfolder name inside root location">
+      </div>
+    </div>
   </section>
 
   <div id="stickyBar" class="sticky hidden"><div><strong id="stickyTitle">0 series</strong><span id="stickySub">—</span></div><button id="downloadBtn" class="primary">Download DICOM</button></div>

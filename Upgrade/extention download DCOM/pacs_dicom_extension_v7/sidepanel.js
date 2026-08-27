@@ -3,8 +3,9 @@ import { decodeQrFromBlob, decodeQrFromDataUrl, parseQrResult, isLikelyPacsViewe
 const $=id=>document.getElementById(id),show=(id,on)=>$(id).classList.toggle('hidden',!on);const TERMINAL=new Set(['done','partial','done_with_errors','error','cancelled']);
 let tabId=null,summary=null,state=null,inventory=null,job=null,history=[],revealDownloaded=false,refreshTimer=null,activeTabUrl='',isStartingDownload=false,currentQrUrl='';
 function setTopLoader(on){const e=$('topLoader');if(e)e.classList.toggle('active',Boolean(on));}
-const FS_DB='pacs_dicom_fs_v1',FS_STORE='handles',FS_KEY='download-root',SAVE_MODE_KEY='pacs6_save_mode';
+const FS_DB='pacs_dicom_fs_v1',FS_STORE='handles',FS_KEY='download-root',SAVE_MODE_KEY='pacs6_save_mode',FOLDER_NAME_KEY='pacs6_folder_name',SUBFOLDER_KEY='pacs6_subfolder_name',DEFAULT_SUBFOLDER='DCom to JPG';
 
+async function getSubfolderName(){try{const st=await chrome.storage.local.get(SUBFOLDER_KEY);return String(st[SUBFOLDER_KEY]||'').trim()||DEFAULT_SUBFOLDER;}catch{return DEFAULT_SUBFOLDER;}}
 async function send(type,payload={}){const r=await chrome.runtime.sendMessage({type,...payload});if(!r?.ok)throw new Error(r?.error||'Extension error');return r;}
 function toast(text,bad=false){const e=$('toast');e.textContent=text;e.classList.toggle('error',bad);e.classList.remove('hidden');setTimeout(()=>e.classList.add('hidden'),2600);}
 function fmtName(x){return String(x||'').replace(/\^+/g,' ').replace(/\s+/g,' ').trim();}
@@ -16,16 +17,31 @@ function patternFor(url){try{const u=new URL(url);return`${u.protocol}//${u.host
 function openFsDb(){return new Promise((resolve,reject)=>{const r=indexedDB.open(FS_DB,1);r.onupgradeneeded=()=>{if(!r.result.objectStoreNames.contains(FS_STORE))r.result.createObjectStore(FS_STORE);};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
 async function fsGet(){const db=await openFsDb();try{return await new Promise((resolve,reject)=>{const tx=db.transaction(FS_STORE,'readonly'),r=tx.objectStore(FS_STORE).get(FS_KEY);r.onsuccess=()=>resolve(r.result||null);r.onerror=()=>reject(r.error);});}finally{db.close();}}
 async function fsSet(h){const db=await openFsDb();try{await new Promise((resolve,reject)=>{const tx=db.transaction(FS_STORE,'readwrite');tx.objectStore(FS_STORE).put(h,FS_KEY);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});}finally{db.close();}}
-async function ensureFolder(interactive=false){let h=await fsGet();if(!h&&interactive){h=await window.showDirectoryPicker({id:'pacs-dicom',startIn:'downloads',mode:'readwrite'});await fsSet(h);await chrome.storage.local.set({[SAVE_MODE_KEY]:'filesystem'});}if(!h)return null;let p=typeof h.queryPermission==='function'?await h.queryPermission({mode:'readwrite'}):'granted';if(p!=='granted'&&interactive&&typeof h.requestPermission==='function')p=await h.requestPermission({mode:'readwrite'});if(p!=='granted')return null;return h;}
-// Accurately show where files will be saved.
+async function ensureFolder(interactive=false){let h=await fsGet();if(!h&&interactive){try{h=await window.showDirectoryPicker({id:'pacs-dicom',startIn:'downloads',mode:'readwrite'});if(h){await fsSet(h);await chrome.storage.local.set({[SAVE_MODE_KEY]:'filesystem',[FOLDER_NAME_KEY]:h.name||'Selected Folder'});}}catch(e){if(e?.name!=='AbortError')console.warn(e);return null;}}if(!h)return null;let p='prompt';try{p=typeof h.queryPermission==='function'?await h.queryPermission({mode:'readwrite'}):'granted';if(p!=='granted'&&interactive&&typeof h.requestPermission==='function'){p=await h.requestPermission({mode:'readwrite'});}}catch{}if(interactive&&p!=='granted')return null;return h;}
+// Accurately show where files will be saved without dropping persisted handle.
 async function renderFolder(){
   try{
-    const pref=(await chrome.storage.local.get(SAVE_MODE_KEY))[SAVE_MODE_KEY]||'',h=await ensureFolder(false);
-    const useFs=Boolean(h&&pref==='filesystem');
-    $('folderText').textContent=useFs?`${h.name} / PACS_DICOM`
-      :pref==='downloads'?'Downloads / PACS_DICOM':'Downloads / PACS_DICOM (default)';
-    show('folderResetBtn',useFs);
-  }catch{$('folderText').textContent='Downloads / PACS_DICOM (default)';show('folderResetBtn',false);}
+    const st=await chrome.storage.local.get([SAVE_MODE_KEY,FOLDER_NAME_KEY,SUBFOLDER_KEY]);
+    const pref=st[SAVE_MODE_KEY]||'';
+    const savedName=st[FOLDER_NAME_KEY]||'';
+    const sub=String(st[SUBFOLDER_KEY]||'').trim()||DEFAULT_SUBFOLDER;
+    if($('subfolderInput')&&document.activeElement!==$('subfolderInput'))$('subfolderInput').value=sub;
+    const h=await fsGet();
+    const useFs=Boolean(pref==='filesystem'&&(h||savedName));
+    const displayName=h?.name||savedName||'Custom Folder';
+    if(useFs){
+      $('folderText').textContent=`📁 ${displayName} / ${sub}`;
+      $('folderText').title=`${displayName} / ${sub}`;
+      show('folderResetBtn',true);
+    }else{
+      $('folderText').textContent=`Downloads / ${sub} (default)`;
+      $('folderText').title=`Downloads / ${sub}`;
+      show('folderResetBtn',false);
+    }
+  }catch{
+    $('folderText').textContent=`Downloads / ${DEFAULT_SUBFOLDER} (default)`;
+    show('folderResetBtn',false);
+  }
 }
 
 async function grantAccess(){let pats=[...(summary?.missingOrigins||[])];if(!pats.length){const p=patternFor(activeTabUrl);if(p)pats=[p];}if(!pats.length)return;const ok=await chrome.permissions.request({origins:pats});if(!ok)return toast('Site permission not granted.',true);await send('SITE_ACCESS_CHANGED',{tabId});toast('Permission granted.');await refresh();}
@@ -240,15 +256,18 @@ async function startDownload(){
   show('jobNote',true);
   $('jobNote').textContent='Preparing and reconnecting to PACS...';
   try{
-    const pref=(await chrome.storage.local.get(SAVE_MODE_KEY))[SAVE_MODE_KEY]||'';
+    const st=await chrome.storage.local.get([SAVE_MODE_KEY,SUBFOLDER_KEY]);
+    const pref=st[SAVE_MODE_KEY]||'';
+    const subfolder=String(st[SUBFOLDER_KEY]||'').trim()||DEFAULT_SUBFOLDER;
     let saveMode='downloads';
-    if(pref==='filesystem'&&await fsGet()){
+    const storedHandle=await fsGet();
+    if(pref==='filesystem'||storedHandle){
       const h=await ensureFolder(true).catch(()=>null);
       if(h)saveMode='filesystem';
       else toast('Write permission not granted for selected folder — saving to Downloads.');
     }
     await renderFolder();
-    const r=await send('START_DOWNLOAD',{tabId,selectedSeries:selectedIds(),options:{concurrency:saveMode==='downloads'?3:6,frameConcurrency:6,saveMode}});
+    const r=await send('START_DOWNLOAD',{tabId,selectedSeries:selectedIds(),options:{concurrency:saveMode==='downloads'?3:6,frameConcurrency:6,saveMode,subfolder}});
     job=r.job;renderJob();
   }catch(e){
     toast(e.message||String(e),true);
@@ -281,9 +300,10 @@ $('qrOpenBtn').addEventListener('click',async()=>{if(!currentQrUrl)return;const 
 window.addEventListener('paste',handleClipboardPaste);
 
 $('grantBtn').addEventListener('click',async()=>{if($('grantBtn').disabled)return;$('grantBtn').disabled=true;try{await grantAccess();}catch(e){toast(e.message||String(e),true);}finally{$('grantBtn').disabled=false;}});
-$('folderBtn').addEventListener('click',async()=>{try{const h=await window.showDirectoryPicker({id:'pacs-dicom',startIn:'downloads',mode:'readwrite'});await fsSet(h);await chrome.storage.local.set({[SAVE_MODE_KEY]:'filesystem'});await renderFolder();toast('Fast download folder selected.');}catch(e){if(e?.name!=='AbortError')toast(e.message||String(e),true);}});
+$('folderBtn').addEventListener('click',async()=>{try{const h=await window.showDirectoryPicker({id:'pacs-dicom',startIn:'downloads',mode:'readwrite'});if(h){await fsSet(h);await chrome.storage.local.set({[SAVE_MODE_KEY]:'filesystem',[FOLDER_NAME_KEY]:h.name||'Selected Folder'});await renderFolder();toast(`Saved folder: ${h.name}`);}}catch(e){if(e?.name!=='AbortError')toast(e.message||String(e),true);}});
 $('copyLinkBtn').addEventListener('click',async()=>{const t=$('viewerUrl').textContent||'';if(!t||t==='—')return;try{await navigator.clipboard.writeText(t);toast('Viewer link copied to clipboard.');}catch(e){toast('Copy failed; select URL to copy manually.',true);}});
-$('folderResetBtn').addEventListener('click',async()=>{try{await chrome.storage.local.set({[SAVE_MODE_KEY]:'downloads'});await renderFolder();toast('Will save to Downloads / PACS_DICOM.');}catch(e){toast(e.message||String(e),true);}});
+$('folderResetBtn').addEventListener('click',async()=>{try{await chrome.storage.local.set({[SAVE_MODE_KEY]:'downloads'});await renderFolder();const sub=await getSubfolderName();toast(`Reset to Downloads / ${sub}`);}catch(e){toast(e.message||String(e),true);}});
+if($('subfolderInput')){$('subfolderInput').addEventListener('input',async(e)=>{const val=String(e.target.value||'').trim()||DEFAULT_SUBFOLDER;await chrome.storage.local.set({[SUBFOLDER_KEY]:val});await renderFolder();});$('subfolderInput').addEventListener('change',async(e)=>{const val=String(e.target.value||'').trim()||DEFAULT_SUBFOLDER;await chrome.storage.local.set({[SUBFOLDER_KEY]:val});await renderFolder();toast(`Subfolder: ${val}`);});}
 $('trackBtn').addEventListener('click',async()=>{if($('trackBtn').disabled)return;$('trackBtn').disabled=true;const old=$('trackBtn').textContent;$('trackBtn').innerHTML='<span class="spinner dark"></span> Processing...';setTopLoader(true);try{if(state?.tracking==='watching')await send('STOP_TRACKING',{tabId});else{if((summary?.missingOrigins||[]).length)await grantAccess();await send('START_TRACKING',{tabId});}await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('trackBtn').disabled=false;$('trackBtn').textContent=old;setTopLoader(false);}});
 $('scanBtn').addEventListener('click',async()=>{if($('scanBtn').disabled)return;$('scanBtn').disabled=true;const old=$('scanBtn').textContent;$('scanBtn').innerHTML='<span class="spinner dark"></span> Scanning...';setTopLoader(true);try{await send('ANALYZE_TAB',{tabId});await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('scanBtn').disabled=false;$('scanBtn').textContent=old;setTopLoader(false);}});
 $('deepScanBtn').addEventListener('click',async()=>{if($('deepScanBtn').disabled)return;$('deepScanBtn').disabled=true;const old=$('deepScanBtn').textContent;$('deepScanBtn').innerHTML='<span class="spinner dark"></span> Deep scanning...';setTopLoader(true);try{const r=await send('DEEP_SCAN',{tabId});toast(r.valid?.length?`Identified ${r.valid.length} DICOM endpoints.`:'No DICOM endpoints verified.',!r.valid?.length);await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('deepScanBtn').disabled=false;$('deepScanBtn').textContent=old;setTopLoader(false);}});
