@@ -77,6 +77,43 @@ def _is_non_image_modality(modality: Any) -> bool:
     return str(modality or "").strip().upper() in _NON_IMAGE_MODALITIES
 
 
+# SOP Classes that carry non-image payload (presentation states, structured reports,
+# key object selection documents, radiotherapy structures, etc.)
+_NON_IMAGE_SOP_CLASSES = frozenset({
+    # Presentation States (GSPS)
+    "1.2.840.10008.5.1.4.1.1.11.1",  # Grayscale Softcopy Presentation State
+    "1.2.840.10008.5.1.4.1.1.11.2",  # Color Softcopy Presentation State
+    "1.2.840.10008.5.1.4.1.1.11.3",  # Pseudo-Color Softcopy Presentation State
+    "1.2.840.10008.5.1.4.1.1.11.4",  # Blending Softcopy Presentation State
+    "1.2.840.10008.5.1.4.1.1.11.5",  # XA/XRF Grayscale Softcopy Presentation State
+    "1.2.840.10008.5.1.4.1.1.11.6",  # Grayscale Planar MPR Volumetric Presentation State
+    "1.2.840.10008.5.1.4.1.1.11.7",  # Compositing Planar MPR Volumetric Presentation State
+    # Structured Reports & Documents
+    "1.2.840.10008.5.1.4.1.1.88.11",  # Basic Text SR
+    "1.2.840.10008.5.1.4.1.1.88.22",  # Enhanced SR
+    "1.2.840.10008.5.1.4.1.1.88.33",  # Comprehensive SR
+    "1.2.840.10008.5.1.4.1.1.88.34",  # Comprehensive 3D SR
+    "1.2.840.10008.5.1.4.1.1.88.59",  # Key Object Selection Document
+    "1.2.840.10008.5.1.4.1.1.88.65",  # Chest CAD SR
+    "1.2.840.10008.5.1.4.1.1.88.67",  # X-Ray Radiation Dose SR
+    "1.2.840.10008.5.1.4.1.1.88.69",  # Radiopharmaceutical Radiation Dose SR
+    "1.2.840.10008.5.1.4.1.1.104.1",  # Encapsulated PDF
+    "1.2.840.10008.5.1.4.1.1.104.2",  # Encapsulated CDA
+    # Radiotherapy & Spatial Registration
+    "1.2.840.10008.5.1.4.1.1.481.1",  # RT Image (non-pixel/plan)
+    "1.2.840.10008.5.1.4.1.1.481.2",  # RT Dose
+    "1.2.840.10008.5.1.4.1.1.481.3",  # RT Structure Set
+    "1.2.840.10008.5.1.4.1.1.481.4",  # RT Beams Treatment Record
+    "1.2.840.10008.5.1.4.1.1.481.5",  # RT Plan
+    "1.2.840.10008.5.1.4.1.1.66.1",   # Spatial Registration
+    "1.2.840.10008.5.1.4.1.1.66.2",   # Spatial Fiducials
+})
+
+
+def _is_non_image_sop_class(sop_class_uid: Any) -> bool:
+    return str(sop_class_uid or "").strip() in _NON_IMAGE_SOP_CLASSES
+
+
 def _guess_ext(data: bytes) -> Optional[str]:
     """Guess the file type from the first few bytes."""
     if data[:3] == b"\xff\xd8\xff":
@@ -1504,6 +1541,8 @@ class DownloadStats:
     reconstructed_dicom: int = 0
     manifest_metadata: dict[str, str] = field(default_factory=dict)
 
+    continuity_valid: Optional[bool] = None
+
     def total(self) -> int:
         return self.dicom + self.jpg + self.png
 
@@ -1518,21 +1557,25 @@ class DownloadStats:
         )
 
     def is_complete(self) -> bool:
-        """Check completeness based on manifest expected count and failed count."""
-        if self.cancelled or self.failed > 0 or self.expected <= 0:
+        """Check completeness based on manifest expected count, error rate, or validated slice continuity."""
+        if self.cancelled or self.failed > 0:
             return False
         if self.dicom <= 0 and self.completed_tasks <= 0 and (self.jpg > 0 or self.png > 0):
             return False
         counted = self.completed_tasks or self.dicom
         if counted <= 0:
             return False
-        return counted >= self.expected
+        if self.continuity_valid is True and self.failed == 0:
+            return True
+        if self.expected > 0:
+            return counted >= self.expected
+        return False
 
     @property
     def status(self) -> str:
         """
         Precise medical download session status:
-        - "complete": All expected DICOM instances downloaded successfully (failed == 0).
+        - "complete": All expected DICOM instances downloaded successfully (failed == 0) or slice continuity validated.
         - "partial": Partially downloaded with known missing/failed instances.
         - "partial_unknown": DICOM instances downloaded without manifest total.
         - "rendered_only": Only rendered screen images (JPG/PNG).
@@ -1543,6 +1586,8 @@ class DownloadStats:
         if self.cancelled:
             return "cancelled"
         if self.dicom > 0:
+            if self.continuity_valid is True and self.failed == 0:
+                return "complete"
             if self.expected > 0:
                 counted = self.completed_tasks or self.dicom
                 if counted >= self.expected and self.failed == 0:
@@ -1554,6 +1599,219 @@ class DownloadStats:
         if self.failed > 0:
             return "failed"
         return "unknown"
+
+
+def verify_study_slice_continuity(dicom_dir: Path | str) -> tuple[bool, dict[str, Any]]:
+    """
+    Examine all DICOM files in a study directory to verify slice continuity
+    and detect any gaps (missing slices) across all series.
+
+    Returns:
+        (is_continuous, report_dict)
+        where report_dict contains:
+        - "total_series": int,
+        - "total_slices": int,
+        - "series_reports": list[dict],
+        - "gaps_found": list[dict],
+        - "is_continuous": bool,
+        - "details": str
+    """
+    path = Path(dicom_dir).expanduser().resolve()
+    if not path.exists():
+        return False, {
+            "total_series": 0,
+            "total_slices": 0,
+            "series_reports": [],
+            "gaps_found": [],
+            "is_continuous": False,
+            "details": f"Thư mục không tồn tại: {path}",
+        }
+
+    files = discover_dicom_files(path)
+    if not files:
+        return False, {
+            "total_series": 0,
+            "total_slices": 0,
+            "series_reports": [],
+            "gaps_found": [],
+            "is_continuous": False,
+            "details": "Không tìm thấy file DICOM nào.",
+        }
+
+    import pydicom
+    from collections import defaultdict
+
+    series_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    total_valid_images = 0
+
+    for file_path in files:
+        try:
+            ds = pydicom.dcmread(str(file_path), stop_before_pixels=True, force=True)
+        except Exception:
+            continue
+
+        modality = str(getattr(ds, "Modality", "") or "").strip().upper()
+        if _is_non_image_modality(modality):
+            continue
+
+        sop_class = str(getattr(ds, "SOPClassUID", "") or "").strip()
+        if _is_non_image_sop_class(sop_class):
+            continue
+
+        series_uid = str(getattr(ds, "SeriesInstanceUID", "") or "").strip()
+        if not series_uid:
+            series_uid = file_path.parent.name
+
+        series_num = getattr(ds, "SeriesNumber", None)
+        try:
+            series_num_int = int(series_num) if series_num is not None else None
+        except (ValueError, TypeError):
+            series_num_int = None
+
+        series_desc = str(getattr(ds, "SeriesDescription", "") or "").strip()
+        sop_uid = str(getattr(ds, "SOPInstanceUID", "") or "").strip()
+
+        instance_num = getattr(ds, "InstanceNumber", None)
+        try:
+            instance_num_int = int(instance_num) if instance_num is not None else None
+        except (ValueError, TypeError):
+            instance_num_int = None
+
+        series_map[series_uid].append({
+            "file": file_path,
+            "instance_number": instance_num_int,
+            "sop_uid": sop_uid,
+            "series_number": series_num_int,
+            "series_description": series_desc,
+        })
+        total_valid_images += 1
+
+    if not series_map:
+        return False, {
+            "total_series": 0,
+            "total_slices": 0,
+            "series_reports": [],
+            "gaps_found": [],
+            "is_continuous": False,
+            "details": "Không tìm thấy file DICOM hình ảnh hợp lệ.",
+        }
+
+    series_reports = []
+    gaps_found = []
+    is_overall_continuous = True
+
+    for series_uid, items in series_map.items():
+        desc = items[0]["series_description"] or f"Series {items[0]['series_number'] or series_uid[:8]}"
+        s_num = items[0]["series_number"]
+        count = len(items)
+
+        instances = [it["instance_number"] for it in items if it["instance_number"] is not None]
+        unique_instances = sorted(set(instances))
+
+        if len(unique_instances) > 1 and len(unique_instances) == len(items):
+            min_inst = min(unique_instances)
+            max_inst = max(unique_instances)
+            expected_range = set(range(min_inst, max_inst + 1))
+            missing_inst = sorted(expected_range - set(unique_instances))
+
+            if missing_inst:
+                is_overall_continuous = False
+                gap_info = {
+                    "series_uid": series_uid,
+                    "series_number": s_num,
+                    "series_description": desc,
+                    "count": count,
+                    "expected_count": len(expected_range),
+                    "missing_instances": missing_inst,
+                    "missing_count": len(missing_inst),
+                }
+                gaps_found.append(gap_info)
+                series_reports.append({
+                    "series_uid": series_uid,
+                    "series_number": s_num,
+                    "series_description": desc,
+                    "count": count,
+                    "continuous": False,
+                    "missing_instances": missing_inst,
+                })
+            else:
+                series_reports.append({
+                    "series_uid": series_uid,
+                    "series_number": s_num,
+                    "series_description": desc,
+                    "count": count,
+                    "continuous": True,
+                    "min_instance": min_inst,
+                    "max_instance": max_inst,
+                })
+        else:
+            series_reports.append({
+                "series_uid": series_uid,
+                "series_number": s_num,
+                "series_description": desc,
+                "count": count,
+                "continuous": True,
+            })
+
+    details = (
+        f"Hoàn toàn liên tục ({total_valid_images} ảnh, {len(series_reports)} series, 0 lỗ hổng)"
+        if is_overall_continuous
+        else f"Phát hiện thiếu lát cắt trong {len(gaps_found)} series ({sum(g['missing_count'] for g in gaps_found)} lát bị khuyết)"
+    )
+
+    return is_overall_continuous, {
+        "total_series": len(series_reports),
+        "total_slices": total_valid_images,
+        "series_reports": series_reports,
+        "gaps_found": gaps_found,
+        "is_continuous": is_overall_continuous,
+        "details": details,
+    }
+
+
+def verify_study_dicom_jpg_parity(study_dir: Path | str) -> tuple[bool, dict[str, Any]]:
+    """
+    Check 1-to-1 parity between valid image DICOMs and converted JPGs in a study folder.
+    """
+    path = Path(study_dir).expanduser().resolve()
+    dicom_dir = path / "DICOM" if (path / "DICOM").is_dir() else path
+    jpg_dir = path / "JPG" if (path / "JPG").is_dir() else path
+
+    dicom_files = discover_dicom_files(dicom_dir)
+    jpg_files = []
+    if jpg_dir.is_dir():
+        for root, _, files in os.walk(jpg_dir):
+            for f in files:
+                if Path(f).suffix.lower() in {".jpg", ".jpeg"}:
+                    jpg_files.append(Path(root) / f)
+
+    import pydicom
+    image_dicoms = []
+    for df in dicom_files:
+        try:
+            ds = pydicom.dcmread(str(df), stop_before_pixels=True, force=True)
+            mod = str(getattr(ds, "Modality", "") or "").strip().upper()
+            sop_cls = str(getattr(ds, "SOPClassUID", "") or "").strip()
+            if not _is_non_image_modality(mod) and not _is_non_image_sop_class(sop_cls):
+                image_dicoms.append(df)
+        except Exception:
+            continue
+
+    dicom_count = len(image_dicoms)
+    jpg_count = len(jpg_files)
+    is_parity = (dicom_count > 0 and jpg_count >= dicom_count)
+
+    return is_parity, {
+        "dicom_count": dicom_count,
+        "jpg_count": jpg_count,
+        "parity": is_parity,
+        "missing_jpg": max(0, dicom_count - jpg_count),
+        "details": (
+            f"Đạt chuẩn 1-1 ({jpg_count}/{dicom_count} JPG)"
+            if is_parity
+            else f"Lệch số lượng JPG ({jpg_count}/{dicom_count} DICOM)"
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -4062,10 +4320,20 @@ def _download_via_zfp(captured, save_body, stats,
     for index, group in enumerate(groups):
         if selected_series is not None and choices[index]["id"] not in selected_series:
             continue
-        n_series += 1
+        modality = str(group.get("modality") or group.get("seriesModality") or "").strip().upper()
+        if _is_non_image_modality(modality):
+            continue
+        valid_sops = []
         for sop in (group.get("dicomSops") or []):
-            if sop.get("sopInstanceUid"):
+            sop_uid = sop.get("sopInstanceUid")
+            sop_class = sop.get("sopClassUid") or sop.get("classUid") or ""
+            if _is_non_image_sop_class(sop_class):
+                continue
+            if sop_uid:
+                valid_sops.append(sop)
                 plan.append((group, sop))
+        if valid_sops:
+            n_series += 1
 
     if selected_series is not None and n_series == 0:
         raise ValueError("Không còn tìm thấy series đã chọn trong cấu trúc ZFP mới.")
@@ -7630,8 +7898,20 @@ def download_studies_list(
             downloaded = dl.total() if dl else 0
             total_downloaded += downloaded
             stopped = bool(should_stop and should_stop())
-            # Complete means all expected instances in manifest downloaded, not just partial count.
             complete = bool(dl and dl.is_complete() and not stopped)
+
+            # Dual-layer verification: check physical slice continuity and DICOM-to-JPG parity
+            dicom_dir = st_out_dir / "DICOM"
+            continuity_rep = {}
+            if dicom_dir.is_dir() and not stopped:
+                is_continuous, continuity_rep = verify_study_slice_continuity(dicom_dir)
+                is_parity, parity_rep = verify_study_dicom_jpg_parity(st_out_dir)
+                if not complete and is_continuous and is_parity and (dl is not None and dl.failed == 0):
+                    complete = True
+                    if dl:
+                        dl.continuity_valid = True
+                    log(f"      ✓ Đã xác thực toàn vẹn 2 lớp: {continuity_rep.get('details', '')} & {parity_rep.get('details', '')}")
+
             metadata = extract_patient_metadata(st_out_dir / "DICOM")
             if metadata:
                 existing_manifest = _read_patient_manifest(patient_folder) or {}
@@ -7671,8 +7951,17 @@ def download_studies_list(
                 unfinished.append(f"{label}: dừng giữa chừng ({downloaded} ảnh)")
             else:
                 expected = getattr(dl, "expected", 0) or "?"
-                log(f"⚠ CA {idx} CHƯA ĐỦ ẢNH ({downloaded}/{expected}) — đánh dấu CHƯA ĐỦ. "
-                    f"Bấm tải lại ca này để bù, ảnh trùng tự bỏ.")
+                gaps = continuity_rep.get("gaps_found") or []
+                if gaps:
+                    gap_msgs = []
+                    for g in gaps:
+                        m_list = g.get("missing_instances") or []
+                        m_str = ", ".join(map(str, m_list[:5])) + (f"... (+{len(m_list)-5})" if len(m_list) > 5 else "")
+                        gap_msgs.append(f"{g.get('series_description', 'Series')}: thiếu lát [{m_str}]")
+                    log(f"⚠ CA {idx} THIẾU LÁT CẮT THẬT ({downloaded}/{expected}): {'; '.join(gap_msgs)} — đánh dấu CHƯA ĐỦ.")
+                else:
+                    log(f"⚠ CA {idx} CHƯA ĐỦ ẢNH ({downloaded}/{expected}) — đánh dấu CHƯA ĐỦ. "
+                        f"Bấm tải lại ca này để bù, ảnh trùng tự bỏ.")
                 unfinished.append(f"{label}: thiếu ảnh ({downloaded}/{expected})")
         except PatientIdentityConflictError as e:
             log(f"❌ CHẶN GỘP CA {idx} DO MÂU THUẪN ĐỊNH DANH: {e}")

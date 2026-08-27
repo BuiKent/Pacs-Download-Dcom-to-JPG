@@ -3444,6 +3444,50 @@ class WebController:
         """
         return dcom_pipeline.set_study_read_state(Path(folder), bool(read))
 
+    def verify_study_integrity(self, folder: str) -> dict:
+        """Examine slice continuity and DICOM-to-JPG parity for a study folder."""
+        study_folder = Path(folder).expanduser().resolve(strict=True)
+        dicom_dir = study_folder / "DICOM" if (study_folder / "DICOM").is_dir() else study_folder
+        is_continuous, continuity_rep = dcom_pipeline.verify_study_slice_continuity(dicom_dir)
+        is_parity, parity_rep = dcom_pipeline.verify_study_dicom_jpg_parity(study_folder)
+        return {
+            "folder": str(study_folder),
+            "isComplete": bool(is_continuous and is_parity),
+            "continuity": continuity_rep,
+            "parity": parity_rep,
+        }
+
+    def mark_study_complete(self, folder: str, complete: bool = True) -> dict:
+        """Manually mark a study complete or incomplete in its patient index."""
+        study_folder = Path(folder).expanduser().resolve(strict=True)
+        candidates = [study_folder, *list(study_folder.parents)[:4]]
+        for candidate in candidates:
+            manifest = dcom_pipeline._read_patient_manifest(candidate)
+            if manifest is None:
+                continue
+            for record in (manifest.get("studies") or {}).values():
+                if not isinstance(record, dict):
+                    continue
+                relative = str(record.get("folder") or "").strip()
+                if not relative:
+                    continue
+                try:
+                    resolved = (candidate / relative).resolve()
+                except OSError:
+                    continue
+                if resolved != study_folder:
+                    continue
+                record["status"] = "complete" if complete else "incomplete"
+                manifest["updatedAt"] = dcom_pipeline._now_local()
+                dcom_pipeline._write_patient_manifest(candidate, manifest)
+                return {
+                    "folder": str(study_folder),
+                    "status": record["status"],
+                    "isComplete": record["status"] == "complete",
+                }
+            break
+        raise ValueError("Ca chụp này chưa có trong patient-index.json.")
+
     def set_output_root(self, path: str) -> dict:
         root = Path(path).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -4748,6 +4792,13 @@ class LocalApiServer:
                     return owner.controller.set_study_read(
                         str(payload.get("folder") or ""),
                         bool(payload.get("read")),
+                    )
+                if path == "/api/study/verify-integrity":
+                    return owner.controller.verify_study_integrity(str(payload.get("folder") or ""))
+                if path == "/api/study/mark-complete":
+                    return owner.controller.mark_study_complete(
+                        str(payload.get("folder") or ""),
+                        bool(payload.get("complete", True)),
                     )
                 if path == "/api/worklist/reveal-folder":
                     return owner.controller.reveal_folder(str(payload.get("folder") or ""))

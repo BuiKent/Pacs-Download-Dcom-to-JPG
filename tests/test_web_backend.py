@@ -18,6 +18,8 @@ from pydicom.sequence import Sequence
 from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage, generate_uid
 from PIL import Image
 
+import dcom_pipeline
+
 from web_backend import (
     ArchiveCatalog,
     SeriesRecord,
@@ -2857,7 +2859,143 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
             self.assertIn("Bắt đầu tải ảnh DICOM thử nghiệm...", content)
             self.assertIn("Đã tải 100/100 ảnh.", content)
 
+    def _create_mock_dicom_file(self, path: Path, series_uid: str, instance_num: int, modality: str = "MR", sop_class: str = "1.2.840.10008.5.1.4.1.1.4"):
+        import pydicom
+        from pydicom.dataset import FileDataset, FileMetaDataset
+        from pydicom.uid import ExplicitVRLittleEndian
+
+        file_meta = FileMetaDataset()
+        file_meta.MediaStorageSOPClassUID = sop_class
+        file_meta.MediaStorageSOPInstanceUID = f"{series_uid}.{instance_num}"
+        file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+
+        ds = FileDataset(str(path), {}, file_meta=file_meta, preamble=b"\0" * 128)
+        ds.PatientName = "Test^Patient"
+        ds.PatientID = "12345"
+        ds.Modality = modality
+        ds.SeriesInstanceUID = series_uid
+        ds.SeriesNumber = 1
+        ds.SeriesDescription = "AX T2"
+        ds.SOPClassUID = sop_class
+        ds.SOPInstanceUID = f"{series_uid}.{instance_num}"
+        ds.InstanceNumber = instance_num
+        ds.Rows = 16
+        ds.Columns = 16
+        ds.BitsAllocated = 16
+        ds.BitsStored = 16
+        ds.HighBit = 15
+        ds.PixelRepresentation = 0
+        ds.SamplesPerPixel = 1
+        ds.PixelData = b"\x00\x00" * (16 * 16)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ds.save_as(str(path))
+
+    def test_verify_slice_continuity_perfect_series(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dcm_dir = Path(tmp_dir) / "DICOM" / "Series1"
+            for i in range(1, 11):
+                self._create_mock_dicom_file(dcm_dir / f"img_{i:03d}.dcm", "1.2.3.4.5", i)
+            
+            is_cont, rep = dcom_pipeline.verify_study_slice_continuity(Path(tmp_dir) / "DICOM")
+            self.assertTrue(is_cont)
+            self.assertEqual(rep["total_slices"], 10)
+            self.assertEqual(len(rep["gaps_found"]), 0)
+            self.assertIn("Hoàn toàn liên tục", rep["details"])
+
+    def test_verify_slice_continuity_gap_detected(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dcm_dir = Path(tmp_dir) / "DICOM" / "Series1"
+            # Missing instance 3 (1, 2, 4, 5)
+            for i in [1, 2, 4, 5]:
+                self._create_mock_dicom_file(dcm_dir / f"img_{i:03d}.dcm", "1.2.3.4.5", i)
+            
+            is_cont, rep = dcom_pipeline.verify_study_slice_continuity(Path(tmp_dir) / "DICOM")
+            self.assertFalse(is_cont)
+            self.assertEqual(rep["total_slices"], 4)
+            self.assertEqual(len(rep["gaps_found"]), 1)
+            self.assertEqual(rep["gaps_found"][0]["missing_instances"], [3])
+            self.assertIn("Phát hiện thiếu lát cắt", rep["details"])
+
+    def test_verify_dicom_jpg_parity(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            study_dir = Path(tmp_dir)
+            dcm_dir = study_dir / "DICOM" / "Series1"
+            jpg_dir = study_dir / "JPG" / "Series1"
+            jpg_dir.mkdir(parents=True, exist_ok=True)
+            
+            for i in range(1, 6):
+                self._create_mock_dicom_file(dcm_dir / f"img_{i:03d}.dcm", "1.2.3.4.5", i)
+                (jpg_dir / f"img_{i:03d}.jpg").write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00")
+                
+            is_par, rep = dcom_pipeline.verify_study_dicom_jpg_parity(study_dir)
+            self.assertTrue(is_par)
+            self.assertEqual(rep["dicom_count"], 5)
+            self.assertEqual(rep["jpg_count"], 5)
+
+            # Delete one JPG to simulate decode/conversion failure
+            (jpg_dir / "img_001.jpg").unlink()
+            is_par2, rep2 = dcom_pipeline.verify_study_dicom_jpg_parity(study_dir)
+            self.assertFalse(is_par2)
+            self.assertEqual(rep2["missing_jpg"], 1)
+
+    def test_download_stats_with_continuity_valid(self):
+        stats = dcom_pipeline.DownloadStats()
+        stats.dicom = 1539
+        stats.expected = 1540
+        stats.failed = 0
+        self.assertFalse(stats.is_complete())
+        self.assertEqual(stats.status, "partial")
+
+        # Continuity validated (no network errors, 100% slices continuous)
+        stats.continuity_valid = True
+        self.assertTrue(stats.is_complete())
+        self.assertEqual(stats.status, "complete")
+
+    def test_study_integrity_and_mark_complete_controller(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            patient_dir = Path(tmp_dir) / "Patient_123"
+            study_dir = patient_dir / "2026-08-12 - MR - Brain"
+            dcm_dir = study_dir / "DICOM" / "Series1"
+            jpg_dir = study_dir / "JPG" / "Series1"
+            jpg_dir.mkdir(parents=True, exist_ok=True)
+            for i in range(1, 4):
+                self._create_mock_dicom_file(dcm_dir / f"img_{i:03d}.dcm", "1.2.3.4.5", i)
+                (jpg_dir / f"img_{i:03d}.jpg").write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00")
+
+            # Create patient-index.json
+            manifest = {
+                "format": dcom_pipeline.PATIENT_MANIFEST_FORMAT,
+                "patientId": "12345",
+                "studies": {
+                    "study_1": {
+                        "folder": "2026-08-12 - MR - Brain",
+                        "status": "incomplete",
+                    }
+                }
+            }
+            (patient_dir / "patient-index.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            controller = WebController()
+            controller.source_folders = [tmp_dir]
+            controller.output_root = Path(tmp_dir)
+            
+            # Verify integrity
+            integ = controller.verify_study_integrity(str(study_dir))
+            self.assertTrue(integ["isComplete"])
+            self.assertTrue(integ["continuity"]["is_continuous"])
+            self.assertTrue(integ["parity"]["parity"])
+
+            # Mark complete
+            res = controller.mark_study_complete(str(study_dir), True)
+            self.assertEqual(res["status"], "complete")
+            self.assertTrue(res["isComplete"])
+
+            # Verify manifest updated
+            updated_manifest = json.loads((patient_dir / "patient-index.json").read_text(encoding="utf-8"))
+            self.assertEqual(updated_manifest["studies"]["study_1"]["status"], "complete")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
