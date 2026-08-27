@@ -586,11 +586,12 @@ function renderSeriesStripContent(seriesList) {
       const visiblePanes = seriesVisiblePanes(item.id);
       const isVisible = visiblePanes.length > 0;
       const label = seriesLabel(item);
+      const cachedThumb = resolvedThumbUrls.get(item.id) || "";
       return `<button class="series-card ${isVisible ? "active" : ""}"
               data-series-id="${item.id}" title="${escapeHtml(label)}"
               ${isVisible ? `data-pane="${visiblePanes.join(",")}"` : ""}>
               <div class="series-thumb-box">
-                <img class="series-card-thumb" data-thumb-id="${item.id}" alt="" />
+                <img class="series-card-thumb" data-thumb-id="${item.id}" ${cachedThumb ? `src="${cachedThumb}"` : ""} alt="" />
                 ${item.mprReady ? `<span class="badge-3d">3D</span>` : ""}
                 <div class="series-thumb-overlay">
                   <b class="series-thumb-title">${escapeHtml(label)}</b>
@@ -2464,6 +2465,23 @@ function render() {
   const mprDisabled = !series?.mprReady;
   if (!app && typeof document !== "undefined") app = document.querySelector("#app");
   if (!app) return;
+
+  const seriesStrip = app.querySelector(".series-strip");
+  const stripScrollTop = seriesStrip ? seriesStrip.scrollTop : null;
+  const stripScrollLeft = seriesStrip ? seriesStrip.scrollLeft : null;
+
+  const historyRail = app.querySelector(".patient-history-rail");
+  const historyRailScrollTop = historyRail ? historyRail.scrollTop : null;
+
+  const seriesPicker = app.querySelector("#series-picker");
+  const seriesPickerScrollTop = seriesPicker ? seriesPicker.scrollTop : null;
+
+  const studyList = app.querySelector(".study-list");
+  const studyListScrollTop = studyList ? studyList.scrollTop : null;
+
+  const worklistContainer = app.querySelector(".worklist-table-container, .worklist-view");
+  const worklistScrollTop = worklistContainer ? worklistContainer.scrollTop : null;
+
   app.innerHTML = `
     <div class="app-shell ${downloadPanelVisible() ? "" : "download-collapsed"} ${state.activeTabId === "worklist" ? "worklist-active" : "viewer-active"}${state.windowMaximized ? " window-maximized" : ""}${state.zenMode ? " zen-mode" : ""}">
       <header class="app-header">
@@ -2642,6 +2660,30 @@ function render() {
   bindEvents();
   hydrateSeriesThumbs();
   initMediaEvents();
+
+  if (stripScrollTop !== null || stripScrollLeft !== null) {
+    const newStrip = app.querySelector(".series-strip");
+    if (newStrip) {
+      if (stripScrollTop !== null) newStrip.scrollTop = stripScrollTop;
+      if (stripScrollLeft !== null) newStrip.scrollLeft = stripScrollLeft;
+    }
+  }
+  if (historyRailScrollTop !== null) {
+    const newRail = app.querySelector(".patient-history-rail");
+    if (newRail) newRail.scrollTop = historyRailScrollTop;
+  }
+  if (seriesPickerScrollTop !== null) {
+    const newPicker = app.querySelector("#series-picker");
+    if (newPicker) newPicker.scrollTop = seriesPickerScrollTop;
+  }
+  if (studyListScrollTop !== null) {
+    const newStudyList = app.querySelector(".study-list");
+    if (newStudyList) newStudyList.scrollTop = studyListScrollTop;
+  }
+  if (worklistScrollTop !== null) {
+    const newWorklist = app.querySelector(".worklist-table-container, .worklist-view");
+    if (newWorklist) newWorklist.scrollTop = worklistScrollTop;
+  }
 }
 
 function renderLoginCard() {
@@ -3064,13 +3106,21 @@ function bindTextViewerButtons(host) {
 // thumbnail is fetched once as a blob and kept as an object URL so the
 // frequent full re-renders reuse it instead of decoding the slice again.
 const seriesThumbs = new Map();
+const resolvedThumbUrls = new Map();
 
 function seriesThumbUrl(seriesId) {
   let pending = seriesThumbs.get(seriesId);
   if (!pending) {
-    pending = apiBlob(thumbnailPath(seriesId)).then((blob) => URL.createObjectURL(blob));
+    pending = apiBlob(thumbnailPath(seriesId)).then((blob) => {
+      const url = URL.createObjectURL(blob);
+      resolvedThumbUrls.set(seriesId, url);
+      return url;
+    });
     // Drop failures so a later render can retry instead of caching the error.
-    pending.catch(() => seriesThumbs.delete(seriesId));
+    pending.catch(() => {
+      seriesThumbs.delete(seriesId);
+      resolvedThumbUrls.delete(seriesId);
+    });
     seriesThumbs.set(seriesId, pending);
   }
   return pending;
@@ -3081,13 +3131,25 @@ function hydrateSeriesThumbs() {
   for (const [seriesId, pending] of seriesThumbs) {
     if (live.has(seriesId)) continue;
     seriesThumbs.delete(seriesId);
+    const cachedUrl = resolvedThumbUrls.get(seriesId);
+    if (cachedUrl) URL.revokeObjectURL(cachedUrl);
+    resolvedThumbUrls.delete(seriesId);
     pending.then((url) => URL.revokeObjectURL(url)).catch(() => {});
   }
   for (const img of app.querySelectorAll(".series-card-thumb[data-thumb-id]")) {
     const seriesId = img.dataset.thumbId;
+    const cached = resolvedThumbUrls.get(seriesId);
+    if (cached) {
+      if (img.getAttribute("src") !== cached) {
+        img.src = cached;
+      }
+      continue;
+    }
     seriesThumbUrl(seriesId)
       .then((url) => {
-        img.src = url;
+        if (img.isConnected && img.getAttribute("src") !== url) {
+          img.src = url;
+        }
       })
       .catch(() => {
         img.remove();
@@ -3376,15 +3438,57 @@ function bindEvents() {
         return;
       }
 
-      // Non-compare modes: full rebuild as before.
+      // Non-compare modes:
+      const prevSelected = selectedSeries();
+      const prevMediaType = getSeriesMediaType(prevSelected);
+      const newMediaType = getSeriesMediaType(newSeries);
+
       state.selectedId = seriesId;
       const selected = selectedSeries();
+      let needsFullRender = false;
       if ((state.mode === "mpr" || state.mode === "volume3d") && !selected?.mprReady) {
         state.mode = "single";
         state.tool = "window";
+        needsFullRender = true;
+      } else if (prevMediaType !== newMediaType) {
+        needsFullRender = true;
       }
-      render();
-      renderViewer();
+
+      if (needsFullRender) {
+        render();
+        renderViewer();
+      } else {
+        updateSeriesCardHighlight();
+        const seriesSelect = app.querySelector("[data-field='series']");
+        if (seriesSelect) seriesSelect.value = seriesId;
+
+        const presetSelect = app.querySelector("[data-field='window-preset']");
+        if (presetSelect) {
+          presetSelect.innerHTML = availableWindowPresets(selected)
+            .map((preset) => `<option value="${preset.id}" ${state.windowPreset === preset.id ? "selected" : ""}>${escapeHtml(preset.detail ? `${t(preset.label)} · ${preset.detail}` : t(preset.label))}</option>`)
+            .join("");
+          presetSelect.setAttribute("title", escapeHtml(t(windowPresetHint(selected))));
+        }
+
+        const safety = seriesSafetyNotice(selected);
+        const notice = app.querySelector(".safety-notice");
+        if (notice) {
+          notice.hidden = !safety;
+          notice.className = `safety-notice ${safety?.level || ""}`;
+          const span = notice.querySelector("span");
+          if (span) span.textContent = safety ? t(safety.text) : "";
+        }
+
+        if (newMediaType !== "dicom") {
+          const workspace = app.querySelector("#workspace");
+          if (workspace) {
+            workspace.innerHTML = renderWorkspacePane(selected);
+            initMediaEvents();
+          }
+        } else {
+          renderViewer();
+        }
+      }
     });
   });
   app.querySelectorAll(".tl-name-input").forEach((input) => {
