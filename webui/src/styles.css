@@ -450,6 +450,27 @@ button { cursor: pointer; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.tab-fmt-badge {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  vertical-align: middle;
+}
+.tab-fmt-badge.dicom {
+  background: rgba(35, 131, 226, 0.2);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+}
+.tab-fmt-badge.jpg {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.4);
+}
 .winbar-tab-close {
   display: inline-grid;
   place-items: center;
@@ -2970,7 +2991,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
-  grid-template-columns: 52px minmax(220px, 1fr) 130px 120px 120px minmax(210px, 230px);
+  grid-template-columns: 52px minmax(200px, 1fr) 130px 115px 95px 110px minmax(210px, 230px);
 }
 
 .plist-header {
@@ -3157,6 +3178,40 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .mtag.photo i { background: var(--m-photo, #2e7d32); }
 .mtag.doc i   { background: var(--m-doc, #7f8c8d); }
 .mtag.video i { background: var(--m-video, #8e44ad); }
+
+.fmt-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  width: fit-content;
+  white-space: nowrap;
+}
+.fmt-badge.dicom {
+  background: rgba(35, 131, 226, 0.14);
+  color: #2563eb;
+  border: 1px solid rgba(37, 99, 235, 0.3);
+}
+.fmt-badge.jpg, .fmt-badge.photo {
+  background: rgba(217, 115, 13, 0.14);
+  color: #d9730d;
+  border: 1px solid rgba(217, 115, 13, 0.3);
+}
+.fmt-badge.video {
+  background: rgba(142, 68, 173, 0.14);
+  color: #8e44ad;
+  border: 1px solid rgba(142, 68, 173, 0.3);
+}
+.fmt-badge.doc {
+  background: rgba(127, 140, 141, 0.14);
+  color: #576574;
+  border: 1px solid rgba(127, 140, 141, 0.3);
+}
 
 .badge {
   justify-self: start;

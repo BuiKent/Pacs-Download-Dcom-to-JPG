@@ -625,10 +625,13 @@ function renderWinbar() {
   const tabItems = state.tabs.map((tab) => {
     const isActive = tab.id === state.activeTabId;
     const title = `${tab.patientId ? tab.patientId + " - " : ""}${tab.patientName || "Bệnh nhân"}`;
-    const modality = tab.archive?.series?.[0]?.modality || "DICOM";
+    const isDicom = tab.archive?.series?.some((s) => s.sourceType === "dicom") ?? false;
+    const format = isDicom ? "DICOM" : "JPG";
+    const modality = tab.archive?.series?.[0]?.modality || (isDicom ? "DICOM" : "MR");
+    const badgeText = `${modality} · ${format}`;
     return `<div class="winbar-tab${isActive ? " active" : ""}" data-tab-id="${tab.id}">
       <span class="winbar-tab-icon">👤</span>
-      <span class="winbar-tab-title" title="${escapeHtml(title)}">${escapeHtml(title)} [${escapeHtml(modality)}]</span>
+      <span class="winbar-tab-title" title="${escapeHtml(title)}">${escapeHtml(title)} <span class="tab-fmt-badge ${isDicom ? "dicom" : "jpg"}">${escapeHtml(badgeText)}</span></span>
       <button class="winbar-tab-close" data-action="close-tab" data-tab-id="${tab.id}" title="${escapeHtml(t("Đóng tab"))}">×</button>
     </div>`;
   }).join("");
@@ -1721,6 +1724,37 @@ function mediaTags(counts, labels = {}) {
     .join("");
 }
 
+function studyFormatBadge(study) {
+  const media = study.primaryMediaType || (study.mediaCounts?.dicom > 0 ? "dicom" : "photo");
+  if (media === "dicom" || study.mediaCounts?.dicom > 0) {
+    return `<span class="fmt-badge dicom" title="${escapeHtml(t("File DICOM gốc (.dcm)"))}">DICOM</span>`;
+  }
+  if (media === "photo" || study.mediaCounts?.photo > 0) {
+    return `<span class="fmt-badge jpg" title="${escapeHtml(t("Ảnh JPG đã giải nén"))}">JPG</span>`;
+  }
+  if (media === "video" || study.mediaCounts?.video > 0) {
+    return `<span class="fmt-badge video" title="${escapeHtml(t("Video"))}">VIDEO</span>`;
+  }
+  if (media === "doc" || study.mediaCounts?.doc > 0) {
+    return `<span class="fmt-badge doc" title="${escapeHtml(t("Bệnh án / Văn bản"))}">BỆNH ÁN</span>`;
+  }
+  return `<span class="fmt-badge jpg">JPG</span>`;
+}
+
+function patientFormatBadges(patient) {
+  const summary = patient.mediaSummary || {};
+  const tags = [];
+  if (summary.dicom > 0) tags.push(`<span class="fmt-badge dicom">DICOM</span>`);
+  if (summary.photo > 0) tags.push(`<span class="fmt-badge jpg">JPG</span>`);
+  if (summary.video > 0) tags.push(`<span class="fmt-badge video">VIDEO</span>`);
+  if (summary.doc > 0) tags.push(`<span class="fmt-badge doc">DOC</span>`);
+  if (tags.length === 0) {
+    const hasDicom = (patient.studies || []).some((s) => s.primaryMediaType === "dicom" || s.mediaCounts?.dicom > 0);
+    tags.push(hasDicom ? `<span class="fmt-badge dicom">DICOM</span>` : `<span class="fmt-badge jpg">JPG</span>`);
+  }
+  return tags.join(" ");
+}
+
 /**
  * Inner HTML of `.worklist-tree`, rendering the multi-level patient study tree.
  */
@@ -1768,6 +1802,7 @@ function renderWorklistTreeInner() {
         <span>${escapeHtml(t("Ngày chụp"))}</span>
         <i class="sort-icon">${state.worklistSortColumn === "date" ? (state.worklistSortOrder === "desc" ? "▼" : "▲") : "↕"}</i>
       </button>
+      <span class="col-format">${escapeHtml(t("Định dạng"))}</span>
       <span class="col-status">${escapeHtml(t("Trạng thái"))}</span>
       <span class="col-acts">${escapeHtml(t("Action"))}</span>
     </div>
@@ -1794,6 +1829,7 @@ function renderWorklistTreeInner() {
             </span>
             <span class="meta pid-col"><b>${escapeHtml(p.patientId || "—")}</b></span>
             <span class="meta date-col">${escapeHtml(patientLatestStudyDateString(p))}</span>
+            <span class="meta format-col">${patientFormatBadges(p)}</span>
             <span class="meta status-col count">${escapeHtml(tf("{} đợt khám", studyCount))}</span>
             <span class="rowacts">
               <button class="soft-button" type="button" data-action="open-patient-record" data-patient-id="${escapeHtml(p.id)}">
@@ -1817,6 +1853,7 @@ function renderWorklistTreeInner() {
                   </span>
                   <span class="meta pid-col sub">—</span>
                   <span class="meta date-col">${escapeHtml(s.studyDate || "—")}</span>
+                  <span class="meta format-col">${studyFormatBadge(s)}</span>
                   <span class="badge status-col ${s.status || "done"}">${escapeHtml(t(s.statusLabel || "Đã tải"))}</span>
                   <span class="rowacts">
                     ${s.status === "part" && s.viewerUrl ? `

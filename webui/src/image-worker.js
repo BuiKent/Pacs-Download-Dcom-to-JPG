@@ -10,13 +10,33 @@ self.onmessage = async (event) => {
     context.drawImage(bitmap, 0, 0);
     bitmap.close();
     const rgba = context.getImageData(0, 0, width, height).data;
-    const pixels = new Uint8Array(width * height);
-    for (let source = 0, target = 0; target < pixels.length; source += 4, target += 1) {
-      pixels[target] = Math.round(
-        rgba[source] * 0.299 + rgba[source + 1] * 0.587 + rgba[source + 2] * 0.114,
-      );
+    const len = rgba.length;
+    let isColor = false;
+    for (let source = 0; source < len; source += 4) {
+      const r = rgba[source];
+      const g = rgba[source + 1];
+      const b = rgba[source + 2];
+      if (Math.abs(r - g) > 2 || Math.abs(g - b) > 2) {
+        isColor = true;
+        break;
+      }
     }
-    self.postMessage({ id, width, height, pixels: pixels.buffer }, [pixels.buffer]);
+
+    if (isColor) {
+      const rgb = new Uint8Array(width * height * 3);
+      for (let source = 0, target = 0; source < len; source += 4, target += 3) {
+        rgb[target] = rgba[source];
+        rgb[target + 1] = rgba[source + 1];
+        rgb[target + 2] = rgba[source + 2];
+      }
+      self.postMessage({ id, width, height, isColor: true, pixels: rgb.buffer }, [rgb.buffer]);
+    } else {
+      const pixels = new Uint8Array(width * height);
+      for (let source = 0, target = 0; target < pixels.length; source += 4, target += 1) {
+        pixels[target] = rgba[source];
+      }
+      self.postMessage({ id, width, height, isColor: false, pixels: pixels.buffer }, [pixels.buffer]);
+    }
   } catch (error) {
     self.postMessage({
       id,

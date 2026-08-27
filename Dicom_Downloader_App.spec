@@ -4,14 +4,16 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files
 datas = []
 binaries = []
 hiddenimports = []
-tmp_ret = collect_all('playwright')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+for pkg in ['playwright', 'pylibjpeg', 'libjpeg', 'openjpeg', 'rle']:
+    tmp_ret = collect_all(pkg)
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 datas += collect_data_files('webview')
 hiddenimports += [
     'webview.platforms.edgechromium',
     'webview.platforms.winforms',
     'pythonnet',
     'clr_loader',
+    'pylibjpeg.plugins',
 ]
 datas += [('web_dist', 'web_dist')]
 import os

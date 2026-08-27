@@ -13,13 +13,19 @@ call npm run build
 if errorlevel 1 goto :failed
 popd
 echo.
+if exist ".venv\Scripts\python.exe" (
+  set "PY_CMD=.venv\Scripts\python.exe"
+) else (
+  set "PY_CMD=python"
+)
+
 echo [2/3] Cai/nang cap dependency Python...
-python -m pip install -r requirements.txt
-python -m pip install --upgrade pyinstaller
+%PY_CMD% -m pip install -r requirements.txt
+%PY_CMD% -m pip install --upgrade pyinstaller
 if errorlevel 1 goto :failed
 echo.
 echo [3/3] Dong goi EXE (vai phut, dung tat cua so)...
-python -m PyInstaller --noconfirm --clean Dicom_Downloader_App.spec
+%PY_CMD% -m PyInstaller --noconfirm Dicom_Downloader_App.spec
 if errorlevel 1 goto :failed
 echo.
 if exist "dist\Dicom_Downloader_App.exe" (

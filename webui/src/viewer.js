@@ -395,14 +395,34 @@ async function decodeBlobOnMain(blob) {
   context.drawImage(bitmap, 0, 0);
   bitmap.close();
   const rgba = context.getImageData(0, 0, width, height).data;
+  const len = rgba.length;
+  let isColor = false;
+  for (let source = 0; source < len; source += 4) {
+    const r = rgba[source];
+    const g = rgba[source + 1];
+    const b = rgba[source + 2];
+    if (Math.abs(r - g) > 2 || Math.abs(g - b) > 2) {
+      isColor = true;
+      break;
+    }
+  }
+
+  decodePath = "main";
+  if (isColor) {
+    const rgb = new Uint8Array(width * height * 3);
+    for (let source = 0, target = 0; source < len; source += 4, target += 3) {
+      rgb[target] = rgba[source];
+      rgb[target + 1] = rgba[source + 1];
+      rgb[target + 2] = rgba[source + 2];
+    }
+    return { pixels: rgb, width, height, isColor: true };
+  }
+
   const pixels = new Uint8Array(width * height);
   for (let source = 0, target = 0; target < pixels.length; source += 4, target += 1) {
-    pixels[target] = Math.round(
-      rgba[source] * 0.299 + rgba[source + 1] * 0.587 + rgba[source + 2] * 0.114,
-    );
+    pixels[target] = rgba[source];
   }
-  decodePath = "main";
-  return { pixels, width, height };
+  return { pixels, width, height, isColor: false };
 }
 
 function rejectDecodeRequests(error) {
@@ -416,7 +436,7 @@ function getDecodeWorker() {
   try {
     decodeWorker = new Worker(new URL("./image-worker.js", import.meta.url), { type: "module" });
     decodeWorker.addEventListener("message", (event) => {
-      const { id, width, height, pixels, error } = event.data || {};
+      const { id, width, height, isColor, pixels, error } = event.data || {};
       const pending = decodeRequests.get(id);
       if (!pending) return;
       decodeRequests.delete(id);
@@ -430,7 +450,7 @@ function getDecodeWorker() {
       // grayscale conversion off-thread while giving vtk.js a normal local
       // ArrayBuffer it can upload reliably.
       const transferred = new Uint8Array(pixels);
-      pending.resolve({ pixels: transferred.slice(), width, height });
+      pending.resolve({ pixels: transferred.slice(), width, height, isColor: Boolean(isColor) });
     });
     decodeWorker.addEventListener("error", (event) => {
       const error = new Error(event.message || "Bộ giải mã ảnh nền gặp sự cố.");
@@ -643,7 +663,18 @@ function decodeImage(imageId) {
       return decodeDicomImage(imageId, parsed, series);
     }
     const blob = await apiBlob(imagePath(parsed.seriesId, parsed.index));
-    const { pixels, width, height } = await decodeBlob(blob);
+    const { pixels, width, height, isColor } = await decodeBlob(blob);
+    const spacing = series?.geometry?.pixelSpacing || series?.pixelData?.pixelSpacing;
+    if (isColor) {
+      return {
+        imageId,
+        ...colorDicomImage({ rgb: pixels, rows: height, columns: width }),
+        getCanvas: () => colorCanvas(pixels, width, height),
+        columnPixelSpacing: spacing?.[1],
+        rowPixelSpacing: spacing?.[0],
+        imageQualityStatus: CoreEnums.ImageQualityStatus.FULL_RESOLUTION,
+      };
+    }
     if (!lastDecodeStats) {
       let min = 255;
       let max = 0;
@@ -655,7 +686,6 @@ function decodeImage(imageId) {
       }
       lastDecodeStats = { width, height, min, max, nonZero };
     }
-    const spacing = series?.geometry?.pixelSpacing || series?.pixelData?.pixelSpacing;
     return {
       imageId,
       minPixelValue: 0,
@@ -1035,8 +1065,10 @@ function updateViewportOverlays(viewportId, tl, tr, bl, br, ot, ob, ol, or) {
   // The accession number is how a study is looked up in the RIS, so it belongs
   // beside the study identity rather than with the technical parameters.
   const accession = acquisition.accessionNumber ? `Acc: ${acquisition.accessionNumber}` : "";
+  const formatTag = series.sourceType === "dicom" ? "DICOM" : "JPG";
+  const modalityLine = `${modality} · ${formatTag}`;
 
-  tr.innerText = [studyDate, modality, desc, accession, inst].filter(Boolean).join("\n");
+  tr.innerText = [studyDate, modalityLine, desc, accession, inst].filter(Boolean).join("\n");
   
   const zoom = Math.round((viewport.getZoom?.() || 1) * 100);
   const props = typeof viewport.getProperties === "function" ? viewport.getProperties() : {};
