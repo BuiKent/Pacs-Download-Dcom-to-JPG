@@ -150,6 +150,10 @@
 }
 
 * { box-sizing: border-box; }
+::selection {
+  background: #cfe6fa;
+  color: #0f4c81;
+}
 html, body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -3347,6 +3351,25 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   overflow-x: hidden;
   border: none;
   background: var(--panel-bg);
+  scrollbar-width: thin;
+  scrollbar-color: var(--control-border, #cbd5e1) transparent;
+}
+
+.plist::-webkit-scrollbar {
+  width: 6px;
+}
+
+.plist::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.plist::-webkit-scrollbar-thumb {
+  background: var(--control-border, #cbd5e1);
+  border-radius: 3px;
+}
+
+.plist::-webkit-scrollbar-thumb:hover {
+  background: var(--label-muted, #94a3b8);
 }
 
 .prow {
