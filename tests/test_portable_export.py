@@ -169,6 +169,67 @@ class ExportTests(unittest.TestCase):
             self.assertNotIn("<script>alert(1)</script>", index)
             self.assertIn("&lt;script&gt;", index)
 
+    def test_detect_patient_export_contents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            patient = build_archive(root, studies=2)
+            contents = portable_export.detect_patient_export_contents(patient)
+
+            self.assertTrue(contents["hasJpg"])
+            self.assertTrue(contents["hasDicom"])
+            self.assertEqual(contents["jpgCount"], 6)
+            self.assertEqual(contents["dicomCount"], 2)
+            self.assertEqual(contents["studyCount"], 2)
+            self.assertEqual(contents["seriesCount"], 2)
+
+    def test_export_dicom_mode_copies_dicom_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            patient = build_archive(root, studies=1)
+            destination = root / "usb_dicom"
+
+            result = portable_export.export_patient_record(patient, destination, mode="dicom")
+
+            self.assertEqual(result["dicoms"], 1)
+            self.assertEqual(len(list((destination / "DICOM").rglob("*.dcm"))), 1)
+            self.assertTrue((destination / "HUONG_DAN_DICOM.txt").is_file())
+            index = (destination / "index.html").read_text(encoding="utf-8")
+            self.assertIn("HỒ SƠ DICOM", index.upper())
+
+    def test_export_both_mode_copies_both_jpg_and_dicom(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            patient = build_archive(root, studies=1)
+            destination = root / "usb_both"
+
+            result = portable_export.export_patient_record(patient, destination, mode="both")
+
+            self.assertEqual(result["images"], 3)
+            self.assertEqual(result["dicoms"], 1)
+            self.assertTrue((destination / "ca-01.html").is_file())
+            self.assertEqual(len(list((destination / "images").rglob("*.jpg"))), 3)
+            self.assertEqual(len(list((destination / "DICOM").rglob("*.dcm"))), 1)
+
+    def test_web_pacs_viewer_contains_interactive_controls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            patient = build_archive(root, studies=1)
+            destination = root / "usb"
+
+            portable_export.export_patient_record(patient, destination, mode="viewer")
+
+            page = (destination / "ca-01.html").read_text(encoding="utf-8")
+            # Verify Web PACS Viewer elements
+            self.assertIn("slice-slider", page)
+            self.assertIn("btn-compare", page)
+            self.assertIn("btn-play", page)
+            self.assertIn("modal-shortcuts", page)
+            self.assertIn("pacs-img-1", page)
+            self.assertIn("DATA =", page)
+            self.assertIn("toggleCompare", page)
+            self.assertIn("stepSlice", page)
+
 
 if __name__ == "__main__":
     unittest.main()
+

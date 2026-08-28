@@ -190,6 +190,10 @@ const state = {
   // gone the next time anything else re-renders.
   windowMaximized: false,
   zenMode: false,
+  showExportModal: false,
+  exportModalFolder: "",
+  exportModalOptions: null,
+  exportModalPatientName: "",
 };
 let viewerQueue = Promise.resolve();
 let viewerRequestId = 0;
@@ -2655,6 +2659,7 @@ function render() {
       ${renderLoginCard()}
       ${renderFileInfoModal()}
       ${renderConcatModal()}
+      ${renderExportModal()}
     </div>
   `;
   bindEvents();
@@ -2994,6 +2999,89 @@ function renderConcatModal() {
     </div>
   `;
 }
+
+function renderExportModal() {
+  if (!state.showExportModal) return "";
+  const opts = state.exportModalOptions || { hasJpg: true, hasDicom: false, jpgCount: 0, dicomCount: 0, studyCount: 0 };
+  const folder = state.exportModalFolder || "";
+  const patientName = state.exportModalPatientName || t("Bệnh nhân");
+
+  return `
+    <div class="export-modal-overlay">
+      <div class="export-modal-dialog">
+        <header class="export-modal-header">
+          <div class="export-modal-title-wrap">
+            <h3 class="export-modal-title">📦 ${escapeHtml(t("Tùy chọn xuất hồ sơ"))}</h3>
+            <span class="export-modal-subtitle">${escapeHtml(patientName)}</span>
+          </div>
+          <button class="file-info-close-btn" data-action="close-export-modal" title="${escapeHtml(t("Đóng"))}">✕</button>
+        </header>
+        <div class="export-modal-body">
+          <p class="export-modal-desc">${escapeHtml(t("Hồ sơ này có cả ảnh JPG và file gốc DICOM. Vui lòng chọn định dạng muốn xuất ra USB / thư mục:"))}</p>
+
+          <div class="export-options-grid">
+            <!-- Option 1: Web Viewer (JPG) -->
+            <div class="export-option-card" data-action="confirm-export-choice" data-mode="viewer" data-folder="${escapeHtml(folder)}">
+              <div class="export-card-icon">🌐</div>
+              <div class="export-card-content">
+                <div class="export-card-title">
+                  <b>${escapeHtml(t("Web PACS Viewer (Ảnh JPG)"))}</b>
+                  <span class="export-card-badge recommended">${escapeHtml(t("Khuyên dùng"))}</span>
+                </div>
+                <div class="export-card-desc">
+                  ${escapeHtml(t("Tạo trang web tự động chạy offline trên mọi trình duyệt. Có thanh cuộn lát cắt, đổi chuỗi xung, phóng to/thu nhỏ, tương phản W/L và so sánh 2 xung song song."))}
+                </div>
+                <div class="export-card-meta">
+                  <span>🖼 ${opts.jpgCount || 0} ${escapeHtml(t("ảnh JPG"))}</span>
+                  <span>⚡ ${escapeHtml(t("Nhẹ, mở tức thì trên mọi máy tính"))}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Option 2: DICOM Originals -->
+            <div class="export-option-card" data-action="confirm-export-choice" data-mode="dicom" data-folder="${escapeHtml(folder)}">
+              <div class="export-card-icon">💾</div>
+              <div class="export-card-content">
+                <div class="export-card-title">
+                  <b>${escapeHtml(t("File gốc DICOM"))}</b>
+                  <span class="export-card-badge">${escapeHtml(t("Máy trạm PACS"))}</span>
+                </div>
+                <div class="export-card-desc">
+                  ${escapeHtml(t("Xuất toàn bộ file chụp gốc DICOM tiêu chuẩn y khoa chất lượng cao nhất, kèm file hướng dẫn mở bằng RadiAnt, Weasis, MicroDicom, Horos..."))}
+                </div>
+                <div class="export-card-meta">
+                  <span>📁 ${opts.dicomCount || 0} ${escapeHtml(t("file DICOM"))}</span>
+                  <span>🔬 ${escapeHtml(t("Dành cho bác sĩ CĐHA chuyên sâu"))}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Option 3: Both -->
+            <div class="export-option-card" data-action="confirm-export-choice" data-mode="both" data-folder="${escapeHtml(folder)}">
+              <div class="export-card-icon">📦</div>
+              <div class="export-card-content">
+                <div class="export-card-title">
+                  <b>${escapeHtml(t("Xuất đầy đủ (Cả Web Viewer + DICOM)"))}</b>
+                  <span class="export-card-badge">${escapeHtml(t("Tất cả"))}</span>
+                </div>
+                <div class="export-card-desc">
+                  ${escapeHtml(t("Bao gồm cả Web PACS Viewer xem nhanh trên trình duyệt lẫn thư mục file gốc DICOM đầy đủ cho máy trạm."))}
+                </div>
+                <div class="export-card-meta">
+                  <span>🌐 ${opts.jpgCount || 0} JPG + 📁 ${opts.dicomCount || 0} DICOM</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <footer class="export-modal-footer">
+          <button class="tool-btn" data-action="close-export-modal">${escapeHtml(t("Hủy bỏ"))}</button>
+        </footer>
+      </div>
+    </div>
+  `;
+}
+
 
 function showCopyToast(message = t("Đã sao chép link tải vào clipboard!")) {
   const existing = document.querySelector(".copy-toast");
@@ -3336,6 +3424,14 @@ function bindEvents() {
   concatOverlay?.addEventListener("click", (event) => {
     if (event.target === concatOverlay) {
       state.showConcatModal = false;
+      render();
+    }
+  });
+
+  const exportOverlay = app.querySelector(".export-modal-overlay");
+  exportOverlay?.addEventListener("click", (event) => {
+    if (event.target === exportOverlay) {
+      state.showExportModal = false;
       render();
     }
   });
@@ -3928,6 +4024,30 @@ async function getPhotoSourcePath(series) {
   return paths[mediaFileIndex(series)] || paths[0] || null;
 }
 
+async function executeExportJob(folder, mode = "viewer") {
+  if (!folder) return;
+  if (window.pywebview?.api?.choose_export_folder) {
+    const job = await window.pywebview.api.choose_export_folder(folder, mode);
+    if (job) {
+      state.bootstrap.job = job;
+      setStatus(t("Đang xuất hồ sơ sang thư mục đã chọn…"));
+      startJobPolling();
+    }
+  } else {
+    const destination = window.prompt(t("Nhập đường dẫn thư mục xuất:"));
+    if (!destination || !destination.trim()) return;
+    const job = await api("/api/worklist/export", {
+      method: "POST",
+      body: JSON.stringify({ folder, destination: destination.trim(), mode }),
+    });
+    if (job) {
+      state.bootstrap.job = job;
+      setStatus(t("Đang xuất hồ sơ sang thư mục đã chọn…"));
+      startJobPolling();
+    }
+  }
+}
+
 async function action(name, element = null) {
   try {
     if (name === "cancel-login") {
@@ -4056,15 +4176,55 @@ async function action(name, element = null) {
     if (name === "export-patient-record") {
       const folder = element?.dataset?.folder;
       if (!folder) throw new Error(t("Hồ sơ này chưa có thư mục trên đĩa."));
-      if (!window.pywebview?.api?.choose_export_folder) {
-        throw new Error(t("Chọn thư mục xuất cần chạy trong ứng dụng WebView2."));
+
+      const patientRow = (state.worklistPatients || []).find((p) => p.folder === folder);
+      const patientName = patientRow?.patientName || state.archive?.patient?.patientName || "";
+
+      // Probe available media options in this patient archive
+      let options = null;
+      try {
+        if (window.pywebview?.api?.get_export_options) {
+          options = await window.pywebview.api.get_export_options(folder);
+        } else {
+          options = await api("/api/worklist/export-options", {
+            method: "POST",
+            body: JSON.stringify({ folder }),
+          });
+        }
+      } catch (_) {
+        options = { hasJpg: true, hasDicom: false };
       }
-      const job = await window.pywebview.api.choose_export_folder(folder);
-      if (job) {
-        state.bootstrap.job = job;
-        setStatus(t("Đang xuất hồ sơ sang thư mục đã chọn…"));
-        startJobPolling();
+
+      if (options?.hasJpg && options?.hasDicom) {
+        // Both JPG & DICOM exist -> Show choices modal
+        state.showExportModal = true;
+        state.exportModalFolder = folder;
+        state.exportModalOptions = options;
+        state.exportModalPatientName = patientName;
+        render();
+        return;
       }
+
+      // Only one type exists -> automatic export
+      const autoMode = (options?.hasDicom && !options?.hasJpg) ? "dicom" : "viewer";
+      await executeExportJob(folder, autoMode);
+      return;
+    }
+    if (name === "close-export-modal") {
+      state.showExportModal = false;
+      state.exportModalFolder = "";
+      state.exportModalOptions = null;
+      render();
+      return;
+    }
+    if (name === "confirm-export-choice") {
+      const folder = element?.dataset?.folder || state.exportModalFolder;
+      const mode = element?.dataset?.mode || "viewer";
+      state.showExportModal = false;
+      state.exportModalFolder = "";
+      state.exportModalOptions = null;
+      render();
+      await executeExportJob(folder, mode);
       return;
     }
     if (name === "clear-worklist-filters") {

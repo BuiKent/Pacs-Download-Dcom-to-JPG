@@ -3411,7 +3411,7 @@ class WebController:
             )
         return indexed
 
-    def start_portable_export(self, folder: str, destination: str) -> dict:
+    def start_portable_export(self, folder: str, destination: str, mode: str = "viewer") -> dict:
         """Write a patient record to a folder any browser can open.
 
         Runs as a queued job because it copies every JPG in the record, which
@@ -3425,16 +3425,26 @@ class WebController:
         target = Path(destination).expanduser().resolve()
 
         def run() -> dict:
-            self.job.log(f"Đang xuất hồ sơ {patient_folder.name} sang {target}…")
+            self.job.log(f"Đang xuất hồ sơ {patient_folder.name} sang {target} (chế độ: {mode})…")
             return portable_export.export_patient_record(
                 patient_folder,
                 target,
+                mode=mode,
                 log=self.job.log,
                 should_stop=self.job.stop_event.is_set,
             )
 
         self.job.start("export", run)
         return self.job.snapshot()
+
+    def get_export_options(self, folder: str) -> dict:
+        """Detect JPG and DICOM counts in a patient folder to inform the export dialog."""
+        import portable_export
+
+        patient_folder = Path(folder).expanduser().resolve(strict=True)
+        if not patient_folder.is_dir():
+            raise ValueError("Đường dẫn hồ sơ không phải thư mục.")
+        return portable_export.detect_patient_export_contents(patient_folder)
 
     def set_study_read(self, folder: str, read: bool) -> dict:
         """Mark a study read or unread, so a reader can see what is left to do.
@@ -4783,10 +4793,13 @@ class LocalApiServer:
                         expected_patient_id=str(payload.get("patientId") or ""),
                         catalog=catalog,
                     )
+                if path == "/api/worklist/export-options":
+                    return owner.controller.get_export_options(str(payload.get("folder") or ""))
                 if path == "/api/worklist/export":
                     return owner.controller.start_portable_export(
                         str(payload.get("folder") or ""),
                         str(payload.get("destination") or ""),
+                        mode=str(payload.get("mode") or "viewer"),
                     )
                 if path == "/api/worklist/read":
                     return owner.controller.set_study_read(

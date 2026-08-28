@@ -3967,3 +3967,162 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   background: rgba(255, 255, 255, 0.3);
 }
 
+/* ── Export Options Modal ────────────────────────────── */
+.export-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: modalFadeIn 0.15s ease-out;
+}
+
+.export-modal-dialog {
+  width: min(680px, 95vw);
+  max-height: 90vh;
+  background: #0c141d;
+  border: 1px solid #1f3347;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.85);
+  overflow: hidden;
+  color: #d8e5f2;
+}
+
+.export-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: #111d2b;
+  border-bottom: 1px solid #1c2e42;
+}
+
+.export-modal-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.export-modal-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #60c5ff;
+}
+
+.export-modal-subtitle {
+  font-size: 12px;
+  color: #8da2b5;
+}
+
+.export-modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.export-modal-desc {
+  font-size: 13px;
+  color: #a0b6cc;
+  line-height: 1.5;
+}
+
+.export-options-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.export-option-card {
+  background: #111d2b;
+  border: 1px solid #1f3347;
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  gap: 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.export-option-card:hover {
+  background: #162638;
+  border-color: #0ea5e9;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.15);
+}
+
+.export-card-icon {
+  font-size: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.export-card-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.export-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.export-card-title b {
+  font-size: 14px;
+  color: #fff;
+}
+
+.export-card-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #1e334a;
+  color: #8da2b5;
+}
+
+.export-card-badge.recommended {
+  background: rgba(14, 165, 233, 0.2);
+  color: #38bdf8;
+  border: 1px solid rgba(14, 165, 233, 0.4);
+}
+
+.export-card-desc {
+  font-size: 12px;
+  color: #8da2b5;
+  line-height: 1.4;
+}
+
+.export-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  color: #5c748a;
+  margin-top: 4px;
+}
+
+.export-modal-footer {
+  padding: 12px 20px;
+  background: #111d2b;
+  border-top: 1px solid #1c2e42;
+  display: flex;
+  justify-content: flex-end;
+}
+
