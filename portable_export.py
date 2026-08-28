@@ -1,52 +1,44 @@
-"""Export one patient record as a folder anyone can open in a browser.
+# -*- coding: utf-8 -*-
+"""Portable export: creates an offline, professional Web PACS Viewer and DICOM package.
 
-A patient who asks for their images gets a USB stick, and whatever is on it has
-to work on a machine with nothing installed. Commercial patient media solves
-this with an `INDEX.HTM` beside the images; this builds an interactive, dark-mode
-Web PACS Viewer out of the JPGs this app already keeps, with full support for
-slice scrubbing, series switching, 2-up comparison, cine playback, zoom/pan,
-and window/level adjustments.
-
-Optionally, it can also export original DICOM folders or both side-by-side.
+Designed for clinical PACS review, multi-study/multi-series comparison (1x1, 1x2, 1x3, 2x2),
+synchronized scrolling, reference crosshairs/crosslink, calipers, angles, ROIs, W/L presets,
+and cine playback without requiring any external internet connection or software.
 """
 
 from __future__ import annotations
 
 import html
 import json
-import re
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
+import shutil
 from typing import Callable, Optional
 
 import dcom_pipeline
 
-LogFn = Callable[[str], None]
-
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
-DOCUMENT_SUFFIXES = {".pdf", ".txt", ".doc", ".docx"}
+DOCUMENT_SUFFIXES = {".pdf", ".docx", ".doc", ".txt", ".json"}
 DICOM_SUFFIXES = {".dcm", ".ima", ".dicom"}
-SKIPPED_FOLDERS = {"DICOM", "RAW_JPG"}
+SKIPPED_FOLDERS = {"RAW_JPG", "CACHE", "THUMB", "THUMBNAILS", "__MACOSX", "THUMBS"}
 UNKNOWN = "—"
+
+LogFn = Callable[[str], None]
 
 
 @dataclass
 class ExportSeries:
-    """One folder of images, as it will appear on the exported page."""
-
     name: str
     description: str
     modality: str
     institution: str
-    images: list[Path]
-    relative: Path
+    images: list[Path] = field(default_factory=list)
+    relative: Path = field(default_factory=Path)
 
 
 @dataclass
 class ExportStudy:
-    """One exam: its own folder on the stick, with its series inside."""
-
     folder: Path
     title: str
     date: str
@@ -64,7 +56,6 @@ class ExportStudy:
 
 
 def _natural_key(value: str) -> list:
-    """Sort "IM_2" before "IM_10". Same split the catalog uses, so both agree."""
     return [int(item) if item.isdigit() else item.casefold() for item in re.split(r"(\d+)", value)]
 
 
@@ -77,12 +68,10 @@ def _read_series_manifest(folder: Path) -> dict:
 
 
 def _relative_url(*parts: str) -> str:
-    """Join URL segments, dropping the "." a same-folder relative path yields."""
-    return "/".join(part for part in parts if part and part != ".")
+    return "/".join(part.replace("\\", "/") for part in parts if part and part != ".")
 
 
 def _collect_series(study_folder: Path) -> list[ExportSeries]:
-    """Every folder of images at or below `study_folder`, its name kept as-is."""
     found: list[ExportSeries] = []
     candidates = [study_folder, *(path for path in study_folder.rglob("*") if path.is_dir())]
     for folder in sorted(candidates, key=lambda path: _natural_key(str(path))):
@@ -120,7 +109,6 @@ def _collect_documents(study_folder: Path) -> list[Path]:
 
 
 def _collect_dicom_files(study_folder: Path) -> list[Path]:
-    """Find all DICOM files under study_folder (either in DICOM/ subfolder or by extension)."""
     dicom_dir = study_folder / "DICOM"
     files: list[Path] = []
     if dicom_dir.is_dir():
@@ -137,7 +125,6 @@ def _collect_dicom_files(study_folder: Path) -> list[Path]:
 
 
 def _study_folders(patient_folder: Path) -> list[Path]:
-    """Study directories inside a patient archive, or the archive itself."""
     children = [
         path for path in sorted(patient_folder.iterdir(), key=lambda p: _natural_key(p.name))
         if path.is_dir() and not path.name.startswith(".")
@@ -150,7 +137,6 @@ def _study_folders(patient_folder: Path) -> list[Path]:
 
 
 def _study_metadata(study_folder: Path, records: dict[str, dict]) -> dict:
-    """What the patient index says about this study folder, if anything."""
     try:
         key = str(study_folder.resolve()).casefold()
     except OSError:
@@ -159,7 +145,6 @@ def _study_metadata(study_folder: Path, records: dict[str, dict]) -> dict:
 
 
 def detect_patient_export_contents(patient_folder: Path) -> dict:
-    """Report what media formats the patient archive holds (JPG, DICOM, documents)."""
     patient_folder = Path(patient_folder).expanduser().resolve(strict=True)
     study_folders = _study_folders(patient_folder)
     jpg_count = 0
@@ -186,7 +171,6 @@ def detect_patient_export_contents(patient_folder: Path) -> dict:
 
 
 def collect_record(patient_folder: Path) -> tuple[dict, list[ExportStudy]]:
-    """The patient block and the studies worth exporting, read off disk."""
     patient_folder = Path(patient_folder).expanduser().resolve(strict=True)
     manifest = dcom_pipeline._read_patient_manifest(patient_folder) or {}
 
@@ -258,43 +242,47 @@ def _sex_label(code: str) -> str:
 
 
 def _patient_header(patient: dict) -> str:
-    sex = _sex_label(patient.get("patientSex", ""))
     fields = [
-        ("Họ và tên", patient.get("patientName", "")),
-        ("Mã bệnh nhân", patient.get("patientId", "")),
-        ("Ngày sinh", patient.get("patientBirthDate", "")),
-        ("Giới tính", sex),
-        ("Bệnh viện", patient.get("hospitalName", "")),
+        ("Họ và tên", patient.get("patientName") or UNKNOWN),
+        ("Mã BN", patient.get("patientId") or UNKNOWN),
+        ("Ngày sinh", patient.get("patientBirthDate") or UNKNOWN),
+        ("Giới tính", _sex_label(patient.get("patientSex") or "") or UNKNOWN),
+        ("Cơ sở", patient.get("hospitalName") or UNKNOWN),
     ]
     cells = "".join(
         f"<span><b>{_escape(label)}:</b> {_or_dash(value)}</span>" for label, value in fields
     )
     return (
-        "<header class=\"patient-header\"><h1>Hồ sơ hình ảnh y tế</h1>"
+        "<header class=\"patient-header\">"
         f'<div class="fields">{cells}</div></header>'
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SHARED DARK PACS THEME CSS
+# UI UX PRO MAX / MEDICAL PACS DESIGN SYSTEM
 # ─────────────────────────────────────────────────────────────────────────────
 
 VIEWER_CSS = """
 :root {
   --bg-app: #070b14;
-  --bg-panel: #0f172a;
-  --bg-card: #1e293b;
-  --bg-hover: #334155;
-  --border: #334155;
-  --border-light: #475569;
-  --text-main: #f8fafc;
+  --bg-panel: #0c1421;
+  --bg-toolbar: #0f172a;
+  --bg-card: #162234;
+  --bg-hover: #1e2f46;
+  --bg-active: #1e3a5f;
+  --border: #1e2e42;
+  --border-light: #2c425d;
+  --text-main: #f1f5f9;
   --text-muted: #94a3b8;
   --text-dim: #64748b;
   --accent: #0ea5e9;
   --accent-hover: #38bdf8;
   --accent-active: #0284c7;
+  --accent-glow: rgba(14, 165, 233, 0.25);
   --success: #10b981;
   --warning: #f59e0b;
+  --danger: #ef4444;
+  --mono-font: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
 body {
@@ -306,79 +294,111 @@ body {
   display: flex;
   flex-direction: column;
 }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.mono { font-family: var(--mono-font); }
 
 /* ── Top Bar ─────────────────────────────────────────── */
 .topbar {
-  background: var(--bg-panel);
+  background: var(--bg-toolbar);
   border-bottom: 1px solid var(--border);
-  height: 48px;
+  height: 44px;
   display: flex;
   align-items: center;
-  padding: 0 14px;
-  gap: 12px;
+  padding: 0 10px;
+  gap: 8px;
   flex-shrink: 0;
   z-index: 20;
 }
 .btn-back {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   background: var(--bg-card);
   color: var(--text-main);
   border: 1px solid var(--border);
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 12px;
   text-decoration: none;
   font-weight: 500;
   transition: all 0.15s;
+  flex-shrink: 0;
 }
 .btn-back:hover { background: var(--bg-hover); color: #fff; border-color: var(--accent); }
-.top-info {
+.top-patient-info {
   display: flex;
   align-items: center;
-  gap: 16px;
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
+  gap: 10px;
+  font-size: 12px;
+  padding-right: 8px;
+  border-right: 1px solid var(--border);
+  flex-shrink: 0;
 }
-.top-info b { color: #fff; font-weight: 600; }
-.top-info span { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.top-patient-info b { color: #fff; font-weight: 600; }
+.top-patient-info span { color: var(--text-muted); }
 .top-badge {
   background: rgba(14, 165, 233, 0.15);
   color: var(--accent);
   border: 1px solid rgba(14, 165, 233, 0.3);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  padding: 2px 8px;
+  padding: 1px 6px;
   border-radius: 4px;
-  text-transform: uppercase;
 }
-.top-actions { display: flex; align-items: center; gap: 6px; }
+
+.toolbar-cluster {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.toolbar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  margin: 0 3px;
+}
 .tool-btn {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  color: var(--text-main);
-  padding: 6px 10px;
-  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  padding: 4px 7px;
+  border-radius: 5px;
   font-size: 12px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-weight: 500;
-  transition: all 0.15s;
+  transition: all 0.12s;
+  height: 28px;
 }
-.tool-btn:hover { background: var(--bg-hover); border-color: var(--border-light); }
-.tool-btn.active { background: var(--accent-active); border-color: var(--accent); color: #fff; }
+.tool-btn:hover { background: var(--bg-hover); color: var(--text-main); border-color: var(--border); }
+.tool-btn.active {
+  background: var(--bg-active);
+  color: var(--accent-hover);
+  border-color: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+.tool-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; flex-shrink: 0; }
+.tool-btn.icon-only { padding: 4px; }
+
+.tool-select {
+  background: var(--bg-card);
+  color: var(--text-main);
+  border: 1px solid var(--border);
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  height: 28px;
+  outline: none;
+  cursor: pointer;
+}
+.tool-select:hover { border-color: var(--accent); }
 
 /* ── Main Layout ─────────────────────────────────────── */
 .main-layout {
-  display: flex;
   flex: 1;
   min-height: 0;
-  position: relative;
+  display: flex;
+  background: #000;
 }
 
 /* ── Series Rail Sidebar ─────────────────────────────── */
@@ -389,15 +409,14 @@ body {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  overflow: hidden;
 }
 .sidebar-head {
-  padding: 10px 12px;
+  padding: 8px 10px;
   font-size: 11px;
   font-weight: 700;
-  color: var(--text-dim);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  color: var(--text-dim);
   border-bottom: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
@@ -406,30 +425,33 @@ body {
 .series-list {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 6px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
 }
+.series-list::-webkit-scrollbar { width: 4px; }
+.series-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
 .series-item {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px;
+  border-radius: 6px;
+  padding: 6px;
   cursor: pointer;
   display: flex;
-  gap: 10px;
-  transition: all 0.15s;
+  gap: 8px;
+  transition: all 0.12s;
 }
 .series-item:hover { background: var(--bg-hover); border-color: var(--border-light); }
 .series-item.active {
   border-color: var(--accent);
-  background: rgba(14, 165, 233, 0.1);
+  background: rgba(14, 165, 233, 0.12);
   box-shadow: 0 0 0 1px var(--accent);
 }
 .series-thumb {
-  width: 52px;
-  height: 52px;
+  width: 48px;
+  height: 48px;
   background: #000;
   border-radius: 4px;
   object-fit: cover;
@@ -441,10 +463,10 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 2px;
+  gap: 1px;
 }
 .series-name {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: #fff;
   white-space: nowrap;
@@ -452,18 +474,18 @@ body {
   text-overflow: ellipsis;
 }
 .series-desc {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .series-count {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-dim);
 }
 
-/* ── Viewport Stage ──────────────────────────────────── */
+/* ── Viewport Grid Stage ─────────────────────────────── */
 .viewport-stage {
   flex: 1;
   min-width: 0;
@@ -477,71 +499,117 @@ body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 1fr;
   gap: 2px;
   background: #000;
-  position: relative;
+  padding: 2px;
 }
-.viewports-grid.compare {
-  grid-template-columns: 1fr 1fr;
-}
+.viewports-grid.layout-1x1 { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+.viewports-grid.layout-1x2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
+.viewports-grid.layout-1x3 { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr; }
+.viewports-grid.layout-2x2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+
 .viewport-panel {
   position: relative;
+  background: #000;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #111d2b;
+}
+.viewport-panel.active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.viewport-panel-header {
+  height: 24px;
+  background: rgba(12, 20, 33, 0.85);
+  backdrop-filter: blur(4px);
+  border-bottom: 1px solid rgba(30, 46, 66, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px;
+  z-index: 10;
+  font-size: 11px;
+}
+.vp-selectors {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.vp-select {
+  background: #09101a;
+  color: var(--text-main);
+  border: 1px solid var(--border);
+  font-size: 10px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 3px;
+  max-width: 140px;
+  outline: none;
+}
+.vp-badge {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  background: rgba(14, 165, 233, 0.15);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.img-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: hidden;
-  background: #020617;
-  outline: 1px solid var(--border);
+  cursor: crosshair;
 }
-.viewport-panel.active {
-  outline: 2px solid var(--accent);
-  z-index: 2;
+.pacs-img {
+  max-width: none;
+  max-height: none;
+  position: absolute;
+  transform-origin: center center;
+  pointer-events: none;
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
+}
+.annotation-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 5;
 }
 
 /* ── HUD Overlays ────────────────────────────────────── */
 .hud {
   position: absolute;
-  padding: 8px 12px;
+  z-index: 8;
+  pointer-events: none;
   font-size: 11px;
-  line-height: 1.4;
+  line-height: 1.35;
   color: rgba(255, 255, 255, 0.85);
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 2px #000;
-  pointer-events: none;
-  z-index: 10;
+  text-shadow: 1px 1px 2px #000, 0 0 3px #000;
 }
-.hud b { color: #fff; }
-.hud-tl { top: 0; left: 0; }
-.hud-tr { top: 0; right: 0; text-align: right; }
-.hud-bl { bottom: 0; left: 0; }
-.hud-br { bottom: 0; right: 0; text-align: right; }
+.hud b { color: #fff; font-weight: 600; }
+.hud-tl { top: 28px; left: 8px; }
+.hud-tr { top: 28px; right: 8px; text-align: right; }
+.hud-bl { bottom: 32px; left: 8px; }
+.hud-br { bottom: 32px; right: 8px; text-align: right; }
 
-.img-container {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: grab;
-}
-.img-container:active { cursor: grabbing; }
-.pacs-img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  transform-origin: center center;
-  transition: transform 0.05s ease-out;
-  pointer-events: none;
-}
-
-/* ── Control Bar / Scrubber ──────────────────────────── */
+/* ── Scrubber & Cine Controls Bar ────────────────────── */
 .controls-bar {
-  background: var(--bg-panel);
+  height: 38px;
+  background: var(--bg-toolbar);
   border-top: 1px solid var(--border);
-  padding: 8px 16px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  padding: 0 10px;
+  gap: 8px;
   flex-shrink: 0;
   z-index: 20;
 }
@@ -549,57 +617,34 @@ body {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 .slice-slider {
   flex: 1;
+  height: 4px;
   -webkit-appearance: none;
-  height: 6px;
-  border-radius: 3px;
-  background: var(--bg-card);
+  background: var(--border-light);
+  border-radius: 2px;
   outline: none;
   cursor: pointer;
 }
 .slice-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: var(--accent);
   cursor: pointer;
-  box-shadow: 0 0 6px rgba(14, 165, 233, 0.6);
+  box-shadow: 0 0 6px var(--accent);
   transition: transform 0.1s;
 }
-.slice-slider::-webkit-slider-thumb:hover {
-  transform: scale(1.2);
-}
+.slice-slider::-webkit-slider-thumb:hover { transform: scale(1.2); }
 .slice-tag {
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 11px;
   color: #fff;
   min-width: 60px;
   text-align: center;
 }
-
-/* ── Documents List Drawer ───────────────────────────── */
-.doc-section {
-  padding: 10px 12px;
-  border-top: 1px solid var(--border);
-  background: var(--bg-panel);
-}
-.doc-link {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--accent);
-  text-decoration: none;
-  font-size: 12px;
-  padding: 4px 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.doc-link:hover { text-decoration: underline; color: var(--accent-hover); }
 
 /* ── Shortcuts Modal ─────────────────────────────────── */
 .modal-overlay {
@@ -615,52 +660,41 @@ body {
 .modal-card {
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 10px;
   width: 440px;
   max-width: 90vw;
-  padding: 20px;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+  padding: 16px 20px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.8);
 }
-.modal-card h3 { font-size: 16px; margin-bottom: 14px; color: #fff; }
+.modal-card h3 { font-size: 15px; margin-bottom: 12px; color: #fff; }
 .shortcut-row {
   display: flex;
   justify-content: space-between;
-  padding: 6px 0;
+  padding: 5px 0;
   border-bottom: 1px solid var(--border);
-  font-size: 13px;
+  font-size: 12px;
 }
 .shortcut-row kbd {
   background: var(--bg-card);
   border: 1px solid var(--border-light);
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-size: 11px;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
   color: var(--accent);
-  font-family: ui-monospace, monospace;
-}
-
-/* ── Print / Fallback Grid ───────────────────────────── */
-@media print {
-  body { overflow: visible; height: auto; background: #fff; color: #000; }
-  .topbar, .sidebar, .controls-bar, .modal-overlay { display: none !important; }
-  .viewport-stage { background: #fff; }
+  font-family: var(--mono-font);
 }
 """
 
 INDEX_CSS = """
 :root {
   --bg-app: #070b14;
-  --bg-panel: #0f172a;
-  --bg-card: #1e293b;
-  --bg-hover: #334155;
-  --border: #334155;
-  --border-light: #475569;
-  --text-main: #f8fafc;
+  --bg-panel: #0c1421;
+  --bg-card: #162234;
+  --bg-hover: #1e2f46;
+  --border: #1e2e42;
+  --text-main: #f1f5f9;
   --text-muted: #94a3b8;
-  --text-dim: #64748b;
   --accent: #0ea5e9;
-  --accent-hover: #38bdf8;
-  --accent-active: #0284c7;
   --success: #10b981;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -673,153 +707,76 @@ body {
   display: flex;
   justify-content: center;
 }
-.container {
-  width: 100%;
-  max-width: 960px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
+.container { width: 100%; max-width: 960px; display: flex; flex-direction: column; gap: 16px; }
 header.patient-header {
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 20px 24px;
-}
-header.patient-header h1 {
-  font-size: 20px;
-  font-weight: 700;
-  margin-bottom: 12px;
-  color: #fff;
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  border-radius: 10px;
+  padding: 16px 20px;
 }
 header.patient-header .fields {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 24px;
-  font-size: 14px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 header.patient-header .fields span b { color: #fff; font-weight: 600; }
 
-.section-title {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-top: 8px;
-}
-.studies-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 16px;
-}
+.section-title { font-size: 14px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-top: 4px; }
+.studies-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .study-card {
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 16px;
+  border-radius: 10px;
+  padding: 14px;
   text-decoration: none;
   color: var(--text-main);
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  transition: all 0.2s;
+  gap: 10px;
+  transition: all 0.15s;
 }
-.study-card:hover {
-  background: var(--bg-card);
-  border-color: var(--accent);
-  transform: translateY(-2px);
-  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.4);
-}
-.card-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 8px;
-}
-.card-title {
-  font-size: 16px;
-  font-weight: 700;
-  color: #fff;
-}
+.study-card:hover { background: var(--bg-card); border-color: var(--accent); transform: translateY(-2px); }
+.card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.card-title { font-size: 14px; font-weight: 700; color: #fff; }
 .modality-badge {
   background: rgba(14, 165, 233, 0.15);
   color: var(--accent);
   border: 1px solid rgba(14, 165, 233, 0.3);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  padding: 2px 8px;
+  padding: 2px 6px;
   border-radius: 4px;
 }
-.card-thumb-wrap {
-  width: 100%;
-  height: 160px;
-  background: #000;
-  border-radius: 8px;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.card-thumb {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.card-meta {
-  display: flex;
-  justify-content: space-between;
-  font-size: 13px;
-  color: var(--text-muted);
-}
-.btn-open-viewer {
-  background: var(--accent);
-  color: #fff;
-  font-weight: 600;
-  font-size: 13px;
-  padding: 8px;
-  border-radius: 6px;
-  text-align: center;
-  margin-top: 4px;
-}
+.card-thumb-wrap { width: 100%; height: 160px; background: #000; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.card-thumb { width: 100%; height: 100%; object-fit: cover; }
+.card-meta { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); }
+.btn-open-viewer { background: var(--accent); color: #fff; font-weight: 600; font-size: 12px; padding: 7px; border-radius: 5px; text-align: center; }
 
 .dicom-banner {
   background: rgba(16, 185, 129, 0.1);
   border: 1px solid rgba(16, 185, 129, 0.3);
-  border-radius: 12px;
-  padding: 16px 20px;
+  border-radius: 10px;
+  padding: 12px 16px;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
-.dicom-banner-icon { font-size: 28px; }
-.dicom-banner-text b { color: #10b981; font-size: 15px; display: block; margin-bottom: 2px; }
-.dicom-banner-text span { font-size: 13px; color: var(--text-muted); }
-
-.note-box {
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 16px 20px;
-  font-size: 13px;
-  color: var(--text-muted);
-  line-height: 1.6;
-}
-.note-box b { color: #fff; }
+.dicom-banner-icon { font-size: 24px; }
+.dicom-banner-text b { color: #10b981; font-size: 14px; display: block; margin-bottom: 2px; }
+.dicom-banner-text span { font-size: 12px; color: var(--text-muted); }
 """
 
 
-def _page(title: str, body: str, custom_css: str = INDEX_CSS) -> str:
+def _page(title: str, body: str, custom_css: str = "") -> str:
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="vi"><head><meta charset="utf-8">'
+        f'<html lang="vi"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f"<title>{_escape(title)}</title><style>{custom_css}</style></head>"
-        f"<body>{body}</body></html>\n"
+        f"<title>{_escape(title)}</title>"
+        f"<style>{custom_css}</style>"
+        f"</head><body>{body}</body></html>"
     )
 
 
@@ -831,67 +788,45 @@ def _index_html(
 ) -> str:
     cards = []
     for study, page in zip(studies, pages):
-        first = next((item for item in study.series if item.images), None)
-        thumbnail_img = ""
-        if first is not None:
-            middle = first.images[len(first.images) // 2]
-            source = _relative_url(
-                "images", study.folder.name, first.relative.as_posix(), middle.name,
-            )
-            thumbnail_img = f'<img class="card-thumb" src="{_escape(source)}" alt="">'
-        else:
-            thumbnail_img = '<div style="color:var(--text-dim);font-size:13px;">Chưa có ảnh JPG</div>'
+        first_img = ""
+        for s in study.series:
+            if s.images:
+                first_img = _relative_url("images", study.folder.name, s.relative.as_posix(), s.images[0].name)
+                break
 
+        thumb_html = (
+            f'<div class="card-thumb-wrap"><img class="card-thumb" src="{_escape(first_img)}" alt=""></div>'
+            if first_img else ""
+        )
         cards.append(
             f'<a href="{_escape(page)}" class="study-card">'
-            '<div class="card-top">'
+            f'<div class="card-top">'
             f'<div class="card-title">{_or_dash(study.title)}</div>'
             f'<span class="modality-badge">{_or_dash(study.modality)}</span>'
             '</div>'
-            f'<div class="card-thumb-wrap">{thumbnail_img}</div>'
-            '<div class="card-meta">'
-            f'<span>📅 {_or_dash(study.date)}</span>'
-            f'<span>🎞 {len(study.series)} series · {study.image_count()} ảnh</span>'
-            '</div>'
-            '<div class="btn-open-viewer">Mở Web PACS Viewer ➔</div>'
+            f'{thumb_html}'
+            f'<div class="card-meta"><span>📅 {_or_dash(study.date)}</span><span>🎞 {len(study.series)} series · {study.image_count()} ảnh</span></div>'
+            f'<div class="btn-open-viewer">Mở Web PACS Viewer ➔</div>'
             '</a>'
         )
 
-    dicom_html = ""
-    if has_dicom_folder:
-        dicom_html = (
-            '<div class="dicom-banner">'
-            '<div class="dicom-banner-icon">📁</div>'
-            '<div class="dicom-banner-text">'
-            '<b>Bao gồm dữ liệu file gốc DICOM</b>'
-            '<span>Thư mục <code>DICOM/</code> chứa đầy đủ các file chụp gốc chất lượng cao '
-            'dành cho các phần mềm PACS chuyên dụng (RadiAnt, Weasis, MicroDicom, Horos...).</span>'
-            '</div>'
-            '</div>'
-        )
-
-    note = (
-        '<div class="note-box">'
-        '<b>Hướng dẫn sử dụng:</b><br>'
-        '• Mở tệp <b>index.html</b> bằng bất kỳ trình duyệt web nào (Chrome, Edge, Safari, Firefox) — không cần cài đặt phần mềm.<br>'
-        '• Trình xem <b>Web PACS Viewer</b> tích hợp sẵn cho phép lăn chuột cuộn lát cắt, chuyển chuỗi xung (T1, T2, FLAIR...), '
-        'chế độ so sánh 2 khung hình, điều chỉnh độ sáng/tương phản (W/L) và xem video loop liên tục.'
+    dicom_banner = (
+        '<div class="dicom-banner">'
+        '<div class="dicom-banner-icon">📁</div>'
+        '<div class="dicom-banner-text">'
+        '<b>Bao gồm dữ liệu file gốc DICOM</b>'
+        '<span>Thư mục <code>DICOM/</code> chứa đầy đủ các file chụp gốc chất lượng cao dành cho các phần mềm PACS chuyên dụng.</span>'
         '</div>'
-    )
-
-    studies_content = (
-        f'<div class="studies-grid">{"".join(cards)}</div>'
-        if cards
-        else '<p style="color:var(--text-dim)">Hồ sơ này chưa có ảnh JPG nào để xem.</p>'
+        '</div>'
+        if has_dicom_folder else ""
     )
 
     body = (
         '<div class="container">'
         f'{_patient_header(patient)}'
-        f'{dicom_html}'
+        f'{dicom_banner}'
         f'<div class="section-title">Danh sách ca chụp ({len(studies)})</div>'
-        f'{studies_content}'
-        f'{note}'
+        f'<div class="studies-grid">{"".join(cards)}</div>'
         '</div>'
     )
     return _page(
@@ -901,217 +836,437 @@ def _index_html(
     )
 
 
-def _study_html(patient: dict, study: ExportStudy, has_dicom: bool = False) -> str:
-    """Build the Interactive Web PACS Viewer HTML page for one study."""
-    series_data = []
-    for s_idx, series in enumerate(study.series):
-        def img_src(image: Path) -> str:
-            return _relative_url(
-                "images", study.folder.name, series.relative.as_posix(), image.name,
-            )
+def _study_html(
+    patient: dict,
+    all_studies: list[ExportStudy],
+    initial_study_idx: int = 0,
+    has_dicom: bool = False,
+) -> str:
+    """Build the Interactive Web PACS Viewer HTML page supporting multi-study & multi-series comparison."""
+    studies_payload = []
+    for st_idx, st in enumerate(all_studies):
+        series_data = []
+        for s_idx, ser in enumerate(st.series):
+            def img_src(image: Path) -> str:
+                return _relative_url(
+                    "images", st.folder.name, ser.relative.as_posix(), image.name,
+                )
 
-        img_urls = [img_src(img) for img in series.images]
-        series_data.append({
-            "id": f"s_{s_idx}",
-            "name": series.name,
-            "description": series.description,
-            "modality": series.modality,
-            "institution": series.institution,
-            "images": img_urls,
-            "count": len(img_urls),
-            "keyIndex": len(img_urls) // 2 if img_urls else 0,
+            img_urls = [img_src(img) for img in ser.images]
+            series_data.append({
+                "id": f"st{st_idx}_s{s_idx}",
+                "name": ser.name,
+                "description": ser.description,
+                "modality": ser.modality,
+                "institution": ser.institution,
+                "images": img_urls,
+                "count": len(img_urls),
+                "keyIndex": len(img_urls) // 2 if img_urls else 0,
+            })
+
+        docs_data = [
+            {"name": doc.name, "url": _relative_url("documents", st.folder.name, doc.name)}
+            for doc in st.documents
+        ]
+
+        studies_payload.append({
+            "id": f"study_{st_idx}",
+            "title": st.title,
+            "date": st.date,
+            "modality": st.modality,
+            "folderName": st.folder.name,
+            "series": series_data,
+            "documents": docs_data,
         })
 
-    docs_data = []
-    for doc in study.documents:
-        docs_data.append({
-            "name": doc.name,
-            "url": _relative_url("documents", study.folder.name, doc.name),
-        })
-
-    study_json = json.dumps({
-        "title": study.title,
-        "date": study.date,
-        "modality": study.modality,
+    payload_json = json.dumps({
         "patient": patient,
-        "series": series_data,
-        "documents": docs_data,
+        "initialStudyIdx": initial_study_idx,
+        "studies": studies_payload,
         "hasDicom": has_dicom,
     }, ensure_ascii=False)
 
-    # Series items for rail
-    sidebar_items = []
-    for idx, s in enumerate(series_data):
-        thumb_src = s["images"][s["keyIndex"]] if s["images"] else ""
-        sidebar_items.append(
-            f'<div class="series-item { "active" if idx == 0 else "" }" data-series-idx="{idx}" onclick="selectSeries({idx})">'
-            f'<img class="series-thumb" src="{_escape(thumb_src)}" alt="">'
-            '<div class="series-meta">'
-            f'<div class="series-name">{_escape(s["description"])}</div>'
-            f'<div class="series-desc">{_escape(s["name"])}</div>'
-            f'<div class="series-count">{s["count"]} ảnh</div>'
-            '</div>'
-            '</div>'
-        )
+    initial_study = all_studies[initial_study_idx] if 0 <= initial_study_idx < len(all_studies) else all_studies[0]
 
-    # Document links
-    doc_links_html = ""
-    if docs_data:
-        doc_links = "".join(
-            f'<a class="doc-link" href="{_escape(d["url"])}" target="_blank" rel="noopener">📄 {_escape(d["name"])}</a>'
-            for d in docs_data
-        )
-        doc_links_html = f'<div class="doc-section"><div style="font-size:11px;font-weight:700;color:var(--text-dim);margin-bottom:6px;">TÀI LIỆU KÈM THEO</div>{doc_links}</div>'
+    # SVG Icons embedded cleanly
+    svg_window = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v18A9 9 0 0 0 12 3z" fill="currentColor"/></svg>'
+    svg_pan = '<svg viewBox="0 0 24 24"><path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/></svg>'
+    svg_zoom = '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35M11 8v6M8 11h6"/></svg>'
+    svg_scroll = '<svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'
+    svg_crosshair = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>'
+    svg_length = '<svg viewBox="0 0 24 24"><path d="M4 19L19 4M3 16l4 4M17 2l4 4M8 12l2 2M12 8l2 2"/></svg>'
+    svg_angle = '<svg viewBox="0 0 24 24"><path d="M3 20h18M3 20L15 4M8 20a5 5 0 0 1 3.5-4.8"/></svg>'
+    svg_ellipse = '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="9" ry="6"/></svg>'
+    svg_text = '<svg viewBox="0 0 24 24"><path d="M4 7V4h16v3M12 4v16M9 20h6"/></svg>'
+    svg_magnify = '<svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="7"/><path d="M21 21l-6-6"/></svg>'
+    svg_rotate_cw = '<svg viewBox="0 0 24 24"><path d="M21.5 2v6h-6M21.34 15.57a9 9 0 1 1-.57-8.38l.67-.7"/></svg>'
+    svg_rotate_ccw = '<svg viewBox="0 0 24 24"><path d="M2.5 2v6h6M2.66 15.57a9 9 0 1 0 .57-8.38l-.67-.7"/></svg>'
+    svg_flip_h = '<svg viewBox="0 0 24 24"><path d="M12 2v20M4 12l4-4v8zM20 12l-4-4v8z"/></svg>'
+    svg_flip_v = '<svg viewBox="0 0 24 24"><path d="M2 12h20M12 4l-4 4h8zM12 20l-4-4h8z"/></svg>'
+    svg_invert = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/></svg>'
+    svg_reset = '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5"/></svg>'
+    svg_sync = '<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>'
 
-    # Fallback / SEO links
-    fallback_links = []
-    for series in study.series:
-        def src(img: Path) -> str:
-            return _escape(_relative_url("images", study.folder.name, series.relative.as_posix(), img.name))
-
-        imgs_tag = "".join(
-            f'<a href="{src(img)}" target="_blank" style="display:none;">{_escape(img.name)}</a>'
-            for img in series.images
-        )
-        fallback_links.append(f'<div style="display:none;">{_escape(series.description)}: {imgs_tag}</div>')
-
-    # JavaScript Engine for the Web PACS Viewer
     js_script = r"""
 <script>
-const DATA = """ + study_json + r""";
-let currentSeriesIdx = 0;
-let currentSlice = 0;
-let isCompare = false;
+const DATA = """ + payload_json + r""";
+
+// Viewport state objects (supports up to 4 viewports in 1x1, 1x2, 1x3, 2x2)
+const MAX_VP = 4;
+let activeVp = 0;
+let layout = "1x1"; // '1x1' | '1x2' | '1x3' | '2x2'
+let activeTool = "window"; // 'window' | 'pan' | 'zoom' | 'scroll' | 'crosshair' | 'length' | 'angle' | 'ellipse' | 'text' | 'magnify'
 let syncScroll = true;
+let syncCrosshair = true;
 let isPlaying = false;
 let playInterval = null;
-let playFps = 15;
+let playFps = 20;
 
-// Panel 2 state
-let compareSeriesIdx = DATA.series.length > 1 ? 1 : 0;
-let compareSlice = 0;
-
-// View transformations (Panel 1)
-let transform = { zoom: 1.0, panX: 0, panY: 0, rotation: 0, invert: false, brightness: 100, contrast: 100 };
-let transform2 = { zoom: 1.0, panX: 0, panY: 0, rotation: 0, invert: false, brightness: 100, contrast: 100 };
-
-let isDragging = false;
-let dragStart = { x: 0, y: 0 };
-let activePanel = 1;
+const viewports = [];
+for (let i = 0; i < MAX_VP; i++) {
+  viewports.push({
+    id: i,
+    studyIdx: DATA.initialStudyIdx || 0,
+    seriesIdx: 0,
+    slice: 0,
+    zoom: 1.0,
+    panX: 0,
+    panY: 0,
+    rotation: 0,
+    flipH: false,
+    flipV: false,
+    invert: false,
+    brightness: 100,
+    contrast: 100,
+    annotations: [], // array of { type: 'length'|'angle'|'ellipse'|'text', points: [] }
+    isDragging: false,
+    dragStart: { x: 0, y: 0 },
+    tempAnnotation: null,
+  });
+}
 
 function init() {
-  if (!DATA.series || !DATA.series.length) return;
-  selectSeries(0);
-  setupEvents();
-  updateHUD();
+  buildSidebar();
+  initViewportHeaders();
+  setLayout("1x1");
+  setupGlobalEvents();
+}
+
+function currentStudy(vpIdx = activeVp) {
+  const vp = viewports[vpIdx];
+  return DATA.studies[vp.studyIdx] || DATA.studies[0];
+}
+
+function currentSeries(vpIdx = activeVp) {
+  const st = currentStudy(vpIdx);
+  const vp = viewports[vpIdx];
+  return st?.series[vp.seriesIdx] || st?.series[0];
+}
+
+function buildSidebar() {
+  const container = document.getElementById('series-list-container');
+  if (!container) return;
+  const st = currentStudy(activeVp);
+  if (!st) return;
+
+  const countBadge = document.getElementById('sidebar-series-count');
+  if (countBadge) countBadge.textContent = String(st.series.length);
+
+  container.innerHTML = st.series.map((s, idx) => {
+    const thumb = s.images[s.keyIndex] || s.images[0] || '';
+    const isActive = viewports[activeVp].seriesIdx === idx;
+    return `
+      <div class="series-item ${isActive ? 'active' : ''}" data-idx="${idx}" onclick="selectSeries(${idx})">
+        <img class="series-thumb" src="${thumb}" alt="">
+        <div class="series-meta">
+          <div class="series-name">${s.description || s.name}</div>
+          <div class="series-desc">${s.name} · ${s.modality || ''}</div>
+          <div class="series-count">${s.count} ảnh</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function initViewportHeaders() {
+  for (let i = 0; i < MAX_VP; i++) {
+    const studySel = document.getElementById(`vp-study-sel-${i}`);
+    if (studySel) {
+      studySel.innerHTML = DATA.studies.map((st, idx) => `
+        <option value="${idx}" ${idx === viewports[i].studyIdx ? 'selected' : ''}>${st.title || 'Ca chụp ' + (idx + 1)}</option>
+      `).join('');
+      studySel.addEventListener('change', (e) => {
+        viewports[i].studyIdx = Number(e.target.value);
+        viewports[i].seriesIdx = 0;
+        viewports[i].slice = 0;
+        updateSeriesDropdown(i);
+        if (i === activeVp) buildSidebar();
+        renderViewport(i);
+      });
+    }
+    updateSeriesDropdown(i);
+  }
+}
+
+function updateSeriesDropdown(i) {
+  const seriesSel = document.getElementById(`vp-series-sel-${i}`);
+  if (!seriesSel) return;
+  const st = currentStudy(i);
+  seriesSel.innerHTML = (st?.series || []).map((s, idx) => `
+    <option value="${idx}" ${idx === viewports[i].seriesIdx ? 'selected' : ''}>${s.description || s.name}</option>
+  `).join('');
+  seriesSel.onchange = (e) => {
+    viewports[i].seriesIdx = Number(e.target.value);
+    const ser = currentSeries(i);
+    viewports[i].slice = ser?.keyIndex || 0;
+    if (i === activeVp) buildSidebar();
+    renderViewport(i);
+  };
 }
 
 function selectSeries(idx) {
-  if (idx < 0 || idx >= DATA.series.length) return;
-  currentSeriesIdx = idx;
-  const s = DATA.series[idx];
-  currentSlice = s.keyIndex || 0;
+  const vp = viewports[activeVp];
+  vp.seriesIdx = idx;
+  const s = currentSeries(activeVp);
+  vp.slice = s?.keyIndex || 0;
+  
+  const seriesSel = document.getElementById(`vp-series-sel-${activeVp}`);
+  if (seriesSel) seriesSel.value = idx;
   
   document.querySelectorAll('.series-item').forEach((el, i) => {
     el.classList.toggle('active', i === idx);
   });
   
-  resetView(1);
-  render();
+  resetViewport(activeVp);
+  renderViewport(activeVp);
 }
 
-function render() {
-  const s1 = DATA.series[currentSeriesIdx];
-  if (!s1 || !s1.images.length) return;
+function setActiveViewport(idx) {
+  activeVp = idx;
+  document.querySelectorAll('.viewport-panel').forEach((el, i) => {
+    el.classList.toggle('active', i === idx);
+  });
+  buildSidebar();
+  updateScrubberBar();
+}
+
+function setLayout(mode) {
+  layout = mode;
+  const grid = document.getElementById('grid-viewports');
+  grid.className = `viewports-grid layout-${mode}`;
   
-  const img1 = document.getElementById('pacs-img-1');
-  const slider1 = document.getElementById('slice-slider-1');
-  const tag1 = document.getElementById('slice-tag-1');
-  
-  const src1 = s1.images[currentSlice] || s1.images[0];
-  img1.src = src1;
-  applyTransform(1);
-  
-  slider1.max = s1.images.length - 1;
-  slider1.value = currentSlice;
-  tag1.textContent = (currentSlice + 1) + ' / ' + s1.images.length;
-  
-  if (isCompare) {
-    const s2 = DATA.series[compareSeriesIdx];
-    if (s2 && s2.images.length) {
-      const img2 = document.getElementById('pacs-img-2');
-      const src2 = s2.images[compareSlice] || s2.images[0];
-      img2.src = src2;
-      applyTransform(2);
+  document.querySelectorAll('[data-layout]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.layout === mode);
+  });
+
+  const visibleCount = mode === '1x1' ? 1 : mode === '1x2' ? 2 : mode === '1x3' ? 3 : 4;
+  for (let i = 0; i < MAX_VP; i++) {
+    const p = document.getElementById(`panel-${i}`);
+    if (p) p.style.display = i < visibleCount ? 'flex' : 'none';
+    if (i < visibleCount) {
+      if (i > 0 && viewports[i].seriesIdx === viewports[0].seriesIdx && currentStudy(i).series.length > i) {
+        viewports[i].seriesIdx = i % currentStudy(i).series.length;
+        updateSeriesDropdown(i);
+      }
+      renderViewport(i);
     }
   }
-  updateHUD();
+  if (activeVp >= visibleCount) setActiveViewport(0);
 }
 
-function applyTransform(panel) {
-  const t = panel === 1 ? transform : transform2;
-  const img = document.getElementById(panel === 1 ? 'pacs-img-1' : 'pacs-img-2');
+function renderViewport(i) {
+  const vp = viewports[i];
+  const ser = currentSeries(i);
+  if (!ser || !ser.images.length) return;
+  
+  const img = document.getElementById(`pacs-img-${i}`);
   if (!img) return;
-  img.style.transform = `translate(${t.panX}px, ${t.panY}px) scale(${t.zoom}) rotate(${t.rotation}deg)`;
-  img.style.filter = `brightness(${t.brightness}%) contrast(${t.contrast}%) ${t.invert ? 'invert(1)' : ''}`;
+
+  const src = ser.images[vp.slice] || ser.images[0];
+  img.src = src;
+  
+  applyTransform(i);
+  drawAnnotations(i);
+  updateHUD(i);
+  if (i === activeVp) updateScrubberBar();
 }
 
-function updateHUD() {
-  const s1 = DATA.series[currentSeriesIdx];
-  if (!s1) return;
+function applyTransform(i) {
+  const vp = viewports[i];
+  const img = document.getElementById(`pacs-img-${i}`);
+  if (!img) return;
+
+  const scaleX = (vp.flipH ? -1 : 1) * vp.zoom;
+  const scaleY = (vp.flipV ? -1 : 1) * vp.zoom;
   
-  document.getElementById('hud-tl-name').textContent = DATA.patient.patientName || '—';
-  document.getElementById('hud-tl-id').textContent = DATA.patient.patientId || '—';
-  document.getElementById('hud-tr-desc').textContent = DATA.title || s1.description;
-  document.getElementById('hud-bl-series').textContent = s1.description + ' (' + s1.name + ')';
-  document.getElementById('hud-bl-wl').textContent = `W/L: B:${transform.brightness}% C:${transform.contrast}%`;
-  document.getElementById('hud-br-slice').textContent = `Lát: ${currentSlice + 1}/${s1.images.length}`;
-  document.getElementById('hud-br-zoom').textContent = `Zoom: ${Math.round(transform.zoom * 100)}%`;
+  img.style.transform = `translate(${vp.panX}px, ${vp.panY}px) rotate(${vp.rotation}deg) scale(${scaleX}, ${scaleY})`;
   
-  if (isCompare) {
-    const s2 = DATA.series[compareSeriesIdx];
-    if (s2) {
-      document.getElementById('hud-2-bl-series').textContent = s2.description + ' (' + s2.name + ')';
-      document.getElementById('hud-2-br-slice').textContent = `Lát: ${compareSlice + 1}/${s2.images.length}`;
-    }
+  let filterStr = `brightness(${vp.brightness}%) contrast(${vp.contrast}%)`;
+  if (vp.invert) filterStr += ' invert(100%)';
+  img.style.filter = filterStr;
+}
+
+function updateHUD(i) {
+  const vp = viewports[i];
+  const st = currentStudy(i);
+  const ser = currentSeries(i);
+  
+  const elSlice = document.getElementById(`hud-slice-${i}`);
+  const elZoom = document.getElementById(`hud-zoom-${i}`);
+  const elSeries = document.getElementById(`hud-series-${i}`);
+  const elWl = document.getElementById(`hud-wl-${i}`);
+  
+  if (elSlice) elSlice.textContent = `Lát: ${vp.slice + 1}/${ser?.count || 1}`;
+  if (elZoom) elZoom.textContent = `Zoom: ${Math.round(vp.zoom * 100)}%`;
+  if (elSeries) elSeries.textContent = ser?.description || ser?.name || '—';
+  if (elWl) elWl.textContent = `W: ${vp.contrast} L: ${vp.brightness}`;
+}
+
+function updateScrubberBar() {
+  const vp = viewports[activeVp];
+  const ser = currentSeries(activeVp);
+  const slider = document.getElementById('main-slice-slider');
+  const tag = document.getElementById('main-slice-tag');
+  
+  if (slider && ser) {
+    slider.max = Math.max(0, ser.count - 1);
+    slider.value = vp.slice;
+  }
+  if (tag && ser) {
+    tag.textContent = `${vp.slice + 1} / ${ser.count}`;
   }
 }
 
-function setSlice(n) {
-  const s1 = DATA.series[currentSeriesIdx];
-  if (!s1) return;
-  const prev = currentSlice;
-  currentSlice = Math.max(0, Math.min(n, s1.images.length - 1));
-  const diff = currentSlice - prev;
+function setSlice(val, vpIdx = activeVp) {
+  const vp = viewports[vpIdx];
+  const ser = currentSeries(vpIdx);
+  if (!ser) return;
   
-  if (isCompare && syncScroll) {
-    const s2 = DATA.series[compareSeriesIdx];
-    if (s2) {
-      compareSlice = Math.max(0, Math.min(compareSlice + diff, s2.images.length - 1));
+  vp.slice = Math.max(0, Math.min(ser.count - 1, val));
+  renderViewport(vpIdx);
+  
+  if (syncScroll) {
+    const ratio = ser.count > 1 ? vp.slice / (ser.count - 1) : 0;
+    const maxVisible = layout === '1x1' ? 1 : layout === '1x2' ? 2 : layout === '1x3' ? 3 : 4;
+    for (let i = 0; i < maxVisible; i++) {
+      if (i !== vpIdx) {
+        const otherSer = currentSeries(i);
+        if (otherSer && otherSer.count > 1) {
+          viewports[i].slice = Math.round(ratio * (otherSer.count - 1));
+          renderViewport(i);
+        }
+      }
     }
   }
-  render();
 }
 
 function stepSlice(delta) {
-  setSlice(currentSlice + delta);
+  setSlice(viewports[activeVp].slice + delta);
+}
+
+function setTool(toolName) {
+  activeTool = toolName;
+  document.querySelectorAll('[data-tool]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tool === toolName);
+  });
+}
+
+function setWindowPreset(preset) {
+  const vp = viewports[activeVp];
+  switch (preset) {
+    case 'brain': vp.brightness = 110; vp.contrast = 140; break;
+    case 'bone': vp.brightness = 90; vp.contrast = 220; break;
+    case 'soft': vp.brightness = 105; vp.contrast = 130; break;
+    case 'lung': vp.brightness = 85; vp.contrast = 180; break;
+    case 'stroke': vp.brightness = 115; vp.contrast = 160; break;
+    default: vp.brightness = 100; vp.contrast = 100; break;
+  }
+  applyTransform(activeVp);
+  updateHUD(activeVp);
+}
+
+function rotateCW() {
+  const vp = viewports[activeVp];
+  vp.rotation = (vp.rotation + 90) % 360;
+  applyTransform(activeVp);
+}
+
+function rotateCCW() {
+  const vp = viewports[activeVp];
+  vp.rotation = (vp.rotation - 90 + 360) % 360;
+  applyTransform(activeVp);
+}
+
+function flipHorizontal() {
+  const vp = viewports[activeVp];
+  vp.flipH = !vp.flipH;
+  applyTransform(activeVp);
+}
+
+function flipVertical() {
+  const vp = viewports[activeVp];
+  vp.flipV = !vp.flipV;
+  applyTransform(activeVp);
+}
+
+function toggleInvert() {
+  const vp = viewports[activeVp];
+  vp.invert = !vp.invert;
+  applyTransform(activeVp);
+}
+
+function resetViewport(idx = activeVp) {
+  const vp = viewports[idx];
+  vp.zoom = 1.0;
+  vp.panX = 0;
+  vp.panY = 0;
+  vp.rotation = 0;
+  vp.flipH = false;
+  vp.flipV = false;
+  vp.invert = false;
+  vp.brightness = 100;
+  vp.contrast = 100;
+  applyTransform(idx);
+  updateHUD(idx);
+}
+
+function resetAllViewports() {
+  for (let i = 0; i < MAX_VP; i++) resetViewport(i);
+}
+
+function clearAnnotations() {
+  viewports[activeVp].annotations = [];
+  drawAnnotations(activeVp);
+}
+
+function toggleSyncScroll() {
+  syncScroll = !syncScroll;
+  document.getElementById('btn-sync-scroll')?.classList.toggle('active', syncScroll);
+}
+
+function toggleSyncCrosshair() {
+  syncCrosshair = !syncCrosshair;
+  document.getElementById('btn-sync-crosshair')?.classList.toggle('active', syncCrosshair);
+  if (!syncCrosshair) {
+    for (let i = 0; i < MAX_VP; i++) drawAnnotations(i);
+  }
 }
 
 function togglePlay() {
   isPlaying = !isPlaying;
   const btn = document.getElementById('btn-play');
+  if (btn) {
+    btn.innerHTML = isPlaying ? '⏸ Tạm dừng' : '▶ Phát';
+    btn.classList.toggle('active', isPlaying);
+  }
   if (isPlaying) {
-    btn.innerHTML = '⏸ Tạm dừng';
-    btn.classList.add('active');
     playInterval = setInterval(() => {
-      const s = DATA.series[currentSeriesIdx];
-      let next = currentSlice + 1;
-      if (next >= s.images.length) next = 0;
-      setSlice(next);
+      const ser = currentSeries(activeVp);
+      if (!ser || ser.count <= 1) return;
+      const nextSlice = (viewports[activeVp].slice + 1) % ser.count;
+      setSlice(nextSlice);
     }, 1000 / playFps);
   } else {
-    btn.innerHTML = '▶ Phát';
-    btn.classList.remove('active');
     clearInterval(playInterval);
   }
 }
@@ -1119,68 +1274,14 @@ function togglePlay() {
 function setFps(fps) {
   playFps = fps;
   if (isPlaying) {
-    togglePlay();
-    togglePlay();
+    clearInterval(playInterval);
+    playInterval = setInterval(() => {
+      const ser = currentSeries(activeVp);
+      if (!ser || ser.count <= 1) return;
+      const nextSlice = (viewports[activeVp].slice + 1) % ser.count;
+      setSlice(nextSlice);
+    }, 1000 / playFps);
   }
-}
-
-function zoom(delta, panel = 1) {
-  const t = panel === 1 ? transform : transform2;
-  t.zoom = Math.max(0.2, Math.min(8.0, t.zoom + delta));
-  applyTransform(panel);
-  updateHUD();
-}
-
-function rotate(panel = 1) {
-  const t = panel === 1 ? transform : transform2;
-  t.rotation = (t.rotation + 90) % 360;
-  applyTransform(panel);
-}
-
-function toggleInvert(panel = 1) {
-  const t = panel === 1 ? transform : transform2;
-  t.invert = !t.invert;
-  applyTransform(panel);
-}
-
-function resetView(panel = 1) {
-  const t = panel === 1 ? transform : transform2;
-  t.zoom = 1.0;
-  t.panX = 0;
-  t.panY = 0;
-  t.rotation = 0;
-  t.invert = false;
-  t.brightness = 100;
-  t.contrast = 100;
-  applyTransform(panel);
-  updateHUD();
-}
-
-function adjustWl(bDelta, cDelta, panel = 1) {
-  const t = panel === 1 ? transform : transform2;
-  t.brightness = Math.max(20, Math.min(300, t.brightness + bDelta));
-  t.contrast = Math.max(20, Math.min(300, t.contrast + cDelta));
-  applyTransform(panel);
-  updateHUD();
-}
-
-function toggleCompare() {
-  isCompare = !isCompare;
-  document.getElementById('btn-compare').classList.toggle('active', isCompare);
-  document.getElementById('grid-viewports').classList.toggle('compare', isCompare);
-  document.getElementById('panel-2').style.display = isCompare ? 'flex' : 'none';
-  if (isCompare) {
-    if (DATA.series.length > 1 && compareSeriesIdx === currentSeriesIdx) {
-      compareSeriesIdx = (currentSeriesIdx + 1) % DATA.series.length;
-    }
-    compareSlice = 0;
-  }
-  render();
-}
-
-function toggleSyncScroll() {
-  syncScroll = !syncScroll;
-  document.getElementById('btn-sync').classList.toggle('active', syncScroll);
 }
 
 function toggleFullscreen() {
@@ -1193,86 +1294,335 @@ function toggleFullscreen() {
 
 function toggleShortcuts() {
   const modal = document.getElementById('modal-shortcuts');
-  modal.style.display = modal.style.display === 'none' ? 'flex' : 'none';
+  if (modal) modal.style.display = modal.style.display === 'none' ? 'flex' : 'none';
 }
 
-function setupEvents() {
-  window.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT') return;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); stepSlice(1); }
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); stepSlice(-1); }
-    else if (e.key === ' ') { e.preventDefault(); togglePlay(); }
-    else if (e.key === 'r' || e.key === 'R') { resetView(1); resetView(2); }
-    else if (e.key === 'i' || e.key === 'I') { toggleInvert(1); }
-    else if (e.key === 'f' || e.key === 'F') { toggleFullscreen(); }
-    else if (e.key === 'c' || e.key === 'C') { toggleCompare(); }
-  });
+/* ── Canvas Annotations & Measurements ───────────────── */
+function drawAnnotations(vpIdx) {
+  const canvas = document.getElementById(`annotation-canvas-${vpIdx}`);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  
+  if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+  }
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  const vp = viewports[vpIdx];
+  const items = [...vp.annotations];
+  if (vp.tempAnnotation) items.push(vp.tempAnnotation);
 
-  const setupWheelAndPan = (container, panelNum) => {
-    container.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      if (e.ctrlKey) {
-        zoom(e.deltaY < 0 ? 0.15 : -0.15, panelNum);
-      } else {
-        stepSlice(e.deltaY > 0 ? 1 : -1);
+  ctx.strokeStyle = '#0ea5e9';
+  ctx.fillStyle = '#0ea5e9';
+  ctx.lineWidth = 1.5;
+  ctx.font = '11px ' + getComputedStyle(document.body).getPropertyValue('--mono-font');
+
+  items.forEach(ann => {
+    if (ann.type === 'length' && ann.p1 && ann.p2) {
+      ctx.beginPath();
+      ctx.moveTo(ann.p1.x, ann.p1.y);
+      ctx.lineTo(ann.p2.x, ann.p2.y);
+      ctx.stroke();
+      
+      const dist = Math.hypot(ann.p2.x - ann.p1.x, ann.p2.y - ann.p1.y) / vp.zoom;
+      const midX = (ann.p1.x + ann.p2.x) / 2;
+      const midY = (ann.p1.y + ann.p2.y) / 2;
+      ctx.fillText(`${dist.toFixed(1)} px`, midX + 5, midY - 5);
+    } else if (ann.type === 'angle' && ann.p1 && ann.p2) {
+      ctx.beginPath();
+      ctx.moveTo(ann.p1.x, ann.p1.y);
+      ctx.lineTo(ann.p2.x, ann.p2.y);
+      if (ann.p3) {
+        ctx.lineTo(ann.p3.x, ann.p3.y);
+        const a1 = Math.atan2(ann.p1.y - ann.p2.y, ann.p1.x - ann.p2.x);
+        const a2 = Math.atan2(ann.p3.y - ann.p2.y, ann.p3.x - ann.p2.x);
+        let deg = Math.abs((a1 - a2) * 180 / Math.PI);
+        if (deg > 180) deg = 360 - deg;
+        ctx.fillText(`${deg.toFixed(1)}°`, ann.p2.x + 8, ann.p2.y - 8);
       }
-    }, { passive: false });
-
-    container.addEventListener('mousedown', (e) => {
-      activePanel = panelNum;
-      isDragging = true;
-      dragStart = { x: e.clientX, y: e.clientY };
-    });
-
-    container.addEventListener('dblclick', () => resetView(panelNum));
-  };
-
-  setupWheelAndPan(document.getElementById('container-1'), 1);
-  setupWheelAndPan(document.getElementById('container-2'), 2);
-
-  window.addEventListener('mousemove', (e) => {
-    if (!isDragging) return;
-    const dx = e.clientX - dragStart.x;
-    const dy = e.clientY - dragStart.y;
-    dragStart = { x: e.clientX, y: e.clientY };
-    
-    const t = activePanel === 1 ? transform : transform2;
-    if (e.buttons === 1) { // Left click: Pan
-      t.panX += dx;
-      t.panY += dy;
-      applyTransform(activePanel);
-    } else if (e.buttons === 2) { // Right click: W/L
-      adjustWl(dy * -1, dx, activePanel);
+      ctx.stroke();
+    } else if (ann.type === 'ellipse' && ann.p1 && ann.p2) {
+      const cx = (ann.p1.x + ann.p2.x) / 2;
+      const cy = (ann.p1.y + ann.p2.y) / 2;
+      const rx = Math.abs(ann.p2.x - ann.p1.x) / 2;
+      const ry = Math.abs(ann.p2.y - ann.p1.y) / 2;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      const area = (Math.PI * (rx / vp.zoom) * (ry / vp.zoom)).toFixed(0);
+      ctx.fillText(`Area: ${area} px²`, cx + 6, cy - 6);
     }
   });
 
-  window.addEventListener('mouseup', () => { isDragging = false; });
-  window.addEventListener('contextmenu', (e) => {
-    if (e.target.closest('.viewport-panel')) e.preventDefault();
+  // Crosshair synchronized reference
+  if (syncCrosshair && vp.crosshair) {
+    ctx.strokeStyle = 'rgba(14, 165, 233, 0.7)';
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(vp.crosshair.x, 0);
+    ctx.lineTo(vp.crosshair.x, canvas.height);
+    ctx.moveTo(0, vp.crosshair.y);
+    ctx.lineTo(canvas.width, vp.crosshair.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function setupGlobalEvents() {
+  window.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); stepSlice(1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); stepSlice(-1); }
+    else if (e.key === ' ') { e.preventDefault(); togglePlay(); }
+    else if (e.key === 'r' || e.key === 'R') { resetAllViewports(); }
+    else if (e.key === 'i' || e.key === 'I') { toggleInvert(); }
+    else if (e.key === 'f' || e.key === 'F') { toggleFullscreen(); }
+    else if (e.key === '1') { setLayout('1x1'); }
+    else if (e.key === '2') { setLayout('1x2'); }
+    else if (e.key === '3') { setLayout('1x3'); }
+    else if (e.key === '4') { setLayout('2x2'); }
+    else if (e.key === 'w' || e.key === 'W') { setTool('window'); }
+    else if (e.key === 'p' || e.key === 'P') { setTool('pan'); }
+    else if (e.key === 'z' || e.key === 'Z') { setTool('zoom'); }
+    else if (e.key === 's' || e.key === 'S') { setTool('scroll'); }
+    else if (e.key === 'l' || e.key === 'L') { setTool('length'); }
   });
+
+  for (let i = 0; i < MAX_VP; i++) {
+    setupViewportMouseEvents(i);
+  }
+}
+
+function setupViewportMouseEvents(idx) {
+  const container = document.getElementById(`container-${idx}`);
+  if (!container) return;
+  const vp = viewports[idx];
+
+  container.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    setActiveViewport(idx);
+    if (e.ctrlKey) {
+      vp.zoom = Math.max(0.2, Math.min(10.0, vp.zoom + (e.deltaY < 0 ? 0.15 : -0.15)));
+      applyTransform(idx);
+      updateHUD(idx);
+    } else {
+      setSlice(vp.slice + (e.deltaY > 0 ? 1 : -1), idx);
+    }
+  }, { passive: false });
+
+  container.addEventListener('mousedown', (e) => {
+    setActiveViewport(idx);
+    vp.isDragging = true;
+    vp.dragStart = { x: e.clientX, y: e.clientY };
+    const rect = container.getBoundingClientRect();
+    const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+
+    if (activeTool === 'length' && e.buttons === 1) {
+      vp.tempAnnotation = { type: 'length', p1: pt, p2: pt };
+    } else if (activeTool === 'angle' && e.buttons === 1) {
+      if (!vp.tempAnnotation) {
+        vp.tempAnnotation = { type: 'angle', p1: pt, p2: pt };
+      } else if (!vp.tempAnnotation.p3) {
+        vp.tempAnnotation.p3 = pt;
+        vp.annotations.push(vp.tempAnnotation);
+        vp.tempAnnotation = null;
+        drawAnnotations(idx);
+      }
+    } else if (activeTool === 'ellipse' && e.buttons === 1) {
+      vp.tempAnnotation = { type: 'ellipse', p1: pt, p2: pt };
+    }
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (syncCrosshair) {
+      const rect = container.getBoundingClientRect();
+      if (e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom) {
+        const normX = (e.clientX - rect.left) / rect.width;
+        const normY = (e.clientY - rect.top) / rect.height;
+        const maxVis = layout === '1x1' ? 1 : layout === '1x2' ? 2 : layout === '1x3' ? 3 : 4;
+        for (let v = 0; v < maxVis; v++) {
+          const c = document.getElementById(`container-${v}`);
+          if (c) {
+            viewports[v].crosshair = { x: normX * c.clientWidth, y: normY * c.clientHeight };
+            drawAnnotations(v);
+          }
+        }
+      }
+    }
+
+    if (!vp.isDragging || activeVp !== idx) return;
+    const dx = e.clientX - vp.dragStart.x;
+    const dy = e.clientY - vp.dragStart.y;
+    vp.dragStart = { x: e.clientX, y: e.clientY };
+    const rect = container.getBoundingClientRect();
+    const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+
+    if (e.buttons === 2 || (activeTool === 'window' && e.buttons === 1)) {
+      // Window / Level
+      vp.brightness = Math.max(10, Math.min(300, vp.brightness - dy * 0.5));
+      vp.contrast = Math.max(10, Math.min(300, vp.contrast + dx * 0.5));
+      applyTransform(idx);
+      updateHUD(idx);
+    } else if (activeTool === 'pan' && e.buttons === 1) {
+      vp.panX += dx;
+      vp.panY += dy;
+      applyTransform(idx);
+    } else if (activeTool === 'zoom' && e.buttons === 1) {
+      vp.zoom = Math.max(0.2, Math.min(10.0, vp.zoom - dy * 0.01));
+      applyTransform(idx);
+      updateHUD(idx);
+    } else if (activeTool === 'scroll' && e.buttons === 1) {
+      if (Math.abs(dy) > 4) {
+        setSlice(vp.slice + (dy > 0 ? 1 : -1), idx);
+        vp.dragStart.y = e.clientY;
+      }
+    } else if ((activeTool === 'length' || activeTool === 'ellipse') && vp.tempAnnotation) {
+      vp.tempAnnotation.p2 = pt;
+      drawAnnotations(idx);
+    } else if (activeTool === 'angle' && vp.tempAnnotation) {
+      if (!vp.tempAnnotation.p3) {
+        vp.tempAnnotation.p2 = pt;
+      } else {
+        vp.tempAnnotation.p3 = pt;
+      }
+      drawAnnotations(idx);
+    }
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (vp.isDragging && activeVp === idx) {
+      if ((activeTool === 'length' || activeTool === 'ellipse') && vp.tempAnnotation) {
+        vp.annotations.push(vp.tempAnnotation);
+        vp.tempAnnotation = null;
+        drawAnnotations(idx);
+      }
+      vp.isDragging = false;
+    }
+  });
+
+  container.addEventListener('dblclick', () => resetViewport(idx));
+  container.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
 window.addEventListener('DOMContentLoaded', init);
+window.addEventListener('resize', () => {
+  for (let i = 0; i < MAX_VP; i++) drawAnnotations(i);
+});
 </script>
 """
 
+    viewport_panels_html = []
+    for i in range(4):
+        viewport_panels_html.append(f"""
+      <div class="viewport-panel { 'active' if i == 0 else '' }" id="panel-{i}" style="{ '' if i == 0 else 'display:none;' }">
+        <div class="viewport-panel-header">
+          <div class="vp-selectors">
+            <span class="vp-badge">VP{i+1}</span>
+            <select class="vp-select" id="vp-study-sel-{i}"></select>
+            <select class="vp-select" id="vp-series-sel-{i}"></select>
+          </div>
+          <button class="tool-btn icon-only" onclick="resetViewport({i})" title="Reset">{svg_reset}</button>
+        </div>
+
+        <div class="hud hud-tl">
+          <div><b id="hud-name-{i}">{_escape(patient.get('patientName') or 'Bệnh nhân')}</b> ({_or_dash(patient.get('patientId'))})</div>
+          <div>{_sex_label(patient.get('patientSex') or '')} · {_or_dash(patient.get('patientBirthDate'))}</div>
+        </div>
+        <div class="hud hud-tr">
+          <div>{_or_dash(initial_study.date)}</div>
+          <div>{_or_dash(patient.get('hospitalName'))}</div>
+        </div>
+        <div class="hud hud-bl">
+          <div id="hud-series-{i}">—</div>
+          <div id="hud-wl-{i}" class="mono">W: 100 L: 100</div>
+        </div>
+        <div class="hud hud-br mono">
+          <div id="hud-slice-{i}">Lát: 1/1</div>
+          <div id="hud-zoom-{i}">Zoom: 100%</div>
+        </div>
+
+        <div class="img-container" id="container-{i}">
+          <img class="pacs-img" id="pacs-img-{i}" alt="PACS Viewport">
+          <canvas class="annotation-canvas" id="annotation-canvas-{i}"></canvas>
+        </div>
+      </div>
+        """)
+
     viewer_body = f"""
 <div class="topbar">
-  <a href="index.html" class="btn-back">← Danh sách ca</a>
-  <div class="top-info">
-    <span class="top-badge">{_escape(study.modality or 'IMG')}</span>
-    <span><b>{_escape(patient.get('patientName') or 'Bệnh nhân')}</b> ({_or_dash(patient.get('patientId'))})</span>
-    <span>📅 {_or_dash(study.date)} · {_escape(study.title)}</span>
+  <a href="index.html" class="btn-back">← Danh sách</a>
+  <div class="top-patient-info">
+    <span class="top-badge">{_escape(initial_study.modality or 'IMG')}</span>
+    <b>{_escape(patient.get('patientName') or 'Bệnh nhân')}</b>
+    <span>({_or_dash(patient.get('patientId'))})</span>
   </div>
-  <div class="top-actions">
-    <button class="tool-btn" id="btn-compare" onclick="toggleCompare()" title="So sánh 2 chuỗi xung (Phím C)">⊞ So sánh 2 xung</button>
-    <button class="tool-btn active" id="btn-sync" onclick="toggleSyncScroll()" title="Đồng bộ cuộn lát cắt">🔗 Sync</button>
-    <button class="tool-btn" onclick="adjustWl(0, 30)" title="Tăng tương phản (W/L)">◐ Contrast</button>
-    <button class="tool-btn" onclick="toggleInvert()" title="Đảo âm bản/dương bản (Phím I)">◑ Invert</button>
-    <button class="tool-btn" onclick="rotate()" title="Xoay 90°">⟳ Xoay</button>
-    <button class="tool-btn" onclick="resetView(1); resetView(2);" title="Khôi phục góc nhìn ban đầu (Phím R)">↺ Reset</button>
-    <button class="tool-btn" onclick="toggleFullscreen()" title="Toàn màn hình (Phím F)">⛶ Fullscreen</button>
-    <button class="tool-btn" onclick="toggleShortcuts()" title="Phím tắt">⌨</button>
+
+  <!-- Primary Tools -->
+  <div class="toolbar-cluster">
+    <button class="tool-btn active" data-tool="window" onclick="setTool('window')" title="Sáng / Tương phản (W/L)">{svg_window} W/L</button>
+    <button class="tool-btn" data-tool="pan" onclick="setTool('pan')" title="Di chuyển ảnh (Pan)">{svg_pan} Pan</button>
+    <button class="tool-btn" data-tool="zoom" onclick="setTool('zoom')" title="Thu / Phóng (Zoom)">{svg_zoom} Zoom</button>
+    <button class="tool-btn" data-tool="scroll" onclick="setTool('scroll')" title="Cuộn lát cắt (Scroll)">{svg_scroll} Scroll</button>
+  </div>
+
+  <span class="toolbar-divider"></span>
+
+  <!-- Measurement Tools -->
+  <div class="toolbar-cluster">
+    <button class="tool-btn" data-tool="length" onclick="setTool('length')" title="Đo chiều dài (Caliper)">{svg_length} Đo</button>
+    <button class="tool-btn" data-tool="angle" onclick="setTool('angle')" title="Đo góc (Angle)">{svg_angle} Góc</button>
+    <button class="tool-btn" data-tool="ellipse" onclick="setTool('ellipse')" title="ROI Vùng chọn (Ellipse)">{svg_ellipse} ROI</button>
+    <button class="tool-btn icon-only" onclick="clearAnnotations()" title="Xóa đo đạc">{svg_invert}</button>
+  </div>
+
+  <span class="toolbar-divider"></span>
+
+  <!-- Window Presets -->
+  <div class="toolbar-cluster">
+    <select class="tool-select" onchange="setWindowPreset(this.value)" title="Cửa sổ W/L">
+      <option value="default">Mặc định</option>
+      <option value="brain">Nhu mô não (Brain)</option>
+      <option value="bone">Cửa sổ xương (Bone)</option>
+      <option value="soft">Mô mềm (Soft Tissue)</option>
+      <option value="lung">Cửa sổ phổi (Lung)</option>
+      <option value="stroke">Đột quỵ (Stroke)</option>
+    </select>
+  </div>
+
+  <span class="toolbar-divider"></span>
+
+  <!-- Orientations -->
+  <div class="toolbar-cluster">
+    <button class="tool-btn icon-only" onclick="rotateCW()" title="Xoay 90°">{svg_rotate_cw}</button>
+    <button class="tool-btn icon-only" onclick="flipHorizontal()" title="Lật ngang">{svg_flip_h}</button>
+    <button class="tool-btn icon-only" onclick="toggleInvert()" title="Âm bản">{svg_invert}</button>
+    <button class="tool-btn icon-only" onclick="resetViewport()" title="Đặt lại góc nhìn (Phím R)">{svg_reset}</button>
+  </div>
+
+  <span class="toolbar-divider"></span>
+
+  <!-- Multi-Viewport Layouts -->
+  <div class="toolbar-cluster">
+    <button class="tool-btn active" data-layout="1x1" onclick="setLayout('1x1')" title="1 Khung hình (1x1)">1x1</button>
+    <button class="tool-btn" data-layout="1x2" onclick="setLayout('1x2')" title="So sánh 2 khung song song (1x2)">1x2</button>
+    <button class="tool-btn" data-layout="1x3" onclick="setLayout('1x3')" title="So sánh 3 khung song song (1x3)">1x3</button>
+    <button class="tool-btn" data-layout="2x2" onclick="setLayout('2x2')" title="Lưới 4 khung hình (2x2)">2x2</button>
+  </div>
+
+  <span class="toolbar-divider"></span>
+
+  <!-- Sync Toggles -->
+  <div class="toolbar-cluster">
+    <button class="tool-btn active" id="btn-sync-scroll" onclick="toggleSyncScroll()" title="Khóa cuộn lát cắt đồng bộ">{svg_sync} Sync</button>
+    <button class="tool-btn active" id="btn-sync-crosshair" onclick="toggleSyncCrosshair()" title="Con trỏ tham chiếu đồng bộ (Crosslink)">{svg_crosshair} Cross</button>
+  </div>
+
+  <div style="flex:1;"></div>
+
+  <div class="toolbar-cluster">
+    <button class="tool-btn icon-only" onclick="toggleFullscreen()" title="Toàn màn hình (F)">⛶</button>
+    <button class="tool-btn icon-only" onclick="toggleShortcuts()" title="Phím tắt (⌨)">⌨</button>
   </div>
 </div>
 
@@ -1280,74 +1630,29 @@ window.addEventListener('DOMContentLoaded', init);
   <!-- Series Rail Sidebar -->
   <div class="sidebar">
     <div class="sidebar-head">
-      <span>Chuỗi xung ({len(study.series)})</span>
+      <span>Chuỗi xung (<span id="sidebar-series-count">0</span>)</span>
     </div>
-    <div class="series-list">
-      {''.join(sidebar_items)}
-    </div>
-    {doc_links_html}
+    <div class="series-list" id="series-list-container"></div>
   </div>
 
-  <!-- Center Viewport Stage -->
+  <!-- Viewports Grid Stage -->
   <div class="viewport-stage">
-    <div class="viewports-grid" id="grid-viewports">
-      <!-- Viewport 1 -->
-      <div class="viewport-panel active" id="panel-1">
-        <div class="hud hud-tl">
-          <div><b id="hud-tl-name">—</b></div>
-          <div id="hud-tl-id">—</div>
-          <div>{_sex_label(patient.get('patientSex', ''))} · {_or_dash(patient.get('patientBirthDate'))}</div>
-        </div>
-        <div class="hud hud-tr">
-          <div id="hud-tr-desc">{_escape(study.title)}</div>
-          <div>{_or_dash(study.date)}</div>
-          <div>{_or_dash(patient.get('hospitalName'))}</div>
-        </div>
-        <div class="hud hud-bl">
-          <div id="hud-bl-series">—</div>
-          <div id="hud-bl-wl" class="mono">W/L: Normal</div>
-        </div>
-        <div class="hud hud-br mono">
-          <div id="hud-br-slice">Lát: 0/0</div>
-          <div id="hud-br-zoom">Zoom: 100%</div>
-        </div>
-
-        <div class="img-container" id="container-1">
-          <img class="pacs-img" id="pacs-img-1" alt="PACS Slice">
-        </div>
-      </div>
-
-      <!-- Viewport 2 (Compare Mode) -->
-      <div class="viewport-panel" id="panel-2" style="display:none;">
-        <div class="hud hud-tl">
-          <div><b id="hud-2-tl-name">{_escape(patient.get('patientName') or 'Bệnh nhân')}</b></div>
-          <div>[Khung so sánh B]</div>
-        </div>
-        <div class="hud hud-bl">
-          <div id="hud-2-bl-series">—</div>
-        </div>
-        <div class="hud hud-br mono">
-          <div id="hud-2-br-slice">Lát: 0/0</div>
-        </div>
-
-        <div class="img-container" id="container-2">
-          <img class="pacs-img" id="pacs-img-2" alt="PACS Compare Slice">
-        </div>
-      </div>
+    <div class="viewports-grid layout-1x1" id="grid-viewports">
+      {''.join(viewport_panels_html)}
     </div>
 
     <!-- Scrubber & Cine Controls -->
     <div class="controls-bar">
       <button class="tool-btn" id="btn-play" onclick="togglePlay()">▶ Phát</button>
       <div style="display:flex;gap:2px;">
-        <button class="tool-btn" onclick="stepSlice(-1)" title="Lát trước">◀</button>
-        <button class="tool-btn" onclick="stepSlice(1)" title="Lát sau">▶</button>
+        <button class="tool-btn icon-only" onclick="stepSlice(-1)" title="Lát trước">◀</button>
+        <button class="tool-btn icon-only" onclick="stepSlice(1)" title="Lát sau">▶</button>
       </div>
       <div class="scrubber-wrap">
-        <input type="range" class="slice-slider" id="slice-slider-1" min="0" max="0" value="0" oninput="setSlice(Number(this.value))">
-        <span class="slice-tag mono" id="slice-tag-1">0/0</span>
+        <input type="range" class="slice-slider" id="main-slice-slider" min="0" max="0" value="0" oninput="setSlice(Number(this.value))">
+        <span class="slice-tag mono" id="main-slice-tag">0 / 0</span>
       </div>
-      <div style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px;">
+      <div style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:4px;">
         <span>FPS:</span>
         <button class="tool-btn" onclick="setFps(10)">10</button>
         <button class="tool-btn" onclick="setFps(20)">20</button>
@@ -1361,31 +1666,29 @@ window.addEventListener('DOMContentLoaded', init);
 <div class="modal-overlay" id="modal-shortcuts" style="display:none;" onclick="if(event.target===this) toggleShortcuts();">
   <div class="modal-card">
     <h3>⌨ Phím tắt điều khiển Web PACS Viewer</h3>
-    <div class="shortcut-row"><span>Lật lát cắt (Slice)</span><div><kbd>←</kbd> <kbd>→</kbd> hoặc <kbd>Cuộn chuột</kbd></div></div>
-    <div class="shortcut-row"><span>Phát / Tạm dừng Cine loop</span><kbd>Space</kbd></div>
+    <div class="shortcut-row"><span>Cuộn lát cắt</span><div><kbd>←</kbd> <kbd>→</kbd> hoặc <kbd>Cuộn chuột</kbd></div></div>
+    <div class="shortcut-row"><span>Phát / Dừng Cine loop</span><kbd>Space</kbd></div>
     <div class="shortcut-row"><span>Phóng to / Thu nhỏ (Zoom)</span><kbd>Ctrl + Cuộn chuột</kbd></div>
-    <div class="shortcut-row"><span>Di chuyển ảnh (Pan)</span><kbd>Kéo chuột trái</kbd></div>
-    <div class="shortcut-row"><span>Chỉnh sáng / Tương phản (W/L)</span><kbd>Kéo chuột phải</kbd></div>
-    <div class="shortcut-row"><span>Đảo âm bản / dương bản</span><kbd>I</kbd></div>
-    <div class="shortcut-row"><span>Bật / Tắt so sánh 2 xung</span><kbd>C</kbd></div>
-    <div class="shortcut-row"><span>Khôi phục góc nhìn ban đầu</span><kbd>R</kbd> hoặc <kbd>Nhấp đúp chuột</kbd></div>
-    <div class="shortcut-row"><span>Toàn màn hình (Fullscreen)</span><kbd>F</kbd></div>
-    <div style="margin-top:16px;text-align:right;">
-      <button class="tool-btn active" onclick="toggleShortcuts()">Đã hiểu</button>
+    <div class="shortcut-row"><span>Chỉnh W/L (Sáng/Tương phản)</span><kbd>Kéo chuột phải</kbd></div>
+    <div class="shortcut-row"><span>Bố cục 1x1, 1x2, 1x3, 2x2</span><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> <kbd>4</kbd></div>
+    <div class="shortcut-row"><span>Công cụ: W/L, Pan, Zoom, Đo</span><kbd>W</kbd> <kbd>P</kbd> <kbd>Z</kbd> <kbd>L</kbd></div>
+    <div class="shortcut-row"><span>Đảo âm bản / Dương bản</span><kbd>I</kbd></div>
+    <div class="shortcut-row"><span>Đặt lại góc nhìn (Reset)</span><kbd>R</kbd> hoặc <kbd>Nhấp đúp chuột</kbd></div>
+    <div class="shortcut-row"><span>Toàn màn hình</span><kbd>F</kbd></div>
+    <div style="margin-top:14px;text-align:right;">
+      <button class="tool-btn active" onclick="toggleShortcuts()">Đóng</button>
     </div>
   </div>
 </div>
 
-{''.join(fallback_links)}
 {js_script}
 """
-    return _page(study.title, viewer_body, custom_css=VIEWER_CSS)
+    return _page(initial_study.title, viewer_body, custom_css=VIEWER_CSS)
 
 
 def _dicom_index_html(patient: dict, studies: list[ExportStudy]) -> str:
-    """Build a helper index page when exporting only DICOM files."""
     rows = []
-    for s_idx, study in enumerate(studies, start=1):
+    for study in studies:
         rows.append(
             f'<div class="study-card">'
             f'<div class="card-top"><div class="card-title">{_or_dash(study.title)}</div>'
@@ -1407,12 +1710,6 @@ def _dicom_index_html(patient: dict, studies: list[ExportStudy]) -> str:
         '</div>'
         '<div class="section-title">Danh sách ca chụp DICOM</div>'
         f'<div class="studies-grid">{"".join(rows)}</div>'
-        '<div class="note-box">'
-        '<b>Phần mềm xem ảnh DICOM khuyến nghị:</b><br>'
-        '• <b>RadiAnt DICOM Viewer</b> (Windows): <a href="https://www.radiantviewer.com" target="_blank" style="color:var(--accent)">radiantviewer.com</a><br>'
-        '• <b>Weasis Medical Viewer</b> (Windows/Mac/Linux): <a href="https://nroduit.github.io/en/" target="_blank" style="color:var(--accent)">nroduit.github.io</a><br>'
-        '• <b>Horos / OsiriX</b> (macOS): <a href="https://horosproject.org" target="_blank" style="color:var(--accent)">horosproject.org</a>'
-        '</div>'
         '</div>'
     )
     return _page(
@@ -1430,13 +1727,7 @@ def export_patient_record(
     log: LogFn = lambda _message: None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> dict:
-    """Copy a patient's JPGs, documents and/or DICOMs into a browsable folder.
-
-    Modes:
-    - 'viewer' (default): Exports JPGs with the interactive Web PACS Viewer.
-    - 'dicom': Exports original DICOM files.
-    - 'both': Exports both the Web PACS Viewer and original DICOM files side-by-side.
-    """
+    """Copy a patient's JPGs, documents and/or DICOMs into a browsable folder."""
     patient_folder = Path(patient_folder).expanduser().resolve(strict=True)
     destination = Path(destination).expanduser().resolve()
     if (
@@ -1461,7 +1752,6 @@ def export_patient_record(
 
     if export_viewer and not has_any_jpg and not export_dicom:
         if has_any_dicom:
-            # Fallback to dicom export if only DICOM exists
             export_viewer = False
             export_dicom = True
         else:
@@ -1477,13 +1767,12 @@ def export_patient_record(
             log(str(msg))
         except Exception:
             try:
-                # Fallback to ASCII-safe message if encoding error occurred
                 safe_msg = str(msg).encode("ascii", errors="replace").decode("ascii")
                 log(safe_msg)
             except Exception:
                 pass
 
-    # ── Export Viewer (JPGs + Interactive HTML) ─────────────────────
+    # ── Export Viewer (JPGs + Interactive Multi-Study Web PACS Viewer) ─
     if export_viewer:
         for index, study in enumerate(studies, start=1):
             if should_stop and should_stop():
@@ -1506,7 +1795,12 @@ def export_patient_record(
             page = f"ca-{index:02d}.html"
             pages.append(page)
             (destination / page).write_text(
-                _study_html(patient, study, has_dicom=export_dicom and bool(study.dicom_files)),
+                _study_html(
+                    patient,
+                    all_studies=studies,
+                    initial_study_idx=index - 1,
+                    has_dicom=export_dicom and bool(study.dicom_files),
+                ),
                 encoding="utf-8",
             )
 
@@ -1542,7 +1836,6 @@ def export_patient_record(
                 shutil.copy2(dcm, out)
                 copied_dicoms += 1
 
-        # Readme instructions
         readme_text = (
             f"HỒ SƠ DICOM: {patient.get('patientName') or 'UNKNOWN'} (ID: {patient.get('patientId') or '—'})\n"
             f"Ngày xuất: {patient.get('patientBirthDate') or ''}\n\n"
@@ -1554,7 +1847,6 @@ def export_patient_record(
         )
         (destination / "HUONG_DAN_DICOM.txt").write_text(readme_text, encoding="utf-8")
 
-        # If only DICOM was exported, write an informational index.html
         if not export_viewer:
             (destination / "index.html").write_text(
                 _dicom_index_html(patient, studies), encoding="utf-8",

@@ -219,14 +219,19 @@ class ExportTests(unittest.TestCase):
             portable_export.export_patient_record(patient, destination, mode="viewer")
 
             page = (destination / "ca-01.html").read_text(encoding="utf-8")
-            # Verify Web PACS Viewer elements
+            # Verify Full Web PACS Viewer elements
             self.assertIn("slice-slider", page)
-            self.assertIn("btn-compare", page)
+            self.assertIn("grid-viewports", page)
+            self.assertIn("setLayout", page)
+            self.assertIn("btn-sync-crosshair", page)
+            self.assertIn("btn-sync-scroll", page)
             self.assertIn("btn-play", page)
             self.assertIn("modal-shortcuts", page)
-            self.assertIn("pacs-img-1", page)
+            self.assertIn("pacs-img-0", page)
+            self.assertIn("annotation-canvas", page)
             self.assertIn("DATA =", page)
-            self.assertIn("toggleCompare", page)
+            self.assertIn("setTool", page)
+            self.assertIn("setWindowPreset", page)
             self.assertIn("stepSlice", page)
 
 
