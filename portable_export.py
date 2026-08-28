@@ -1472,12 +1472,23 @@ def export_patient_record(
     copied_dicoms = 0
     pages: list[str] = []
 
+    def _safe_log(msg: str) -> None:
+        try:
+            log(str(msg))
+        except Exception:
+            try:
+                # Fallback to ASCII-safe message if encoding error occurred
+                safe_msg = str(msg).encode("ascii", errors="replace").decode("ascii")
+                log(safe_msg)
+            except Exception:
+                pass
+
     # ── Export Viewer (JPGs + Interactive HTML) ─────────────────────
     if export_viewer:
         for index, study in enumerate(studies, start=1):
             if should_stop and should_stop():
                 break
-            log(f"Đang chép ảnh ca {index}/{len(studies)}: {study.title}")
+            _safe_log(f"Đang chép ảnh ca {index}/{len(studies)}: {study.title}")
             for series in study.series:
                 target = destination / "images" / study.folder.name / series.relative
                 target.mkdir(parents=True, exist_ok=True)
@@ -1516,7 +1527,7 @@ def export_patient_record(
                 break
             if not study.dicom_files:
                 continue
-            log(f"Đang chép file DICOM ca {index}/{len(studies)}: {study.title}")
+            _safe_log(f"Đang chép file DICOM ca {index}/{len(studies)}: {study.title}")
             dicom_target = destination / "DICOM" / study.folder.name
             dicom_target.mkdir(parents=True, exist_ok=True)
             for dcm in study.dicom_files:
@@ -1557,7 +1568,7 @@ def export_patient_record(
     if copied_documents:
         log_msg += f", {copied_documents} tài liệu"
     log_msg += f" vào {destination}"
-    log(log_msg)
+    _safe_log(log_msg)
 
     return {
         "folder": str(destination),
