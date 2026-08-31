@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Portable export: creates an offline, professional Web PACS Viewer and DICOM package.
+"""Portable export: creates an offline, professional Web PACS Viewer matching Dcom to JPG 1:1.
 
-Designed for clinical PACS review, multi-study/multi-series comparison (1x1, 1x2, 1x3, 2x2),
-synchronized scrolling, reference crosshairs/crosslink, calipers, angles, ROIs, W/L presets,
-and cine playback without requiring any external internet connection or software.
+Directly ports the Dcom to JPG clinical PACS UI, tool clusters, series filmstrip,
+multi-study timeline rail, 1x1 / 1x2 / 1x3 / 2x2 multi-viewport workspace, synchronized
+crosshair reference cursors, calipers, angles, ROIs, W/L presets, and cine player.
 """
 
 from __future__ import annotations
@@ -224,6 +224,9 @@ def collect_record(patient_folder: Path) -> tuple[dict, list[ExportStudy]]:
         "patientBirthDate": str(manifest.get("patientBirthDate") or "").strip(),
         "patientSex": str(manifest.get("patientSex") or "").strip().upper(),
         "hospitalName": hospital,
+        "phone": str(manifest.get("patientPhone") or "").strip(),
+        "address": str(manifest.get("patientAddress") or "").strip(),
+        "diagnosis": str(manifest.get("patientDiagnosis") or "").strip(),
     }
     return patient, studies
 
@@ -259,36 +262,31 @@ def _patient_header(patient: dict) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# UI UX PRO MAX / MEDICAL PACS DESIGN SYSTEM
+# 1:1 DCOM TO JPG PACS WORKSTATION CSS (EXACT COPY-CAT)
 # ─────────────────────────────────────────────────────────────────────────────
 
 VIEWER_CSS = """
 :root {
-  --bg-app: #070b14;
-  --bg-panel: #0c1421;
-  --bg-toolbar: #0f172a;
-  --bg-card: #162234;
-  --bg-hover: #1e2f46;
-  --bg-active: #1e3a5f;
-  --border: #1e2e42;
-  --border-light: #2c425d;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  color-scheme: dark;
+  --bg-app: #05080c;
+  --bg-panel: #090e15;
+  --bg-card: #0e161f;
+  --bg-hover: #13202c;
+  --border: #18232c;
+  --border-subtle: #1e2b36;
   --text-main: #f1f5f9;
   --text-muted: #94a3b8;
   --text-dim: #64748b;
-  --accent: #0ea5e9;
-  --accent-hover: #38bdf8;
-  --accent-active: #0284c7;
-  --accent-glow: rgba(14, 165, 233, 0.25);
-  --success: #10b981;
-  --warning: #f59e0b;
-  --danger: #ef4444;
+  --accent: #007fbd;
+  --accent-glow: #00b0f0;
+  --focus-ring: #49c7ff;
   --mono-font: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
 body {
   background: var(--bg-app);
   color: var(--text-main);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   height: 100vh;
   overflow: hidden;
   display: flex;
@@ -296,285 +294,382 @@ body {
 }
 .mono { font-family: var(--mono-font); }
 
-/* ── Top Bar ─────────────────────────────────────────── */
-.topbar {
-  background: var(--bg-toolbar);
+/* ── Winbar (Top Tab Strip) ──────────────────────────── */
+.winbar {
+  height: 34px;
+  background: #090d12;
   border-bottom: 1px solid var(--border);
-  height: 44px;
   display: flex;
   align-items: center;
-  padding: 0 10px;
-  gap: 8px;
+  padding: 0 6px;
+  gap: 4px;
   flex-shrink: 0;
-  z-index: 20;
+  z-index: 30;
 }
-.btn-back {
-  display: inline-flex;
+.winbar-tab {
+  display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   background: var(--bg-card);
-  color: var(--text-main);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-subtle);
+  border-bottom: none;
   padding: 4px 10px;
-  border-radius: 5px;
-  font-size: 12px;
+  border-radius: 6px 6px 0 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
   text-decoration: none;
-  font-weight: 500;
+  cursor: pointer;
+  height: 28px;
+  margin-top: 6px;
   transition: all 0.15s;
-  flex-shrink: 0;
 }
-.btn-back:hover { background: var(--bg-hover); color: #fff; border-color: var(--accent); }
-.top-patient-info {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  padding-right: 8px;
-  border-right: 1px solid var(--border);
-  flex-shrink: 0;
+.winbar-tab:hover { background: var(--bg-hover); color: var(--text-main); }
+.winbar-tab.active {
+  background: #0c141d;
+  color: #fff;
+  border-color: #007fbd;
+  border-top: 2px solid #00b0f0;
 }
-.top-patient-info b { color: #fff; font-weight: 600; }
-.top-patient-info span { color: var(--text-muted); }
-.top-badge {
-  background: rgba(14, 165, 233, 0.15);
-  color: var(--accent);
-  border: 1px solid rgba(14, 165, 233, 0.3);
-  font-size: 10px;
+.tab-fmt-badge {
+  font-size: 9px;
   font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 4px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: #1e3a5f;
+  color: #38bdf8;
+  margin-left: 4px;
 }
 
-.toolbar-cluster {
+/* ── Viewer Toolbar ──────────────────────────────────── */
+.viewer-toolbar {
+  height: 38px;
+  background: #0b1118;
+  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  gap: 3px;
+  padding: 0 8px;
+  gap: 4px;
+  flex-shrink: 0;
+  z-index: 25;
+}
+.tool-cluster {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 .toolbar-divider {
   width: 1px;
-  height: 20px;
-  background: var(--border);
-  margin: 0 3px;
+  height: 18px;
+  background: var(--border-subtle);
+  margin: 0 4px;
 }
-.tool-btn {
+.icon-button {
   background: transparent;
-  color: var(--text-muted);
+  color: #9eb0be;
   border: 1px solid transparent;
-  padding: 4px 7px;
+  width: 28px;
+  height: 28px;
   border-radius: 5px;
-  font-size: 12px;
-  cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  cursor: pointer;
   transition: all 0.12s;
-  height: 28px;
+  padding: 0;
 }
-.tool-btn:hover { background: var(--bg-hover); color: var(--text-main); border-color: var(--border); }
-.tool-btn.active {
-  background: var(--bg-active);
-  color: var(--accent-hover);
-  border-color: var(--accent);
-  box-shadow: 0 0 8px var(--accent-glow);
+.icon-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.icon-button:hover { background: var(--bg-hover); color: #fff; border-color: var(--border-subtle); }
+.icon-button.active, .icon-button[aria-pressed="true"] {
+  background: #0e2838;
+  color: #38bdf8;
+  border-color: #007fbd;
+  box-shadow: 0 0 6px rgba(0, 176, 240, 0.3);
 }
-.tool-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; flex-shrink: 0; }
-.tool-btn.icon-only { padding: 4px; }
 
-.tool-select {
+.window-select {
   background: var(--bg-card);
   color: var(--text-main);
-  border: 1px solid var(--border);
-  padding: 3px 6px;
+  border: 1px solid var(--border-subtle);
+  padding: 2px 6px;
   border-radius: 4px;
   font-size: 11px;
-  height: 28px;
+  height: 26px;
   outline: none;
   cursor: pointer;
 }
-.tool-select:hover { border-color: var(--accent); }
+.window-select:hover { border-color: #007fbd; }
 
-/* ── Main Layout ─────────────────────────────────────── */
-.main-layout {
+/* ── App Shell 3-Column Layout ───────────────────────── */
+.app-shell {
   flex: 1;
   min-height: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: 200px 140px minmax(0, 1fr);
   background: #000;
 }
 
-/* ── Series Rail Sidebar ─────────────────────────────── */
-.sidebar {
-  width: 220px;
+/* ── Patient Record Rail (Left Sidebar) ──────────────── */
+.rec-rail {
   background: var(--bg-panel);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  flex-shrink: 0;
+  overflow-y: auto;
+  padding: 8px;
+  gap: 10px;
 }
-.sidebar-head {
+.rec-rail::-webkit-scrollbar { width: 4px; }
+.rec-rail::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 2px; }
+
+.rec-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
   padding: 8px 10px;
   font-size: 11px;
+}
+.rec-card-header {
+  font-size: 10.5px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-dim);
-  border-bottom: 1px solid var(--border);
+  color: #7dd3fc;
+  margin-bottom: 6px;
   display: flex;
-  justify-content: space-between;
   align-items: center;
-}
-.series-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 6px;
-  display: flex;
-  flex-direction: column;
   gap: 5px;
 }
-.series-list::-webkit-scrollbar { width: 4px; }
-.series-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.rfacts { display: grid; gap: 4px; }
+.rfact { display: flex; justify-content: space-between; }
+.rfact dt { color: var(--text-dim); }
+.rfact dd { color: #fff; font-weight: 500; text-align: right; }
 
-.series-item {
+.rec-timeline-head {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 0 4px;
+}
+.tl { display: flex; flex-direction: column; gap: 4px; }
+.tl-item {
   background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  padding: 6px 8px;
   cursor: pointer;
-  display: flex;
-  gap: 8px;
   transition: all 0.12s;
 }
-.series-item:hover { background: var(--bg-hover); border-color: var(--border-light); }
-.series-item.active {
-  border-color: var(--accent);
-  background: rgba(14, 165, 233, 0.12);
-  box-shadow: 0 0 0 1px var(--accent);
+.tl-item:hover { background: var(--bg-hover); border-color: #2c4456; }
+.tl-item.on {
+  border-color: #007fbd;
+  background: #0e2838;
 }
-.series-thumb {
-  width: 48px;
-  height: 48px;
-  background: #000;
-  border-radius: 4px;
-  object-fit: cover;
-  flex-shrink: 0;
-}
-.series-meta {
-  flex: 1;
-  min-width: 0;
+.tl-item-title { font-size: 11px; font-weight: 600; color: #fff; }
+.tl-item-meta { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+
+/* ── Series Strip (Middle Column) ────────────────────── */
+.series-strip {
+  background: #070b10;
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  overflow-y: auto;
+  padding: 6px 4px;
+  gap: 6px;
+}
+.series-strip::-webkit-scrollbar { width: 3px; }
+.series-strip::-webkit-scrollbar-thumb { background: var(--border-subtle); }
+
+.series-group-badge {
+  padding: 4px 6px;
+  background: #0f1a26;
+  border: 1px solid #1a2c3f;
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
   gap: 1px;
 }
-.series-name {
-  font-size: 12px;
+.badge-date { font-size: 9px; font-weight: 700; color: #38bdf8; }
+.badge-study { font-size: 9px; font-weight: 600; color: #fef3c7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.series-card {
+  display: block;
+  width: 100%;
+  padding: 3px;
+  color: #9eb0be;
+  text-align: left;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  background: var(--bg-card);
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.series-card:hover {
+  border-color: #2c4456;
+  background: var(--bg-hover);
+  color: #d6e8f5;
+}
+.series-card.active {
+  color: #eff9ff;
+  border-color: #007fbd;
+  background: #0e2838;
+}
+.series-thumb-box {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: #04070a;
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #162430;
+}
+.series-card-thumb {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.badge-3d {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  z-index: 2;
+  padding: 1px 4px;
+  color: #38bdf8;
+  border-radius: 3px;
+  background: rgba(12, 40, 61, 0.9);
+  border: 1px solid #0369a1;
+  font-size: 8.5px;
+  font-weight: 700;
+}
+.series-thumb-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 3px;
+  padding: 10px 4px 2px 4px;
+  background: linear-gradient(transparent, rgba(4, 7, 10, 0.94) 65%);
+  pointer-events: none;
+}
+.series-thumb-title {
+  font-size: 9.5px;
   font-weight: 600;
+  color: #e2f0fb;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.series-thumb-count {
+  font-size: 9px;
+  font-weight: 700;
+  color: #7dd3fc;
+  flex-shrink: 0;
+}
+.series-card[data-pane]::after {
+  content: attr(data-pane);
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  font-size: 8px;
+  font-weight: 700;
+  min-width: 14px;
+  height: 14px;
+  line-height: 14px;
+  text-align: center;
   color: #fff;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.series-desc {
-  font-size: 10px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.series-count {
-  font-size: 10px;
-  color: var(--text-dim);
+  background: #007fbd;
+  border-radius: 7px;
+  padding: 0 3px;
+  z-index: 3;
 }
 
-/* ── Viewport Grid Stage ─────────────────────────────── */
-.viewport-stage {
+/* ── Workspace Grid & Viewport Shells ────────────────── */
+.viewer-main {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   background: #000;
-  position: relative;
-  overflow: hidden;
 }
-.viewports-grid {
+.workspace-grid {
   flex: 1;
   min-height: 0;
   display: grid;
   gap: 2px;
-  background: #000;
   padding: 2px;
-}
-.viewports-grid.layout-1x1 { grid-template-columns: 1fr; grid-template-rows: 1fr; }
-.viewports-grid.layout-1x2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
-.viewports-grid.layout-1x3 { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr; }
-.viewports-grid.layout-2x2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
-
-.viewport-panel {
-  position: relative;
   background: #000;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid #111d2b;
 }
-.viewport-panel.active {
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
-}
-.viewport-panel-header {
-  height: 24px;
-  background: rgba(12, 20, 33, 0.85);
-  backdrop-filter: blur(4px);
-  border-bottom: 1px solid rgba(30, 46, 66, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 6px;
-  z-index: 10;
-  font-size: 11px;
-}
-.vp-selectors {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-.vp-select {
-  background: #09101a;
-  color: var(--text-main);
-  border: 1px solid var(--border);
-  font-size: 10px;
-  height: 18px;
-  padding: 0 4px;
-  border-radius: 3px;
-  max-width: 140px;
-  outline: none;
-}
-.vp-badge {
-  font-size: 9px;
-  font-weight: 700;
-  color: var(--accent);
-  background: rgba(14, 165, 233, 0.15);
-  padding: 1px 4px;
-  border-radius: 3px;
-}
+.workspace-grid.mode-single { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+.workspace-grid.mode-compare { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
+.workspace-grid.mode-compare3 { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr; }
+.workspace-grid.mode-montage6 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
 
-.img-container {
-  flex: 1;
+.viewport-shell {
   position: relative;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
+  border: 1px solid #18232c;
+  background: #000;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: crosshair;
 }
-.pacs-img {
+.viewport-shell:hover { border-color: #008bc8; }
+.viewport-shell.is-active {
+  border-color: #00b0f0;
+  border-width: 2px;
+  box-shadow: inset 0 0 0 1px rgba(0, 176, 240, 0.3), 0 0 12px 2px rgba(0, 176, 240, 0.2);
+}
+
+.viewport-header-strip {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.vp-select {
+  background: rgba(12, 20, 29, 0.85);
+  backdrop-filter: blur(4px);
+  color: #fff;
+  border: 1px solid #21455a;
+  border-radius: 4px;
+  font-size: 10px;
+  height: 20px;
+  padding: 0 4px;
+  outline: none;
+  max-width: 130px;
+}
+.vp-badge {
+  font-size: 8.5px;
+  font-weight: 700;
+  color: #38bdf8;
+  background: rgba(0, 127, 189, 0.3);
+  border: 1px solid #007fbd;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.viewport-img {
   max-width: none;
   max-height: none;
   position: absolute;
   transform-origin: center center;
   pointer-events: none;
-  image-rendering: -webkit-optimize-contrast;
-  image-rendering: crisp-edges;
 }
 .annotation-canvas {
   position: absolute;
@@ -582,69 +677,91 @@ body {
   width: 100%;
   height: 100%;
   pointer-events: none;
-  z-index: 5;
+  z-index: 10;
 }
 
 /* ── HUD Overlays ────────────────────────────────────── */
-.hud {
+.viewport-overlay {
   position: absolute;
-  z-index: 8;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #ffbc42;
+  text-shadow: 1px 1px 1px #000, 0 0 2px #000;
   pointer-events: none;
-  font-size: 11px;
-  line-height: 1.35;
-  color: rgba(255, 255, 255, 0.85);
-  text-shadow: 1px 1px 2px #000, 0 0 3px #000;
+  z-index: 12;
+  white-space: pre-line;
 }
-.hud b { color: #fff; font-weight: 600; }
-.hud-tl { top: 28px; left: 8px; }
-.hud-tr { top: 28px; right: 8px; text-align: right; }
-.hud-bl { bottom: 32px; left: 8px; }
-.hud-br { bottom: 32px; right: 8px; text-align: right; }
+.overlay-tl { top: 28px; left: 6px; text-align: left; }
+.overlay-tr { top: 6px; right: 6px; text-align: right; }
+.overlay-bl { bottom: 34px; left: 6px; text-align: left; }
+.overlay-br { bottom: 34px; right: 6px; text-align: right; }
 
-/* ── Scrubber & Cine Controls Bar ────────────────────── */
-.controls-bar {
-  height: 38px;
-  background: var(--bg-toolbar);
-  border-top: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  padding: 0 10px;
-  gap: 8px;
-  flex-shrink: 0;
-  z-index: 20;
-}
-.scrubber-wrap {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.slice-slider {
-  flex: 1;
-  height: 4px;
-  -webkit-appearance: none;
-  background: var(--border-light);
-  border-radius: 2px;
-  outline: none;
-  cursor: pointer;
-}
-.slice-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--accent);
-  cursor: pointer;
-  box-shadow: 0 0 6px var(--accent);
-  transition: transform 0.1s;
-}
-.slice-slider::-webkit-slider-thumb:hover { transform: scale(1.2); }
-.slice-tag {
+.orientation-marker {
+  position: absolute;
   font-size: 11px;
-  color: #fff;
-  min-width: 60px;
-  text-align: center;
+  color: #88c0d0;
+  font-weight: bold;
+  text-shadow: 1px 1px 1px #000, 0 0 2px #000;
+  pointer-events: none;
+  z-index: 12;
 }
+.orientation-t { top: 6px; left: 50%; transform: translateX(-50%); }
+.orientation-b { bottom: 34px; left: 50%; transform: translateX(-50%); }
+.orientation-l { left: 6px; top: 50%; transform: translateY(-50%); }
+.orientation-r { right: 6px; top: 50%; transform: translateY(-50%); }
+
+/* ── Slice Control Scrubber on Viewport ──────────────── */
+.slice-control {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  left: 6px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  color: #c8e9fb;
+  border: 1px solid #21455a;
+  border-radius: 5px;
+  background: rgba(7, 18, 27, 0.85);
+  opacity: 0.7;
+  transition: opacity 120ms ease;
+}
+.viewport-shell:hover .slice-control,
+.viewport-shell.is-active .slice-control { opacity: 1; }
+.slice-control input { min-width: 40px; width: 100%; accent-color: #20b7ef; height: 3px; cursor: pointer; }
+.slice-control .cine-btn {
+  background: none;
+  border: none;
+  color: #20b7ef;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 3px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.slice-control .cine-btn:hover { color: #fff; }
+
+/* ── Bottom Status Bar ───────────────────────────────── */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 9px;
+  color: #7890a2;
+  border-top: 1px solid #192530;
+  background: #0c131a;
+  font-size: 10.5px;
+  flex-shrink: 0;
+  z-index: 25;
+}
+.status-dot { width: 7px; height: 7px; border-radius: 50%; background: #27bd72; flex-shrink: 0; }
+.status-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ── Shortcuts Modal ─────────────────────────────────── */
 .modal-overlay {
@@ -660,48 +777,54 @@ body {
 .modal-card {
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   width: 440px;
   max-width: 90vw;
   padding: 16px 20px;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.8);
 }
-.modal-card h3 { font-size: 15px; margin-bottom: 12px; color: #fff; }
+.modal-card h3 { font-size: 14px; margin-bottom: 12px; color: #fff; font-weight: 600; }
 .shortcut-row {
   display: flex;
   justify-content: space-between;
   padding: 5px 0;
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: 11.5px;
 }
 .shortcut-row kbd {
   background: var(--bg-card);
-  border: 1px solid var(--border-light);
+  border: 1px solid var(--border-subtle);
   border-radius: 3px;
   padding: 1px 5px;
   font-size: 10px;
-  color: var(--accent);
+  color: #38bdf8;
   font-family: var(--mono-font);
+}
+
+@media (max-width: 1000px) {
+  .app-shell { grid-template-columns: 160px 120px minmax(0, 1fr); }
 }
 """
 
 INDEX_CSS = """
 :root {
-  --bg-app: #070b14;
-  --bg-panel: #0c1421;
-  --bg-card: #162234;
-  --bg-hover: #1e2f46;
-  --border: #1e2e42;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  color-scheme: dark;
+  --bg-app: #05080c;
+  --bg-panel: #090e15;
+  --bg-card: #0e161f;
+  --bg-hover: #13202c;
+  --border: #18232c;
+  --border-subtle: #1e2b36;
   --text-main: #f1f5f9;
   --text-muted: #94a3b8;
-  --accent: #0ea5e9;
+  --accent: #007fbd;
   --success: #10b981;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   background: var(--bg-app);
   color: var(--text-main);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   min-height: 100vh;
   padding: 24px;
   display: flex;
@@ -711,24 +834,24 @@ body {
 header.patient-header {
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 16px 20px;
 }
 header.patient-header .fields {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 24px;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--text-muted);
 }
 header.patient-header .fields span b { color: #fff; font-weight: 600; }
 
-.section-title { font-size: 14px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-top: 4px; }
+.section-title { font-size: 13px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-top: 4px; letter-spacing: 0.5px; }
 .studies-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .study-card {
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 14px;
   text-decoration: none;
   color: var(--text-main);
@@ -739,32 +862,32 @@ header.patient-header .fields span b { color: #fff; font-weight: 600; }
 }
 .study-card:hover { background: var(--bg-card); border-color: var(--accent); transform: translateY(-2px); }
 .card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
-.card-title { font-size: 14px; font-weight: 700; color: #fff; }
+.card-title { font-size: 13.5px; font-weight: 700; color: #fff; }
 .modality-badge {
-  background: rgba(14, 165, 233, 0.15);
-  color: var(--accent);
-  border: 1px solid rgba(14, 165, 233, 0.3);
-  font-size: 10px;
+  background: rgba(0, 127, 189, 0.2);
+  color: #38bdf8;
+  border: 1px solid #007fbd;
+  font-size: 9.5px;
   font-weight: 700;
   padding: 2px 6px;
   border-radius: 4px;
 }
-.card-thumb-wrap { width: 100%; height: 160px; background: #000; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; }
-.card-thumb { width: 100%; height: 100%; object-fit: cover; }
-.card-meta { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); }
+.card-thumb-wrap { width: 100%; height: 160px; background: #04070a; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border-subtle); }
+.card-thumb { width: 100%; height: 100%; object-fit: contain; }
+.card-meta { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-muted); }
 .btn-open-viewer { background: var(--accent); color: #fff; font-weight: 600; font-size: 12px; padding: 7px; border-radius: 5px; text-align: center; }
 
 .dicom-banner {
-  background: rgba(16, 185, 129, 0.1);
-  border: 1px solid rgba(16, 185, 129, 0.3);
-  border-radius: 10px;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  border-radius: 8px;
   padding: 12px 16px;
   display: flex;
   align-items: center;
   gap: 12px;
 }
 .dicom-banner-icon { font-size: 24px; }
-.dicom-banner-text b { color: #10b981; font-size: 14px; display: block; margin-bottom: 2px; }
+.dicom-banner-text b { color: #10b981; font-size: 13.5px; display: block; margin-bottom: 2px; }
 .dicom-banner-text span { font-size: 12px; color: var(--text-muted); }
 """
 
@@ -842,7 +965,7 @@ def _study_html(
     initial_study_idx: int = 0,
     has_dicom: bool = False,
 ) -> str:
-    """Build the Interactive Web PACS Viewer HTML page supporting multi-study & multi-series comparison."""
+    """Build the Interactive Web PACS Viewer HTML page matching Dcom to JPG app structure 1:1."""
     studies_payload = []
     for st_idx, st in enumerate(all_studies):
         series_data = []
@@ -888,34 +1011,43 @@ def _study_html(
 
     initial_study = all_studies[initial_study_idx] if 0 <= initial_study_idx < len(all_studies) else all_studies[0]
 
-    # SVG Icons embedded cleanly
-    svg_window = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v18A9 9 0 0 0 12 3z" fill="currentColor"/></svg>'
-    svg_pan = '<svg viewBox="0 0 24 24"><path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/></svg>'
-    svg_zoom = '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35M11 8v6M8 11h6"/></svg>'
-    svg_scroll = '<svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>'
-    svg_crosshair = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>'
-    svg_length = '<svg viewBox="0 0 24 24"><path d="M4 19L19 4M3 16l4 4M17 2l4 4M8 12l2 2M12 8l2 2"/></svg>'
-    svg_angle = '<svg viewBox="0 0 24 24"><path d="M3 20h18M3 20L15 4M8 20a5 5 0 0 1 3.5-4.8"/></svg>'
-    svg_ellipse = '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="9" ry="6"/></svg>'
-    svg_text = '<svg viewBox="0 0 24 24"><path d="M4 7V4h16v3M12 4v16M9 20h6"/></svg>'
-    svg_magnify = '<svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="7"/><path d="M21 21l-6-6"/></svg>'
-    svg_rotate_cw = '<svg viewBox="0 0 24 24"><path d="M21.5 2v6h-6M21.34 15.57a9 9 0 1 1-.57-8.38l.67-.7"/></svg>'
-    svg_rotate_ccw = '<svg viewBox="0 0 24 24"><path d="M2.5 2v6h6M2.66 15.57a9 9 0 1 0 .57-8.38l-.67-.7"/></svg>'
-    svg_flip_h = '<svg viewBox="0 0 24 24"><path d="M12 2v20M4 12l4-4v8zM20 12l-4-4v8z"/></svg>'
-    svg_flip_v = '<svg viewBox="0 0 24 24"><path d="M2 12h20M12 4l-4 4h8zM12 20l-4-4h8z"/></svg>'
-    svg_invert = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3v18"/></svg>'
-    svg_reset = '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5"/></svg>'
-    svg_sync = '<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>'
+    # Exact SVG icons from Dcom to JPG webui/src/main.js
+    icons = {
+        "window": "◐",
+        "pan": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M14 7.5a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M10 8a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M6 9a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M18 11v1a8 8 0 1 1-16 0v-2.5"/></svg>',
+        "zoom": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
+        "scroll": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
+        "crosshair": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="22" x2="18" y1="12" y2="12"/><line x1="6" x2="2" y1="12" y2="12"/><line x1="12" x2="12" y1="6" y2="2"/><line x1="12" x2="12" y1="22" y2="18"/></svg>',
+        "length": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></svg>',
+        "angle": "∠",
+        "ellipse": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/></svg>',
+        "freehand": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>',
+        "text": '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/></svg>',
+        "magnify": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7"/><line x1="10" y1="7" x2="10" y2="13"/><line x1="7" y1="10" x2="13" y2="10"/><path d="m21 21-5.2-5.2"/></svg>',
+        "rotateClockwise": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><rect x="8.5" y="8.5" width="7" height="7" rx="1" transform="rotate(45 12 12)"></rect></svg>',
+        "flipHorizontal": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 21h8a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2Z"/><path d="M12 2v20"/></svg>',
+        "flipVertical": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v3"/><path d="M21 16v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3"/><path d="M4 12h16"/></svg>',
+        "invert": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 18a6 6 0 0 0 0-12v12z"/></svg>',
+        "reset": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
+        "clearAnnotations": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>',
+        "scrollSync": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
+        "single": '<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>',
+        "compare": '<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></svg>',
+        "compare3": '<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>',
+        "montage6": '<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>',
+        "capture": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>',
+        "info": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+        "history": "🕘",
+    }
 
     js_script = r"""
 <script>
 const DATA = """ + payload_json + r""";
 
-// Viewport state objects (supports up to 4 viewports in 1x1, 1x2, 1x3, 2x2)
 const MAX_VP = 4;
 let activeVp = 0;
 let layout = "1x1"; // '1x1' | '1x2' | '1x3' | '2x2'
-let activeTool = "window"; // 'window' | 'pan' | 'zoom' | 'scroll' | 'crosshair' | 'length' | 'angle' | 'ellipse' | 'text' | 'magnify'
+let activeTool = "window"; // 'window' | 'pan' | 'zoom' | 'scroll' | 'crosshair' | 'length' | 'angle' | 'ellipse' | 'freehand' | 'text' | 'magnify'
 let syncScroll = true;
 let syncCrosshair = true;
 let isPlaying = false;
@@ -938,7 +1070,7 @@ for (let i = 0; i < MAX_VP; i++) {
     invert: false,
     brightness: 100,
     contrast: 100,
-    annotations: [], // array of { type: 'length'|'angle'|'ellipse'|'text', points: [] }
+    annotations: [],
     isDragging: false,
     dragStart: { x: 0, y: 0 },
     tempAnnotation: null,
@@ -946,7 +1078,8 @@ for (let i = 0; i < MAX_VP; i++) {
 }
 
 function init() {
-  buildSidebar();
+  buildTimelineRail();
+  buildSeriesStrip();
   initViewportHeaders();
   setLayout("1x1");
   setupGlobalEvents();
@@ -963,29 +1096,86 @@ function currentSeries(vpIdx = activeVp) {
   return st?.series[vp.seriesIdx] || st?.series[0];
 }
 
-function buildSidebar() {
-  const container = document.getElementById('series-list-container');
-  if (!container) return;
-  const st = currentStudy(activeVp);
-  if (!st) return;
-
-  const countBadge = document.getElementById('sidebar-series-count');
-  if (countBadge) countBadge.textContent = String(st.series.length);
-
-  container.innerHTML = st.series.map((s, idx) => {
-    const thumb = s.images[s.keyIndex] || s.images[0] || '';
-    const isActive = viewports[activeVp].seriesIdx === idx;
+function buildTimelineRail() {
+  const tl = document.getElementById('timeline-container');
+  if (!tl) return;
+  tl.innerHTML = DATA.studies.map((st, idx) => {
+    const isActive = viewports[activeVp].studyIdx === idx;
     return `
-      <div class="series-item ${isActive ? 'active' : ''}" data-idx="${idx}" onclick="selectSeries(${idx})">
-        <img class="series-thumb" src="${thumb}" alt="">
-        <div class="series-meta">
-          <div class="series-name">${s.description || s.name}</div>
-          <div class="series-desc">${s.name} · ${s.modality || ''}</div>
-          <div class="series-count">${s.count} ảnh</div>
-        </div>
+      <div class="tl-item ${isActive ? 'on' : ''}" onclick="switchStudy(${idx})">
+        <div class="tl-item-title">${st.modality || 'MR'} - ${st.date || 'Chưa rõ ngày'}</div>
+        <div class="tl-item-meta">${st.folderName || st.title}</div>
       </div>
     `;
   }).join('');
+}
+
+function switchStudy(stIdx) {
+  const vp = viewports[activeVp];
+  vp.studyIdx = stIdx;
+  vp.seriesIdx = 0;
+  vp.slice = 0;
+  updateSeriesDropdown(activeVp);
+  buildTimelineRail();
+  buildSeriesStrip();
+  renderViewport(activeVp);
+}
+
+function buildSeriesStrip() {
+  const container = document.getElementById('series-strip-container');
+  if (!container) return;
+  
+  let html = '';
+  DATA.studies.forEach((st, stIdx) => {
+    const dateLabel = st.date || 'Chưa rõ ngày';
+    html += `
+      <div class="series-group-badge">
+        <span class="badge-date">📁 ${dateLabel}</span>
+        <span class="badge-study">${st.modality || ''} · ${st.folderName || st.title}</span>
+      </div>
+    `;
+    st.series.forEach((ser, serIdx) => {
+      const thumb = ser.images[ser.keyIndex] || ser.images[0] || '';
+      
+      const visiblePanes = [];
+      const maxVis = layout === '1x1' ? 1 : layout === '1x2' ? 2 : layout === '1x3' ? 3 : 4;
+      for (let v = 0; v < maxVis; v++) {
+        if (viewports[v].studyIdx === stIdx && viewports[v].seriesIdx === serIdx) {
+          visiblePanes.push(v + 1);
+        }
+      }
+      const isVisible = visiblePanes.length > 0;
+      const paneAttr = isVisible ? `data-pane="${visiblePanes.join(',')}"` : '';
+
+      html += `
+        <button class="series-card ${isVisible ? 'active' : ''}" ${paneAttr} onclick="selectSeriesFromStrip(${stIdx}, ${serIdx})">
+          <div class="series-thumb-box">
+            <img class="series-card-thumb" src="${thumb}" alt="">
+            <span class="badge-3d">${ser.modality || 'MR'}</span>
+            <div class="series-thumb-overlay">
+              <b class="series-thumb-title">${ser.description || ser.name}</b>
+              <span class="series-thumb-count">${ser.count}</span>
+            </div>
+          </div>
+        </button>
+      `;
+    });
+  });
+  container.innerHTML = html;
+}
+
+function selectSeriesFromStrip(stIdx, serIdx) {
+  const vp = viewports[activeVp];
+  vp.studyIdx = stIdx;
+  vp.seriesIdx = serIdx;
+  const ser = currentSeries(activeVp);
+  vp.slice = ser?.keyIndex || 0;
+  
+  updateSeriesDropdown(activeVp);
+  buildTimelineRail();
+  buildSeriesStrip();
+  resetViewport(activeVp);
+  renderViewport(activeVp);
 }
 
 function initViewportHeaders() {
@@ -993,14 +1183,14 @@ function initViewportHeaders() {
     const studySel = document.getElementById(`vp-study-sel-${i}`);
     if (studySel) {
       studySel.innerHTML = DATA.studies.map((st, idx) => `
-        <option value="${idx}" ${idx === viewports[i].studyIdx ? 'selected' : ''}>${st.title || 'Ca chụp ' + (idx + 1)}</option>
+        <option value="${idx}" ${idx === viewports[i].studyIdx ? 'selected' : ''}>${st.date || 'Ca ' + (idx + 1)}</option>
       `).join('');
       studySel.addEventListener('change', (e) => {
         viewports[i].studyIdx = Number(e.target.value);
         viewports[i].seriesIdx = 0;
         viewports[i].slice = 0;
         updateSeriesDropdown(i);
-        if (i === activeVp) buildSidebar();
+        buildSeriesStrip();
         renderViewport(i);
       });
     }
@@ -1019,41 +1209,32 @@ function updateSeriesDropdown(i) {
     viewports[i].seriesIdx = Number(e.target.value);
     const ser = currentSeries(i);
     viewports[i].slice = ser?.keyIndex || 0;
-    if (i === activeVp) buildSidebar();
+    buildSeriesStrip();
     renderViewport(i);
   };
 }
 
-function selectSeries(idx) {
-  const vp = viewports[activeVp];
-  vp.seriesIdx = idx;
-  const s = currentSeries(activeVp);
-  vp.slice = s?.keyIndex || 0;
-  
-  const seriesSel = document.getElementById(`vp-series-sel-${activeVp}`);
-  if (seriesSel) seriesSel.value = idx;
-  
-  document.querySelectorAll('.series-item').forEach((el, i) => {
-    el.classList.toggle('active', i === idx);
-  });
-  
-  resetViewport(activeVp);
-  renderViewport(activeVp);
-}
-
 function setActiveViewport(idx) {
   activeVp = idx;
-  document.querySelectorAll('.viewport-panel').forEach((el, i) => {
-    el.classList.toggle('active', i === idx);
+  document.querySelectorAll('.viewport-shell').forEach((el, i) => {
+    el.classList.toggle('is-active', i === idx);
   });
-  buildSidebar();
+  buildTimelineRail();
+  buildSeriesStrip();
   updateScrubberBar();
+  updateStatusBar();
 }
 
 function setLayout(mode) {
   layout = mode;
   const grid = document.getElementById('grid-viewports');
-  grid.className = `viewports-grid layout-${mode}`;
+  const classMap = {
+    '1x1': 'mode-single',
+    '1x2': 'mode-compare',
+    '1x3': 'mode-compare3',
+    '2x2': 'mode-montage6',
+  };
+  grid.className = `workspace-grid ${classMap[mode] || 'mode-single'}`;
   
   document.querySelectorAll('[data-layout]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.layout === mode);
@@ -1061,7 +1242,7 @@ function setLayout(mode) {
 
   const visibleCount = mode === '1x1' ? 1 : mode === '1x2' ? 2 : mode === '1x3' ? 3 : 4;
   for (let i = 0; i < MAX_VP; i++) {
-    const p = document.getElementById(`panel-${i}`);
+    const p = document.getElementById(`viewport-shell-${i}`);
     if (p) p.style.display = i < visibleCount ? 'flex' : 'none';
     if (i < visibleCount) {
       if (i > 0 && viewports[i].seriesIdx === viewports[0].seriesIdx && currentStudy(i).series.length > i) {
@@ -1071,6 +1252,7 @@ function setLayout(mode) {
       renderViewport(i);
     }
   }
+  buildSeriesStrip();
   if (activeVp >= visibleCount) setActiveViewport(0);
 }
 
@@ -1079,7 +1261,7 @@ function renderViewport(i) {
   const ser = currentSeries(i);
   if (!ser || !ser.images.length) return;
   
-  const img = document.getElementById(`pacs-img-${i}`);
+  const img = document.getElementById(`viewport-img-${i}`);
   if (!img) return;
 
   const src = ser.images[vp.slice] || ser.images[0];
@@ -1088,12 +1270,15 @@ function renderViewport(i) {
   applyTransform(i);
   drawAnnotations(i);
   updateHUD(i);
-  if (i === activeVp) updateScrubberBar();
+  if (i === activeVp) {
+    updateScrubberBar();
+    updateStatusBar();
+  }
 }
 
 function applyTransform(i) {
   const vp = viewports[i];
-  const img = document.getElementById(`pacs-img-${i}`);
+  const img = document.getElementById(`viewport-img-${i}`);
   if (!img) return;
 
   const scaleX = (vp.flipH ? -1 : 1) * vp.zoom;
@@ -1108,7 +1293,6 @@ function applyTransform(i) {
 
 function updateHUD(i) {
   const vp = viewports[i];
-  const st = currentStudy(i);
   const ser = currentSeries(i);
   
   const elSlice = document.getElementById(`hud-slice-${i}`);
@@ -1116,8 +1300,8 @@ function updateHUD(i) {
   const elSeries = document.getElementById(`hud-series-${i}`);
   const elWl = document.getElementById(`hud-wl-${i}`);
   
-  if (elSlice) elSlice.textContent = `Lát: ${vp.slice + 1}/${ser?.count || 1}`;
-  if (elZoom) elZoom.textContent = `Zoom: ${Math.round(vp.zoom * 100)}%`;
+  if (elSlice) elSlice.textContent = `IM: ${vp.slice + 1}/${ser?.count || 1}`;
+  if (elZoom) elZoom.textContent = `Mag: ${Math.round(vp.zoom * 100)}%`;
   if (elSeries) elSeries.textContent = ser?.description || ser?.name || '—';
   if (elWl) elWl.textContent = `W: ${vp.contrast} L: ${vp.brightness}`;
 }
@@ -1125,15 +1309,25 @@ function updateHUD(i) {
 function updateScrubberBar() {
   const vp = viewports[activeVp];
   const ser = currentSeries(activeVp);
-  const slider = document.getElementById('main-slice-slider');
-  const tag = document.getElementById('main-slice-tag');
+  const slider = document.getElementById(`slice-range-${activeVp}`);
+  const tag = document.getElementById(`slice-tag-${activeVp}`);
   
   if (slider && ser) {
     slider.max = Math.max(0, ser.count - 1);
     slider.value = vp.slice;
   }
   if (tag && ser) {
-    tag.textContent = `${vp.slice + 1} / ${ser.count}`;
+    tag.textContent = `${vp.slice + 1}/${ser.count}`;
+  }
+}
+
+function updateStatusBar() {
+  const vp = viewports[activeVp];
+  const ser = currentSeries(activeVp);
+  const st = currentStudy(activeVp);
+  const statusEl = document.getElementById('status-bar-text');
+  if (statusEl && ser) {
+    statusEl.textContent = `${DATA.patient.patientName || 'Bệnh nhân'} • ${st.date || ''} • ${ser.description || ser.name} • Lát ${vp.slice + 1}/${ser.count} • Zoom: ${Math.round(vp.zoom * 100)}% • W/L: ${vp.contrast}/${vp.brightness}`;
   }
 }
 
@@ -1183,17 +1377,12 @@ function setWindowPreset(preset) {
   }
   applyTransform(activeVp);
   updateHUD(activeVp);
+  updateStatusBar();
 }
 
 function rotateCW() {
   const vp = viewports[activeVp];
   vp.rotation = (vp.rotation + 90) % 360;
-  applyTransform(activeVp);
-}
-
-function rotateCCW() {
-  const vp = viewports[activeVp];
-  vp.rotation = (vp.rotation - 90 + 360) % 360;
   applyTransform(activeVp);
 }
 
@@ -1228,6 +1417,7 @@ function resetViewport(idx = activeVp) {
   vp.contrast = 100;
   applyTransform(idx);
   updateHUD(idx);
+  updateStatusBar();
 }
 
 function resetAllViewports() {
@@ -1254,11 +1444,9 @@ function toggleSyncCrosshair() {
 
 function togglePlay() {
   isPlaying = !isPlaying;
-  const btn = document.getElementById('btn-play');
-  if (btn) {
-    btn.innerHTML = isPlaying ? '⏸ Tạm dừng' : '▶ Phát';
-    btn.classList.toggle('active', isPlaying);
-  }
+  document.querySelectorAll('.cine-btn').forEach(btn => {
+    btn.innerHTML = isPlaying ? '⏸' : '▶';
+  });
   if (isPlaying) {
     playInterval = setInterval(() => {
       const ser = currentSeries(activeVp);
@@ -1268,19 +1456,6 @@ function togglePlay() {
     }, 1000 / playFps);
   } else {
     clearInterval(playInterval);
-  }
-}
-
-function setFps(fps) {
-  playFps = fps;
-  if (isPlaying) {
-    clearInterval(playInterval);
-    playInterval = setInterval(() => {
-      const ser = currentSeries(activeVp);
-      if (!ser || ser.count <= 1) return;
-      const nextSlice = (viewports[activeVp].slice + 1) % ser.count;
-      setSlice(nextSlice);
-    }, 1000 / playFps);
   }
 }
 
@@ -1297,7 +1472,6 @@ function toggleShortcuts() {
   if (modal) modal.style.display = modal.style.display === 'none' ? 'flex' : 'none';
 }
 
-/* ── Canvas Annotations & Measurements ───────────────── */
 function drawAnnotations(vpIdx) {
   const canvas = document.getElementById(`annotation-canvas-${vpIdx}`);
   if (!canvas) return;
@@ -1313,8 +1487,8 @@ function drawAnnotations(vpIdx) {
   const items = [...vp.annotations];
   if (vp.tempAnnotation) items.push(vp.tempAnnotation);
 
-  ctx.strokeStyle = '#0ea5e9';
-  ctx.fillStyle = '#0ea5e9';
+  ctx.strokeStyle = '#00b0f0';
+  ctx.fillStyle = '#00b0f0';
   ctx.lineWidth = 1.5;
   ctx.font = '11px ' + getComputedStyle(document.body).getPropertyValue('--mono-font');
 
@@ -1355,9 +1529,8 @@ function drawAnnotations(vpIdx) {
     }
   });
 
-  // Crosshair synchronized reference
   if (syncCrosshair && vp.crosshair) {
-    ctx.strokeStyle = 'rgba(14, 165, 233, 0.7)';
+    ctx.strokeStyle = 'rgba(0, 176, 240, 0.7)';
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
     ctx.moveTo(vp.crosshair.x, 0);
@@ -1395,7 +1568,7 @@ function setupGlobalEvents() {
 }
 
 function setupViewportMouseEvents(idx) {
-  const container = document.getElementById(`container-${idx}`);
+  const container = document.getElementById(`viewport-shell-${idx}`);
   if (!container) return;
   const vp = viewports[idx];
 
@@ -1406,12 +1579,14 @@ function setupViewportMouseEvents(idx) {
       vp.zoom = Math.max(0.2, Math.min(10.0, vp.zoom + (e.deltaY < 0 ? 0.15 : -0.15)));
       applyTransform(idx);
       updateHUD(idx);
+      updateStatusBar();
     } else {
       setSlice(vp.slice + (e.deltaY > 0 ? 1 : -1), idx);
     }
   }, { passive: false });
 
   container.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.viewport-header-strip') || e.target.closest('.slice-control')) return;
     setActiveViewport(idx);
     vp.isDragging = true;
     vp.dragStart = { x: e.clientX, y: e.clientY };
@@ -1442,7 +1617,7 @@ function setupViewportMouseEvents(idx) {
         const normY = (e.clientY - rect.top) / rect.height;
         const maxVis = layout === '1x1' ? 1 : layout === '1x2' ? 2 : layout === '1x3' ? 3 : 4;
         for (let v = 0; v < maxVis; v++) {
-          const c = document.getElementById(`container-${v}`);
+          const c = document.getElementById(`viewport-shell-${v}`);
           if (c) {
             viewports[v].crosshair = { x: normX * c.clientWidth, y: normY * c.clientHeight };
             drawAnnotations(v);
@@ -1459,11 +1634,11 @@ function setupViewportMouseEvents(idx) {
     const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
 
     if (e.buttons === 2 || (activeTool === 'window' && e.buttons === 1)) {
-      // Window / Level
       vp.brightness = Math.max(10, Math.min(300, vp.brightness - dy * 0.5));
       vp.contrast = Math.max(10, Math.min(300, vp.contrast + dx * 0.5));
       applyTransform(idx);
       updateHUD(idx);
+      updateStatusBar();
     } else if (activeTool === 'pan' && e.buttons === 1) {
       vp.panX += dx;
       vp.panY += dy;
@@ -1472,6 +1647,7 @@ function setupViewportMouseEvents(idx) {
       vp.zoom = Math.max(0.2, Math.min(10.0, vp.zoom - dy * 0.01));
       applyTransform(idx);
       updateHUD(idx);
+      updateStatusBar();
     } else if (activeTool === 'scroll' && e.buttons === 1) {
       if (Math.abs(dy) > 4) {
         setSlice(vp.slice + (dy > 0 ? 1 : -1), idx);
@@ -1501,7 +1677,10 @@ function setupViewportMouseEvents(idx) {
     }
   });
 
-  container.addEventListener('dblclick', () => resetViewport(idx));
+  container.addEventListener('dblclick', (e) => {
+    if (e.target.closest('.viewport-header-strip') || e.target.closest('.slice-control')) return;
+    resetViewport(idx);
+  });
   container.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
@@ -1512,76 +1691,106 @@ window.addEventListener('resize', () => {
 </script>
 """
 
-    viewport_panels_html = []
+    viewport_shells_html = []
     for i in range(4):
-        viewport_panels_html.append(f"""
-      <div class="viewport-panel { 'active' if i == 0 else '' }" id="panel-{i}" style="{ '' if i == 0 else 'display:none;' }">
-        <div class="viewport-panel-header">
-          <div class="vp-selectors">
-            <span class="vp-badge">VP{i+1}</span>
-            <select class="vp-select" id="vp-study-sel-{i}"></select>
-            <select class="vp-select" id="vp-series-sel-{i}"></select>
-          </div>
-          <button class="tool-btn icon-only" onclick="resetViewport({i})" title="Reset">{svg_reset}</button>
+        viewport_shells_html.append(f"""
+      <div class="viewport-shell { 'is-active' if i == 0 else '' }" id="viewport-shell-{i}" style="{ '' if i == 0 else 'display:none;' }">
+        <div class="viewport-header-strip">
+          <span class="vp-badge">PANE {i+1}</span>
+          <select class="vp-select" id="vp-study-sel-{i}"></select>
+          <select class="vp-select" id="vp-series-sel-{i}"></select>
         </div>
 
-        <div class="hud hud-tl">
+        <div class="viewport-overlay overlay-tl">
           <div><b id="hud-name-{i}">{_escape(patient.get('patientName') or 'Bệnh nhân')}</b> ({_or_dash(patient.get('patientId'))})</div>
           <div>{_sex_label(patient.get('patientSex') or '')} · {_or_dash(patient.get('patientBirthDate'))}</div>
         </div>
-        <div class="hud hud-tr">
+        <div class="viewport-overlay overlay-tr">
           <div>{_or_dash(initial_study.date)}</div>
           <div>{_or_dash(patient.get('hospitalName'))}</div>
         </div>
-        <div class="hud hud-bl">
+        <div class="viewport-overlay overlay-bl">
           <div id="hud-series-{i}">—</div>
           <div id="hud-wl-{i}" class="mono">W: 100 L: 100</div>
         </div>
-        <div class="hud hud-br mono">
-          <div id="hud-slice-{i}">Lát: 1/1</div>
-          <div id="hud-zoom-{i}">Zoom: 100%</div>
+        <div class="viewport-overlay overlay-br mono">
+          <div id="hud-slice-{i}">IM: 1/1</div>
+          <div id="hud-zoom-{i}">Mag: 100%</div>
         </div>
 
-        <div class="img-container" id="container-{i}">
-          <img class="pacs-img" id="pacs-img-{i}" alt="PACS Viewport">
-          <canvas class="annotation-canvas" id="annotation-canvas-{i}"></canvas>
+        <span class="orientation-marker orientation-t">A</span>
+        <span class="orientation-marker orientation-b">P</span>
+        <span class="orientation-marker orientation-l">R</span>
+        <span class="orientation-marker orientation-r">L</span>
+
+        <img class="viewport-img" id="viewport-img-{i}" alt="PACS Canvas">
+        <canvas class="annotation-canvas" id="annotation-canvas-{i}"></canvas>
+
+        <div class="slice-control">
+          <button class="cine-btn" onclick="togglePlay()" title="Cine loop (Phím Space)">▶</button>
+          <button class="cine-btn" onclick="stepSlice(-1)" title="Lát trước (Phím ←)">‹</button>
+          <input type="range" id="slice-range-{i}" min="0" max="0" value="0" oninput="setSlice(Number(this.value), {i})">
+          <button class="cine-btn" onclick="stepSlice(1)" title="Lát sau (Phím →)">›</button>
+          <span class="mono" id="slice-tag-{i}" style="font-size:10px;min-width:32px;text-align:right;">1/1</span>
         </div>
       </div>
         """)
 
     viewer_body = f"""
-<div class="topbar">
-  <a href="index.html" class="btn-back">← Danh sách</a>
-  <div class="top-patient-info">
-    <span class="top-badge">{_escape(initial_study.modality or 'IMG')}</span>
-    <b>{_escape(patient.get('patientName') or 'Bệnh nhân')}</b>
-    <span>({_or_dash(patient.get('patientId'))})</span>
+<!-- Winbar Navigation -->
+<nav class="winbar">
+  <a href="index.html" class="winbar-tab">
+    <span>📋</span>
+    <span>Danh sách ca chụp</span>
+  </a>
+  <div class="winbar-tab active">
+    <span>👤</span>
+    <span>{_escape(patient.get('patientName') or 'Bệnh nhân')}</span>
+    <span class="tab-fmt-badge">{_escape(initial_study.modality or 'MR')} · VIEWER</span>
   </div>
+</nav>
 
-  <!-- Primary Tools -->
-  <div class="toolbar-cluster">
-    <button class="tool-btn active" data-tool="window" onclick="setTool('window')" title="Sáng / Tương phản (W/L)">{svg_window} W/L</button>
-    <button class="tool-btn" data-tool="pan" onclick="setTool('pan')" title="Di chuyển ảnh (Pan)">{svg_pan} Pan</button>
-    <button class="tool-btn" data-tool="zoom" onclick="setTool('zoom')" title="Thu / Phóng (Zoom)">{svg_zoom} Zoom</button>
-    <button class="tool-btn" data-tool="scroll" onclick="setTool('scroll')" title="Cuộn lát cắt (Scroll)">{svg_scroll} Scroll</button>
+<!-- Toolbar Groups (1:1 from Dcom to JPG) -->
+<header class="viewer-toolbar">
+  <!-- Nav tools -->
+  <div class="tool-cluster nav-tools">
+    <button class="icon-button active" data-tool="window" onclick="setTool('window')" title="Sáng / Tương phản (W/L: phím W)">{icons['window']}</button>
+    <button class="icon-button" data-tool="pan" onclick="setTool('pan')" title="Di chuyển ảnh (Pan: phím P)">{icons['pan']}</button>
+    <button class="icon-button" data-tool="zoom" onclick="setTool('zoom')" title="Thu / Phóng (Zoom: phím Z)">{icons['zoom']}</button>
+    <button class="icon-button" data-tool="scroll" onclick="setTool('scroll')" title="Cuộn lát cắt (Scroll: phím S)">{icons['scroll']}</button>
+    <button class="icon-button" data-tool="crosshair" onclick="setTool('crosshair')" title="Định vị con trỏ">{icons['crosshair']}</button>
   </div>
 
   <span class="toolbar-divider"></span>
 
-  <!-- Measurement Tools -->
-  <div class="toolbar-cluster">
-    <button class="tool-btn" data-tool="length" onclick="setTool('length')" title="Đo chiều dài (Caliper)">{svg_length} Đo</button>
-    <button class="tool-btn" data-tool="angle" onclick="setTool('angle')" title="Đo góc (Angle)">{svg_angle} Góc</button>
-    <button class="tool-btn" data-tool="ellipse" onclick="setTool('ellipse')" title="ROI Vùng chọn (Ellipse)">{svg_ellipse} ROI</button>
-    <button class="tool-btn icon-only" onclick="clearAnnotations()" title="Xóa đo đạc">{svg_invert}</button>
+  <!-- Measure tools -->
+  <div class="tool-cluster measure-tools">
+    <button class="icon-button" data-tool="length" onclick="setTool('length')" title="Đo chiều dài (Caliper: phím L)">{icons['length']}</button>
+    <button class="icon-button" data-tool="angle" onclick="setTool('angle')" title="Đo góc (Angle)">{icons['angle']}</button>
+    <button class="icon-button" data-tool="ellipse" onclick="setTool('ellipse')" title="ROI ellipse">{icons['ellipse']}</button>
+    <button class="icon-button" data-tool="freehand" onclick="setTool('freehand')" title="ROI tự do">{icons['freehand']}</button>
+    <button class="icon-button" data-tool="text" onclick="setTool('text')" title="Ghi chú chữ lên ảnh">{icons['text']}</button>
+    <button class="icon-button" data-tool="magnify" onclick="setTool('magnify')" title="Kính lúp">{icons['magnify']}</button>
   </div>
 
   <span class="toolbar-divider"></span>
 
-  <!-- Window Presets -->
-  <div class="toolbar-cluster">
-    <select class="tool-select" onchange="setWindowPreset(this.value)" title="Cửa sổ W/L">
-      <option value="default">Mặc định</option>
+  <!-- Orientation tools -->
+  <div class="tool-cluster orientation-tools">
+    <button class="icon-button" onclick="rotateCW()" title="Xoay 90°">{icons['rotateClockwise']}</button>
+    <button class="icon-button" onclick="flipHorizontal()" title="Lật ngang">{icons['flipHorizontal']}</button>
+    <button class="icon-button" onclick="flipVertical()" title="Lật dọc">{icons['flipVertical']}</button>
+    <button class="icon-button" onclick="toggleInvert()" title="Đảo màu (phím I)">{icons['invert']}</button>
+    <button class="icon-button" onclick="resetViewport()" title="Đặt lại góc nhìn (phím R)">{icons['reset']}</button>
+    <button class="icon-button" onclick="clearAnnotations()" title="Xóa đo đạc & ghi chú">{icons['clearAnnotations']}</button>
+  </div>
+
+  <span class="toolbar-divider"></span>
+
+  <!-- Window Presets Selector -->
+  <div class="tool-cluster">
+    <select class="window-select" onchange="setWindowPreset(this.value)" title="Cửa sổ W/L">
+      <option value="default">Cửa sổ mặc định</option>
       <option value="brain">Nhu mô não (Brain)</option>
       <option value="bone">Cửa sổ xương (Bone)</option>
       <option value="soft">Mô mềm (Soft Tissue)</option>
@@ -1592,80 +1801,73 @@ window.addEventListener('resize', () => {
 
   <span class="toolbar-divider"></span>
 
-  <!-- Orientations -->
-  <div class="toolbar-cluster">
-    <button class="tool-btn icon-only" onclick="rotateCW()" title="Xoay 90°">{svg_rotate_cw}</button>
-    <button class="tool-btn icon-only" onclick="flipHorizontal()" title="Lật ngang">{svg_flip_h}</button>
-    <button class="tool-btn icon-only" onclick="toggleInvert()" title="Âm bản">{svg_invert}</button>
-    <button class="tool-btn icon-only" onclick="resetViewport()" title="Đặt lại góc nhìn (Phím R)">{svg_reset}</button>
+  <!-- Compare & Sync Tools -->
+  <div class="tool-cluster compare-tools">
+    <button class="icon-button active" id="btn-sync-scroll" onclick="toggleSyncScroll()" title="Khoá cuộn đồng bộ">{icons['scrollSync']}</button>
+    <button class="icon-button active" id="btn-sync-crosshair" onclick="toggleSyncCrosshair()" title="Con trỏ tham chiếu">{icons['crosshair']}</button>
   </div>
 
   <span class="toolbar-divider"></span>
 
-  <!-- Multi-Viewport Layouts -->
-  <div class="toolbar-cluster">
-    <button class="tool-btn active" data-layout="1x1" onclick="setLayout('1x1')" title="1 Khung hình (1x1)">1x1</button>
-    <button class="tool-btn" data-layout="1x2" onclick="setLayout('1x2')" title="So sánh 2 khung song song (1x2)">1x2</button>
-    <button class="tool-btn" data-layout="1x3" onclick="setLayout('1x3')" title="So sánh 3 khung song song (1x3)">1x3</button>
-    <button class="tool-btn" data-layout="2x2" onclick="setLayout('2x2')" title="Lưới 4 khung hình (2x2)">2x2</button>
-  </div>
-
-  <span class="toolbar-divider"></span>
-
-  <!-- Sync Toggles -->
-  <div class="toolbar-cluster">
-    <button class="tool-btn active" id="btn-sync-scroll" onclick="toggleSyncScroll()" title="Khóa cuộn lát cắt đồng bộ">{svg_sync} Sync</button>
-    <button class="tool-btn active" id="btn-sync-crosshair" onclick="toggleSyncCrosshair()" title="Con trỏ tham chiếu đồng bộ (Crosslink)">{svg_crosshair} Cross</button>
+  <!-- Layout cluster -->
+  <div class="tool-cluster layout-tools">
+    <button class="icon-button active" data-layout="1x1" onclick="setLayout('1x1')" title="1 Khung hình (phím 1)">{icons['single']}</button>
+    <button class="icon-button" data-layout="1x2" onclick="setLayout('1x2')" title="So sánh 2 khung (phím 2)">{icons['compare']}</button>
+    <button class="icon-button" data-layout="1x3" onclick="setLayout('1x3')" title="So sánh 3 khung (phím 3)">{icons['compare3']}</button>
+    <button class="icon-button" data-layout="2x2" onclick="setLayout('2x2')" title="Lưới 4 khung hình (phím 4)">{icons['montage6']}</button>
   </div>
 
   <div style="flex:1;"></div>
 
-  <div class="toolbar-cluster">
-    <button class="tool-btn icon-only" onclick="toggleFullscreen()" title="Toàn màn hình (F)">⛶</button>
-    <button class="tool-btn icon-only" onclick="toggleShortcuts()" title="Phím tắt (⌨)">⌨</button>
+  <!-- Output & Info -->
+  <div class="tool-cluster output-tools">
+    <button class="icon-button" onclick="toggleFullscreen()" title="Toàn màn hình (phím F)">⛶</button>
+    <button class="icon-button" onclick="toggleShortcuts()" title="Phím tắt">{icons['info']}</button>
   </div>
-</div>
+</header>
 
-<div class="main-layout">
-  <!-- Series Rail Sidebar -->
-  <div class="sidebar">
-    <div class="sidebar-head">
-      <span>Chuỗi xung (<span id="sidebar-series-count">0</span>)</span>
+<!-- 3-Column Workstation App Shell -->
+<div class="app-shell">
+  <!-- Col 1: Patient Record Rail -->
+  <aside class="rec-rail">
+    <div class="rec-card">
+      <div class="rec-card-header">
+        <b>👤 Thông tin bệnh nhân</b>
+      </div>
+      <dl class="rfacts">
+        <div class="rfact"><dt>Họ tên</dt><dd><b>{_escape(patient.get('patientName') or UNKNOWN)}</b></dd></div>
+        <div class="rfact"><dt>Mã BN</dt><dd>{_or_dash(patient.get('patientId'))}</dd></div>
+        <div class="rfact"><dt>Giới tính</dt><dd>{_sex_label(patient.get('patientSex') or '') or UNKNOWN}</dd></div>
+        <div class="rfact"><dt>Ngày sinh</dt><dd>{_or_dash(patient.get('patientBirthDate'))}</dd></div>
+        <div class="rfact"><dt>Điện thoại</dt><dd>{_or_dash(patient.get('phone'))}</dd></div>
+        <div class="rfact"><dt>Cơ sở</dt><dd>{_or_dash(patient.get('hospitalName'))}</dd></div>
+      </dl>
     </div>
-    <div class="series-list" id="series-list-container"></div>
-  </div>
 
-  <!-- Viewports Grid Stage -->
-  <div class="viewport-stage">
-    <div class="viewports-grid layout-1x1" id="grid-viewports">
-      {''.join(viewport_panels_html)}
+    <div class="rec-timeline-head"><b>Lịch sử khám ({len(all_studies)})</b></div>
+    <div class="tl" id="timeline-container"></div>
+  </aside>
+
+  <!-- Col 2: Series Strip -->
+  <aside class="series-strip" id="series-strip-container"></aside>
+
+  <!-- Col 3: Main Diagnostic Stage -->
+  <main class="viewer-main">
+    <div class="workspace-grid mode-single" id="grid-viewports">
+      {''.join(viewport_shells_html)}
     </div>
 
-    <!-- Scrubber & Cine Controls -->
-    <div class="controls-bar">
-      <button class="tool-btn" id="btn-play" onclick="togglePlay()">▶ Phát</button>
-      <div style="display:flex;gap:2px;">
-        <button class="tool-btn icon-only" onclick="stepSlice(-1)" title="Lát trước">◀</button>
-        <button class="tool-btn icon-only" onclick="stepSlice(1)" title="Lát sau">▶</button>
-      </div>
-      <div class="scrubber-wrap">
-        <input type="range" class="slice-slider" id="main-slice-slider" min="0" max="0" value="0" oninput="setSlice(Number(this.value))">
-        <span class="slice-tag mono" id="main-slice-tag">0 / 0</span>
-      </div>
-      <div style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:4px;">
-        <span>FPS:</span>
-        <button class="tool-btn" onclick="setFps(10)">10</button>
-        <button class="tool-btn" onclick="setFps(20)">20</button>
-        <button class="tool-btn" onclick="setFps(30)">30</button>
-      </div>
-    </div>
-  </div>
+    <footer class="status-bar">
+      <span class="status-dot"></span>
+      <span class="status-text" id="status-bar-text">Sẵn sàng đọc phim.</span>
+    </footer>
+  </main>
 </div>
 
 <!-- Shortcuts Modal -->
 <div class="modal-overlay" id="modal-shortcuts" style="display:none;" onclick="if(event.target===this) toggleShortcuts();">
   <div class="modal-card">
-    <h3>⌨ Phím tắt điều khiển Web PACS Viewer</h3>
+    <h3>⌨ Phím tắt điều khiển DCOM Web PACS Viewer</h3>
     <div class="shortcut-row"><span>Cuộn lát cắt</span><div><kbd>←</kbd> <kbd>→</kbd> hoặc <kbd>Cuộn chuột</kbd></div></div>
     <div class="shortcut-row"><span>Phát / Dừng Cine loop</span><kbd>Space</kbd></div>
     <div class="shortcut-row"><span>Phóng to / Thu nhỏ (Zoom)</span><kbd>Ctrl + Cuộn chuột</kbd></div>
@@ -1676,7 +1878,7 @@ window.addEventListener('resize', () => {
     <div class="shortcut-row"><span>Đặt lại góc nhìn (Reset)</span><kbd>R</kbd> hoặc <kbd>Nhấp đúp chuột</kbd></div>
     <div class="shortcut-row"><span>Toàn màn hình</span><kbd>F</kbd></div>
     <div style="margin-top:14px;text-align:right;">
-      <button class="tool-btn active" onclick="toggleShortcuts()">Đóng</button>
+      <button class="icon-button active" style="width:auto;padding:0 12px;font-size:12px;" onclick="toggleShortcuts()">Đóng</button>
     </div>
   </div>
 </div>
