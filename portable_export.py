@@ -674,11 +674,18 @@ body {
 }
 
 .viewport-img {
-  max-width: none;
-  max-height: none;
+  max-width: calc(100% - 8px);
+  max-height: calc(100% - 8px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
   position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   transform-origin: center center;
   pointer-events: none;
+  user-select: none;
 }
 .annotation-canvas {
   position: absolute;
@@ -1311,7 +1318,7 @@ function applyTransform(i) {
   const scaleX = (vp.flipH ? -1 : 1) * vp.zoom;
   const scaleY = (vp.flipV ? -1 : 1) * vp.zoom;
   
-  img.style.transform = `translate(${vp.panX}px, ${vp.panY}px) rotate(${vp.rotation}deg) scale(${scaleX}, ${scaleY})`;
+  img.style.transform = `translate(-50%, -50%) translate(${vp.panX}px, ${vp.panY}px) rotate(${vp.rotation}deg) scale(${scaleX}, ${scaleY})`;
   
   let filterStr = `brightness(${vp.brightness}%) contrast(${vp.contrast}%)`;
   if (vp.invert) filterStr += ' invert(100%)';
