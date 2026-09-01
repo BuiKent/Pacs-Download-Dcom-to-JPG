@@ -194,7 +194,8 @@ def collect_record(patient_folder: Path) -> tuple[dict, list[ExportStudy]]:
         if not series and not documents and not dicom_files:
             continue
         record = _study_metadata(folder, records)
-        date = str(record.get("date") or "").strip()
+        date_raw = str(record.get("date") or "").strip()
+        date = _format_date_only(date_raw)
         modality = str(record.get("modality") or "").strip().upper()
         description = str(record.get("description") or "").strip()
         if not modality:
@@ -221,7 +222,7 @@ def collect_record(patient_folder: Path) -> tuple[dict, list[ExportStudy]]:
     patient = {
         "patientName": str(manifest.get("patientName") or "").strip(),
         "patientId": str(manifest.get("patientId") or "").strip(),
-        "patientBirthDate": str(manifest.get("patientBirthDate") or "").strip(),
+        "patientBirthDate": _format_date_only(str(manifest.get("patientBirthDate") or "")),
         "patientSex": str(manifest.get("patientSex") or "").strip().upper(),
         "hospitalName": hospital,
         "phone": str(manifest.get("patientPhone") or "").strip(),
@@ -229,6 +230,13 @@ def collect_record(patient_folder: Path) -> tuple[dict, list[ExportStudy]]:
         "diagnosis": str(manifest.get("patientDiagnosis") or "").strip(),
     }
     return patient, studies
+
+
+def _format_date_only(val: str | None) -> str:
+    if not val:
+        return ""
+    val_str = str(val).strip()
+    return val_str.split()[0] if " " in val_str else val_str
 
 
 def _escape(value: str) -> str:
