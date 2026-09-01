@@ -509,9 +509,16 @@ body {
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
   background: var(--bg-card);
-  cursor: pointer;
+  cursor: grab;
+  user-select: none;
   position: relative;
   transition: border-color 0.15s ease, background 0.15s ease;
+}
+.series-card:active { cursor: grabbing; }
+.series-card.is-dragging {
+  opacity: 0.45;
+  outline: 2px dashed #00b0f0;
+  cursor: grabbing;
 }
 .series-card:hover {
   border-color: #2c4456;
@@ -640,6 +647,26 @@ body {
   border-color: #00b0f0;
   border-width: 2px;
   box-shadow: inset 0 0 0 1px rgba(0, 176, 240, 0.3), 0 0 12px 2px rgba(0, 176, 240, 0.2);
+}
+.viewport-shell.drop-target {
+  border-color: #00b0f0 !important;
+  box-shadow: inset 0 0 0 2px #00b0f0, 0 0 16px rgba(0, 176, 240, 0.45) !important;
+}
+.viewport-shell.drop-target::after {
+  content: '⬇ Thả chuỗi xung vào đây';
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 28, 42, 0.85);
+  backdrop-filter: blur(3px);
+  color: #38bdf8;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+  pointer-events: none;
+  border: 2px dashed #38bdf8;
 }
 
 .viewport-header-strip {
@@ -1138,9 +1165,9 @@ function buildSeriesStrip() {
     st.series.forEach((ser, serIdx) => {
       const thumb = ser.images[ser.keyIndex] || ser.images[0] || '';
       html += `
-        <button class="series-card" data-study-idx="${stIdx}" data-series-idx="${serIdx}" onclick="selectSeriesFromStrip(${stIdx}, ${serIdx})">
+        <button class="series-card" draggable="true" data-study-idx="${stIdx}" data-series-idx="${serIdx}" onclick="selectSeriesFromStrip(${stIdx}, ${serIdx})" title="${ser.description || ser.name} (Kéo vào khung hình để xem)">
           <div class="series-thumb-box">
-            <img class="series-card-thumb" src="${thumb}" alt="">
+            <img class="series-card-thumb" src="${thumb}" alt="" draggable="false">
             <span class="badge-3d">${ser.modality || 'MR'}</span>
             <div class="series-thumb-overlay">
               <b class="series-thumb-title">${ser.description || ser.name}</b>
@@ -1152,6 +1179,21 @@ function buildSeriesStrip() {
     });
   });
   container.innerHTML = html;
+
+  // Setup HTML5 Drag and Drop on series cards
+  container.querySelectorAll('.series-card').forEach(card => {
+    card.addEventListener('dragstart', (e) => {
+      const stIdx = Number(card.dataset.studyIdx);
+      const serIdx = Number(card.dataset.seriesIdx);
+      e.dataTransfer.setData('text/plain', JSON.stringify({ studyIdx: stIdx, seriesIdx: serIdx }));
+      e.dataTransfer.effectAllowed = 'copyMove';
+      card.classList.add('is-dragging');
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('is-dragging');
+      document.querySelectorAll('.viewport-shell').forEach(vp => vp.classList.remove('drop-target'));
+    });
+  });
 }
 
 function updateCardHighlights() {
@@ -1607,6 +1649,42 @@ function setupViewportMouseEvents(idx) {
   const container = document.getElementById(`viewport-shell-${idx}`);
   if (!container) return;
   const vp = viewports[idx];
+
+  // HTML5 Drag and Drop handlers for series dropping
+  container.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    container.classList.add('drop-target');
+  });
+  container.addEventListener('dragleave', (e) => {
+    if (!container.contains(e.relatedTarget)) {
+      container.classList.remove('drop-target');
+    }
+  });
+  container.addEventListener('drop', (e) => {
+    e.preventDefault();
+    container.classList.remove('drop-target');
+    try {
+      const raw = e.dataTransfer.getData('text/plain');
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (data.studyIdx !== undefined && data.seriesIdx !== undefined) {
+        viewports[idx].studyIdx = data.studyIdx;
+        viewports[idx].seriesIdx = data.seriesIdx;
+        const stSel = document.getElementById(`vp-study-sel-${idx}`);
+        if (stSel) stSel.value = data.studyIdx;
+        updateSeriesDropdown(idx);
+        const ser = currentSeries(idx);
+        viewports[idx].slice = ser?.keyIndex || 0;
+        setActiveViewport(idx);
+        updateCardHighlights();
+        resetViewport(idx);
+        renderViewport(idx);
+      }
+    } catch (err) {
+      console.error('Drop error:', err);
+    }
+  });
 
   container.addEventListener('wheel', (e) => {
     e.preventDefault();
