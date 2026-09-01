@@ -2147,6 +2147,7 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         catalog = ArchiveCatalog()
         series_id = catalog.open(patient)["series"][0]["id"]
 
+        web_backend.MEDIA_WORK_ROOT.mkdir(parents=True, exist_ok=True)
         work = web_backend.MEDIA_WORK_ROOT / "edited_probe.jpg"
         Image.new("RGB", (24, 24), (200, 10, 10)).save(work)
         self.addCleanup(work.unlink, True)

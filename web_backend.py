@@ -53,6 +53,7 @@ APP_METADATA_NAMES = {
     "patient-index.json",
     "viewer-annotations.json",
     ".direct-download.json",
+    ".dicom_cache.json",
     "manifest.json",
     # Written next to every converted JPG series by the MPR builder, so a
     # study folder would otherwise list a second "report" holding geometry.
@@ -96,6 +97,8 @@ def media_type_for_file(path: Path) -> str:
     trimmer instead of the diagnostic canvas. A file's type is a property of
     the file, so that is what gets read.
     """
+    if path.name.startswith("."):
+        return ""
     suffix = path.suffix.casefold()
     if suffix in VIDEO_EXTENSIONS:
         return "video"
@@ -1130,6 +1133,64 @@ class SeriesRecord:
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
 
 
+_DICOM_MEM_CACHE: dict[str, tuple[str, dict[str, SeriesRecord], int, int]] = {}
+
+
+def _dicom_fingerprint(paths: list[Path]) -> str:
+    if not paths:
+        return "0:0:0"
+    count = len(paths)
+    try:
+        m0 = paths[0].stat().st_mtime_ns
+        m_mid = paths[count // 2].stat().st_mtime_ns
+        m_last = paths[-1].stat().st_mtime_ns
+        return f"{count}:{m0}:{m_mid}:{m_last}"
+    except OSError:
+        return str(count)
+
+
+def _serialize_series_record(rec: SeriesRecord) -> dict:
+    return {
+        "series_id": rec.series_id,
+        "name": rec.name,
+        "folder": str(rec.folder),
+        "images": [str(img) for img in rec.images],
+        "frame_indices": rec.frame_indices,
+        "manifest": rec.manifest,
+        "mpr_ready": rec.mpr_ready,
+        "mpr_reason": rec.mpr_reason,
+        "modality": rec.modality,
+        "source_type": rec.source_type,
+        "pixel_data": rec.pixel_data,
+        "study_group": rec.study_group,
+        "study_date": rec.study_date,
+        "acquisition": rec.acquisition,
+    }
+
+
+def _deserialize_series_record(item: dict) -> SeriesRecord:
+    return SeriesRecord(
+        series_id=item["series_id"],
+        name=item["name"],
+        folder=Path(item["folder"]),
+        images=[Path(x) for x in item["images"]],
+        frame_indices=item.get("frame_indices") or [],
+        manifest=item.get("manifest"),
+        mpr_ready=bool(item.get("mpr_ready")),
+        mpr_reason=str(item.get("mpr_reason") or ""),
+        modality=str(item.get("modality") or "UNKNOWN"),
+        source_type=str(item.get("source_type") or "dicom"),
+        pixel_data=item.get("pixel_data"),
+        study_group=str(item.get("study_group") or ""),
+        study_date=str(item.get("study_date") or ""),
+        acquisition=item.get("acquisition") or {},
+    )
+
+
+def _get_dicom_cache_path(root: Path) -> Path:
+    return root / ".dicom_cache.json"
+
+
 class ArchiveCatalog:
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -1446,19 +1507,61 @@ class ArchiveCatalog:
         should_stop: Optional[Callable[[], bool]] = None,
     ) -> tuple[dict[str, SeriesRecord], int, int]:
         paths = discover_dicom_files(root)
+        if not paths:
+            return {}, 0, 0
+
+        fp = _dicom_fingerprint(paths)
+        root_key = str(root.resolve()).casefold()
+
+        # 1. In-memory session cache
+        if root_key in _DICOM_MEM_CACHE:
+            cached_fp, cached_recs, cached_unsupp, cached_total = _DICOM_MEM_CACHE[root_key]
+            if cached_fp == fp:
+                return copy.copy(cached_recs), cached_unsupp, cached_total
+
+        # 2. On-disk metadata cache
+        cache_path = _get_dicom_cache_path(root)
+        if cache_path.is_file():
+            try:
+                data = json.loads(cache_path.read_text(encoding="utf-8"))
+                if data.get("fingerprint") == fp and "records" in data:
+                    records = {
+                        uid: _deserialize_series_record(item)
+                        for uid, item in data["records"].items()
+                    }
+                    unsupported = int(data.get("unsupported", 0))
+                    total = int(data.get("total", len(paths)))
+                    _DICOM_MEM_CACHE[root_key] = (fp, records, unsupported, total)
+                    return copy.copy(records), unsupported, total
+            except Exception:
+                pass
+
         groups: dict[str, list[DicomHeader]] = {}
         unsupported = 0
-        for index, path in enumerate(paths, start=1):
-            if should_stop and should_stop():
-                return {}, unsupported, len(paths)
-            if log and (index == 1 or index % 100 == 0):
-                log(f"Đang đọc metadata DICOM: {index}/{len(paths)} file…")
-            # One entry per frame: a multi-frame file contributes several.
-            headers = _read_dicom_header(path)
-            if headers:
-                groups.setdefault(headers[0].series_uid, []).extend(headers)
-            else:
-                unsupported += 1
+
+        if len(paths) > 16:
+            import concurrent.futures
+            max_workers = min(8, max(2, os.cpu_count() or 4))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Parallel map to read DICOM headers concurrently across CPU cores
+                results = list(executor.map(_read_dicom_header, paths))
+                for headers in results:
+                    if headers:
+                        groups.setdefault(headers[0].series_uid, []).extend(headers)
+                    else:
+                        unsupported += 1
+        else:
+            for index, path in enumerate(paths, start=1):
+                if should_stop and should_stop():
+                    return {}, unsupported, len(paths)
+                if log and (index == 1 or index % 100 == 0):
+                    log(f"Đang đọc metadata DICOM: {index}/{len(paths)} file…")
+                # One entry per frame: a multi-frame file contributes several.
+                headers = _read_dicom_header(path)
+                if headers:
+                    groups.setdefault(headers[0].series_uid, []).extend(headers)
+                else:
+                    unsupported += 1
 
         records: dict[str, SeriesRecord] = {}
         for uid, headers in groups.items():
@@ -1542,6 +1645,20 @@ class ArchiveCatalog:
                 f"Bỏ qua {unsupported} file nghi DICOM chưa hỗ trợ "
                 "(ảnh màu, metadata thiếu hoặc file hỏng)."
             )
+
+        # Cache valid results
+        _DICOM_MEM_CACHE[root_key] = (fp, records, unsupported, len(paths))
+        try:
+            cache_payload = {
+                "fingerprint": fp,
+                "unsupported": unsupported,
+                "total": len(paths),
+                "records": {uid: _serialize_series_record(rec) for uid, rec in records.items()},
+            }
+            cache_path.write_text(json.dumps(cache_payload, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+
         return records, unsupported, len(paths)
 
     @staticmethod
@@ -1870,15 +1987,23 @@ class ArchiveCatalog:
             # filed in the same folder still has to be.
             for extra in self._companion_media_records(folder, root, skip=set()):
                 records[extra.series_id] = extra
-        self._restore_legacy_jpg_geometry(
-            records,
-            root,
-            log=log,
-            should_stop=should_stop,
-        )
-        _enrich_manifest_records(records)
-        if log:
-            log(f"Đã quét {scanned} thư mục, tìm thấy {len(records)} series ảnh.")
+
+        if records:
+            self._restore_legacy_jpg_geometry(
+                records,
+                root,
+                log=log,
+                should_stop=should_stop,
+            )
+            _enrich_manifest_records(records)
+            if log:
+                log(f"Đã quét {scanned} thư mục, tìm thấy {len(records)} series ảnh.")
+            with self._lock:
+                self.root = root
+                self._patient = self._patient_block(patient_manifest)
+                self._series = records
+            return self.snapshot()
+
         if not records and dicom_candidates:
             raise ValueError(
                 "Folder có file DICOM nhưng chưa có series ảnh xám một khung đọc được. "
@@ -4956,6 +5081,7 @@ class LocalApiServer:
                 if record.source_type == "dicom":
                     frame = record.frame_indices[index] if record.frame_indices else 0
                     body, headers = _dicom_pixel_payload(image, frame)
+                    headers["Cache-Control"] = "private, max-age=86400"
                     self._send(
                         HTTPStatus.OK,
                         body,
@@ -4964,7 +5090,7 @@ class LocalApiServer:
                     )
                     return True
                 mime = MIME_TYPES.get(image.suffix.casefold(), "application/octet-stream")
-                self._send_file(image, mime)
+                self._send_file(image, mime, {"Cache-Control": "private, max-age=86400"})
                 return True
 
             def _static(self, path: str) -> None:
