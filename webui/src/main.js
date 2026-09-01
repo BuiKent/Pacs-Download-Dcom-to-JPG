@@ -3506,6 +3506,14 @@ function bindEvents() {
       const newSeries = state.archive.series.find((item) => item.id === seriesId);
       if (!newSeries) return;
 
+      // If clicked from timeline rail, scroll series strip to the target card
+      if (element.classList.contains("tl-open") || element.closest(".tl-item")) {
+        const targetCard = app.querySelector(`.series-card[data-series-id="${seriesId}"]`);
+        if (targetCard) {
+          targetCard.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      }
+
       // In compare mode: hot-swap the focused pane's series (no rebuild).
       if (isCompareMode()) {
         const info = getActiveCompareInfo();

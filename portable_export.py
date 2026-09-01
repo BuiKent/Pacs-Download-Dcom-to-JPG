@@ -1157,7 +1157,7 @@ function buildSeriesStrip() {
   DATA.studies.forEach((st, stIdx) => {
     const dateLabel = st.date || 'Chưa rõ ngày';
     html += `
-      <div class="series-group-badge">
+      <div class="series-group-badge" data-study-idx="${stIdx}">
         <span class="badge-date">📁 ${dateLabel}</span>
         <span class="badge-study">${st.modality || ''} · ${st.folderName || st.title}</span>
       </div>
@@ -1237,6 +1237,14 @@ function switchStudy(stIdx) {
   updateSeriesDropdown(activeVp);
   updateCardHighlights();
   renderViewport(activeVp);
+
+  // Auto scroll series-strip to the selected study group
+  const targetBadge = document.querySelector(`.series-group-badge[data-study-idx="${stIdx}"]`);
+  const targetCard = document.querySelector(`.series-card[data-study-idx="${stIdx}"]`);
+  const target = targetBadge || targetCard;
+  if (target) {
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 function selectSeriesFromStrip(stIdx, serIdx) {
