@@ -1099,26 +1099,12 @@ function currentSeries(vpIdx = activeVp) {
 function buildTimelineRail() {
   const tl = document.getElementById('timeline-container');
   if (!tl) return;
-  tl.innerHTML = DATA.studies.map((st, idx) => {
-    const isActive = viewports[activeVp].studyIdx === idx;
-    return `
-      <div class="tl-item ${isActive ? 'on' : ''}" onclick="switchStudy(${idx})">
-        <div class="tl-item-title">${st.modality || 'MR'} - ${st.date || 'Chưa rõ ngày'}</div>
-        <div class="tl-item-meta">${st.folderName || st.title}</div>
-      </div>
-    `;
-  }).join('');
-}
-
-function switchStudy(stIdx) {
-  const vp = viewports[activeVp];
-  vp.studyIdx = stIdx;
-  vp.seriesIdx = 0;
-  vp.slice = 0;
-  updateSeriesDropdown(activeVp);
-  buildTimelineRail();
-  buildSeriesStrip();
-  renderViewport(activeVp);
+  tl.innerHTML = DATA.studies.map((st, idx) => `
+    <div class="tl-item" data-study-idx="${idx}" onclick="switchStudy(${idx})">
+      <div class="tl-item-title">${st.modality || 'MR'} - ${st.date || 'Chưa rõ ngày'}</div>
+      <div class="tl-item-meta">${st.folderName || st.title}</div>
+    </div>
+  `).join('');
 }
 
 function buildSeriesStrip() {
@@ -1136,19 +1122,8 @@ function buildSeriesStrip() {
     `;
     st.series.forEach((ser, serIdx) => {
       const thumb = ser.images[ser.keyIndex] || ser.images[0] || '';
-      
-      const visiblePanes = [];
-      const maxVis = layout === '1x1' ? 1 : layout === '1x2' ? 2 : layout === '1x3' ? 3 : 4;
-      for (let v = 0; v < maxVis; v++) {
-        if (viewports[v].studyIdx === stIdx && viewports[v].seriesIdx === serIdx) {
-          visiblePanes.push(v + 1);
-        }
-      }
-      const isVisible = visiblePanes.length > 0;
-      const paneAttr = isVisible ? `data-pane="${visiblePanes.join(',')}"` : '';
-
       html += `
-        <button class="series-card ${isVisible ? 'active' : ''}" ${paneAttr} onclick="selectSeriesFromStrip(${stIdx}, ${serIdx})">
+        <button class="series-card" data-study-idx="${stIdx}" data-series-idx="${serIdx}" onclick="selectSeriesFromStrip(${stIdx}, ${serIdx})">
           <div class="series-thumb-box">
             <img class="series-card-thumb" src="${thumb}" alt="">
             <span class="badge-3d">${ser.modality || 'MR'}</span>
@@ -1164,6 +1139,49 @@ function buildSeriesStrip() {
   container.innerHTML = html;
 }
 
+function updateCardHighlights() {
+  const maxVis = layout === '1x1' ? 1 : layout === '1x2' ? 2 : layout === '1x3' ? 3 : 4;
+  
+  // Update timeline study items in-place
+  document.querySelectorAll('.tl-item[data-study-idx]').forEach(el => {
+    const stIdx = Number(el.dataset.studyIdx);
+    let isVisible = false;
+    for (let v = 0; v < maxVis; v++) {
+      if (viewports[v].studyIdx === stIdx) { isVisible = true; break; }
+    }
+    el.classList.toggle('on', isVisible);
+  });
+
+  // Update series cards in-place (never touch innerHTML or scrollTop)
+  document.querySelectorAll('.series-card[data-study-idx]').forEach(card => {
+    const stIdx = Number(card.dataset.studyIdx);
+    const serIdx = Number(card.dataset.seriesIdx);
+    const visiblePanes = [];
+    for (let v = 0; v < maxVis; v++) {
+      if (viewports[v].studyIdx === stIdx && viewports[v].seriesIdx === serIdx) {
+        visiblePanes.push(v + 1);
+      }
+    }
+    const isVisible = visiblePanes.length > 0;
+    card.classList.toggle('active', isVisible);
+    if (isVisible) {
+      card.dataset.pane = visiblePanes.join(',');
+    } else {
+      delete card.dataset.pane;
+    }
+  });
+}
+
+function switchStudy(stIdx) {
+  const vp = viewports[activeVp];
+  vp.studyIdx = stIdx;
+  vp.seriesIdx = 0;
+  vp.slice = 0;
+  updateSeriesDropdown(activeVp);
+  updateCardHighlights();
+  renderViewport(activeVp);
+}
+
 function selectSeriesFromStrip(stIdx, serIdx) {
   const vp = viewports[activeVp];
   vp.studyIdx = stIdx;
@@ -1172,8 +1190,7 @@ function selectSeriesFromStrip(stIdx, serIdx) {
   vp.slice = ser?.keyIndex || 0;
   
   updateSeriesDropdown(activeVp);
-  buildTimelineRail();
-  buildSeriesStrip();
+  updateCardHighlights();
   resetViewport(activeVp);
   renderViewport(activeVp);
 }
@@ -1190,7 +1207,7 @@ function initViewportHeaders() {
         viewports[i].seriesIdx = 0;
         viewports[i].slice = 0;
         updateSeriesDropdown(i);
-        buildSeriesStrip();
+        updateCardHighlights();
         renderViewport(i);
       });
     }
@@ -1209,20 +1226,21 @@ function updateSeriesDropdown(i) {
     viewports[i].seriesIdx = Number(e.target.value);
     const ser = currentSeries(i);
     viewports[i].slice = ser?.keyIndex || 0;
-    buildSeriesStrip();
+    updateCardHighlights();
     renderViewport(i);
   };
 }
 
 function setActiveViewport(idx) {
-  activeVp = idx;
-  document.querySelectorAll('.viewport-shell').forEach((el, i) => {
-    el.classList.toggle('is-active', i === idx);
-  });
-  buildTimelineRail();
-  buildSeriesStrip();
-  updateScrubberBar();
-  updateStatusBar();
+  if (activeVp !== idx) {
+    activeVp = idx;
+    document.querySelectorAll('.viewport-shell').forEach((el, i) => {
+      el.classList.toggle('is-active', i === idx);
+    });
+    updateCardHighlights();
+    updateScrubberBar();
+    updateStatusBar();
+  }
 }
 
 function setLayout(mode) {
@@ -1252,7 +1270,7 @@ function setLayout(mode) {
       renderViewport(i);
     }
   }
-  buildSeriesStrip();
+  updateCardHighlights();
   if (activeVp >= visibleCount) setActiveViewport(0);
 }
 
