@@ -864,28 +864,30 @@ body {
 """
 
 INDEX_CSS = """
-:root {
-  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
-  color-scheme: dark;
-  --bg-app: #05080c;
-  --bg-panel: #090e15;
-  --bg-card: #0e161f;
-  --bg-hover: #13202c;
-  --border: #18232c;
-  --border-subtle: #1e2b36;
-  --text-main: #f1f5f9;
-  --text-muted: #94a3b8;
-  --accent: #007fbd;
-  --success: #10b981;
+/* ── Layout Wrap for Viewports vs Worklist ─────────────── */
+.viewer-layout-wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  background: var(--bg-app);
-  color: var(--text-main);
-  min-height: 100vh;
+
+/* ── Worklist View Container (Danh sách ca chụp) ──────── */
+.worklist-container {
+  flex: 1;
+  overflow-y: auto;
   padding: 24px;
+  background: var(--bg-app);
   display: flex;
   justify-content: center;
+}
+.worklist-inner {
+  width: 100%;
+  max-width: 960px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 .container { width: 100%; max-width: 960px; display: flex; flex-direction: column; gap: 16px; }
 header.patient-header {
@@ -915,9 +917,10 @@ header.patient-header .fields span b { color: #fff; font-weight: 600; }
   display: flex;
   flex-direction: column;
   gap: 10px;
+  cursor: pointer;
   transition: all 0.15s;
 }
-.study-card:hover { background: var(--bg-card); border-color: var(--accent); transform: translateY(-2px); }
+.study-card:hover { background: var(--bg-card); border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,0.4); }
 .card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
 .card-title { font-size: 13.5px; font-weight: 700; color: #fff; }
 .modality-badge {
@@ -933,6 +936,7 @@ header.patient-header .fields span b { color: #fff; font-weight: 600; }
 .card-thumb { width: 100%; height: 100%; object-fit: contain; }
 .card-meta { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-muted); }
 .btn-open-viewer { background: var(--accent); color: #fff; font-weight: 600; font-size: 12px; padding: 7px; border-radius: 5px; text-align: center; }
+.study-card:hover .btn-open-viewer { background: #0284c7; }
 
 .dicom-banner {
   background: rgba(16, 185, 129, 0.08);
@@ -1242,6 +1246,49 @@ function updateCardHighlights() {
       delete card.dataset.pane;
     }
   });
+}
+
+function switchView(viewName) {
+  const tabWorklist = document.getElementById('tab-worklist');
+  const tabViewer = document.getElementById('tab-viewer');
+  const viewWorklist = document.getElementById('view-worklist');
+  const viewViewer = document.getElementById('view-viewer');
+
+  if (viewName === 'worklist') {
+    if (tabWorklist) tabWorklist.classList.add('active');
+    if (tabViewer) tabViewer.classList.remove('active');
+    if (viewWorklist) viewWorklist.style.display = 'flex';
+    if (viewViewer) viewViewer.style.display = 'none';
+  } else {
+    if (tabViewer) tabViewer.classList.add('active');
+    if (tabWorklist) tabWorklist.classList.remove('active');
+    if (viewWorklist) viewWorklist.style.display = 'none';
+    if (viewViewer) viewViewer.style.display = 'flex';
+    const visibleCount = layout === '1x1' ? 1 : layout === '1x2' ? 2 : layout === '1x3' ? 3 : 4;
+    for (let v = 0; v < visibleCount; v++) {
+      renderViewport(v);
+    }
+  }
+}
+
+function openStudyFromWorklist(stIdx) {
+  switchView('viewer');
+  if (stIdx >= 0 && stIdx < DATA.studies.length) {
+    const vp = viewports[activeVp];
+    vp.studyIdx = stIdx;
+    vp.seriesIdx = 0;
+    const ser = currentSeries(activeVp);
+    vp.slice = ser?.keyIndex || 0;
+    
+    const studySel = document.getElementById(`vp-study-sel-${activeVp}`);
+    if (studySel) studySel.value = String(stIdx);
+    
+    updateSeriesDropdown(activeVp);
+    updateCardHighlights();
+    resetViewport(activeVp);
+    renderViewport(activeVp);
+    scrollToStudy(stIdx);
+  }
 }
 
 function scrollToStudy(stIdx) {
@@ -1865,129 +1912,188 @@ window.addEventListener('resize', () => {
       </div>
         """)
 
+    cards = []
+    for st_idx, st in enumerate(all_studies):
+        first_img = ""
+        for s in st.series:
+            if s.images:
+                first_img = _relative_url("images", st.folder.name, s.relative.as_posix(), s.images[0].name)
+                break
+
+        thumb_html = (
+            f'<div class="card-thumb-wrap"><img class="card-thumb" src="{_escape(first_img)}" alt=""></div>'
+            if first_img else ""
+        )
+        cards.append(
+            f'<div class="study-card" onclick="openStudyFromWorklist({st_idx})">'
+            f'<div class="card-top">'
+            f'<div class="card-title">{_or_dash(st.title)}</div>'
+            f'<span class="modality-badge">{_or_dash(st.modality)}</span>'
+            '</div>'
+            f'{thumb_html}'
+            f'<div class="card-meta"><span>📅 {_format_date_only(st.date)}</span><span>🎞 {len(st.series)} series · {st.image_count()} ảnh</span></div>'
+            f'<div class="btn-open-viewer">Mở Web PACS Viewer ➔</div>'
+            '</div>'
+        )
+
+    dicom_banner_html = (
+        '<div class="dicom-banner">'
+        '<div class="dicom-banner-icon">📁</div>'
+        '<div class="dicom-banner-text">'
+        '<b>Bao gồm dữ liệu file gốc DICOM</b>'
+        '<span>Thư mục <code>DICOM/</code> chứa đầy đủ các file chụp gốc chất lượng cao dành cho các phần mềm PACS chuyên dụng.</span>'
+        '</div>'
+        '</div>'
+        if has_dicom else ""
+    )
+
     viewer_body = f"""
 <!-- Winbar Navigation -->
 <nav class="winbar">
-  <div class="winbar-tab active">
+  <div class="winbar-tab" id="tab-worklist" onclick="switchView('worklist')">
+    <span>📋</span>
+    <span>Danh sách ca chụp</span>
+  </div>
+  <div class="winbar-tab active" id="tab-viewer" onclick="switchView('viewer')">
     <span>👤</span>
     <span>{_escape(patient.get('patientName') or 'Bệnh nhân')}</span>
-    <span class="tab-fmt-badge">{_escape(patient.get('patientId') or '')}</span>
-    <span class="tab-fmt-badge" style="background:#0284c7;color:#fff;">WEB PACS VIEWER</span>
+    <span class="tab-fmt-badge">{_escape(initial_study.modality or 'MR')} - VIEWER</span>
   </div>
 </nav>
 
-<!-- Toolbar Groups (1:1 from Dcom to JPG) -->
-<header class="viewer-toolbar">
-  <!-- Nav tools -->
-  <div class="tool-cluster nav-tools">
-    <button class="icon-button active" data-tool="window" onclick="setTool('window')" title="Sáng / Tương phản (W/L: phím W)">{icons['window']}</button>
-    <button class="icon-button" data-tool="pan" onclick="setTool('pan')" title="Di chuyển ảnh (Pan: phím P)">{icons['pan']}</button>
-    <button class="icon-button" data-tool="zoom" onclick="setTool('zoom')" title="Thu / Phóng (Zoom: phím Z)">{icons['zoom']}</button>
-    <button class="icon-button" data-tool="scroll" onclick="setTool('scroll')" title="Cuộn lát cắt (Scroll: phím S)">{icons['scroll']}</button>
-    <button class="icon-button" data-tool="crosshair" onclick="setTool('crosshair')" title="Định vị con trỏ">{icons['crosshair']}</button>
-  </div>
-
-  <span class="toolbar-divider"></span>
-
-  <!-- Measure tools -->
-  <div class="tool-cluster measure-tools">
-    <button class="icon-button" data-tool="length" onclick="setTool('length')" title="Đo chiều dài (Caliper: phím L)">{icons['length']}</button>
-    <button class="icon-button" data-tool="angle" onclick="setTool('angle')" title="Đo góc (Angle)">{icons['angle']}</button>
-    <button class="icon-button" data-tool="ellipse" onclick="setTool('ellipse')" title="ROI ellipse">{icons['ellipse']}</button>
-    <button class="icon-button" data-tool="freehand" onclick="setTool('freehand')" title="ROI tự do">{icons['freehand']}</button>
-    <button class="icon-button" data-tool="text" onclick="setTool('text')" title="Ghi chú chữ lên ảnh">{icons['text']}</button>
-    <button class="icon-button" data-tool="magnify" onclick="setTool('magnify')" title="Kính lúp">{icons['magnify']}</button>
-  </div>
-
-  <span class="toolbar-divider"></span>
-
-  <!-- Orientation tools -->
-  <div class="tool-cluster orientation-tools">
-    <button class="icon-button" onclick="rotateCW()" title="Xoay 90°">{icons['rotateClockwise']}</button>
-    <button class="icon-button" onclick="flipHorizontal()" title="Lật ngang">{icons['flipHorizontal']}</button>
-    <button class="icon-button" onclick="flipVertical()" title="Lật dọc">{icons['flipVertical']}</button>
-    <button class="icon-button" onclick="toggleInvert()" title="Đảo màu (phím I)">{icons['invert']}</button>
-    <button class="icon-button" onclick="resetViewport()" title="Đặt lại góc nhìn (phím R)">{icons['reset']}</button>
-    <button class="icon-button" onclick="clearAnnotations()" title="Xóa đo đạc & ghi chú">{icons['clearAnnotations']}</button>
-  </div>
-
-  <span class="toolbar-divider"></span>
-
-  <!-- Window Presets Selector -->
-  <div class="tool-cluster">
-    <select class="window-select" onchange="setWindowPreset(this.value)" title="Cửa sổ W/L">
-      <option value="default">Cửa sổ mặc định</option>
-      <option value="brain">Nhu mô não (Brain)</option>
-      <option value="bone">Cửa sổ xương (Bone)</option>
-      <option value="soft">Mô mềm (Soft Tissue)</option>
-      <option value="lung">Cửa sổ phổi (Lung)</option>
-      <option value="stroke">Đột quỵ (Stroke)</option>
-    </select>
-  </div>
-
-  <span class="toolbar-divider"></span>
-
-  <!-- Compare & Sync Tools -->
-  <div class="tool-cluster compare-tools">
-    <button class="icon-button active" id="btn-sync-scroll" onclick="toggleSyncScroll()" title="Khoá cuộn đồng bộ">{icons['scrollSync']}</button>
-    <button class="icon-button active" id="btn-sync-crosshair" onclick="toggleSyncCrosshair()" title="Con trỏ tham chiếu">{icons['crosshair']}</button>
-  </div>
-
-  <span class="toolbar-divider"></span>
-
-  <!-- Layout cluster -->
-  <div class="tool-cluster layout-tools">
-    <button class="icon-button active" data-layout="1x1" onclick="setLayout('1x1')" title="1 Khung hình (phím 1)">{icons['single']}</button>
-    <button class="icon-button" data-layout="1x2" onclick="setLayout('1x2')" title="So sánh 2 khung (phím 2)">{icons['compare']}</button>
-    <button class="icon-button" data-layout="1x3" onclick="setLayout('1x3')" title="So sánh 3 khung (phím 3)">{icons['compare3']}</button>
-    <button class="icon-button" data-layout="2x2" onclick="setLayout('2x2')" title="Lưới 4 khung hình (phím 4)">{icons['montage6']}</button>
-  </div>
-
-  <div style="flex:1;"></div>
-
-  <!-- Output & Info -->
-  <div class="tool-cluster output-tools">
-    <button class="icon-button" onclick="toggleFullscreen()" title="Toàn màn hình (phím F)">⛶</button>
-    <button class="icon-button" onclick="toggleShortcuts()" title="Phím tắt">{icons['info']}</button>
-  </div>
-</header>
-
-<!-- 3-Column Workstation App Shell -->
-<div class="app-shell">
-  <!-- Col 1: Patient Record Rail -->
-  <aside class="rec-rail">
-    <div class="rec-card">
-      <div class="rec-card-header">
-        <b>👤 Thông tin bệnh nhân</b>
+<!-- View 1: Worklist View (Danh sách ca chụp) -->
+<div id="view-worklist" class="worklist-container" style="display:none;">
+  <div class="worklist-inner">
+    <header class="patient-header">
+      <div class="fields">
+        <span><b>Họ và tên:</b> {_escape(patient.get('patientName') or UNKNOWN)}</span>
+        <span><b>Mã BN:</b> {_or_dash(patient.get('patientId'))}</span>
+        <span><b>Ngày sinh:</b> {_or_dash(patient.get('patientBirthDate'))}</span>
+        <span><b>Giới tính:</b> {_sex_label(patient.get('patientSex') or '') or UNKNOWN}</span>
+        <span><b>Cơ sở:</b> {_or_dash(patient.get('hospitalName'))}</span>
       </div>
-      <dl class="rfacts">
-        <div class="rfact"><dt>Họ tên</dt><dd><b>{_escape(patient.get('patientName') or UNKNOWN)}</b></dd></div>
-        <div class="rfact"><dt>Mã BN</dt><dd>{_or_dash(patient.get('patientId'))}</dd></div>
-        <div class="rfact"><dt>Giới tính</dt><dd>{_sex_label(patient.get('patientSex') or '') or UNKNOWN}</dd></div>
-        <div class="rfact"><dt>Ngày sinh</dt><dd>{_or_dash(patient.get('patientBirthDate'))}</dd></div>
-        <div class="rfact"><dt>Điện thoại</dt><dd>{_or_dash(patient.get('phone'))}</dd></div>
-        <div class="rfact"><dt>Cơ sở</dt><dd>{_or_dash(patient.get('hospitalName'))}</dd></div>
-      </dl>
+    </header>
+    {dicom_banner_html}
+    <div class="section-title">Danh sách ca chụp ({len(all_studies)})</div>
+    <div class="studies-grid">{''.join(cards)}</div>
+  </div>
+</div>
+
+<!-- View 2: Diagnostic PACS Viewer (Chế độ đọc phim) -->
+<div id="view-viewer" class="viewer-layout-wrap">
+  <!-- Toolbar Groups (1:1 from Dcom to JPG) -->
+  <header class="viewer-toolbar">
+    <!-- Nav tools -->
+    <div class="tool-cluster nav-tools">
+      <button class="icon-button active" data-tool="window" onclick="setTool('window')" title="Sáng / Tương phản (W/L: phím W)">{icons['window']}</button>
+      <button class="icon-button" data-tool="pan" onclick="setTool('pan')" title="Di chuyển ảnh (Pan: phím P)">{icons['pan']}</button>
+      <button class="icon-button" data-tool="zoom" onclick="setTool('zoom')" title="Thu / Phóng (Zoom: phím Z)">{icons['zoom']}</button>
+      <button class="icon-button" data-tool="scroll" onclick="setTool('scroll')" title="Cuộn lát cắt (Scroll: phím S)">{icons['scroll']}</button>
+      <button class="icon-button" data-tool="crosshair" onclick="setTool('crosshair')" title="Định vị con trỏ">{icons['crosshair']}</button>
     </div>
 
-    <div class="rec-timeline-head"><b>Lịch sử khám ({len(all_studies)})</b></div>
-    <div class="tl" id="timeline-container"></div>
-  </aside>
+    <span class="toolbar-divider"></span>
 
-  <!-- Col 2: Series Strip -->
-  <aside class="series-strip" id="series-strip-container"></aside>
-
-  <!-- Col 3: Main Diagnostic Stage -->
-  <main class="viewer-main">
-    <div class="workspace-grid mode-single" id="grid-viewports">
-      {''.join(viewport_shells_html)}
+    <!-- Measure tools -->
+    <div class="tool-cluster measure-tools">
+      <button class="icon-button" data-tool="length" onclick="setTool('length')" title="Đo chiều dài (Caliper: phím L)">{icons['length']}</button>
+      <button class="icon-button" data-tool="angle" onclick="setTool('angle')" title="Đo góc (Angle)">{icons['angle']}</button>
+      <button class="icon-button" data-tool="ellipse" onclick="setTool('ellipse')" title="ROI ellipse">{icons['ellipse']}</button>
+      <button class="icon-button" data-tool="freehand" onclick="setTool('freehand')" title="ROI tự do">{icons['freehand']}</button>
+      <button class="icon-button" data-tool="text" onclick="setTool('text')" title="Ghi chú chữ lên ảnh">{icons['text']}</button>
+      <button class="icon-button" data-tool="magnify" onclick="setTool('magnify')" title="Kính lúp">{icons['magnify']}</button>
     </div>
 
-    <footer class="status-bar">
-      <span class="status-dot"></span>
-      <span class="status-text" id="status-bar-text">Sẵn sàng đọc phim.</span>
-    </footer>
-  </main>
+    <span class="toolbar-divider"></span>
+
+    <!-- Orientation tools -->
+    <div class="tool-cluster orientation-tools">
+      <button class="icon-button" onclick="rotateCW()" title="Xoay 90°">{icons['rotateClockwise']}</button>
+      <button class="icon-button" onclick="flipHorizontal()" title="Lật ngang">{icons['flipHorizontal']}</button>
+      <button class="icon-button" onclick="flipVertical()" title="Lật dọc">{icons['flipVertical']}</button>
+      <button class="icon-button" onclick="toggleInvert()" title="Đảo màu (phím I)">{icons['invert']}</button>
+      <button class="icon-button" onclick="resetViewport()" title="Đặt lại góc nhìn (phím R)">{icons['reset']}</button>
+      <button class="icon-button" onclick="clearAnnotations()" title="Xóa đo đạc & ghi chú">{icons['clearAnnotations']}</button>
+    </div>
+
+    <span class="toolbar-divider"></span>
+
+    <!-- Window Presets Selector -->
+    <div class="tool-cluster">
+      <select class="window-select" onchange="setWindowPreset(this.value)" title="Cửa sổ W/L">
+        <option value="default">Cửa sổ mặc định</option>
+        <option value="brain">Nhu mô não (Brain)</option>
+        <option value="bone">Cửa sổ xương (Bone)</option>
+        <option value="soft">Mô mềm (Soft Tissue)</option>
+        <option value="lung">Cửa sổ phổi (Lung)</option>
+        <option value="stroke">Đột quỵ (Stroke)</option>
+      </select>
+    </div>
+
+    <span class="toolbar-divider"></span>
+
+    <!-- Compare & Sync Tools -->
+    <div class="tool-cluster compare-tools">
+      <button class="icon-button active" id="btn-sync-scroll" onclick="toggleSyncScroll()" title="Khoá cuộn đồng bộ">{icons['scrollSync']}</button>
+      <button class="icon-button active" id="btn-sync-crosshair" onclick="toggleSyncCrosshair()" title="Con trỏ tham chiếu">{icons['crosshair']}</button>
+    </div>
+
+    <span class="toolbar-divider"></span>
+
+    <!-- Layout cluster -->
+    <div class="tool-cluster layout-tools">
+      <button class="icon-button active" data-layout="1x1" onclick="setLayout('1x1')" title="1 Khung hình (phím 1)">{icons['single']}</button>
+      <button class="icon-button" data-layout="1x2" onclick="setLayout('1x2')" title="So sánh 2 khung (phím 2)">{icons['compare']}</button>
+      <button class="icon-button" data-layout="1x3" onclick="setLayout('1x3')" title="So sánh 3 khung (phím 3)">{icons['compare3']}</button>
+      <button class="icon-button" data-layout="2x2" onclick="setLayout('2x2')" title="Lưới 4 khung hình (phím 4)">{icons['montage6']}</button>
+    </div>
+
+    <div style="flex:1;"></div>
+
+    <!-- Output & Info -->
+    <div class="tool-cluster output-tools">
+      <button class="icon-button" onclick="toggleFullscreen()" title="Toàn màn hình (phím F)">⛶</button>
+      <button class="icon-button" onclick="toggleShortcuts()" title="Phím tắt">{icons['info']}</button>
+    </div>
+  </header>
+
+  <!-- 3-Column Workstation App Shell -->
+  <div class="app-shell">
+    <!-- Col 1: Patient Record Rail -->
+    <aside class="rec-rail">
+      <div class="rec-card">
+        <div class="rec-card-header">
+          <b>👤 Thông tin bệnh nhân</b>
+        </div>
+        <dl class="rfacts">
+          <div class="rfact"><dt>Họ tên</dt><dd><b>{_escape(patient.get('patientName') or UNKNOWN)}</b></dd></div>
+          <div class="rfact"><dt>Mã BN</dt><dd>{_or_dash(patient.get('patientId'))}</dd></div>
+          <div class="rfact"><dt>Giới tính</dt><dd>{_sex_label(patient.get('patientSex') or '') or UNKNOWN}</dd></div>
+          <div class="rfact"><dt>Ngày sinh</dt><dd>{_or_dash(patient.get('patientBirthDate'))}</dd></div>
+          <div class="rfact"><dt>Điện thoại</dt><dd>{_or_dash(patient.get('phone'))}</dd></div>
+          <div class="rfact"><dt>Cơ sở</dt><dd>{_or_dash(patient.get('hospitalName'))}</dd></div>
+        </dl>
+      </div>
+
+      <div class="rec-timeline-head"><b>Lịch sử khám ({len(all_studies)})</b></div>
+      <div class="tl" id="timeline-container"></div>
+    </aside>
+
+    <!-- Col 2: Series Strip -->
+    <aside class="series-strip" id="series-strip-container"></aside>
+
+    <!-- Col 3: Main Diagnostic Stage -->
+    <main class="viewer-main">
+      <div class="workspace-grid mode-single" id="grid-viewports">
+        {''.join(viewport_shells_html)}
+      </div>
+
+      <footer class="status-bar">
+        <span class="status-dot"></span>
+        <span class="status-text" id="status-bar-text">Sẵn sàng đọc phim.</span>
+      </footer>
+    </main>
+  </div>
 </div>
 
 <!-- Shortcuts Modal -->
@@ -2011,7 +2117,7 @@ window.addEventListener('resize', () => {
 
 {js_script}
 """
-    return _page(initial_study.title, viewer_body, custom_css=VIEWER_CSS)
+    return _page(initial_study.title, viewer_body, custom_css=VIEWER_CSS + "\n" + INDEX_CSS)
 
 
 def _dicom_index_html(patient: dict, studies: list[ExportStudy]) -> str:
