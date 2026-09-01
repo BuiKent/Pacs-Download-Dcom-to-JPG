@@ -3599,8 +3599,13 @@ volumeActor.getProperty().${r}()
                 title="${R(s.examName?`${s.title} · ${s.examName}`:s.title)}">
                 <div class="tl-row">
                   <button class="tl-open" type="button" data-series-id="${R(s.primaryId)}">
-                    <i></i>
-                    <span class="nm">${R(s.title)}</span>
+                    <div class="tl-card-header">
+                      <span class="tl-badge-pill">${R(s.badge)}</span>
+                      <span class="tl-date-text">${R(s.dateLabel)}</span>
+                    </div>
+                    <div class="tl-card-body">
+                      <span class="nm">${R(s.title!==s.defaultTitle?s.title:s.examName||s.title)}</span>
+                    </div>
                   </button>
                   <input class="tl-name-input" value="${R(s.title)}"
                     maxlength="120" aria-label="${R(M("Tên hiển thị trên timeline"))}">

@@ -1109,26 +1109,27 @@ class SeriesRecord:
     def timeline_key(self) -> str:
         """Stable opaque identity for one patient-timeline row.
 
-        DICOM series use StudyInstanceUID so T1, T2, FLAIR, DWI, ADC, etc. from
-        the same examination collapse into one row.  Non-DICOM media use the
-        enclosing study label and media kind, keeping photos/video/documents as
-        separate clinical entries even when they share the same date.
+        Groups series by study group / folder and exam date so localizers, DWI,
+        and post-processed reconstructions belong to the same clinical study row.
         """
         manifest = self.manifest or {}
-        study_uid = str(
-            manifest.get("study_instance_uid")
-            or manifest.get("studyInstanceUID")
-            or manifest.get("study_uid")
-            or ""
-        ).strip()
-        if study_uid:
-            identity = f"uid:{study_uid}"
+        date = str(self.study_date or manifest.get("study_date") or "").strip()
+        group = str(self.study_group or "").strip()
+        cleaned_group = group
+        if " - OT - " in group:
+            cleaned_group = group.replace(" - OT - ", " - MR - ")
+        if cleaned_group and cleaned_group != "Không rõ ca chụp":
+            identity = f"group:{date}|{cleaned_group}"
+        elif self.folder:
+            identity = f"folder:{str(self.folder).casefold()}"
         else:
-            group = str(self.study_group or "").strip()
-            date = str(self.study_date or manifest.get("study_date") or "").strip()
-            identity = f"group:{date}|{group}"
-            if not date and not group:
-                identity = f"folder:{str(self.folder).casefold()}"
+            study_uid = str(
+                manifest.get("study_instance_uid")
+                or manifest.get("studyInstanceUID")
+                or manifest.get("study_uid")
+                or ""
+            ).strip()
+            identity = f"uid:{study_uid}" if study_uid else f"date:{date}"
         raw = f"{identity}|{self.resolved_media_type()}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
 

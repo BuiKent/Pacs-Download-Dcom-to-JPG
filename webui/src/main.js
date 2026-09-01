@@ -1441,8 +1441,13 @@ function renderPatientRail() {
                 title="${escapeHtml(row.examName ? `${row.title} · ${row.examName}` : row.title)}">
                 <div class="tl-row">
                   <button class="tl-open" type="button" data-series-id="${escapeHtml(row.primaryId)}">
-                    <i></i>
-                    <span class="nm">${escapeHtml(row.title)}</span>
+                    <div class="tl-card-header">
+                      <span class="tl-badge-pill">${escapeHtml(row.badge)}</span>
+                      <span class="tl-date-text">${escapeHtml(row.dateLabel)}</span>
+                    </div>
+                    <div class="tl-card-body">
+                      <span class="nm">${escapeHtml(row.title !== row.defaultTitle ? row.title : (row.examName || row.title))}</span>
+                    </div>
                   </button>
                   <input class="tl-name-input" value="${escapeHtml(row.title)}"
                     maxlength="120" aria-label="${escapeHtml(t("Tên hiển thị trên timeline"))}">
