@@ -580,8 +580,8 @@ function renderSeriesStripContent(seriesList) {
       : `Ngày ${group.displayDate}`;
 
     const groupHeader = multiGroup
-      ? `<div class="series-group-badge" title="${escapeHtml(`${dateLabel} - ${group.studyTitle}`)}">
-          <span class="badge-date">${escapeHtml(dateLabel)}</span>
+      ? `<div class="series-group-badge" data-date-key="${escapeHtml(group.dateKey)}" title="${escapeHtml(`${dateLabel} - ${group.studyTitle}`)}">
+          <span class="badge-date">📁 ${escapeHtml(dateLabel)}</span>
           <span class="badge-study">${escapeHtml(group.studyTitle)}</span>
          </div>`
       : "";
@@ -592,7 +592,9 @@ function renderSeriesStripContent(seriesList) {
       const label = seriesLabel(item);
       const cachedThumb = resolvedThumbUrls.get(item.id) || "";
       return `<button class="series-card ${isVisible ? "active" : ""}"
-              data-series-id="${item.id}" title="${escapeHtml(label)}"
+              data-series-id="${item.id}" 
+              data-date-key="${escapeHtml(group.dateKey)}"
+              title="${escapeHtml(label)}"
               ${isVisible ? `data-pane="${visiblePanes.join(",")}"` : ""}>
               <div class="series-thumb-box">
                 <img class="series-card-thumb" data-thumb-id="${item.id}" ${cachedThumb ? `src="${cachedThumb}"` : ""} alt="" />
@@ -3507,17 +3509,15 @@ function bindEvents() {
   });
   app.querySelectorAll("[data-series-id]").forEach((element) => {
     element.addEventListener("click", async () => {
-      const seriesId = element.dataset.seriesId;
-      const newSeries = state.archive.series.find((item) => item.id === seriesId);
-      if (!newSeries) return;
-
-      // If clicked from timeline rail: only scroll series strip to that date, do NOT change viewer image
+      // If clicked from timeline rail: auto scroll thumbnail strip so that study's header is at the top
       if (element.classList.contains("tl-open") || element.closest(".tl-item")) {
         const targetCard = app.querySelector(`.series-card[data-series-id="${seriesId}"]`);
         if (targetCard) {
-          targetCard.scrollIntoView({ behavior: "smooth", block: "start" });
+          const dateKey = targetCard.dataset.dateKey;
+          const groupBadge = dateKey ? app.querySelector(`.series-group-badge[data-date-key="${dateKey}"]`) : null;
+          const targetToScroll = groupBadge || targetCard;
+          targetToScroll.scrollIntoView({ behavior: "smooth", block: "start" });
         }
-        return;
       }
 
       // In compare mode: hot-swap the focused pane's series (no rebuild).
