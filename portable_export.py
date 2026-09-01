@@ -1312,16 +1312,19 @@ function applyTransform(i) {
 function updateHUD(i) {
   const vp = viewports[i];
   const ser = currentSeries(i);
+  const st = currentStudy(i);
   
   const elSlice = document.getElementById(`hud-slice-${i}`);
   const elZoom = document.getElementById(`hud-zoom-${i}`);
   const elSeries = document.getElementById(`hud-series-${i}`);
   const elWl = document.getElementById(`hud-wl-${i}`);
+  const elDate = document.getElementById(`hud-date-${i}`);
   
   if (elSlice) elSlice.textContent = `IM: ${vp.slice + 1}/${ser?.count || 1}`;
   if (elZoom) elZoom.textContent = `Mag: ${Math.round(vp.zoom * 100)}%`;
   if (elSeries) elSeries.textContent = ser?.description || ser?.name || '—';
   if (elWl) elWl.textContent = `W: ${vp.contrast} L: ${vp.brightness}`;
+  if (elDate) elDate.textContent = st?.date || '—';
 }
 
 function updateScrubberBar() {
@@ -1724,7 +1727,7 @@ window.addEventListener('resize', () => {
           <div>{_sex_label(patient.get('patientSex') or '')} · {_or_dash(patient.get('patientBirthDate'))}</div>
         </div>
         <div class="viewport-overlay overlay-tr">
-          <div>{_or_dash(initial_study.date)}</div>
+          <div id="hud-date-{i}">{_or_dash(initial_study.date)}</div>
           <div>{_or_dash(patient.get('hospitalName'))}</div>
         </div>
         <div class="viewport-overlay overlay-bl">
