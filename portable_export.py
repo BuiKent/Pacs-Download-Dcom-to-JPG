@@ -1142,7 +1142,7 @@ function buildTimelineRail() {
   const tl = document.getElementById('timeline-container');
   if (!tl) return;
   tl.innerHTML = DATA.studies.map((st, idx) => `
-    <div class="tl-item" data-study-idx="${idx}" onclick="switchStudy(${idx})">
+    <div class="tl-item" data-study-idx="${idx}" onclick="scrollToStudy(${idx})" title="Xem các chuỗi xung ngày ${st.date || ''}">
       <div class="tl-item-title">${st.modality || 'MR'} - ${st.date || 'Chưa rõ ngày'}</div>
       <div class="tl-item-meta">${st.folderName || st.title}</div>
     </div>
@@ -1229,16 +1229,8 @@ function updateCardHighlights() {
   });
 }
 
-function switchStudy(stIdx) {
-  const vp = viewports[activeVp];
-  vp.studyIdx = stIdx;
-  vp.seriesIdx = 0;
-  vp.slice = 0;
-  updateSeriesDropdown(activeVp);
-  updateCardHighlights();
-  renderViewport(activeVp);
-
-  // Auto scroll series-strip to the selected study group
+function scrollToStudy(stIdx) {
+  // Auto scroll series-strip to the selected study group without altering current viewport image
   const targetBadge = document.querySelector(`.series-group-badge[data-study-idx="${stIdx}"]`);
   const targetCard = document.querySelector(`.series-card[data-study-idx="${stIdx}"]`);
   const target = targetBadge || targetCard;
