@@ -239,6 +239,21 @@ def _format_date_only(val: str | None) -> str:
     return val_str.split()[0] if " " in val_str else val_str
 
 
+def _clean_patient_folder_name(patient: dict, fallback: str = "BENH_NHAN") -> str:
+    name = str(patient.get("patientName") or "").strip()
+    pid = str(patient.get("patientId") or "").strip()
+    if name and pid:
+        raw = f"{name} - {pid}"
+    elif name:
+        raw = name
+    elif pid:
+        raw = pid
+    else:
+        raw = fallback
+    cleaned = re.sub(r'[\\/:*?"<>|]', '_', raw).strip()
+    return cleaned or fallback
+
+
 def _escape(value: str) -> str:
     return html.escape(str(value or ""), quote=True)
 
@@ -1049,7 +1064,7 @@ def _study_html(
         "initialStudyIdx": initial_study_idx,
         "studies": studies_payload,
         "hasDicom": has_dicom,
-    }, ensure_ascii=False)
+    }, ensure_ascii=False).replace("<", "\\u003c")
 
     initial_study = all_studies[initial_study_idx] if 0 <= initial_study_idx < len(all_studies) else all_studies[0]
 
@@ -1853,14 +1868,11 @@ window.addEventListener('resize', () => {
     viewer_body = f"""
 <!-- Winbar Navigation -->
 <nav class="winbar">
-  <a href="index.html" class="winbar-tab">
-    <span>📋</span>
-    <span>Danh sách ca chụp</span>
-  </a>
   <div class="winbar-tab active">
     <span>👤</span>
     <span>{_escape(patient.get('patientName') or 'Bệnh nhân')}</span>
-    <span class="tab-fmt-badge">{_escape(initial_study.modality or 'MR')} · VIEWER</span>
+    <span class="tab-fmt-badge">{_escape(patient.get('patientId') or '')}</span>
+    <span class="tab-fmt-badge" style="background:#0284c7;color:#fff;">WEB PACS VIEWER</span>
   </div>
 </nav>
 
@@ -2043,22 +2055,34 @@ def export_patient_record(
     log: LogFn = lambda _message: None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> dict:
-    """Copy a patient's JPGs, documents and/or DICOMs into a browsable folder."""
+    """Copy a patient's JPGs, documents and/or DICOMs into a browsable patient folder."""
     patient_folder = Path(patient_folder).expanduser().resolve(strict=True)
     destination = Path(destination).expanduser().resolve()
-    if (
-        destination == patient_folder
-        or destination in patient_folder.parents
-        or patient_folder in destination.parents
-    ):
-        raise ValueError(
-            "Thư mục xuất không được nằm trùng, nằm trên hay nằm trong thư mục hồ sơ gốc."
-        )
-    destination.mkdir(parents=True, exist_ok=True)
 
     patient, studies = collect_record(patient_folder)
     if not studies:
         raise ValueError("Hồ sơ này chưa có ảnh JPG, tài liệu hoặc file DICOM nào để xuất.")
+
+    patient_folder_name = _clean_patient_folder_name(patient, fallback=patient_folder.name)
+
+    # Put exported files inside a parent folder named [Tên BN] - [Mã BN]
+    if destination.name.casefold() in (patient_folder_name.casefold(), patient_folder.name.casefold()):
+        target_dir = destination
+    else:
+        target_dir = destination / patient_folder_name
+
+    if (
+        destination == patient_folder
+        or destination in patient_folder.parents
+        or patient_folder in destination.parents
+        or target_dir == patient_folder
+        or target_dir in patient_folder.parents
+        or patient_folder in target_dir.parents
+    ):
+        raise ValueError(
+            "Thư mục xuất không được nằm trùng, nằm trên hay nằm trong thư mục hồ sơ gốc."
+        )
+    target_dir.mkdir(parents=True, exist_ok=True)
 
     export_viewer = mode in ("viewer", "both", "all", "jpg")
     export_dicom = mode in ("dicom", "both", "all")
@@ -2076,7 +2100,7 @@ def export_patient_record(
     copied_images = 0
     copied_documents = 0
     copied_dicoms = 0
-    pages: list[str] = []
+    html_filename = f"{patient_folder_name}.html"
 
     def _safe_log(msg: str) -> None:
         try:
@@ -2088,14 +2112,14 @@ def export_patient_record(
             except Exception:
                 pass
 
-    # ── Export Viewer (JPGs + Interactive Multi-Study Web PACS Viewer) ─
+    # ── Export Viewer (JPGs + Single Unified Multi-Study Web PACS Viewer) ─
     if export_viewer:
         for index, study in enumerate(studies, start=1):
             if should_stop and should_stop():
                 break
             _safe_log(f"Đang chép ảnh ca {index}/{len(studies)}: {study.title}")
             for series in study.series:
-                target = destination / "images" / study.folder.name / series.relative
+                target = target_dir / "images" / study.folder.name / series.relative
                 target.mkdir(parents=True, exist_ok=True)
                 for image in series.images:
                     if should_stop and should_stop():
@@ -2103,32 +2127,18 @@ def export_patient_record(
                     shutil.copy2(image, target / image.name)
                     copied_images += 1
             for document in study.documents:
-                target = destination / "documents" / study.folder.name
+                target = target_dir / "documents" / study.folder.name
                 target.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(document, target / document.name)
                 copied_documents += 1
 
-            page = f"ca-{index:02d}.html"
-            pages.append(page)
-            (destination / page).write_text(
-                _study_html(
-                    patient,
-                    all_studies=studies,
-                    initial_study_idx=index - 1,
-                    has_dicom=export_dicom and bool(study.dicom_files),
-                ),
-                encoding="utf-8",
-            )
-
-        (destination / "index.html").write_text(
-            _index_html(
-                patient,
-                studies[:len(pages)],
-                pages,
-                has_dicom_folder=export_dicom and has_any_dicom,
-            ),
-            encoding="utf-8",
+        viewer_html = _study_html(
+            patient,
+            all_studies=studies,
+            initial_study_idx=0,
+            has_dicom=export_dicom and has_any_dicom,
         )
+        (target_dir / html_filename).write_text(viewer_html, encoding="utf-8")
 
     # ── Export DICOM ───────────────────────────────────────────────
     if export_dicom:
@@ -2138,7 +2148,7 @@ def export_patient_record(
             if not study.dicom_files:
                 continue
             _safe_log(f"Đang chép file DICOM ca {index}/{len(studies)}: {study.title}")
-            dicom_target = destination / "DICOM" / study.folder.name
+            dicom_target = target_dir / "DICOM" / study.folder.name
             dicom_target.mkdir(parents=True, exist_ok=True)
             for dcm in study.dicom_files:
                 if should_stop and should_stop():
@@ -2161,10 +2171,10 @@ def export_patient_record(
             "- Weasis Medical Viewer (Windows/Mac/Linux): https://nroduit.github.io/en/\n"
             "- Horos / OsiriX (macOS): https://horosproject.org\n"
         )
-        (destination / "HUONG_DAN_DICOM.txt").write_text(readme_text, encoding="utf-8")
+        (target_dir / "HUONG_DAN_DICOM.txt").write_text(readme_text, encoding="utf-8")
 
         if not export_viewer:
-            (destination / "index.html").write_text(
+            (target_dir / html_filename).write_text(
                 _dicom_index_html(patient, studies), encoding="utf-8",
             )
 
@@ -2175,12 +2185,13 @@ def export_patient_record(
         log_msg += f", {copied_dicoms} file DICOM"
     if copied_documents:
         log_msg += f", {copied_documents} tài liệu"
-    log_msg += f" vào {destination}"
+    log_msg += f" vào {target_dir}"
     _safe_log(log_msg)
 
     return {
-        "folder": str(destination),
-        "studies": len(pages) if export_viewer else len(studies),
+        "folder": str(target_dir),
+        "htmlFile": str(target_dir / html_filename),
+        "studies": len(studies),
         "images": copied_images,
         "documents": copied_documents,
         "dicoms": copied_dicoms,

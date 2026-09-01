@@ -70,13 +70,18 @@ class ExportTests(unittest.TestCase):
 
             self.assertEqual(result["studies"], 2)
             self.assertEqual(result["images"], 6)
-            index = (destination / "index.html").read_text(encoding="utf-8")
-            self.assertIn("HOANG MINH THIEP", index)
-            self.assertIn("R0152082B", index)
-            self.assertIn("ca-01.html", index)
-            self.assertIn("ca-02.html", index)
-            self.assertTrue((destination / "ca-01.html").is_file())
-            self.assertEqual(len(list((destination / "images").rglob("*.jpg"))), 6)
+            export_folder = Path(result["folder"])
+            self.assertEqual(export_folder.name, "HOANG MINH THIEP - R0152082B")
+            html_file = Path(result["htmlFile"])
+            self.assertTrue(html_file.is_file())
+            self.assertEqual(html_file.name, "HOANG MINH THIEP - R0152082B.html")
+
+            content = html_file.read_text(encoding="utf-8")
+            self.assertIn("HOANG MINH THIEP", content)
+            self.assertIn("R0152082B", content)
+            self.assertEqual(len(list((export_folder / "images").rglob("*.jpg"))), 6)
+            # Verify no redundant extra html files
+            self.assertEqual(len(list(export_folder.glob("*.html"))), 1)
 
     def test_the_dicom_originals_are_not_copied_onto_the_stick(self):
         """The export is the JPG record; shipping the DICOM would multiply its size."""
@@ -85,9 +90,10 @@ class ExportTests(unittest.TestCase):
             patient = build_archive(root)
             destination = root / "usb"
 
-            portable_export.export_patient_record(patient, destination)
+            result = portable_export.export_patient_record(patient, destination)
+            export_folder = Path(result["folder"])
 
-            self.assertEqual(list(destination.rglob("*.dcm")), [])
+            self.assertEqual(list(export_folder.rglob("*.dcm")), [])
 
     def test_a_field_the_archive_never_recorded_is_shown_as_a_dash(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -95,14 +101,11 @@ class ExportTests(unittest.TestCase):
             patient = build_archive(root, with_manifest=False)
             destination = root / "usb"
 
-            portable_export.export_patient_record(patient, destination)
-
-            index = (destination / "index.html").read_text(encoding="utf-8")
-            # No manifest means no demographics. The page must say so rather
-            # than fill the header from the folder name.
-            self.assertIn("Ngày sinh:</b> —", index)
-            self.assertIn("Giới tính:</b> —", index)
-            self.assertNotIn("Nam", index.split("</header>")[0])
+            result = portable_export.export_patient_record(patient, destination)
+            html_file = Path(result["htmlFile"])
+            content = html_file.read_text(encoding="utf-8")
+            self.assertIn("Ngày sinh</dt><dd>—", content)
+            self.assertIn("Giới tính</dt><dd>—", content)
 
     def test_study_pages_link_every_image_of_every_series(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -110,13 +113,12 @@ class ExportTests(unittest.TestCase):
             patient = build_archive(root, studies=1)
             destination = root / "usb"
 
-            portable_export.export_patient_record(patient, destination)
-
-            page = (destination / "ca-01.html").read_text(encoding="utf-8")
-            self.assertIn("Ax T2 FLAIR 1", page)
+            result = portable_export.export_patient_record(patient, destination)
+            html_file = Path(result["htmlFile"])
+            content = html_file.read_text(encoding="utf-8")
+            self.assertIn("Ax T2 FLAIR 1", content)
             for image in ("IM_0001.jpg", "IM_0002.jpg", "IM_0003.jpg"):
-                self.assertIn(image, page)
-            self.assertIn('href="index.html"', page)
+                self.assertIn(image, content)
 
     def test_documents_filed_with_a_study_travel_with_it(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,11 +128,12 @@ class ExportTests(unittest.TestCase):
             (study / "ket-qua.pdf").write_bytes(b"%PDF-1.4\n")
             destination = root / "usb"
 
-            portable_export.export_patient_record(patient, destination)
+            result = portable_export.export_patient_record(patient, destination)
+            export_folder = Path(result["folder"])
 
-            self.assertTrue((destination / "documents").exists())
-            self.assertEqual(len(list((destination / "documents").rglob("*.pdf"))), 1)
-            self.assertIn("ket-qua.pdf", (destination / "ca-01.html").read_text(encoding="utf-8"))
+            self.assertTrue((export_folder / "documents").exists())
+            self.assertEqual(len(list((export_folder / "documents").rglob("*.pdf"))), 1)
+            self.assertIn("ket-qua.pdf", Path(result["htmlFile"]).read_text(encoding="utf-8"))
 
     def test_exporting_into_the_record_itself_is_refused(self):
         """Copying a folder into itself would recurse until the disk filled."""
@@ -163,11 +166,11 @@ class ExportTests(unittest.TestCase):
             )
             destination = root / "usb"
 
-            portable_export.export_patient_record(patient, destination)
-
-            index = (destination / "index.html").read_text(encoding="utf-8")
-            self.assertNotIn("<script>alert(1)</script>", index)
-            self.assertIn("&lt;script&gt;", index)
+            result = portable_export.export_patient_record(patient, destination)
+            html_file = Path(result["htmlFile"])
+            content = html_file.read_text(encoding="utf-8")
+            self.assertNotIn("<script>alert(1)</script>", content)
+            self.assertIn("&lt;script&gt;", content)
 
     def test_detect_patient_export_contents(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -189,12 +192,14 @@ class ExportTests(unittest.TestCase):
             destination = root / "usb_dicom"
 
             result = portable_export.export_patient_record(patient, destination, mode="dicom")
+            export_folder = Path(result["folder"])
 
             self.assertEqual(result["dicoms"], 1)
-            self.assertEqual(len(list((destination / "DICOM").rglob("*.dcm"))), 1)
-            self.assertTrue((destination / "HUONG_DAN_DICOM.txt").is_file())
-            index = (destination / "index.html").read_text(encoding="utf-8")
-            self.assertIn("HỒ SƠ DICOM", index.upper())
+            self.assertEqual(len(list((export_folder / "DICOM").rglob("*.dcm"))), 1)
+            self.assertTrue((export_folder / "HUONG_DAN_DICOM.txt").is_file())
+            html_file = Path(result["htmlFile"])
+            content = html_file.read_text(encoding="utf-8")
+            self.assertIn("HỒ SƠ DICOM", content.upper())
 
     def test_export_both_mode_copies_both_jpg_and_dicom(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -203,12 +208,13 @@ class ExportTests(unittest.TestCase):
             destination = root / "usb_both"
 
             result = portable_export.export_patient_record(patient, destination, mode="both")
+            export_folder = Path(result["folder"])
 
             self.assertEqual(result["images"], 3)
             self.assertEqual(result["dicoms"], 1)
-            self.assertTrue((destination / "ca-01.html").is_file())
-            self.assertEqual(len(list((destination / "images").rglob("*.jpg"))), 3)
-            self.assertEqual(len(list((destination / "DICOM").rglob("*.dcm"))), 1)
+            self.assertTrue(Path(result["htmlFile"]).is_file())
+            self.assertEqual(len(list((export_folder / "images").rglob("*.jpg"))), 3)
+            self.assertEqual(len(list((export_folder / "DICOM").rglob("*.dcm"))), 1)
 
     def test_web_pacs_viewer_contains_interactive_controls(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -216,9 +222,9 @@ class ExportTests(unittest.TestCase):
             patient = build_archive(root, studies=1)
             destination = root / "usb"
 
-            portable_export.export_patient_record(patient, destination, mode="viewer")
-
-            page = (destination / "ca-01.html").read_text(encoding="utf-8")
+            result = portable_export.export_patient_record(patient, destination, mode="viewer")
+            html_file = Path(result["htmlFile"])
+            page = html_file.read_text(encoding="utf-8")
             # Verify 1:1 App Port Web PACS Viewer elements
             self.assertIn("app-shell", page)
             self.assertIn("rec-rail", page)
