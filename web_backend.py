@@ -23,7 +23,7 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1137,6 +1137,26 @@ class SeriesRecord:
 _DICOM_MEM_CACHE: dict[str, tuple[str, dict[str, SeriesRecord], int, int]] = {}
 
 
+def _detached_records(records: dict[str, SeriesRecord]) -> dict[str, SeriesRecord]:
+    """Hand out records whose manifest the caller is free to enrich.
+
+    Enrichment writes the patient folder's name and ID into `manifest` in
+    place, and it only fills fields that are still blank or redacted. Sharing
+    that dict with the cache would bake the first scan's demographics into
+    every later one, so a corrected patient name would never reach the reader
+    while this process lives. The heavy fields stay shared: only the manifest
+    is copied.
+    """
+    return {
+        uid: (
+            replace(rec, manifest=dict(rec.manifest))
+            if isinstance(rec.manifest, dict)
+            else rec
+        )
+        for uid, rec in records.items()
+    }
+
+
 def _dicom_fingerprint(paths: list[Path]) -> str:
     if not paths:
         return "0:0:0"
@@ -1518,7 +1538,7 @@ class ArchiveCatalog:
         if root_key in _DICOM_MEM_CACHE:
             cached_fp, cached_recs, cached_unsupp, cached_total = _DICOM_MEM_CACHE[root_key]
             if cached_fp == fp:
-                return copy.copy(cached_recs), cached_unsupp, cached_total
+                return _detached_records(cached_recs), cached_unsupp, cached_total
 
         # 2. On-disk metadata cache
         cache_path = _get_dicom_cache_path(root)
@@ -1533,36 +1553,42 @@ class ArchiveCatalog:
                     unsupported = int(data.get("unsupported", 0))
                     total = int(data.get("total", len(paths)))
                     _DICOM_MEM_CACHE[root_key] = (fp, records, unsupported, total)
-                    return copy.copy(records), unsupported, total
+                    return _detached_records(records), unsupported, total
             except Exception:
                 pass
 
         groups: dict[str, list[DicomHeader]] = {}
         unsupported = 0
 
+        # Big studies are parsed across cores, small ones stay on this thread
+        # because the pool would cost more than it saves. Either way the
+        # headers arrive as a lazy stream, so the single loop below keeps
+        # cancellation and progress reporting working in both cases.
+        executor = None
         if len(paths) > 16:
             import concurrent.futures
             max_workers = min(8, max(2, os.cpu_count() or 4))
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Parallel map to read DICOM headers concurrently across CPU cores
-                results = list(executor.map(_read_dicom_header, paths))
-                for headers in results:
-                    if headers:
-                        groups.setdefault(headers[0].series_uid, []).extend(headers)
-                    else:
-                        unsupported += 1
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+            header_stream = executor.map(_read_dicom_header, paths)
         else:
-            for index, path in enumerate(paths, start=1):
+            header_stream = (_read_dicom_header(path) for path in paths)
+
+        try:
+            for index, headers in enumerate(header_stream, start=1):
                 if should_stop and should_stop():
                     return {}, unsupported, len(paths)
                 if log and (index == 1 or index % 100 == 0):
                     log(f"Đang đọc metadata DICOM: {index}/{len(paths)} file…")
                 # One entry per frame: a multi-frame file contributes several.
-                headers = _read_dicom_header(path)
                 if headers:
                     groups.setdefault(headers[0].series_uid, []).extend(headers)
                 else:
                     unsupported += 1
+        finally:
+            if executor is not None:
+                # Drop whatever is still queued instead of waiting for the
+                # whole study when the scan was cancelled.
+                executor.shutdown(wait=False, cancel_futures=True)
 
         records: dict[str, SeriesRecord] = {}
         for uid, headers in groups.items():
@@ -1660,7 +1686,7 @@ class ArchiveCatalog:
         except OSError:
             pass
 
-        return records, unsupported, len(paths)
+        return _detached_records(records), unsupported, len(paths)
 
     @staticmethod
     def _provenance_sources(start: Path) -> tuple[Optional[dict], Optional[dict]]:
@@ -3549,6 +3575,9 @@ class WebController:
         if not patient_folder.is_dir():
             raise ValueError("Đường dẫn hồ sơ không phải thư mục.")
         target = Path(destination).expanduser().resolve()
+        # Rejected here rather than inside the job, so a bad mode answers the
+        # caller directly instead of queueing work that can only fail.
+        portable_export._resolve_export_mode(mode)
 
         def run() -> dict:
             self.job.log(f"Đang xuất hồ sơ {patient_folder.name} sang {target} (chế độ: {mode})…")

@@ -22,9 +22,38 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 DOCUMENT_SUFFIXES = {".pdf", ".docx", ".doc", ".txt", ".json"}
 DICOM_SUFFIXES = {".dcm", ".ima", ".dicom"}
 SKIPPED_FOLDERS = {"RAW_JPG", "CACHE", "THUMB", "THUMBNAILS", "__MACOSX", "THUMBS"}
+# Sidecars the pipeline writes for its own use. They share the .json suffix
+# with real documents, but a patient must never receive them as one.
+INTERNAL_SIDECAR_NAMES = {
+    dcom_pipeline.PATIENT_MANIFEST_NAME.casefold(),
+    "mpr-volume.json",
+}
 UNKNOWN = "—"
 
+# What each export mode writes, as (viewer, dicom). "jpg" and "all" are older
+# spellings of "viewer" and "both" kept so existing callers keep working.
+# This mapping is the only place a mode name is recognised, so an unknown mode
+# fails loudly here instead of silently exporting an empty folder.
+EXPORT_MODES: dict[str, tuple[bool, bool]] = {
+    "viewer": (True, False),
+    "jpg": (True, False),
+    "dicom": (False, True),
+    "both": (True, True),
+    "all": (True, True),
+}
+
 LogFn = Callable[[str], None]
+
+
+def _resolve_export_mode(mode: str) -> tuple[bool, bool]:
+    """Return (export_viewer, export_dicom) for a requested export mode."""
+    try:
+        return EXPORT_MODES[str(mode).strip().casefold()]
+    except KeyError:
+        supported = ", ".join(sorted(EXPORT_MODES))
+        raise ValueError(
+            f"Chế độ xuất không hợp lệ: {mode!r}. Chỉ nhận: {supported}."
+        ) from None
 
 
 @dataclass
@@ -98,12 +127,21 @@ def _collect_series(study_folder: Path) -> list[ExportSeries]:
     return found
 
 
+def _is_in_skipped_folder(path: Path, study_folder: Path) -> bool:
+    """True when a file sits inside a working folder that must not be exported."""
+    return any(
+        part.upper() in SKIPPED_FOLDERS
+        for part in path.relative_to(study_folder).parts[:-1]
+    )
+
+
 def _collect_documents(study_folder: Path) -> list[Path]:
     return sorted(
         (path for path in study_folder.rglob("*")
          if path.is_file()
          and path.suffix.casefold() in DOCUMENT_SUFFIXES
-         and path.name != dcom_pipeline.PATIENT_MANIFEST_NAME),
+         and path.name.casefold() not in INTERNAL_SIDECAR_NAMES
+         and not _is_in_skipped_folder(path, study_folder)),
         key=lambda path: _natural_key(path.name),
     )
 
@@ -117,9 +155,13 @@ def _collect_dicom_files(study_folder: Path) -> list[Path]:
             if path.is_file() and not path.name.startswith(".")
         ]
     else:
+        # Without a DICOM/ folder the whole study is searched, so the working
+        # folders have to be excluded the same way series detection does it.
         files = [
             path for path in study_folder.rglob("*")
-            if path.is_file() and path.suffix.casefold() in DICOM_SUFFIXES
+            if path.is_file()
+            and path.suffix.casefold() in DICOM_SUFFIXES
+            and not _is_in_skipped_folder(path, study_folder)
         ]
     return sorted(files, key=lambda path: _natural_key(path.name))
 
@@ -145,28 +187,23 @@ def _study_metadata(study_folder: Path, records: dict[str, dict]) -> dict:
 
 
 def detect_patient_export_contents(patient_folder: Path) -> dict:
-    patient_folder = Path(patient_folder).expanduser().resolve(strict=True)
-    study_folders = _study_folders(patient_folder)
-    jpg_count = 0
-    dicom_count = 0
-    doc_count = 0
-    series_count = 0
+    """Summarise what an export would write, to drive the mode picker.
 
-    for study in study_folders:
-        for s in _collect_series(study):
-            series_count += 1
-            jpg_count += len(s.images)
-        doc_count += len(_collect_documents(study))
-        dicom_count += len(_collect_dicom_files(study))
+    Counted from the same pass the export itself uses, so the dialog cannot
+    promise studies that the export then skips for holding nothing.
+    """
+    _patient, studies = collect_record(patient_folder)
+    jpg_count = sum(study.image_count() for study in studies)
+    dicom_count = sum(study.dicom_count() for study in studies)
 
     return {
         "hasJpg": jpg_count > 0,
         "hasDicom": dicom_count > 0,
         "jpgCount": jpg_count,
         "dicomCount": dicom_count,
-        "documentCount": doc_count,
-        "studyCount": len(study_folders),
-        "seriesCount": series_count,
+        "documentCount": sum(len(study.documents) for study in studies),
+        "studyCount": len(studies),
+        "seriesCount": sum(len(study.series) for study in studies),
     }
 
 
@@ -244,14 +281,13 @@ def _clean_patient_folder_name(patient: dict, fallback: str = "BENH_NHAN") -> st
     pid = str(patient.get("patientId") or "").strip()
     if name and pid:
         raw = f"{name} - {pid}"
-    elif name:
-        raw = name
-    elif pid:
-        raw = pid
     else:
-        raw = fallback
-    cleaned = re.sub(r'[\\/:*?"<>|]', '_', raw).strip()
-    return cleaned or fallback
+        raw = name or pid or fallback
+    # The pipeline names the archive folders with _safe_name. Sanitising
+    # differently here would give the same patient two different folder names —
+    # one in the archive, another in the exported copy — and would skip the
+    # length cap that keeps the nested export paths inside the Windows limit.
+    return dcom_pipeline._safe_name(raw) or fallback
 
 
 def _escape(value: str) -> str:
@@ -964,62 +1000,6 @@ def _page(title: str, body: str, custom_css: str = "") -> str:
     )
 
 
-def _index_html(
-    patient: dict,
-    studies: list[ExportStudy],
-    pages: list[str],
-    has_dicom_folder: bool = False,
-) -> str:
-    cards = []
-    for study, page in zip(studies, pages):
-        first_img = ""
-        for s in study.series:
-            if s.images:
-                first_img = _relative_url("images", study.folder.name, s.relative.as_posix(), s.images[0].name)
-                break
-
-        thumb_html = (
-            f'<div class="card-thumb-wrap"><img class="card-thumb" src="{_escape(first_img)}" alt=""></div>'
-            if first_img else ""
-        )
-        cards.append(
-            f'<a href="{_escape(page)}" class="study-card">'
-            f'<div class="card-top">'
-            f'<div class="card-title">{_or_dash(study.title)}</div>'
-            f'<span class="modality-badge">{_or_dash(study.modality)}</span>'
-            '</div>'
-            f'{thumb_html}'
-            f'<div class="card-meta"><span>📅 {_or_dash(study.date)}</span><span>🎞 {len(study.series)} series · {study.image_count()} ảnh</span></div>'
-            f'<div class="btn-open-viewer">Mở Web PACS Viewer ➔</div>'
-            '</a>'
-        )
-
-    dicom_banner = (
-        '<div class="dicom-banner">'
-        '<div class="dicom-banner-icon">📁</div>'
-        '<div class="dicom-banner-text">'
-        '<b>Bao gồm dữ liệu file gốc DICOM</b>'
-        '<span>Thư mục <code>DICOM/</code> chứa đầy đủ các file chụp gốc chất lượng cao dành cho các phần mềm PACS chuyên dụng.</span>'
-        '</div>'
-        '</div>'
-        if has_dicom_folder else ""
-    )
-
-    body = (
-        '<div class="container">'
-        f'{_patient_header(patient)}'
-        f'{dicom_banner}'
-        f'<div class="section-title">Danh sách ca chụp ({len(studies)})</div>'
-        f'<div class="studies-grid">{"".join(cards)}</div>'
-        '</div>'
-    )
-    return _page(
-        f"Hồ sơ {patient.get('patientName') or patient.get('patientId') or ''}".strip(),
-        body,
-        custom_css=INDEX_CSS,
-    )
-
-
 def _study_html(
     patient: dict,
     all_studies: list[ExportStudy],
@@ -1096,9 +1076,7 @@ def _study_html(
         "compare": '<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></svg>',
         "compare3": '<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>',
         "montage6": '<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>',
-        "capture": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>',
         "info": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
-        "history": "🕘",
     }
 
     js_script = r"""
@@ -1108,10 +1086,15 @@ const DATA = """ + payload_json + r""";
 const MAX_VP = 4;
 let activeVp = 0;
 let layout = "1x1"; // '1x1' | '1x2' | '1x3' | '2x2'
+const LAYOUT_VIEWPORTS = { "1x1": 1, "1x2": 2, "1x3": 3, "2x2": 4 };
+// How many panes the current layout shows. Every caller has to agree on this,
+// so a new layout is added here once rather than in each of them.
+function visibleViewportCount() {
+  return LAYOUT_VIEWPORTS[layout] || 1;
+}
 let activeTool = "window"; // 'window' | 'pan' | 'zoom' | 'scroll' | 'crosshair' | 'length' | 'angle' | 'ellipse' | 'freehand' | 'text' | 'magnify'
 let syncScroll = true;
 let syncCrosshair = true;
-let isPlaying = false;
 let playInterval = null;
 let playFps = 20;
 
@@ -1216,7 +1199,7 @@ function buildSeriesStrip() {
 }
 
 function updateCardHighlights() {
-  const maxVis = layout === '1x1' ? 1 : layout === '1x2' ? 2 : layout === '1x3' ? 3 : 4;
+  const maxVis = visibleViewportCount();
   
   // Update timeline study items in-place
   document.querySelectorAll('.tl-item[data-study-idx]').forEach(el => {
@@ -1264,7 +1247,7 @@ function switchView(viewName) {
     if (tabWorklist) tabWorklist.classList.remove('active');
     if (viewWorklist) viewWorklist.style.display = 'none';
     if (viewViewer) viewViewer.style.display = 'flex';
-    const visibleCount = layout === '1x1' ? 1 : layout === '1x2' ? 2 : layout === '1x3' ? 3 : 4;
+    const visibleCount = visibleViewportCount();
     for (let v = 0; v < visibleCount; v++) {
       renderViewport(v);
     }
@@ -1481,7 +1464,7 @@ function setSlice(val, vpIdx = activeVp) {
   
   if (syncScroll) {
     const ratio = ser.count > 1 ? vp.slice / (ser.count - 1) : 0;
-    const maxVisible = layout === '1x1' ? 1 : layout === '1x2' ? 2 : layout === '1x3' ? 3 : 4;
+    const maxVisible = visibleViewportCount();
     for (let i = 0; i < maxVisible; i++) {
       if (i !== vpIdx) {
         const otherSer = currentSeries(i);
@@ -1583,20 +1566,22 @@ function toggleSyncCrosshair() {
 }
 
 function togglePlay() {
-  isPlaying = !isPlaying;
-  document.querySelectorAll('.cine-btn').forEach(btn => {
-    btn.innerHTML = isPlaying ? '⏸' : '▶';
-  });
-  if (isPlaying) {
+  // The running timer is what "playing" means, so the button is read back off
+  // it rather than off a second flag that can fall out of step with it.
+  if (playInterval !== null) {
+    clearInterval(playInterval);
+    playInterval = null;
+  } else {
     playInterval = setInterval(() => {
       const ser = currentSeries(activeVp);
       if (!ser || ser.count <= 1) return;
       const nextSlice = (viewports[activeVp].slice + 1) % ser.count;
       setSlice(nextSlice);
     }, 1000 / playFps);
-  } else {
-    clearInterval(playInterval);
   }
+  document.querySelectorAll('.cine-btn').forEach(btn => {
+    btn.innerHTML = playInterval !== null ? '⏸' : '▶';
+  });
 }
 
 function toggleFullscreen() {
@@ -1791,7 +1776,7 @@ function setupViewportMouseEvents(idx) {
       if (e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom) {
         const normX = (e.clientX - rect.left) / rect.width;
         const normY = (e.clientY - rect.top) / rect.height;
-        const maxVis = layout === '1x1' ? 1 : layout === '1x2' ? 2 : layout === '1x3' ? 3 : 4;
+        const maxVis = visibleViewportCount();
         for (let v = 0; v < maxVis; v++) {
           const c = document.getElementById(`viewport-shell-${v}`);
           if (c) {
@@ -2157,7 +2142,7 @@ def export_patient_record(
     patient_folder: Path,
     destination: Path,
     *,
-    mode: str = "viewer",  # "viewer" | "dicom" | "both" | "jpg"
+    mode: str = "viewer",  # see EXPORT_MODES
     log: LogFn = lambda _message: None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> dict:
@@ -2190,18 +2175,26 @@ def export_patient_record(
         )
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    export_viewer = mode in ("viewer", "both", "all", "jpg")
-    export_dicom = mode in ("dicom", "both", "all")
+    export_viewer, export_dicom = _resolve_export_mode(mode)
 
     has_any_jpg = any(s.image_count() > 0 for s in studies)
     has_any_dicom = any(s.dicom_count() > 0 for s in studies)
+    has_any_document = any(study.documents for study in studies)
 
-    if export_viewer and not has_any_jpg and not export_dicom:
+    # A record without pictures is still worth exporting: documents ride along
+    # the viewer path. Only fall back to the DICOM originals, or refuse, when
+    # the requested mode really has nothing to write.
+    if export_viewer and not has_any_jpg and not has_any_document and not export_dicom:
         if has_any_dicom:
             export_viewer = False
             export_dicom = True
+            # The caller asked for a viewer and gets DICOM originals instead,
+            # so the reported mode has to say what actually happened.
+            mode = "dicom"
         else:
-            raise ValueError("Hồ sơ này chưa có ảnh JPG hoặc tài liệu nào để xuất.")
+            raise ValueError(
+                "Hồ sơ này chưa có ảnh JPG, tài liệu hoặc file DICOM nào để xuất."
+            )
 
     copied_images = 0
     copied_documents = 0

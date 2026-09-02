@@ -8,6 +8,9 @@ stays an em dash rather than becoming a plausible-looking date.
 from __future__ import annotations
 
 import json
+import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -153,6 +156,62 @@ class ExportTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 portable_export.export_patient_record(empty, root / "usb")
 
+    def test_internal_sidecars_are_not_handed_over_as_patient_documents(self):
+        """mpr-volume.json is pipeline bookkeeping, not something a patient gets."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            patient = build_archive(root, studies=1)
+            destination = root / "usb"
+
+            result = portable_export.export_patient_record(patient, destination)
+
+            self.assertEqual(result["documents"], 0)
+            export_folder = Path(result["folder"])
+            self.assertEqual(list(export_folder.rglob("mpr-volume.json")), [])
+            self.assertEqual(list(export_folder.rglob("patient-index.json")), [])
+
+    def test_a_record_holding_only_documents_is_still_exported(self):
+        """A report with no pictures is the whole record for some patients."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            patient = root / "NGUYEN THI HOA - R0900001 - 2026-08-25"
+            study = patient / "2026-07-21 - XA - Ket qua"
+            study.mkdir(parents=True)
+            (study / "ket-qua.pdf").write_bytes(b"%PDF-1.4\n")
+
+            result = portable_export.export_patient_record(patient, root / "usb")
+
+            self.assertEqual(result["documents"], 1)
+            self.assertEqual(result["images"], 0)
+            export_folder = Path(result["folder"])
+            self.assertEqual(len(list((export_folder / "documents").rglob("*.pdf"))), 1)
+
+    def test_a_record_with_only_dicom_falls_back_and_reports_the_mode_it_used(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            patient = build_archive(root, studies=1)
+            for image in (patient / "2026-07-21 - MR - MRI Brain 1").rglob("*.jpg"):
+                image.unlink()
+
+            result = portable_export.export_patient_record(
+                patient, root / "usb", mode="viewer",
+            )
+
+            # Asking for a viewer and silently getting DICOM originals would
+            # leave the log claiming something that never happened.
+            self.assertEqual(result["mode"], "dicom")
+            self.assertGreater(result["dicoms"], 0)
+
+    def test_an_unknown_export_mode_is_refused_rather_than_writing_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            patient = build_archive(root, studies=1)
+
+            with self.assertRaises(ValueError):
+                portable_export.export_patient_record(
+                    patient, root / "usb", mode="viewr",
+                )
+
     def test_the_page_escapes_names_rather_than_letting_them_become_markup(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -240,6 +299,39 @@ class ExportTests(unittest.TestCase):
             self.assertIn("setTool", page)
             self.assertIn("setWindowPreset", page)
             self.assertIn("stepSlice", page)
+
+
+def _node_available() -> bool:
+    return shutil.which("node") is not None
+
+
+class ExportedViewerScriptTests(unittest.TestCase):
+    """The viewer is one generated script that nothing else parses.
+
+    A stray edit to it produces a page that opens blank on the patient's
+    machine, with no error anywhere on this side, so the script is handed to a
+    real JavaScript parser here.
+    """
+
+    @unittest.skipUnless(_node_available(), "node không có trong PATH")
+    def test_the_generated_viewer_script_parses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            patient = build_archive(root, studies=2)
+            result = portable_export.export_patient_record(patient, root / "usb")
+            html = Path(result["htmlFile"]).read_text(encoding="utf-8")
+
+            scripts = re.findall(r"<script[^>]*>(.*?)</script>", html, re.S)
+            self.assertTrue(scripts, "Trang xuất ra không có khối script nào.")
+
+            script_file = root / "viewer-script.js"
+            script_file.write_text("\n".join(scripts), encoding="utf-8")
+            check = subprocess.run(
+                ["node", "--check", str(script_file)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(check.returncode, 0, check.stderr)
 
 
 if __name__ == "__main__":

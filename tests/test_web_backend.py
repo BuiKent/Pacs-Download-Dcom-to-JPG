@@ -34,7 +34,52 @@ from web_backend import (
     _local_import_plan,
     _redirect_plan,
     _study_from_folder_path,
+    _detached_records,
 )
+
+
+class DicomCacheIsolationTests(unittest.TestCase):
+    """The scan cache must never hand back a manifest an earlier scan wrote to.
+
+    Enrichment fills blank or redacted demographics from the patient folder and
+    leaves anything already filled alone. If a cached record kept the values a
+    previous scan enriched into it, correcting a misspelled patient name would
+    never show up until the app was restarted.
+    """
+
+    @staticmethod
+    def _record(manifest: dict) -> SeriesRecord:
+        return SeriesRecord(
+            series_id="d" * 20,
+            name="Series 1",
+            folder=Path("."),
+            images=[],
+            manifest=manifest,
+            mpr_ready=False,
+            mpr_reason="",
+            modality="MR",
+        )
+
+    def test_enriching_a_handed_out_record_leaves_the_cached_one_untouched(self):
+        cached = {"1.2.3": self._record({"patient_name": "***"})}
+
+        handed_out = _detached_records(cached)
+        handed_out["1.2.3"].manifest["patient_name"] = "NGUYEN VAN A"
+
+        self.assertEqual(cached["1.2.3"].manifest["patient_name"], "***")
+
+    def test_the_costly_fields_are_still_shared_with_the_cache(self):
+        # Only the manifest is copied: re-copying pixel-heavy fields on every
+        # scan would undo what the cache exists for.
+        images = [Path("IM_0001.dcm")]
+        cached = {"1.2.3": self._record({})}
+        cached["1.2.3"].images = images
+        cached["1.2.3"].thumbnail_bytes = b"jpeg"
+
+        handed_out = _detached_records(cached)
+
+        self.assertIs(handed_out["1.2.3"].images, images)
+        self.assertEqual(handed_out["1.2.3"].thumbnail_bytes, b"jpeg")
 
 
 class JobStateContractTests(unittest.TestCase):

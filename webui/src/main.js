@@ -3509,7 +3509,12 @@ function bindEvents() {
   });
   app.querySelectorAll("[data-series-id]").forEach((element) => {
     element.addEventListener("click", async () => {
-      // If clicked from timeline rail: auto scroll thumbnail strip so that study's header is at the top
+      const seriesId = element.dataset.seriesId;
+      const newSeries = state.archive.series.find((item) => item.id === seriesId);
+      if (!newSeries) return;
+
+      // If clicked from timeline rail: only scroll the series strip so that study's
+      // group header sits at the top, and leave the current viewport image intact.
       if (element.classList.contains("tl-open") || element.closest(".tl-item")) {
         const targetCard = app.querySelector(`.series-card[data-series-id="${seriesId}"]`);
         if (targetCard) {
@@ -3518,6 +3523,7 @@ function bindEvents() {
           const targetToScroll = groupBadge || targetCard;
           targetToScroll.scrollIntoView({ behavior: "smooth", block: "start" });
         }
+        return;
       }
 
       // In compare mode: hot-swap the focused pane's series (no rebuild).
@@ -6172,4 +6178,5 @@ export {
   renderSeriesStripContent,
   switchTab,
   applyArchive,
+  bindEvents,
 };
