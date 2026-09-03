@@ -3040,6 +3040,47 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
             updated_manifest = json.loads((patient_dir / "patient-index.json").read_text(encoding="utf-8"))
             self.assertEqual(updated_manifest["studies"]["study_1"]["status"], "complete")
 
+    def test_document_detection_avoids_clariscan_and_ct_scan(self):
+        from web_backend import is_document_folder, WorklistScanner
+
+        # 1. Verify is_document_folder does not match contrast agents or diagnostic CT/MR scans
+        self.assertFalse(is_document_folder(Path("2026-05-17 - MR - MR nao mach nao Clariscan")))
+        self.assertFalse(is_document_folder(Path("2026-08-10 - CT Scan so nao")))
+        self.assertFalse(is_document_folder(Path("Series_1_3D Ax SWAN")))
+        self.assertFalse(is_document_folder(Path("JPG")))
+        self.assertFalse(is_document_folder(Path("DICOM")))
+
+        # 2. Verify is_document_folder still accurately matches genuine paperwork
+        self.assertTrue(is_document_folder(Path("benh_an")))
+        self.assertTrue(is_document_folder(Path("Benh-An")))
+        self.assertTrue(is_document_folder(Path("Scan")))
+        self.assertTrue(is_document_folder(Path("scans")))
+        self.assertTrue(is_document_folder(Path("Giay ra vien")))
+        self.assertTrue(is_document_folder(Path("Ho so benh an")))
+        self.assertTrue(is_document_folder(Path("doc")))
+        self.assertTrue(is_document_folder(Path("Documents")))
+
+        # 3. Verify scanner counts converted JPG slices of a Clariscan study as photo, not doc
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            patient_dir = Path(tmp_dir) / "Patient_Thom"
+            study_dir = patient_dir / "2026-05-17 - MR - MR nao mach nao Clariscan"
+            jpg_dir = study_dir / "JPG" / "Series_100"
+            jpg_dir.mkdir(parents=True, exist_ok=True)
+            for i in range(1, 5):
+                (jpg_dir / f"IM_{i:04d}.jpg").write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00")
+
+            class DummyJob:
+                def snapshot(self): return {}
+
+            class DummyController:
+                job = DummyJob()
+
+            scanner = WorklistScanner(DummyController())
+            result = scanner._scan_study(study_dir, {})
+            self.assertEqual(result["mediaCounts"]["doc"], 0)
+            self.assertEqual(result["mediaCounts"]["photo"], 4)
+
+
 
 if __name__ == "__main__":
     unittest.main()

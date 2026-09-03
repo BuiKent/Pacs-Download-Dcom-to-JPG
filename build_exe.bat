@@ -25,6 +25,10 @@ echo [2/3] Cai/nang cap dependency Python...
 if errorlevel 1 goto :failed
 echo.
 echo [3/3] Dong goi EXE (vai phut, dung tat cua so)...
+if not exist "dist\backups" mkdir "dist\backups" 2>nul
+if exist "dist\Dicom_Downloader_App.exe" (
+  copy /y "dist\Dicom_Downloader_App.exe" "dist\backups\Dicom_Downloader_App_backup_prev.exe" >nul
+)
 %PY_CMD% -m PyInstaller --noconfirm Dicom_Downloader_App.spec
 if errorlevel 1 goto :failed
 echo.

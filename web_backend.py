@@ -68,7 +68,19 @@ TEXT_MAX_BYTES = 2 * 1024 * 1024
 # Matched against the folder name only — never against a study description,
 # because "sau mổ" in a study description describes a scan of a patient, not a
 # video of an operation.
-DOC_FOLDER_HINTS = {"doc", "docs", "benh_an", "benh-an", "benhan", "scan", "hoso", "ho_so"}
+DOC_FOLDER_HINTS = {"doc", "docs", "benh_an", "benh-an", "benhan", "scan", "scans", "hoso", "ho_so"}
+DOC_FOLDER_WORDS = {
+    "doc", "docs", "document", "documents",
+    "scan", "scans",
+    "benhan", "hoso", "giayto",
+}
+DOC_FOLDER_COMPOUNDS = {
+    "benh_an", "benh-an", "ho_so", "ho-so", "giay_to", "giay-to",
+    "tai_lieu", "tai-lieu", "don_thuoc", "don-thuoc", "ra_vien", "ra-vien",
+}
+IMAGING_MODALITY_TOKENS = {
+    "ct", "mr", "mri", "xray", "x-ray", "xquang", "x-quang", "pet", "spect", "us", "sieuam", "sieu_am",
+}
 ANNOTATIONS_NAME = "viewer-annotations.json"
 
 
@@ -114,14 +126,60 @@ def media_type_for_file(path: Path) -> str:
 
 
 def is_document_folder(folder: Path) -> bool:
-    """Whether a folder of images holds scanned paperwork rather than photos.
+    """Whether a folder of images holds scanned paperwork rather than photos or diagnostic scans.
 
     Read off the folder name alone. Photographs and scanned records are both
     JPEGs, so the only honest signal available without opening every file is
     where the operator filed them.
     """
-    name = folder.name.casefold().replace(" ", "_")
-    return any(hint in name for hint in DOC_FOLDER_HINTS)
+    name = folder.name.casefold()
+    # A DICOM series or converted JPG series is diagnostic imaging, never paperwork
+    if folder.name.startswith("Series_") or folder.name in {"DICOM", "JPG", "mpr", "MPR"}:
+        return False
+
+    norm = re.sub(r"[\s\-]+", "_", name)
+    if any(compound in norm for compound in DOC_FOLDER_COMPOUNDS):
+        return True
+
+    tokens = set(re.split(r"[^a-z0-9]+", name))
+    if any(word in tokens for word in DOC_FOLDER_WORDS):
+        # 'CT Scan' or 'MRI scan' is diagnostic imaging, not scanned paperwork
+        if "scan" in tokens and any(m in tokens for m in IMAGING_MODALITY_TOKENS):
+            return False
+        return True
+    return False
+
+
+def _is_document_image(study_dir: Path, root_path: Path, filename: str) -> bool:
+    """Whether an image file represents scanned paperwork rather than a clinical photo or DICOM slice."""
+    # Slices in converted JPG or DICOM series folders are diagnostic imaging
+    try:
+        rel_parts = root_path.relative_to(study_dir).parts
+        if any(p in {"JPG", "DICOM", "mpr", "MPR"} or p.startswith("Series_") for p in rel_parts):
+            return False
+    except ValueError:
+        pass
+
+    # Check directory hierarchy from root_path up to study_dir
+    curr = root_path
+    while True:
+        if is_document_folder(curr):
+            return True
+        if curr == study_dir or curr.parent == curr:
+            break
+        curr = curr.parent
+
+    # Check file name tokens/compounds
+    fn_lower = filename.casefold()
+    fn_norm = re.sub(r"[\s\-]+", "_", fn_lower)
+    if any(compound in fn_norm for compound in DOC_FOLDER_COMPOUNDS):
+        return True
+    fn_tokens = set(re.split(r"[^a-z0-9]+", fn_lower))
+    if any(word in fn_tokens for word in DOC_FOLDER_WORDS):
+        if "scan" in fn_tokens and any(m in fn_tokens for m in IMAGING_MODALITY_TOKENS):
+            return False
+        return True
+    return False
 
 
 MEDIA_WORK_ROOT = Path(tempfile.gettempdir()) / "concord_media_work"
@@ -2863,7 +2921,7 @@ class WorklistScanner:
                     elif ext in {".pdf"}:
                         doc_count += 1
                     elif ext in {".jpg", ".png", ".jpeg", ".webp"}:
-                        if "doc" in str(fp).casefold() or "benh_an" in str(fp).casefold() or "scan" in str(fp).casefold():
+                        if _is_document_image(study_dir, root_path, f):
                             doc_count += 1
                         else:
                             photo_count += 1
