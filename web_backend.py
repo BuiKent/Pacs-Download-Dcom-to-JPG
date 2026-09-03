@@ -1228,12 +1228,42 @@ def _dicom_fingerprint(paths: list[Path]) -> str:
         return str(count)
 
 
-def _serialize_series_record(rec: SeriesRecord) -> dict:
+def _to_portable_rel_path(p: Path, root: Optional[Path]) -> str:
+    if root is not None:
+        try:
+            return str(p.resolve().relative_to(root.resolve()))
+        except Exception:
+            try:
+                return str(p.relative_to(root))
+            except Exception:
+                pass
+    return str(p)
+
+
+def _from_portable_rel_path(raw: str, root: Optional[Path], is_dir: bool = False) -> Path:
+    p = Path(raw)
+    if root is None:
+        return p
+    if not p.is_absolute():
+        return root / p
+    # If absolute path still exists on disk, use it directly
+    if p.exists():
+        return p
+    # If folder was moved/renamed, attempt to locate the matching relative subpath under root
+    parts = p.parts
+    for i in range(1, len(parts)):
+        cand = root.joinpath(*parts[i:])
+        if cand.is_dir() if is_dir else cand.is_file():
+            return cand
+    return p
+
+
+def _serialize_series_record(rec: SeriesRecord, root: Optional[Path] = None) -> dict:
     return {
         "series_id": rec.series_id,
         "name": rec.name,
-        "folder": str(rec.folder),
-        "images": [str(img) for img in rec.images],
+        "folder": _to_portable_rel_path(rec.folder, root),
+        "images": [_to_portable_rel_path(img, root) for img in rec.images],
         "frame_indices": rec.frame_indices,
         "manifest": rec.manifest,
         "mpr_ready": rec.mpr_ready,
@@ -1247,12 +1277,12 @@ def _serialize_series_record(rec: SeriesRecord) -> dict:
     }
 
 
-def _deserialize_series_record(item: dict) -> SeriesRecord:
+def _deserialize_series_record(item: dict, root: Optional[Path] = None) -> SeriesRecord:
     return SeriesRecord(
         series_id=item["series_id"],
         name=item["name"],
-        folder=Path(item["folder"]),
-        images=[Path(x) for x in item["images"]],
+        folder=_from_portable_rel_path(item["folder"], root, is_dir=True),
+        images=[_from_portable_rel_path(x, root, is_dir=False) for x in item["images"]],
         frame_indices=item.get("frame_indices") or [],
         manifest=item.get("manifest"),
         mpr_ready=bool(item.get("mpr_ready")),
@@ -1264,6 +1294,7 @@ def _deserialize_series_record(item: dict) -> SeriesRecord:
         study_date=str(item.get("study_date") or ""),
         acquisition=item.get("acquisition") or {},
     )
+
 
 
 def _get_dicom_cache_path(root: Path) -> Path:
@@ -1605,13 +1636,46 @@ class ArchiveCatalog:
                 data = json.loads(cache_path.read_text(encoding="utf-8"))
                 if data.get("fingerprint") == fp and "records" in data:
                     records = {
-                        uid: _deserialize_series_record(item)
+                        uid: _deserialize_series_record(item, root)
                         for uid, item in data["records"].items()
                     }
-                    unsupported = int(data.get("unsupported", 0))
-                    total = int(data.get("total", len(paths)))
-                    _DICOM_MEM_CACHE[root_key] = (fp, records, unsupported, total)
-                    return _detached_records(records), unsupported, total
+                    # Validate that the cached images actually exist on disk!
+                    has_valid_images = True
+                    checked_count = 0
+                    for rec in records.values():
+                        for img in rec.images:
+                            checked_count += 1
+                            if not img.is_file():
+                                has_valid_images = False
+                                break
+                            if checked_count >= 5:
+                                break
+                        if not has_valid_images:
+                            break
+                    if has_valid_images:
+                        unsupported = int(data.get("unsupported", 0))
+                        total = int(data.get("total", len(paths)))
+                        _DICOM_MEM_CACHE[root_key] = (fp, records, unsupported, total)
+                        # If cache had old non-relative paths, upgrade to portable relative format
+                        try:
+                            sample_raw = next(iter(data["records"].values()))["images"][0]
+                            if Path(sample_raw).is_absolute():
+                                cache_payload = {
+                                    "fingerprint": fp,
+                                    "unsupported": unsupported,
+                                    "total": total,
+                                    "records": {uid: _serialize_series_record(rec, root) for uid, rec in records.items()},
+                                }
+                                cache_path.write_text(json.dumps(cache_payload, ensure_ascii=False), encoding="utf-8")
+                        except Exception:
+                            pass
+                        return _detached_records(records), unsupported, total
+                    else:
+                        # Stale cache with dead file paths! Invalidate and remove so it gets cleanly regenerated.
+                        try:
+                            cache_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
             except Exception:
                 pass
 
@@ -1738,7 +1802,7 @@ class ArchiveCatalog:
                 "fingerprint": fp,
                 "unsupported": unsupported,
                 "total": len(paths),
-                "records": {uid: _serialize_series_record(rec) for uid, rec in records.items()},
+                "records": {uid: _serialize_series_record(rec, root) for uid, rec in records.items()},
             }
             cache_path.write_text(json.dumps(cache_payload, ensure_ascii=False), encoding="utf-8")
         except OSError:

@@ -3080,6 +3080,67 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
             self.assertEqual(result["mediaCounts"]["doc"], 0)
             self.assertEqual(result["mediaCounts"]["photo"], 4)
 
+    def test_dicom_cache_portable_and_auto_remap_on_folder_move(self):
+        from web_backend import (
+            ArchiveCatalog,
+            SeriesRecord,
+            _serialize_series_record,
+            _deserialize_series_record,
+            _to_portable_rel_path,
+            _from_portable_rel_path,
+            _get_dicom_cache_path,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root_old = Path(tmp_dir) / "Old_Location" / "Patient_Test"
+            series_old = root_old / "Study_1" / "DICOM" / "Series_1"
+            series_old.mkdir(parents=True, exist_ok=True)
+            dcm1 = series_old / "IM_0001.dcm"
+            dcm2 = series_old / "IM_0002.dcm"
+            dcm1.write_bytes(b"\x00" * 132 + b"DICM" + b"\x00" * 100)
+            dcm2.write_bytes(b"\x00" * 132 + b"DICM" + b"\x00" * 100)
+
+            # 1. Serialization with root produces relative paths
+            rec = SeriesRecord(
+                series_id="ser_1",
+                name="Series 1",
+                folder=series_old,
+                images=[dcm1, dcm2],
+                manifest=None,
+                mpr_ready=False,
+                mpr_reason="",
+            )
+            serialized = _serialize_series_record(rec, root_old)
+            self.assertFalse(Path(serialized["folder"]).is_absolute())
+            self.assertFalse(Path(serialized["images"][0]).is_absolute())
+
+            # 2. Deserialization restores absolute paths matching root
+            deserialized = _deserialize_series_record(serialized, root_old)
+            self.assertEqual(deserialized.folder, series_old)
+            self.assertEqual(deserialized.images, [dcm1, dcm2])
+
+            # 3. Simulate moving the folder to a new location
+            root_new = Path(tmp_dir) / "New_Drive" / "Renamed_Patient"
+            # Move the directory
+            shutil.move(str(root_old), str(root_new))
+
+            # A) With relative cache: seamlessly loads at root_new
+            deserialized_new = _deserialize_series_record(serialized, root_new)
+            self.assertTrue(deserialized_new.images[0].is_file())
+            self.assertEqual(deserialized_new.folder, root_new / "Study_1" / "DICOM" / "Series_1")
+
+            # B) With legacy absolute cache: auto-remaps dead absolute paths to root_new
+            legacy_serialized = {
+                "series_id": "ser_1",
+                "name": "Series 1",
+                "folder": str(series_old),
+                "images": [str(dcm1), str(dcm2)],
+            }
+            remapped = _deserialize_series_record(legacy_serialized, root_new)
+            self.assertTrue(remapped.images[0].is_file())
+            self.assertEqual(remapped.images[0], root_new / "Study_1" / "DICOM" / "Series_1" / "IM_0001.dcm")
+
+
 
 
 if __name__ == "__main__":
