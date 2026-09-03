@@ -5306,9 +5306,9 @@ def ensure_patient_archive(
         display_name = patient_name or "KHONG_RO_TEN"
         pid = patient_id or "KHONG_RO_ID"
         folder_name = " - ".join((
+            _safe_name(pid),
             _safe_name(display_name),
             "KHONG_RO_TUOI",
-            _safe_name(pid),
             created_date,
         ))
         folder = root / folder_name
@@ -6569,7 +6569,7 @@ def extract_patient_metadata(
 
 
 def patient_download_folder_name(metadata: dict, download_date: str = "") -> str:
-    """Build `<name> - <age> - <patient id> - <download date>` safely."""
+    """Build `<patient id> - <name> - <age> - <download date>` safely."""
     name = _safe_name(_patient_display_name(metadata.get("PatientName")) or "KHONG_RO_TEN")[:40]
     raw_id = metadata.get("PatientID")
     patient_id = _safe_name(
@@ -6581,7 +6581,7 @@ def patient_download_folder_name(metadata: dict, download_date: str = "") -> str
         date,
     )
     age = _safe_name(current_age or metadata.get("PatientAge") or "KHONG_RO_TUOI")
-    return f"{name} - {age} - {patient_id} - {date}"
+    return f"{patient_id} - {name} - {age} - {date}"
 
 
 def _merge_manifest_demographics(manifest: dict, metadata: dict) -> None:

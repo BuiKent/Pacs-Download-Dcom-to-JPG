@@ -3446,7 +3446,15 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   gap: 1px;
 }
 
-.who b {
+.who-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.who b,
+.who-main b {
   display: block;
   font-size: 12.5px;
   font-weight: 600;
@@ -3467,6 +3475,82 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
+}
+
+/* Copiable table columns (Patient Name, Patient ID, Study Date) */
+.copyable-cell {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.copyable-text {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.copyable-cell:hover .copyable-text {
+  text-decoration: underline dotted var(--control-border, #cbd5e1);
+}
+
+.cell-copy-btn {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease, border-color 120ms ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  padding: 0;
+  border: 1px solid var(--control-border, #d8d8d5);
+  background: var(--control-bg, #ffffff);
+  color: var(--label-muted, #9b9a97);
+  border-radius: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-left: 3px;
+}
+
+.copyable-cell:hover .cell-copy-btn,
+.cell-copy-btn:focus-visible {
+  opacity: 0.85;
+  pointer-events: auto;
+}
+
+.cell-copy-btn:hover {
+  opacity: 1 !important;
+  background: var(--accent-fg, #0f4c81);
+  color: #ffffff;
+  border-color: var(--accent-fg, #0f4c81);
+}
+
+.cell-copy-btn svg {
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.pid-col.copyable-cell,
+.date-col.copyable-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2px;
+}
+
+.pid-col.copyable-cell .copyable-text,
+.date-col.copyable-cell .copyable-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
 }
 
 .meta {

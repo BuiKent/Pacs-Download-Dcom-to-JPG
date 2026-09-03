@@ -1819,15 +1819,39 @@ function renderWorklistTreeInner() {
           }
           return 0;
         });
+        const patientName = p.patientName || p.patientId || t("Chưa rõ tên BN");
+        const patientId = p.patientId || "";
+        const studyDate = patientLatestStudyDateString(p);
         return `
           <div class="prow" role="button" tabindex="0" aria-expanded="${isExpanded}" data-toggle-patient="${escapeHtml(p.id)}">
             <span class="stt-cell"><i class="twist">▶</i><span class="stt-num">${pIdx + 1}</span></span>
-            <span class="who">
-              <b>${escapeHtml(p.patientName || p.patientId || t("Chưa rõ tên BN"))}</b>
+            <span class="who copyable-cell" title="${escapeHtml(patientName)}">
+              <span class="who-main">
+                <b>${escapeHtml(patientName)}</b>
+                ${(p.patientName || p.patientId) ? `
+                  <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                    data-copy-text="${escapeHtml(p.patientName || p.patientId)}"
+                    title="${escapeHtml(t("Sao chép tên bệnh nhân"))}">${icons.copy}</button>
+                ` : ""}
+              </span>
               ${demoLine ? `<small>${escapeHtml(demoLine)}</small>` : ""}
             </span>
-            <span class="meta pid-col"><b>${escapeHtml(p.patientId || "—")}</b></span>
-            <span class="meta date-col">${escapeHtml(patientLatestStudyDateString(p))}</span>
+            <span class="meta pid-col copyable-cell" title="${escapeHtml(patientId || "—")}">
+              <b>${escapeHtml(patientId || "—")}</b>
+              ${patientId ? `
+                <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                  data-copy-text="${escapeHtml(patientId)}"
+                  title="${escapeHtml(t("Sao chép mã BN"))}">${icons.copy}</button>
+              ` : ""}
+            </span>
+            <span class="meta date-col copyable-cell" title="${escapeHtml(studyDate)}">
+              <span>${escapeHtml(studyDate)}</span>
+              ${studyDate && studyDate !== "—" ? `
+                <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                  data-copy-text="${escapeHtml(studyDate)}"
+                  title="${escapeHtml(t("Sao chép ngày chụp"))}">${icons.copy}</button>
+              ` : ""}
+            </span>
             <span class="meta format-col">${patientFormatBadges(p)}</span>
             <span class="meta status-col count">${escapeHtml(tf("{} đợt khám", studyCount))}</span>
             <span class="rowacts">
@@ -1843,15 +1867,37 @@ function renderWorklistTreeInner() {
           </div>
 
           <div class="studies${isExpanded ? " on" : ""}" data-studies="${escapeHtml(p.id)}">
-            ${studies.map((s, sIdx) => `
+            ${studies.map((s, sIdx) => {
+              const studyHead = studyHeadingLine(s);
+              const studyDt = s.studyDate || "—";
+              return `
                 <div class="srow${s.isRead ? " read" : " unread"}">
                   <span class="stt-cell"><span class="rail"></span><span class="stt-subnum">${pIdx + 1}.${sIdx + 1}</span></span>
-                  <span class="who">
-                    <b>${escapeHtml(studyHeadingLine(s))}</b>
+                  <span class="who copyable-cell" title="${escapeHtml(studyHead)}">
+                    <span class="who-main">
+                      <b>${escapeHtml(studyHead)}</b>
+                      <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                        data-copy-text="${escapeHtml(studyHead)}"
+                        title="${escapeHtml(t("Sao chép tên ca chụp"))}">${icons.copy}</button>
+                    </span>
                     <small>${escapeHtml(studyCountLine(s))}</small>
                   </span>
-                  <span class="meta pid-col sub">—</span>
-                  <span class="meta date-col">${escapeHtml(s.studyDate || "—")}</span>
+                  <span class="meta pid-col sub copyable-cell" title="${escapeHtml(p.patientId || "—")}">
+                    <span>—</span>
+                    ${p.patientId ? `
+                      <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                        data-copy-text="${escapeHtml(p.patientId)}"
+                        title="${escapeHtml(t("Sao chép mã BN"))}">${icons.copy}</button>
+                    ` : ""}
+                  </span>
+                  <span class="meta date-col copyable-cell" title="${escapeHtml(studyDt)}">
+                    <span>${escapeHtml(studyDt)}</span>
+                    ${s.studyDate && s.studyDate !== "—" ? `
+                      <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                        data-copy-text="${escapeHtml(s.studyDate)}"
+                        title="${escapeHtml(t("Sao chép ngày chụp"))}">${icons.copy}</button>
+                    ` : ""}
+                  </span>
                   <span class="meta format-col">${studyFormatBadge(s)}</span>
                   <span class="badge status-col ${s.status || "done"}">${escapeHtml(t(s.statusLabel || "Đã tải"))}</span>
                   <span class="rowacts">
@@ -1875,7 +1921,8 @@ function renderWorklistTreeInner() {
                     </button>
                   </span>
                 </div>
-              `).join("")}
+              `;
+            }).join("")}
           </div>
         `;
       }).join("")}
@@ -1893,6 +1940,7 @@ function renderWorklistTreeInner() {
  */
 const WORKLIST_OWNED_ACTIONS = new Set([
   "sort-worklist",
+  "copy-cell",
   "open-study-viewer",
   "open-patient-record",
   "reveal-study-folder",
@@ -1932,9 +1980,30 @@ function bindWorklistOpenButtons(host) {
     });
   });
 
+  host.querySelectorAll("[data-action='copy-cell']").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      action("copy-cell", btn);
+    });
+  });
+
+  host.querySelectorAll(".copyable-cell").forEach((cell) => {
+    cell.addEventListener("dblclick", (e) => {
+      if (e.target.closest("button")) return;
+      e.stopPropagation();
+      const copyBtn = cell.querySelector(".cell-copy-btn");
+      const text = copyBtn?.dataset?.copyText || cell.querySelector("b, span")?.textContent?.trim();
+      if (text && text !== "—") {
+        copyTextToClipboard(text, `${t("Đã sao chép")}: ${text.length > 25 ? text.slice(0, 22) + "..." : text}`);
+      }
+    });
+  });
+
   host.querySelectorAll("[data-toggle-patient]").forEach((prow) => {
     prow.addEventListener("click", (e) => {
-      if (e.target.closest("button")) return;
+      if (e.target.closest("button, a, input, .cell-copy-btn")) return;
+      const selection = window.getSelection();
+      if (selection && selection.toString().trim().length > 0) return;
       const pid = prow.dataset.togglePatient;
       state.expandedPatients = state.expandedPatients || {};
       state.expandedPatients[pid] = !(state.expandedPatients[pid] !== false);
@@ -3077,7 +3146,7 @@ function renderExportModal() {
 }
 
 
-function showCopyToast(message = t("Đã sao chép link tải vào clipboard!")) {
+function showCopyToast(message = t("Đã sao chép vào clipboard!")) {
   const existing = document.querySelector(".copy-toast");
   if (existing) existing.remove();
   const toast = document.createElement("div");
@@ -3089,7 +3158,7 @@ function showCopyToast(message = t("Đã sao chép link tải vào clipboard!"))
   }, 2500);
 }
 
-async function copyTextToClipboard(text) {
+async function copyTextToClipboard(text, customMessage) {
   if (!text) return;
   try {
     if (navigator.clipboard && window.isSecureContext) {
@@ -3105,9 +3174,9 @@ async function copyTextToClipboard(text) {
       document.execCommand("copy");
       textarea.remove();
     }
-    showCopyToast();
+    showCopyToast(customMessage || t("Đã sao chép vào clipboard!"));
   } catch (_) {
-    showCopyToast(t("Không thể sao chép liên kết"));
+    showCopyToast(t("Không thể sao chép"));
   }
 }
 
@@ -4488,9 +4557,16 @@ async function action(name, element = null) {
       closeFileInfoModal();
       return;
     }
+    if (name === "copy-cell") {
+      const text = element?.dataset?.copyText;
+      if (text && text !== "—") {
+        await copyTextToClipboard(text, `${t("Đã sao chép")}: ${text.length > 25 ? text.slice(0, 22) + "..." : text}`);
+      }
+      return;
+    }
     if (name === "copy-download-url") {
       const url = element?.dataset?.url;
-      if (url) await copyTextToClipboard(url);
+      if (url) await copyTextToClipboard(url, t("Đã sao chép link tải vào clipboard!"));
       return;
     }
     if (name === "open-download-url") {

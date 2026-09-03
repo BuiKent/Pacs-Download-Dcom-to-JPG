@@ -88,7 +88,7 @@ class PatientArchiveTests(unittest.TestCase):
                 hospital_name="Bệnh viện Hữu nghị Việt Đức",
             )
             self.assertTrue(created)
-            self.assertTrue(folder.name.startswith("Nguyễn Văn A - KHONG_RO_TUOI - 2605032022 - "))
+            self.assertTrue(folder.name.startswith("2605032022 - Nguyễn Văn A - KHONG_RO_TUOI - "))
             first_study_folder = folder / dcom_pipeline.study_archive_folder_name(studies[0])
             first_study_folder.mkdir()
             dcom_pipeline.record_patient_study(
@@ -566,7 +566,7 @@ class PatientDemographicsTests(unittest.TestCase):
             self.assertEqual("", metadata["PatientBirthDate"])
             self.assertEqual("55T", metadata["PatientAge"])
             self.assertEqual(
-                "KHONG_RO_TEN - 55T - KHONG_RO_ID - 2026-08-09",
+                "KHONG_RO_ID - KHONG_RO_TEN - 55T - 2026-08-09",
                 folder,
             )
 
@@ -588,7 +588,7 @@ class PatientDemographicsTests(unittest.TestCase):
 
             self.assertEqual("NGUYEN THI CAM TU", metadata["PatientName"])
             self.assertEqual(
-                "NGUYEN THI CAM TU - 23T - 2606033997 - 2026-08-09",
+                "2606033997 - NGUYEN THI CAM TU - 23T - 2026-08-09",
                 folder,
             )
 
@@ -878,7 +878,7 @@ class PatientDemographicsTests(unittest.TestCase):
 
             self.assertEqual(3, attempts)
             self.assertEqual(
-                "NGUYEN VAN A - 23T - BN001 - 2026-08-09",
+                "BN001 - NGUYEN VAN A - 23T - 2026-08-09",
                 renamed.name,
             )
             self.assertEqual(renamed / "JPG", remapped_jpg)
@@ -981,7 +981,7 @@ class PatientDemographicsTests(unittest.TestCase):
 
             renamed = Path(jpg_dir).parent
             self.assertFalse(original.exists())
-            self.assertIn("NGUYEN VAN A - 23T - BN001 - ", renamed.name)
+            self.assertIn("BN001 - NGUYEN VAN A - 23T - ", renamed.name)
             manifest = json.loads(
                 (renamed / dcom_pipeline.PATIENT_MANIFEST_NAME).read_text(encoding="utf-8")
             )
@@ -990,7 +990,7 @@ class PatientDemographicsTests(unittest.TestCase):
 
     def test_resuming_named_direct_root_keeps_original_download_date(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "NGUYEN VAN A - 23T - BN001 - 2026-01-02"
+            root = Path(tmp) / "BN001 - NGUYEN VAN A - 23T - 2026-01-02"
             dicom_dir = root / "DICOM"
             dicom_dir.mkdir(parents=True)
             write_patient_dicom(dicom_dir / "one.dcm")
@@ -1037,7 +1037,7 @@ class PatientDemographicsTests(unittest.TestCase):
             metadata = dcom_pipeline.extract_patient_metadata(dicom_dir)
             self.assertIs(kwargs["after_first_dicom"], kwargs["after_dicom_download"])
             remapped_out = kwargs["after_first_dicom"](Path(kwargs["out_base"]), metadata)
-            self.assertIn("NGUYEN VAN A - 23T - BN001 - ", remapped_out.parent.name)
+            self.assertIn("BN001 - NGUYEN VAN A - 23T - ", remapped_out.parent.name)
             jpg_dir = remapped_out / "JPG"
             jpg_dir.mkdir()
             return (
@@ -1062,7 +1062,7 @@ class PatientDemographicsTests(unittest.TestCase):
 
             patient_dirs = [path for path in root.iterdir() if path.is_dir()]
             self.assertEqual(1, len(patient_dirs))
-            self.assertIn("NGUYEN VAN A - 23T - BN001 - ", patient_dirs[0].name)
+            self.assertIn("BN001 - NGUYEN VAN A - 23T - ", patient_dirs[0].name)
             manifest = json.loads(
                 (patient_dirs[0] / dcom_pipeline.PATIENT_MANIFEST_NAME).read_text(encoding="utf-8")
             )
