@@ -181,24 +181,25 @@ describe("Viewer tab: patient rail", () => {
     expect(renderPatientRail()).toContain("Chưa có dữ liệu nào trong hồ sơ này.");
   });
 
-  it("renders the history card with history dropdown at the top of the rail", () => {
+  it("does not render the history card on the patient rail", () => {
     state.history = [{ folder: "D:\\PACS\\BN_01", time: "10/08 14:00", exists: true }];
     const html = renderPatientRail();
-    expect(html).toContain("rec-history-card");
-    expect(html).toContain('data-field="history"');
-    expect(html).toContain("Lịch sử mở gần đây");
+    expect(html).not.toContain("rec-history-card");
   });
 
-  it("renders patient info card with phone, address, and icon-only edit button", () => {
+  it("renders patient info card with phone, address, and edit button aligned with patient name", () => {
     state.archive.patient.phone = "0912345678";
     state.archive.patient.address = "Hà Nội";
     const html = renderPatientRail();
     expect(html).toContain("rec-info-card");
+    expect(html).toContain("rec-name-row");
     expect(html).toContain("0912345678");
     expect(html).toContain("Hà Nội");
     expect(html).toContain('data-action="edit-patient-info"');
     // Button should only contain the icon glyph '✎', not trailing text
     expect(html).toContain('>✎</button>');
+    // Header title 'Thông tin bệnh nhân' is removed
+    expect(html).not.toContain("Thông tin bệnh nhân");
   });
 
   it("renders icon-only save and cancel buttons when editing", () => {

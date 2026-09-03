@@ -637,7 +637,6 @@ function renderWinbar() {
     const modality = tab.archive?.series?.[0]?.modality || (isDicom ? "DICOM" : "MR");
     const badgeText = `${modality} · ${format}`;
     return `<div class="winbar-tab${isActive ? " active" : ""}" data-tab-id="${tab.id}">
-      <span class="winbar-tab-icon">👤</span>
       <span class="winbar-tab-title" title="${escapeHtml(title)}">${escapeHtml(title)} <span class="tab-fmt-badge ${isDicom ? "dicom" : "jpg"}">${escapeHtml(badgeText)}</span></span>
       <button class="winbar-tab-close" data-action="close-tab" data-tab-id="${tab.id}" title="${escapeHtml(t("Đóng tab"))}">×</button>
     </div>`;
@@ -645,7 +644,6 @@ function renderWinbar() {
 
   return `<nav class="winbar">
     <div class="winbar-tab${worklistActive ? " active" : ""}" data-tab-id="worklist">
-      <span class="winbar-tab-icon">📋</span>
       <span class="winbar-tab-title">Worklist</span>
     </div>
     ${tabItems}
@@ -1333,7 +1331,7 @@ function renderPatientRail() {
       return `
         <div class="rec-card rec-info-card editing">
           <div class="rec-card-header">
-            <b>👤 ${escapeHtml(t("Sửa thông tin bệnh nhân"))}</b>
+            <b>${escapeHtml(t("Sửa thông tin bệnh nhân"))}</b>
             <div class="rec-card-actions">
               <button class="mini-btn primary" type="button" data-action="save-patient-info" title="${escapeHtml(t("Lưu thay đổi"))}">✓</button>
               <button class="mini-btn" type="button" data-action="cancel-patient-info" title="${escapeHtml(t("Hủy"))}">✕</button>
@@ -1386,15 +1384,14 @@ function renderPatientRail() {
 
     return `
       <div class="rec-card rec-info-card">
-        <div class="rec-card-header">
-          <b>👤 ${escapeHtml(t("Thông tin bệnh nhân"))}</b>
-          <button class="rec-edit-btn" type="button" data-action="edit-patient-info"
-            title="${escapeHtml(t("Chỉnh sửa thông tin bệnh nhân"))}">✎</button>
-        </div>
         <div class="rec-id">
-          <b>${escapeHtml(dash(patient.patientName) === "—"
-            ? t("Chưa có tên bệnh nhân")
-            : patient.patientName)}</b>
+          <div class="rec-name-row">
+            <b>${escapeHtml(dash(patient.patientName) === "—"
+              ? t("Chưa có tên bệnh nhân")
+              : patient.patientName)}</b>
+            <button class="rec-edit-btn" type="button" data-action="edit-patient-info"
+              title="${escapeHtml(t("Chỉnh sửa thông tin bệnh nhân"))}">✎</button>
+          </div>
           <small>${escapeHtml(dash(patient.patientId))}${identity ? ` · ${escapeHtml(identity)}` : ""}</small>
         </div>
         <dl class="rec-facts">
@@ -1416,16 +1413,6 @@ function renderPatientRail() {
 
   return `
     <aside class="rec-rail">
-      <div class="rec-card rec-history-card">
-        <div class="rec-card-header">
-          <b>${icons.history} ${escapeHtml(t("Lịch sử mở gần đây"))}</b>
-        </div>
-        <label class="field history-field" style="margin:0;">
-          <select data-field="history" title="${escapeHtml(t("Mở lại thư mục đã tải hoặc đã xem"))}"
-            ${state.history.length ? "" : "disabled"}>${renderHistoryOptions()}</select>
-        </label>
-      </div>
-
       ${renderInfoCard()}
 
       <div class="rec-timeline-head"><b>${escapeHtml(t("Lịch sử khám"))}</b></div>
