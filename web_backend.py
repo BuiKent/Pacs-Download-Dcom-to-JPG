@@ -2564,6 +2564,54 @@ class HistoryStore:
 _STUDY_FOLDER_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s*-\s*([^-]+?)\s*-\s*(.+)$")
 _LEADING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|\d{8})")
 
+# A patient code as the pipeline writes it into a folder name: one word, and at
+# least one digit in it. The digit is what tells a code apart from a one-word
+# Vietnamese name. Matching on length alone read `TUAN - 30T - 2606033997 -
+# 2026-08-03` as a patient coded TUAN whose name was "30T".
+_PATIENT_CODE_RE = re.compile(r"^(?=[^\s]*\d)[A-Za-z0-9][A-Za-z0-9._-]*$")
+# `14T`, `26 T`, `45` — an age written into the folder name, never a name.
+_AGE_TOKEN_RE = re.compile(r"^\d{1,3}\s*[A-Za-z]{0,2}$")
+# `patient_download_folder_name` writes these when the DICOM tag is missing.
+# Their underscores are separators to the splitter in `_parse_patient_meta`,
+# which turned `KHONG_RO_TEN` into a patient named "KHONG". They are collapsed
+# to one token before the split, then blanked out of whatever field they reach.
+# `?` cannot occur in a Windows path, so this token can never collide with
+# real folder text; `_safe_name` strips it out of anything the pipeline writes.
+_UNKNOWN_FOLDER_FIELD = "?UNKNOWN?"
+_UNKNOWN_FOLDER_FIELD_RE = re.compile(r"KHONG[_\s-]RO[_\s-](?:ID|TEN|TUOI)", re.IGNORECASE)
+
+
+def _blank_if_unknown(value: str) -> str:
+    """A folder field the pipeline marked unknown reads back as blank."""
+    text = str(value or "").strip()
+    return "" if _UNKNOWN_FOLDER_FIELD in text else text
+
+
+def _identity_code(value) -> str:
+    """A patient code reduced to what identifies it, for local comparison only.
+
+    Case and the punctuation an operator types into a folder name vary; the
+    code itself does not. Never use this for display.
+    """
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+
+def _folder_identity(patient_id: str, patient_name: str) -> dict:
+    """A patient identity read off a folder name, with nothing else guessed.
+
+    Sex, birth year and hospital stay empty here: a folder name that happens to
+    look like it carries them is not a DICOM tag, and those are the fields a
+    clinician reads to confirm they opened the right chart.
+    """
+    return {
+        "patientId": _blank_if_unknown(patient_id),
+        "patientName": _blank_if_unknown(patient_name),
+        "gender": "",
+        "birthYear": "",
+        "hospital": "",
+        "hospitalKey": "",
+    }
+
 
 def _is_real_date(digits: str) -> bool:
     """Whether 8 digits are an actual calendar date.
@@ -2820,38 +2868,65 @@ class WorklistScanner:
         Once patient-index.json exists it is the source of truth. A blank field
         in that file means unknown; filling it from a plausible folder name can
         fabricate demographics beside clinical images.
+
+        The one field borrowed back from the folder is the name, and only when
+        the manifest left it blank while both agree on the patient code. That
+        agreement is the evidence: the folder is describing the same person the
+        manifest is, so showing the name is reporting what is on disk rather
+        than inventing a demographic. Sex and birth year are never borrowed.
         """
         guessed = self._parse_patient_meta(patient_dir.name)
         recorded = self._manifest_patient_meta(patient_dir)
         if not recorded:
             return guessed
-        return {
+        result = {
             key: str(recorded.get(key) or "").strip()
             for key in guessed
         }
+        if not result.get("patientName") and guessed.get("patientName"):
+            recorded_code = _identity_code(result.get("patientId"))
+            folder_code = _identity_code(guessed.get("patientId"))
+            if recorded_code and recorded_code == folder_code:
+                result["patientName"] = guessed["patientName"]
+        return result
 
     def _parse_patient_meta(self, folder_name: str) -> dict:
         name_clean = folder_name.replace("\\", "/").rstrip("/").split("/")[-1]
+        name_clean = _UNKNOWN_FOLDER_FIELD_RE.sub(_UNKNOWN_FOLDER_FIELD, name_clean)
         primary_chunks = [c.strip() for c in re.split(r"[_|]|\s+-\s+|\s+·\s+", name_clean) if c.strip()]
 
-        # Current direct-download folders are
-        #   <name> - <age> - <patient id> - <download date>.
-        # Recognise that exact shape before the legacy parser treats the name as
-        # the ID. The age is not a birth year and the download date is not a
-        # clinical demographic, so neither is inferred here.
+        # Direct-download folders ending in date YYYY-MM-DD:
+        #   <patient id> - <name> - <age> - <download date> (current format)
+        #   <name> - <age> - <patient id> - <download date> (legacy format)
+        # Which of the two is in front is decided by the shape of the first
+        # chunk, not by its length: a code carries a digit, a name does not.
         if (
             len(primary_chunks) >= 4
             and re.fullmatch(r"\d{4}-\d{2}-\d{2}", primary_chunks[-1])
-            and primary_chunks[-2]
         ):
-            return {
-                "patientId": primary_chunks[-2],
-                "patientName": " - ".join(primary_chunks[:-3]).strip(),
-                "gender": "",
-                "birthYear": "",
-                "hospital": "",
-                "hospitalKey": "",
-            }
+            if (
+                _PATIENT_CODE_RE.match(primary_chunks[0])
+                and any(c.isalpha() for c in primary_chunks[1])
+                and not _AGE_TOKEN_RE.match(primary_chunks[1])
+            ):
+                return _folder_identity(primary_chunks[0], primary_chunks[1])
+            if primary_chunks[-2]:
+                return _folder_identity(
+                    primary_chunks[-2], " - ".join(primary_chunks[:-3]).strip())
+
+        # Folders typed by hand, hyphenated with no spaces around the hyphens:
+        #   2606033997-NGUYỄN THỊ CẨM TÚ-14T-U thần kinh đệm...
+        #   2401005051-Đào Trường Giang-30T-Phình mạch...
+        # Everything after the age is the operator's own note about the case,
+        # not a demographic, so it is read and discarded.
+        m = re.match(
+            r"^([A-Za-z0-9._-]*\d[A-Za-z0-9._-]*)-([A-Za-zÀ-ỹ][A-Za-zÀ-ỹ\s]*?)"
+            r"(?:-\d{1,3}[A-Za-z]{0,2})?(?:-.*)?$",
+            name_clean,
+        )
+        if m:
+            return _folder_identity(m.group(1).strip(), m.group(2).strip())
+
         patient_id = primary_chunks[0] if primary_chunks else name_clean
 
         remaining = " ".join(primary_chunks[1:]) if len(primary_chunks) > 1 else ""
@@ -2871,16 +2946,24 @@ class WorklistScanner:
                 break
 
         hospital = ""
+        # Which words the hospital took, so the name below does not take them
+        # again: in "... - BV A" the "A" is the hospital, not the last word of
+        # the patient's name.
+        hospital_indices: set[int] = set()
         for i, w in enumerate(words):
             if w.upper() in {"BV", "BENHVIEN", "BỆNHVIỆN"} and i + 1 < len(words):
                 hospital = f"BV {words[i+1].upper()}"
+                hospital_indices = {i, i + 1}
                 break
             elif re.fullmatch(r"BV\s*[A-Za-z0-9]+", w, re.IGNORECASE):
                 hospital = w.upper()
+                hospital_indices = {i}
                 break
 
         name_tokens = []
-        for w in words:
+        for index, w in enumerate(words):
+            if index in hospital_indices:
+                continue
             if w == patient_id:
                 continue
             if w.casefold() in {"nam", "nu", "nữ", "male", "female", "m", "f"}:
@@ -2889,7 +2972,10 @@ class WorklistScanner:
                 continue
             if w.upper().startswith("BV") or w.upper() in {"BENHVIEN", "BỆNHVIỆN"}:
                 continue
-            if len(w) > 1 and not w.isdigit():
+            # A one-letter token is kept only when it is a letter: the final
+            # word of "Nguyễn Văn A" is part of the name, while a stray
+            # separator left over by the split is not.
+            if w.isalpha() or (len(w) > 1 and not w.isdigit()):
                 name_tokens.append(w)
         patient_name = " ".join(name_tokens).upper() if name_tokens else (primary_chunks[1].upper() if len(primary_chunks) > 1 else patient_id)
 
@@ -2898,8 +2984,8 @@ class WorklistScanner:
         # are exactly what a clinician reads to confirm they opened the right
         # patient, so a guess here can send images to the wrong chart.
         return {
-            "patientId": patient_id,
-            "patientName": patient_name,
+            "patientId": _blank_if_unknown(patient_id),
+            "patientName": _blank_if_unknown(patient_name),
             "gender": gender,
             "birthYear": birth_year,
             "hospital": hospital,

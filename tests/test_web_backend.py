@@ -1887,6 +1887,77 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertEqual(current["gender"], "")
         self.assertEqual(current["birthYear"], "")
 
+        # Format with Patient ID first
+        new_format = scanner._parse_patient_meta(
+            "2606033997 - NGUYỄN THỊ CẨM TÚ - 14T - 2026-08-03"
+        )
+        self.assertEqual(new_format["patientName"], "NGUYỄN THỊ CẨM TÚ")
+        self.assertEqual(new_format["patientId"], "2606033997")
+
+        # Hyphenated format without spaces
+        hyphen_format = scanner._parse_patient_meta(
+            "2606033997-NGUYỄN THỊ CẨM TÚ-14T-U thần kinh đệm não thất III#U sọ hầu"
+        )
+        self.assertEqual(hyphen_format["patientName"], "NGUYỄN THỊ CẨM TÚ")
+        self.assertEqual(hyphen_format["patientId"], "2606033997")
+
+    def test_a_one_word_name_is_not_mistaken_for_the_patient_code(self) -> None:
+        """`TUAN - 30T - 2606033997 - 2026-08-03` read TUAN as the code.
+
+        Both folder layouts end in the download date, so the first chunk has to
+        say which one it is. Length cannot: plenty of Vietnamese names are one
+        word of four or more letters. A code carries a digit; a name does not.
+        """
+        from web_backend import WorklistScanner
+
+        scanner = WorklistScanner(self.controller)
+        for folder in (
+            "TUAN - 30T - 2606033997 - 2026-08-03",
+            "TRANG - 25T - 2606033997 - 2026-08-03",
+        ):
+            meta = scanner._parse_patient_meta(folder)
+            self.assertEqual(meta["patientId"], "2606033997", folder)
+            self.assertEqual(meta["patientName"], folder.split(" - ")[0], folder)
+
+        # A code with punctuation in it is still a code, not a name.
+        punctuated = scanner._parse_patient_meta(
+            "PID-2024-01 - NGUYEN VAN C - 45T - 2026-08-03")
+        self.assertEqual(punctuated["patientId"], "PID-2024-01")
+        self.assertEqual(punctuated["patientName"], "NGUYEN VAN C")
+
+    def test_unknown_folder_fields_read_back_blank(self) -> None:
+        """`KHONG_RO_TEN` was split on its underscores into a patient "KHONG".
+
+        The pipeline writes those placeholders when the DICOM tag is missing,
+        so what reaches the worklist has to stay empty rather than turn into a
+        name a clinician could mistake for the real one.
+        """
+        from web_backend import WorklistScanner
+
+        scanner = WorklistScanner(self.controller)
+        blank = scanner._parse_patient_meta(
+            "KHONG_RO_ID - KHONG_RO_TEN - KHONG_RO_TUOI - 2026-08-03")
+        self.assertEqual(blank["patientId"], "")
+        self.assertEqual(blank["patientName"], "")
+
+        named_id = scanner._parse_patient_meta(
+            "2606033997 - KHONG_RO_TEN - 14T - 2026-08-03")
+        self.assertEqual(named_id["patientId"], "2606033997")
+        self.assertEqual(named_id["patientName"], "")
+
+    def test_a_one_letter_last_word_stays_in_the_name(self) -> None:
+        """"NGUYEN VAN B" lost its B, while "BV A" must not gain one."""
+        from web_backend import WorklistScanner
+
+        scanner = WorklistScanner(self.controller)
+        meta = scanner._parse_patient_meta("2607063527_NGUYEN VAN B_Nam_1974")
+        self.assertEqual(meta["patientName"], "NGUYEN VAN B")
+
+        with_hospital = scanner._parse_patient_meta(
+            "TEST-0001_NGUYEN VAN MAU - Nam - 1974 - BV A")
+        self.assertEqual(with_hospital["patientName"], "NGUYEN VAN MAU")
+        self.assertEqual(with_hospital["hospital"], "BV A")
+
     def test_worklist_prefers_patient_index_over_folder_name(self) -> None:
         """patient-index.json records the real DICOM tags, so it wins."""
         from web_backend import WorklistScanner
@@ -1926,6 +1997,52 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertEqual(meta["patientName"], "")
         self.assertEqual(meta["gender"], "")
         self.assertEqual(meta["birthYear"], "")
+
+    def test_patient_index_with_blank_name_adopts_name_from_matching_folder(self) -> None:
+        from web_backend import WorklistScanner
+
+        patient_dir = self.temp_dir / "2606033997-NGUYỄN THỊ CẨM TÚ-14T-U thần kinh"
+        patient_dir.mkdir(parents=True)
+        (patient_dir / "patient-index.json").write_text(json.dumps({
+            "format": "dcom-patient-index-v1",
+            "patientId": "2606033997",
+            "patientName": "",
+            "hospitalName": "BV Đại học Y Hà Nội",
+            "studies": {},
+        }), encoding="utf-8")
+
+        meta = WorklistScanner(self.controller)._patient_meta_for(patient_dir)
+        self.assertEqual(meta["patientId"], "2606033997")
+        self.assertEqual(meta["patientName"], "NGUYỄN THỊ CẨM TÚ")
+        self.assertEqual(meta["hospital"], "BV Đại học Y Hà Nội")
+
+    def test_the_code_match_that_unlocks_the_folder_name_ignores_punctuation(self) -> None:
+        """`BN-9999` in the manifest and `BN9999` on disk are the same patient.
+
+        The name is only borrowed when both sides agree on the code, so that
+        comparison has to survive the punctuation an operator types into a
+        folder name. A genuinely different code still blocks the borrow.
+        """
+        from web_backend import WorklistScanner
+
+        scanner = WorklistScanner(self.controller)
+
+        def meta_for(folder_name: str, recorded_id: str) -> dict:
+            patient_dir = self.temp_dir / folder_name
+            patient_dir.mkdir(parents=True, exist_ok=True)
+            (patient_dir / "patient-index.json").write_text(json.dumps({
+                "format": "dcom-patient-index-v1",
+                "patientId": recorded_id,
+                "patientName": "",
+                "studies": {},
+            }), encoding="utf-8")
+            return scanner._patient_meta_for(patient_dir)
+
+        same = meta_for("BN9999 - NGUYEN VAN C - 45T - 2026-08-03", "bn-9999")
+        self.assertEqual(same["patientName"], "NGUYEN VAN C")
+
+        other = meta_for("BN1234 - TRAN THI D - 45T - 2026-08-03", "BN-9999")
+        self.assertEqual(other["patientName"], "")
 
     def test_a_patient_code_is_not_read_as_a_study_date(self) -> None:
         """Found by running the app: `2607063527_...` displayed as 35/06/2607.
