@@ -205,3 +205,27 @@ class TestLegibility:
         # If the two drift, the reader approves one coarseness and gets another.
         for width, expected in ((4, 10), (1, 4), (12, 30)):
             assert pe._pixelate_block(pe.Shape(kind="pixelate", stroke_width=width)) == expected
+
+
+class TestTimedMarks:
+    """A mark on a clip carries when it is on screen; one on a photo does not."""
+
+    def test_parses_a_span_from_the_client(self):
+        shape = pe.Shape.from_dict({"kind": "arrow", "start_s": 4, "end_s": 13})
+        assert (shape.start_s, shape.end_s) == (4.0, 13.0)
+
+    def test_a_mark_with_no_span_belongs_to_the_whole_clip(self):
+        # Absent, not null-and-zero: an identity stamp that quietly became a
+        # 0.0-second overlay would vanish from the recording it identifies.
+        shape = pe.Shape.from_dict({"kind": "text", "text": "BN 02"})
+        assert shape.start_s is None and shape.end_s is None
+
+    def test_the_span_does_not_change_what_is_drawn(self, tmp_path):
+        # Timing is the video layer's business; the rasteriser must ignore it,
+        # or a timed mark would come out different from an untimed one.
+        base = {"kind": "rect", "x": 10, "y": 10, "width": 80, "height": 60,
+                "color": [255, 0, 0], "filled": True}
+        plain = pe.render_overlay_png([base], (200, 150), tmp_path / "a.png")
+        timed = pe.render_overlay_png([{**base, "start_s": 2, "end_s": 5}],
+                                      (200, 150), tmp_path / "b.png")
+        assert Image.open(plain).tobytes() == Image.open(timed).tobytes()

@@ -138,6 +138,10 @@ const state = {
   videoIn: null,
   videoOut: null,
   videoDuration: 0,
+  // What a new mark on a clip is timed to: "span" pins it to the marked in/out
+  // points, "all" leaves it on for the whole recording. A stamp and a blurred
+  // face belong to the whole clip; an arrow belongs to a moment.
+  videoShapeTiming: "span",
   // Series shown beside the primary one; index 0 is pane B, index 1 is pane C.
   compareIds: ["", ""],
   scrollSync: true,
@@ -771,6 +775,9 @@ function syncVideoRangeUI() {
   if (clear) clear.disabled = !range;
   const trim = root.querySelector("[data-action='video-tool-trim']");
   if (trim) trim.disabled = !range;
+  // Marking a span is also what makes the "show for this span" choice
+  // available, and that picker lives in the properties bar, not this row.
+  syncPhotoStudioUI();
 }
 
 function renderSurgeryVideoStudio(series) {
@@ -837,6 +844,7 @@ function renderSurgeryVideoStudio(series) {
           }).join("")}
         </div>
       ` : ""}
+      ${renderStudioStatusBar(series)}
       <div class="surgery-video-controls">
         <button class="control-btn" data-action="video-play-pause" title="${escapeHtml(t("Phát / Tạm dừng"))}">⏯</button>
         <button class="control-btn" data-action="video-rewind-5" title="${escapeHtml(t("Tua lùi 5s"))}">-5s</button>
@@ -1023,6 +1031,7 @@ function renderPhotoProperties(series) {
         <input type="checkbox" data-field="photo-fill" ${style.filled ? "checked" : ""}>
         <span>${escapeHtml(t("Tô đặc"))}</span>
       </label>
+      ${getSeriesMediaType(series) === "video" ? renderVideoTimingPicker() : ""}
       <span class="photo-props-actions">
         <button class="tool-btn" data-action="photo-apply-crop" id="photo-apply-crop" hidden>
           ✂ ${escapeHtml(t("Cắt theo vùng chọn"))}
@@ -1035,6 +1044,53 @@ function renderPhotoProperties(series) {
         </button>
       </span>
     </div>
+  `;
+}
+
+/**
+ * When a mark on a clip is on screen.
+ *
+ * Two choices, because there are exactly two things a reader means: this mark
+ * belongs to the whole recording (a stamp, a blurred face), or it belongs to
+ * the moment they have marked out (an arrow at the clip, a label on a step).
+ * The second is only offered once there is a span to pin it to.
+ */
+/**
+ * The line under both studios: what the pointer is holding, what is selected,
+ * and how much has been drawn but not yet written to the file.
+ *
+ * The video studio had no such row, so a reader who had marked four findings
+ * on a clip had nothing on screen telling them the marks were still unsaved.
+ */
+function renderStudioStatusBar(series) {
+  const pending = pendingShapeCount(series);
+  return `
+    <div class="photo-editor-status">
+      <span id="photo-status-hint">${escapeHtml(t(toolById(state.photoTool).label))}</span>
+      <span style="flex:1;"></span>
+      <span id="photo-status-size"></span>
+      <span id="photo-status-count">${
+        pending ? tf("{} nét chưa áp dụng", pending) : escapeHtml(t("Chưa vẽ gì"))
+      }</span>
+    </div>
+  `;
+}
+
+function renderVideoTimingPicker() {
+  const range = videoRange();
+  const spanLabel = range
+    ? `${formatVideoTime(range.start)}→${formatVideoTime(range.end)}`
+    : t("Chưa chọn đoạn");
+  const choice = (mode, label, disabled) => `
+    <button class="tool-btn ${state.videoShapeTiming === mode && !disabled ? "active" : ""}"
+      data-action="video-timing" data-timing="${mode}" ${disabled ? "disabled" : ""}>${escapeHtml(label)}</button>`;
+  return `
+    <span class="photo-props-divider"></span>
+    <span class="photo-props-label">${escapeHtml(t("Hiện"))}</span>
+    <span class="photo-timing-picker" id="photo-timing-picker">
+      ${choice("all", t("Toàn bộ"), false)}
+      ${choice("span", spanLabel, !range)}
+    </span>
   `;
 }
 
@@ -1077,12 +1133,7 @@ function renderPhotoEditorStudio(series) {
           </div>
         </div>
       </div>
-      <div class="photo-editor-status">
-        <span id="photo-status-hint">${escapeHtml(t(toolById(state.photoTool).label))}</span>
-        <span style="flex:1;"></span>
-        <span id="photo-status-size"></span>
-        <span id="photo-status-count">${pending ? tf("{} nét chưa áp dụng", pending) : escapeHtml(t("Chưa vẽ gì"))}</span>
-      </div>
+      ${renderStudioStatusBar(series)}
     </div>
   `;
 }
@@ -4226,6 +4277,15 @@ function initPhotoAnnotator() {
     // Only the photo stage scrolls; the player is always sized to its pane.
     scroller: root.querySelector("#photo-editor-stage"),
     onZoomAt: (factor, clientX, clientY) => zoomPhotoAt(factor, clientX, clientY),
+    // On a clip every new mark records when it is meant to be on screen; on a
+    // photo there is no such thing, and the keys stay absent.
+    shapeExtras: () => (getSeriesMediaType(selectedSeries()) === "video" ? videoShapeSpan() : {}),
+    // Marks outside the playhead's moment are drawn faint, so scrubbing shows
+    // what appears when.
+    getTime: () => {
+      const video = getDomRoot()?.querySelector("#surgery-video-player");
+      return video ? video.currentTime : null;
+    },
     getLayer: () => photoLayer(selectedSeries()),
     getStyle: () => state.photoStyle,
     getTool: () => state.photoTool,
@@ -4241,6 +4301,19 @@ function initPhotoAnnotator() {
   });
   applyPhotoZoom();
   syncPhotoStudioUI();
+}
+
+/**
+ * The span a mark drawn now should carry, or nothing for the whole clip.
+ *
+ * Choosing "đoạn đã đánh dấu" with no points marked cannot pin anything, so it
+ * falls through to the whole clip rather than writing a span of null..null that
+ * would read as a timing the reader never set.
+ */
+function videoShapeSpan() {
+  if (state.videoShapeTiming !== "span") return {};
+  const range = videoRange();
+  return range ? { startS: range.start, endS: range.end } : {};
 }
 
 /** Arm a drawing tool. */
@@ -4365,6 +4438,31 @@ function syncPhotoStudioUI() {
   const fontField = root.querySelector("#photo-font-field");
   if (fontField) fontField.classList.toggle("muted", !textual);
 
+  setText(root, "#photo-status-hint", selected
+    ? tf("Đang chọn: {}", t(shapeKindLabel(selected.kind)))
+    : t(toolById(state.photoTool).label));
+
+  const range = videoRange();
+  root.querySelectorAll("[data-action='video-timing']").forEach((button) => {
+    const mode = button.dataset.timing;
+    const usable = mode !== "span" || Boolean(range);
+    button.disabled = !usable;
+    button.classList.toggle("active", state.videoShapeTiming === mode && usable);
+    if (mode === "span") {
+      button.textContent = range
+        ? `${formatVideoTime(range.start)}→${formatVideoTime(range.end)}`
+        : t("Chưa chọn đoạn");
+    }
+  });
+  // A selected mark reports its own timing rather than the armed default.
+  if (selected && getSeriesMediaType(series) === "video") {
+    const span = Number.isFinite(selected.startS) && Number.isFinite(selected.endS)
+      ? `${formatVideoTime(selected.startS)}→${formatVideoTime(selected.endS)}`
+      : t("Toàn bộ");
+    setText(root, "#photo-status-hint",
+      `${tf("Đang chọn: {}", t(shapeKindLabel(selected.kind)))} · ${span}`);
+  }
+
   const cropButton = root.querySelector("#photo-apply-crop");
   if (cropButton) {
     cropButton.hidden = state.photoTool !== "crop";
@@ -4384,16 +4482,14 @@ function syncPhotoStudioUI() {
     apply.disabled = !pending;
     apply.textContent = pending ? `${label} (${pending})` : label;
   }
-  setText(root, "#photo-status-hint", selected
-    ? tf("Đang chọn: {}", t(shapeKindLabel(selected.kind)))
-    : t(toolById(state.photoTool).label));
+
   setText(root, "#photo-status-count", pending
     ? tf("{} nét chưa áp dụng", pending)
     : t("Chưa vẽ gì"));
-  const img = root.querySelector("#photo-editor-img");
-  if (img?.naturalWidth) {
-    setText(root, "#photo-status-size", `${img.naturalWidth}×${img.naturalHeight} px`);
-  }
+  const media = root.querySelector("#photo-editor-img, #surgery-video-player");
+  const width = media?.naturalWidth || media?.videoWidth;
+  const height = media?.naturalHeight || media?.videoHeight;
+  if (width && height) setText(root, "#photo-status-size", `${width}×${height} px`);
   syncEditHistoryButtons(series);
   void layer;
 }
@@ -4523,6 +4619,21 @@ function initMediaEvents() {
       if (scrubber && video.duration) {
         scrubber.value = String((video.currentTime / video.duration) * 100);
       }
+    };
+
+    // Operating-theatre recorders write .wmv, .mpg and .mts, which the worklist
+    // now lists — a file nobody can see is worse than one that needs
+    // converting. No browser decodes them, so the studio has to say that
+    // plainly instead of showing a black rectangle and letting the reader
+    // conclude the recording is corrupt.
+    video.onerror = () => {
+      const name = (workFileName(state.videoWorkingPath)
+        || String(selectedSeries()?.name || "")).toLowerCase();
+      const format = name.includes(".") ? name.slice(name.lastIndexOf(".")) : "";
+      setStatus(tf(
+        "Trình duyệt không phát được định dạng {} — bấm “Tối ưu MP4” để chuyển đổi rồi xem.",
+        format || "này",
+      ), true);
     };
 
     // The in/out band is positioned as a percentage of the clip, so it cannot
@@ -5568,6 +5679,30 @@ async function action(name, element = null) {
         : tf("Đã chọn đoạn {} → {}.", formatVideoTime(state.videoIn), formatVideoTime(at)));
       return;
     }
+    if (name === "video-timing") {
+      const mode = element?.dataset?.timing === "span" ? "span" : "all";
+      state.videoShapeTiming = mode;
+      // Re-time the selected mark too, so a mark already drawn can be moved
+      // onto or off the marked span without redrawing it.
+      const span = mode === "span" ? videoShapeSpan() : { startS: null, endS: null };
+      // Re-timing what is selected is the same rule the colour swatches follow,
+      // but its effect is invisible until the reader scrubs to a moment the
+      // mark is no longer on. So the line says which mark moved, not just what
+      // the next one will do.
+      const selected = currentSurface()?.selectedShape() || null;
+      const retimed = Boolean(selected) && currentSurface()?.restyleSelected(span);
+      syncPhotoStudioUI();
+      currentSurface()?.repaint();
+      const range = mode === "span" ? videoRange() : null;
+      const scope = range
+        ? `${formatVideoTime(range.start)} → ${formatVideoTime(range.end)}`
+        : t("suốt video");
+      setStatus(retimed
+        ? tf("Đã đổi “{}” sang hiện {}. Nét vẽ mới cũng vậy.",
+          t(shapeKindLabel(selected.kind)), scope)
+        : tf("Nét vẽ mới sẽ hiện {}.", scope));
+      return;
+    }
     if (name === "video-clear-range") {
       state.videoIn = null;
       state.videoOut = null;
@@ -5583,21 +5718,16 @@ async function action(name, element = null) {
       if (!shapes.length) throw new Error(t("Chưa vẽ gì trên video để áp dụng."));
       const path = await getVideoSourcePath(series);
       if (!path) throw new Error(t("Không tìm thấy đường dẫn video gốc."));
-      const range = videoRange();
-      setStatus(range
-        ? tf("Đang ghi {} nét vẽ vào video ({} → {})...", shapes.length,
-          formatVideoTime(range.start), formatVideoTime(range.end))
+      // Each mark carries the span it was drawn under; the ones without a span
+      // belong to the whole recording. The backend groups them, so the number
+      // of rendered layers is the number of distinct moments, not of shapes.
+      const timed = shapes.filter((shape) => shape.start_s !== undefined).length;
+      setStatus(timed
+        ? tf("Đang ghi {} nét vẽ vào video ({} nét theo mốc thời gian)...", shapes.length, timed)
         : tf("Đang ghi {} nét vẽ vào toàn bộ video...", shapes.length));
       const res = await api("/api/media/video/burn-overlay", {
         method: "POST",
-        body: JSON.stringify({
-          path,
-          shapes,
-          // No marked range means the drawing belongs to the whole clip, which
-          // is what a permanent stamp or a blurred face usually is.
-          startSeconds: range ? range.start : null,
-          endSeconds: range ? range.end : null,
-        }),
+        body: JSON.stringify({ path, shapes }),
       });
       state.videoWorkingPath = res.outputPath;
       pushMediaEdit(series, res);

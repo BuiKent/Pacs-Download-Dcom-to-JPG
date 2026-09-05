@@ -644,6 +644,21 @@ def transcode(
 
 
 @dataclass
+class OverlayLayer:
+    """One rasterised drawing and the span it is on screen for.
+
+    A clip carries several: an arrow that belongs to the moment a duct is
+    clipped, a label that belongs to the closing, and a stamp that belongs to
+    the whole recording. Shapes sharing a span are rasterised together, so the
+    number of layers is the number of distinct spans, not the number of shapes.
+    """
+
+    png: Path
+    start_s: float | None = None
+    end_s: float | None = None
+
+
+@dataclass
 class BlurRegion:
     """A rectangle whose pixels are destroyed, optionally only for a while."""
 
@@ -664,12 +679,45 @@ def _enable_clause(start_s: float | None, end_s: float | None) -> str:
     return f":enable='between(t,{max(0.0, float(start_s)):.3f},{float(end_s):.3f})'"
 
 
-def _even(value: int) -> int:
-    """Crop and overlay want even offsets on chroma-subsampled video."""
-    return max(2, int(value) // 2 * 2)
+def _even_down(value: float, minimum: int) -> int:
+    """Round down to an even number, not below `minimum`.
+
+    Crop and overlay want even offsets and sizes on chroma-subsampled video.
+    An offset's floor is 0 and a size's is 2: clamping an offset up to 2 pushed
+    a region drawn against the top-left corner two pixels inward, which on a
+    redaction leaves a two-pixel sliver of the patient's name at the edge, and
+    on a full-frame region makes `x + width` exceed the frame.
+    """
+    return max(minimum, int(value) // 2 * 2)
 
 
-def _blur_filters(regions: list[BlurRegion], label: str) -> tuple[list[str], str]:
+def _fit_region(region: BlurRegion, frame: tuple[int, int] | None) -> tuple[int, int, int, int] | None:
+    """
+    The region as an even-aligned box guaranteed to sit inside the frame.
+
+    ffmpeg's `crop` refuses a width or height larger than the input and the
+    whole encode dies with it, so a rectangle that arrives oversized has to be
+    trimmed here rather than discovered in a filtergraph error. Its `x`/`y` are
+    merely clamped by ffmpeg, which is worse than an error: the blur silently
+    lands somewhere other than where the reader put it.
+    """
+    x = _even_down(max(0, region.x), 0)
+    y = _even_down(max(0, region.y), 0)
+    width = _even_down(region.width, 2)
+    height = _even_down(region.height, 2)
+    if frame:
+        frame_w, frame_h = frame
+        x = min(x, max(0, _even_down(frame_w - 2, 0)))
+        y = min(y, max(0, _even_down(frame_h - 2, 0)))
+        width = _even_down(min(width, frame_w - x), 2)
+        height = _even_down(min(height, frame_h - y), 2)
+    if width < 2 or height < 2:
+        return None
+    return x, y, width, height
+
+
+def _blur_filters(regions: list[BlurRegion], label: str,
+                  frame: tuple[int, int] | None = None) -> tuple[list[str], str]:
     """
     Build the filter chain that destroys each region, returning it and the last label.
 
@@ -681,10 +729,10 @@ def _blur_filters(regions: list[BlurRegion], label: str) -> tuple[list[str], str
     current = label
     for index, region in enumerate(regions):
         gate = _enable_clause(region.start_s, region.end_s)
-        x, y = _even(region.x), _even(region.y)
-        width, height = _even(region.width), _even(region.height)
-        if width < 2 or height < 2:
+        fitted = _fit_region(region, frame)
+        if fitted is None:
             continue
+        x, y, width, height = fitted
         if region.mode == "solid":
             nxt = f"bx{index}"
             filters.append(
@@ -693,8 +741,27 @@ def _blur_filters(regions: list[BlurRegion], label: str) -> tuple[list[str], str
             )
             current = nxt
             continue
+        # boxblur refuses a radius wider than half the plane it works on, and on
+        # 4:2:0 video the chroma planes are half size — so a radius that is legal
+        # for luma can still kill the encode on chroma. The limit is computed
+        # against the smaller plane. Below a radius of 1 a blur means nothing
+        # anyway, so the sliver is painted out rather than skipped: a redaction
+        # that silently does nothing is the one outcome that must never happen.
+        radius = min(
+            int(region.strength),
+            (width - 1) // 2, (height - 1) // 2,
+            (width // 2 - 1) // 2, (height // 2 - 1) // 2,
+        )
+        if radius < 1:
+            nxt = f"bx{index}"
+            filters.append(
+                f"[{current}]drawbox=x={x}:y={y}:w={width}:h={height}"
+                f":color=black@1:t=fill{gate}[{nxt}]"
+            )
+            current = nxt
+            continue
         keep, work, blurred, nxt = f"bk{index}", f"bw{index}", f"bb{index}", f"bo{index}"
-        strength = max(2, min(60, int(region.strength)))
+        strength = max(1, min(60, radius))
         filters.append(f"[{current}]split=2[{keep}][{work}]")
         filters.append(
             f"[{work}]crop={width}:{height}:{x}:{y},boxblur={strength}:2[{blurred}]"
@@ -711,37 +778,56 @@ def burn_overlay(
     start_s: float | None = None,
     end_s: float | None = None,
     blur_regions: list[BlurRegion] = (),
+    overlays: list[OverlayLayer] = (),
     crf: int = 20,
     timeout: int = _DEFAULT_TIMEOUT_S,
 ) -> Path:
     """
-    Composite a drawn layer onto a clip, and blur or black out what must go.
+    Composite drawn layers onto a clip, and blur or black out what must go.
 
-    `start_s`/`end_s` gate the drawn layer only: a marker pointing at the moment
-    the duct is clipped should not sit on screen for the whole operation. Blur
-    regions carry their own gates, because a face that must be hidden is usually
-    hidden for a different span than an arrow is shown.
+    Each layer carries its own span, so a marker pointing at the moment the duct
+    is clipped need not sit on screen for the whole operation while an identity
+    stamp does. Blur regions carry their own spans for the same reason: a face
+    is usually hidden for a different stretch than an arrow is shown.
+
+    `overlay_png` with `start_s`/`end_s` is the single-layer shorthand.
     """
     src, out_path = Path(src), Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     regions = list(blur_regions or [])
-    if overlay_png is None and not regions:
+    layers = list(overlays or [])
+    if overlay_png is not None:
+        layers.append(OverlayLayer(png=Path(overlay_png), start_s=start_s, end_s=end_s))
+    if not layers and not regions:
         raise VideoEngineError("Chưa có nét vẽ hoặc vùng che nào để áp dụng lên video.")
 
-    filters, label = _blur_filters(regions, "0:v")
+    # The frame size is what makes a region safe to crop against. Probing costs
+    # one ffprobe call and turns a filtergraph failure — which loses the whole
+    # encode — into a rectangle trimmed to the edge.
+    frame = None
+    if regions:
+        try:
+            info = probe(src)
+            frame = (info.width, info.height)
+        except VideoEngineError:
+            frame = None
+    filters, label = _blur_filters(regions, "0:v", frame)
     inputs = ["-i", str(src)]
-    if overlay_png is not None:
-        overlay_png = Path(overlay_png)
-        if not overlay_png.exists():
-            raise VideoEngineError(f"Không tìm thấy file lớp vẽ: {overlay_png.name}")
+    for index, layer in enumerate(layers):
+        if not layer.png.exists():
+            raise VideoEngineError(f"Không tìm thấy file lớp vẽ: {layer.png.name}")
         # A single still frame, deliberately not looped: overlay's default
         # eof_action=repeat holds the last frame for the rest of the clip.
         # Looping it instead makes an endless input, and the encode then runs
         # until it is killed rather than ending with the video.
-        inputs += ["-i", str(overlay_png)]
-        filters.append(f"[{label}][1:v]overlay=0:0{_enable_clause(start_s, end_s)}[vout]")
-        label = "vout"
-    elif filters:
+        inputs += ["-i", str(layer.png)]
+        nxt = f"ov{index}"
+        filters.append(
+            f"[{label}][{index + 1}:v]overlay=0:0"
+            f"{_enable_clause(layer.start_s, layer.end_s)}[{nxt}]"
+        )
+        label = nxt
+    if filters and label == "0:v":
         filters.append(f"[{label}]null[vout]")
         label = "vout"
 

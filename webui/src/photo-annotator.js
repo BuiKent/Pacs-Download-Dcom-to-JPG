@@ -60,6 +60,22 @@ const RECT_KINDS = new Set(["rect", "ellipse", "highlight", "pixelate", "redact"
 /** Shapes whose geometry is two endpoints. */
 const SEGMENT_KINDS = new Set(["arrow", "line"]);
 
+/**
+ * Whether a shape is on screen at `time` seconds into a clip.
+ *
+ * A shape with no span belongs to the whole recording — an identity stamp, a
+ * blurred face — and one with a span belongs to a moment: the arrow that points
+ * at the duct as it is clipped has no business sitting there for the closing.
+ * `time` of null means "not playing a video", where everything is visible.
+ */
+export function shapeVisibleAt(shape, time) {
+  if (time === null || time === undefined) return true;
+  const start = shape?.startS;
+  const end = shape?.endS;
+  if (start === null || start === undefined || end === null || end === undefined) return true;
+  return time >= start && time <= end;
+}
+
 let idCounter = 0;
 function nextId() {
   idCounter += 1;
@@ -685,7 +701,13 @@ export function renderLayer(canvas, shapes, view, selectedId = null, options = {
     // The text being typed is shown by the live editor element sitting on top;
     // painting it here too would double-strike every glyph.
     if (shape.editing) continue;
+    // A shape whose moment has not come is drawn faint rather than hidden: the
+    // reader still has to be able to find it, select it and change its timing
+    // while the playhead is somewhere else entirely.
+    const dimmed = !shapeVisibleAt(shape, options.time ?? null);
+    if (dimmed) ctx.globalAlpha = 0.22;
     drawShape(ctx, shape, view);
+    ctx.globalAlpha = 1;
   }
   const selected = shapes.find((shape) => shape.id === selectedId);
   if (selected && !selected.editing) {
@@ -712,6 +734,12 @@ export function shapePayload(shape) {
     stroke_width: Math.max(1, Math.round(shape.strokeWidth || 1)),
     opacity: Number(shape.opacity ?? 1),
   };
+  // Only a shape drawn on a clip carries a span; on a photo the keys are absent
+  // rather than null, so the engine's `Shape` never has to know about time.
+  if (Number.isFinite(shape.startS) && Number.isFinite(shape.endS)) {
+    common.start_s = Number(shape.startS);
+    common.end_s = Number(shape.endS);
+  }
   const round = (value) => Math.round(Number(value) || 0);
   if (SEGMENT_KINDS.has(shape.kind)) {
     return { ...common, x1: round(shape.x1), y1: round(shape.y1), x2: round(shape.x2), y2: round(shape.y2) };

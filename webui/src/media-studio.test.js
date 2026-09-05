@@ -390,28 +390,62 @@ describe("Surgery Video Studio Action Handlers", () => {
     expect(state.videoOut).toBe(null);
   });
 
-  it("burns the drawn layer into the clip in one pass, gated to the marked span", async () => {
+  it("gives each mark the span it was drawn under, and none to a whole-clip mark", async () => {
+    // A teaching clip wants the arrow at the moment the duct is clipped and the
+    // identity stamp on the whole recording; one span for the batch could only
+    // ever express one of the two.
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ outputPath: "D:/storage/drawn_01.mp4", url: "/api/media/work-file?name=drawn_01.mp4" })
     );
     global.fetch = fetchMock;
-    state.videoIn = 3;
-    state.videoOut = 8;
     const layer = photoLayer(selectedSeries());
-    const arrow = createShape("arrow", { x: 40, y: 60 }, defaultStyle());
-    Object.assign(arrow, { x2: 300, y2: 220 });
-    layer.shapes = [arrow];
+    const timed = createShape("arrow", { x: 40, y: 60 }, defaultStyle(), { startS: 3, endS: 8 });
+    Object.assign(timed, { x2: 300, y2: 220 });
+    const always = createShape("text", { x: 10, y: 10 }, defaultStyle());
+    always.text = "BN 02";
+    layer.shapes = [timed, always];
 
     await action("video-apply-shapes");
 
     const [, options] = fetchMock.mock.calls
       .find(([url]) => String(url).includes("/api/media/video/burn-overlay"));
     const body = JSON.parse(options.body);
-    expect(body.shapes).toHaveLength(1);
-    expect(body.shapes[0]).toMatchObject({ kind: "arrow", x1: 40, y1: 60, x2: 300, y2: 220 });
-    expect(body).toMatchObject({ startSeconds: 3, endSeconds: 8 });
+    expect(body.shapes).toHaveLength(2);
+    expect(body.shapes[0]).toMatchObject({ kind: "arrow", x1: 40, y1: 60, start_s: 3, end_s: 8 });
+    // No span at all rather than a null one: absent means the whole clip, and
+    // the engine's Shape never has to reason about time.
+    expect(body.shapes[1]).not.toHaveProperty("start_s");
     expect(state.videoWorkingPath).toBe("D:/storage/drawn_01.mp4");
     expect(photoLayer(selectedSeries()).shapes).toHaveLength(0);
+  });
+
+  it("times a new mark from the marked span, or leaves it on the whole clip", async () => {
+    state.videoIn = 4;
+    state.videoOut = 13;
+
+    state.videoShapeTiming = "all";
+    await action("video-timing");   // no data-timing -> falls back to whole clip
+    expect(state.videoShapeTiming).toBe("all");
+
+    document.body.innerHTML += `<button id="pick" data-action="video-timing" data-timing="span"></button>`;
+    await action("video-timing", document.querySelector("#pick"));
+    expect(state.videoShapeTiming).toBe("span");
+
+    // With nothing marked there is no span to pin a mark to, so it stays on for
+    // the whole clip rather than carrying a half-set timing.
+    state.videoIn = null;
+    state.videoOut = null;
+    const layer = photoLayer(selectedSeries());
+    layer.shapes = [];
+    global.fetch = vi.fn().mockResolvedValue(
+      mockJsonResponse({ outputPath: "D:/x.mp4", url: "/api/media/work-file?name=x.mp4" })
+    );
+    const mark = createShape("marker", { x: 5, y: 5 }, defaultStyle(), { label: 1 });
+    layer.shapes = [mark];
+    await action("video-apply-shapes");
+    const body = JSON.parse(global.fetch.mock.calls
+      .find(([url]) => String(url).includes("burn-overlay"))[1].body);
+    expect(body.shapes[0]).not.toHaveProperty("start_s");
   });
 
   it("stamps the record's own identity, in the field names the engine has", async () => {

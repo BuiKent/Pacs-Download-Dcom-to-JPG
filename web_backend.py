@@ -38,7 +38,18 @@ import mpr_engine
 
 APP_VERSION = "1.1.0"
 IMG_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-VIDEO_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
+# Containers an operating theatre actually produces. Endoscopy towers and older
+# capture stations write .wmv and .mpg, and AVCHD recorders write .mts/.m2ts;
+# leaving them out did not merely fail to play them, it hid the file from the
+# worklist entirely, so nobody could tell the recording had been filed at all.
+# Several of these no browser can play — the studio says so and offers the MP4
+# conversion rather than showing a black player.
+VIDEO_EXTENSIONS = {
+    ".mp4", ".webm", ".avi", ".mov", ".mkv",
+    ".wmv", ".m4v", ".mpg", ".mpeg", ".mts", ".m2ts", ".flv", ".3gp",
+}
+# What a browser will actually decode. The rest have to go through FFmpeg first.
+BROWSER_PLAYABLE_VIDEO = {".mp4", ".webm", ".m4v", ".mov"}
 # Modalities whose slices belong on the reading canvas no matter what file
 # format they arrived in. A converted JPG of an MR slice is still an MR slice.
 DIAGNOSTIC_MODALITIES = {"CT", "MR", "MRI", "CR", "DX", "XA", "US", "PT", "NM", "MG"}
@@ -1386,9 +1397,14 @@ class ArchiveCatalog:
         """
         found: list[SeriesRecord] = []
         for extensions, source in MEDIA_KINDS:
-            # Photographs are what the image scan already produced; listing
-            # them again here would double every folder of intra-op pictures.
-            if source == "image" or source in skip:
+            # Which kinds are already listed is the caller's knowledge, not
+            # this function's. Skipping photographs unconditionally was right
+            # for the JPG branch, which lists a folder's pictures before asking
+            # for its companions — and wrong for the DICOM branch, which has no
+            # image scan at all. A patient folder holding a scan plus a
+            # `Video trong mổ` folder of clips and screen captures listed the
+            # clips and silently dropped every capture beside them.
+            if source in skip:
                 continue
             files = self._playable_files(folder, extensions)
             if files:
@@ -2089,7 +2105,7 @@ class ArchiveCatalog:
                 if media_record is not None:
                     records[media_record.series_id] = media_record
                     for extra in self._companion_media_records(
-                        folder, root, skip={media_record.source_type},
+                        folder, root, skip={media_record.source_type, "image"},
                     ):
                         records[extra.series_id] = extra
                 continue
@@ -2134,7 +2150,7 @@ class ArchiveCatalog:
             )
             # The pictures are listed; the operative video or the typed report
             # filed in the same folder still has to be.
-            for extra in self._companion_media_records(folder, root, skip=set()):
+            for extra in self._companion_media_records(folder, root, skip={"image"}):
                 records[extra.series_id] = extra
 
         if records:
@@ -2563,6 +2579,27 @@ class HistoryStore:
 
 _STUDY_FOLDER_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s*-\s*([^-]+?)\s*-\s*(.+)$")
 _LEADING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|\d{8})")
+# `19.05.2026-trước mổ, DTI` — how a clinician names a folder by hand. Only the
+# DICOM spellings were recognised, so every hand-named study folder came into
+# the worklist with an empty date column and sorted to the bottom.
+# Day-first: that is the Vietnamese convention, and it is what these folders
+# carry. `_is_real_date` rejects the reading where the parts are the other way
+# round, so an unambiguous American-style name still fails rather than lying.
+_LEADING_DMY_RE = re.compile(r"^(\d{1,2})[.\-_](\d{1,2})[.\-_](\d{4})")
+
+
+def _leading_folder_date(name: str) -> str:
+    """The date a study folder's name starts with, as YYYY-MM-DD, or empty."""
+    match = _LEADING_DATE_RE.match(name)
+    if match and _is_real_date(re.sub(r"\D", "", match.group(1))):
+        return match.group(1)
+    match = _LEADING_DMY_RE.match(name)
+    if match:
+        day, month, year = match.groups()
+        stamp = f"{year}{int(month):02d}{int(day):02d}"
+        if _is_real_date(stamp):
+            return f"{year}-{int(month):02d}-{int(day):02d}"
+    return ""
 
 # A patient code as the pipeline writes it into a folder name: one word, and at
 # least one digit in it. The digit is what tells a code apart from a one-word
@@ -2646,9 +2683,7 @@ def _study_from_folder_path(start: Path) -> tuple[str, str, str]:
         if match:
             return match.group(1), match.group(2).strip().upper(), match.group(3).strip()
         if not date:
-            leading = _LEADING_DATE_RE.match(folder.name)
-            if leading and _is_real_date(re.sub(r"\D", "", leading.group(1))):
-                date = leading.group(1)
+            date = _leading_folder_date(folder.name)
         folder = folder.parent
     return date, "", ""
 
@@ -3055,19 +3090,27 @@ class WorklistScanner:
         # tags, so it wins over anything the folder name happens to contain.
         study_date = self._format_study_date(record.get("date", ""))
         if not study_date:
-            date_match = re.search(r"(\d{4})[-_](\d{2})[-_](\d{2})|(\d{8})", study_dir.name)
-            if date_match:
-                digits = (
-                    f"{date_match.group(1)}{date_match.group(2)}{date_match.group(3)}"
-                    if date_match.group(1) else date_match.group(4)
-                )
-                # A folder named after a patient code can start with 8 digits
-                # that are not a date, so the same validation applies here.
-                study_date = self._format_study_date(digits)
+            leading = _leading_folder_date(study_dir.name)
+            if leading:
+                study_date = self._format_study_date(leading)
+            else:
+                date_match = re.search(r"(\d{4})[-_](\d{2})[-_](\d{2})|(\d{8})", study_dir.name)
+                if date_match:
+                    digits = (
+                        f"{date_match.group(1)}{date_match.group(2)}{date_match.group(3)}"
+                        if date_match.group(1) else date_match.group(4)
+                    )
+                    # A folder named after a patient code can start with 8 digits
+                    # that are not a date, so the same validation applies here.
+                    study_date = self._format_study_date(digits)
 
         study_name = str(record.get("description") or "").strip()
         if not study_name:
-            clean_study_name = re.sub(r"^\d{4}[-_]\d{2}[-_]\d{2}[\s_-]*|^\d{8}[\s_-]*", "", study_dir.name).strip()
+            clean_study_name = re.sub(
+                r"^\d{4}[-_]\d{2}[-_]\d{2}[\s_-]*|^\d{8}[\s_-]*|^\d{1,2}[.\-_]\d{1,2}[.\-_]\d{4}[\s_-]*",
+                "",
+                study_dir.name,
+            ).strip()
             if clean_study_name.startswith("-"):
                 clean_study_name = clean_study_name.lstrip("- ").strip()
             study_name = clean_study_name or study_dir.name
@@ -5327,24 +5370,42 @@ class LocalApiServer:
                     src = self._resolve_media_path(payload.get("path"), catalog)
                     info = ve.probe(src)
                     drawn, destructive = pe.split_destructive(payload.get("shapes", []))
-                    start_s = payload.get("startSeconds")
-                    end_s = payload.get("endSeconds")
-                    overlay = None
-                    if drawn:
-                        overlay = self._new_media_work_path(".png")
-                        pe.render_overlay_png(drawn, (info.width, info.height), overlay)
-                    regions = [
-                        ve.BlurRegion(
+                    # A whole-clip default, for a client that sends one span for
+                    # the batch instead of a span per mark.
+                    default_span = (payload.get("startSeconds"), payload.get("endSeconds"))
+
+                    def _span(shape):
+                        start = getattr(shape, "start_s", None)
+                        end = getattr(shape, "end_s", None)
+                        if start is None or end is None:
+                            return default_span
+                        return (start, end)
+
+                    # Marks sharing a moment are rasterised together: one PNG and
+                    # one overlay filter per distinct span, not per shape, so a
+                    # clip annotated twenty times still costs a handful of
+                    # filters. dict preserves insertion order, which keeps the
+                    # layers stacked in the order they were drawn.
+                    groups: dict = {}
+                    for shape in drawn:
+                        groups.setdefault(_span(shape), []).append(shape)
+                    layers = []
+                    for (start, end), shapes in groups.items():
+                        png = self._new_media_work_path(".png")
+                        pe.render_overlay_png(shapes, (info.width, info.height), png)
+                        layers.append(ve.OverlayLayer(png=png, start_s=start, end_s=end))
+
+                    regions = []
+                    for shape in destructive:
+                        start, end = _span(shape)
+                        regions.append(ve.BlurRegion(
                             x=shape.x, y=shape.y, width=shape.width, height=shape.height,
                             mode="solid" if shape.kind == "redact" else "blur",
                             strength=max(2, shape.stroke_width * 3),
-                            start_s=start_s, end_s=end_s,
-                        )
-                        for shape in destructive
-                    ]
+                            start_s=start, end_s=end,
+                        ))
                     out = self._new_media_work_path(".mp4")
-                    ve.burn_overlay(src, out, overlay_png=overlay,
-                                    start_s=start_s, end_s=end_s, blur_regions=regions)
+                    ve.burn_overlay(src, out, overlays=layers, blur_regions=regions)
                     return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 if path == "/api/media/video/transcode":
                     import video_engine as ve

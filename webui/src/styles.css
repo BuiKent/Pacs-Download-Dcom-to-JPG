@@ -3349,6 +3349,19 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   accent-color: #4da3ff;
 }
 
+/* The two timing choices read as one control, the way a segmented button does,
+   so it is obvious they are alternatives rather than two separate actions. */
+.photo-timing-picker {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.photo-timing-picker .tool-btn {
+  padding: 4px 8px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* The buttons that remove things sit at the far end, away from the sliders the
    hand is moving between. */
 .photo-props-actions {

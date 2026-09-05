@@ -293,18 +293,92 @@ class BoxAnnotation:
 _FONT_CANDIDATES = [
     "C:/Windows/Fonts/arial.ttf",
     "C:/Windows/Fonts/segoeui.ttf",
+    "C:/Windows/Fonts/tahoma.ttf",
+    "C:/Windows/Fonts/calibri.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
 ]
 
+# A codepoint in the Private Use Area that no real font defines. Rendering it
+# gives the font's own .notdef glyph, which is what a missing character looks
+# like — so comparing against it tells us whether a character is really there.
+_NOTDEF_PROBE = ""
 
-def _load_font(size: int) -> ImageFont.FreeTypeFont:
+_font_cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
+
+
+def _glyph_bitmap(font: ImageFont.FreeTypeFont, char: str) -> bytes:
+    """One character drawn on its own, as raw pixels.
+
+    `font.getmask()` hands back an ImagingCore, which has no `.tobytes()`; going
+    through a real image is what makes two glyphs comparable at all.
+    """
+    canvas = Image.new("L", (64, 64), 0)
+    ImageDraw.Draw(canvas).text((2, 2), char, fill=255, font=font)
+    return canvas.tobytes()
+
+
+def _renders(font: ImageFont.FreeTypeFont, text: str) -> bool:
+    """
+    Whether `font` has a real glyph for every character of `text`.
+
+    A font that lacks one draws .notdef — an empty box — and Pillow reports no
+    error at all. On a clinical photo that means a surgeon's note is exported as
+    a row of rectangles with nothing anywhere saying so, which is why the font is
+    chosen by what it can draw rather than by which file happens to exist.
+    """
+    try:
+        probe_font = font.font_variant(size=32)
+        notdef = _glyph_bitmap(probe_font, _NOTDEF_PROBE)
+        for char in set(text):
+            if char.isspace():
+                continue
+            if _glyph_bitmap(probe_font, char) == notdef:
+                return False
+    except Exception:
+        # A font that cannot even be probed is not evidence against itself.
+        return True
+    return True
+
+
+def _load_font(size: int, text: str = "") -> ImageFont.FreeTypeFont:
+    """
+    The first installed font that can actually draw `text` at `size`.
+
+    Vietnamese needs Latin Extended Additional (the tone marks stacked on vowels
+    — ế, ộ, ữ). Every candidate here carries it, but the check is on the text in
+    hand rather than on an assumption, so a stripped machine falls through to
+    whatever font on it does work instead of silently exporting boxes.
+    """
+    key = (text, size)
+    cached = _font_cache.get(key)
+    if cached is not None:
+        return cached
+    fallback = None
     for candidate in _FONT_CANDIDATES:
-        if Path(candidate).exists():
-            try:
-                return ImageFont.truetype(candidate, size)
-            except Exception:
-                pass
+        if not Path(candidate).exists():
+            continue
+        try:
+            font = ImageFont.truetype(candidate, size)
+        except Exception:
+            continue
+        if fallback is None:
+            fallback = font
+        if not text or _renders(font, text):
+            _font_cache[key] = font
+            return font
+    if fallback is not None:
+        logger.warning(
+            "Không có font nào vẽ đủ ký tự cho %r; dùng tạm font đầu tiên tìm được. "
+            "Chữ tiếng Việt trên ảnh có thể mất dấu.", text[:40],
+        )
+        _font_cache[key] = fallback
+        return fallback
+    logger.warning("Không tìm thấy font TTF nào trên máy; chữ chèn vào ảnh sẽ bị lỗi dấu.")
     return ImageFont.load_default()
 
 
@@ -324,7 +398,7 @@ def annotate(src: str | Path, out_path: str | Path,
         _draw_arrowhead(draw, arrow)
 
     for txt in texts:
-        font = _load_font(txt.font_size)
+        font = _load_font(txt.font_size, txt.text)
         bbox = draw.textbbox((txt.x, txt.y), txt.text, font=font)
         if txt.box:
             pad = 4
@@ -491,6 +565,10 @@ class Shape:
     points: list = field(default_factory=list)
     text: str = ""
     font_size: int = 28
+    # When a mark drawn on a clip is on screen. Absent on a photo, where the
+    # idea has no meaning; the renderer ignores both.
+    start_s: float | None = None
+    end_s: float | None = None
     background: bool = True
     filled: bool = False
     label: str = ""
@@ -518,6 +596,9 @@ class Shape:
                           "x1", "y1", "x2", "y2", "font_size"):
             if int_field in normalised:
                 normalised[int_field] = int(round(float(normalised[int_field])))
+        for span_field in ("start_s", "end_s"):
+            if normalised.get(span_field) is not None:
+                normalised[span_field] = float(normalised[span_field])
         if "opacity" in normalised:
             normalised["opacity"] = max(0.0, min(1.0, float(normalised["opacity"])))
         if "label" in normalised:
@@ -693,7 +774,7 @@ def _paint_text(overlay: Image.Image, shapes: list) -> None:
                           fill=_rgba(shape.color, shape.opacity), font=font)
         elif shape.kind == "marker":
             radius = _marker_radius(shape)
-            font = _load_font(max(8, int(radius * 1.15)))
+            font = _load_font(max(8, int(radius * 1.15)), shape.label or "1")
             draw.text((shape.x, shape.y), shape.label or "1",
                       fill=(*_readable_ink(shape.color), 255), font=font, anchor="mm")
 

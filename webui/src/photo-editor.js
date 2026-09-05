@@ -63,6 +63,10 @@ export function createAnnotatorSurface(options) {
   const onChange = options.onChange || (() => {});
   const onStatus = options.onStatus || (() => {});
   const onToolDone = options.onToolDone || (() => {});
+  // Extra fields every new shape is born with — the studio's business, not
+  // the surface's. On video this is the span the shape will be shown for.
+  const shapeExtras = options.shapeExtras || (() => ({}));
+  const getTime = options.getTime || (() => null);
   const buffer = typeof document !== "undefined" ? document.createElement("canvas") : null;
 
   const surface = {
@@ -168,6 +172,7 @@ export function createAnnotatorSurface(options) {
     const drafted = gesture?.draft ? [...shapes, gesture.draft] : shapes;
     renderLayer(canvas, drafted, view(), surface.selectedId, {
       handles: toolById(getTool()).id === "select",
+      time: getTime(),
     });
     if (surface.crop) drawCropOverlay();
     syncTextEditorPosition();
@@ -392,7 +397,7 @@ export function createAnnotatorSurface(options) {
 
     if (tool.shape === "text") {
       pushHistory(layer);
-      const shape = createShape("text", point, style);
+      const shape = createShape("text", point, style, shapeExtras("text"));
       layer.shapes.push(shape);
       surface.selectedId = shape.id;
       openTextEditor(shape);
@@ -402,7 +407,7 @@ export function createAnnotatorSurface(options) {
 
     if (tool.shape === "marker") {
       pushHistory(layer);
-      const shape = createShape("marker", point, style, { label: nextMarkerLabel(layer) });
+      const shape = createShape("marker", point, style, { label: nextMarkerLabel(layer), ...shapeExtras("marker") });
       layer.shapes.push(shape);
       surface.selectedId = shape.id;
       onChange({ reason: "draw" });
@@ -412,7 +417,7 @@ export function createAnnotatorSurface(options) {
     }
 
     if (!tool.shape) return;
-    const draft = createShape(tool.shape, point, style);
+    const draft = createShape(tool.shape, point, style, shapeExtras(tool.shape));
     markOrigin(draft, point);
     gesture = { mode: "draw", draft };
     repaint();

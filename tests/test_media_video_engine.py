@@ -267,3 +267,87 @@ class TestBurnOverlay:
         ve.burn_overlay(sample_video, tmp_path / "copy.mp4",
                         blur_regions=[ve.BlurRegion(x=0, y=0, width=64, height=64)])
         assert sample_video.read_bytes() == before
+
+
+class TestTimedOverlayLayers:
+    """Several drawings on one clip, each on screen for its own moment."""
+
+    def test_each_layer_appears_only_in_its_own_span(self, sample_video, tmp_path):
+        import photo_engine as pe
+        from PIL import Image
+
+        info = ve.probe(sample_video)
+        full = (info.width, info.height)
+
+        def flat(colour, path):
+            return pe.render_overlay_png(
+                [{"kind": "rect", "x": 0, "y": 0, "width": info.width, "height": info.height,
+                  "color": colour, "filled": True, "opacity": 1.0}],
+                full, tmp_path / path,
+            )
+
+        out = ve.burn_overlay(sample_video, tmp_path / "timed.mp4", overlays=[
+            ve.OverlayLayer(png=flat([255, 0, 0], "red.png"), start_s=0.5, end_s=1.5),
+            ve.OverlayLayer(png=flat([0, 0, 255], "blue.png"), start_s=3.0, end_s=4.5),
+        ])
+
+        def mean_rgb(at):
+            frame = tmp_path / f"t{at}.png"
+            subprocess.run([ve._ffmpeg(), "-y", "-ss", str(at), "-i", str(out),
+                            "-frames:v", "1", str(frame)], check=True, capture_output=True)
+            pixels = list(Image.open(frame).convert("RGB").getdata())
+            n = len(pixels)
+            return tuple(sum(p[i] for p in pixels) / n for i in range(3))
+
+        red = mean_rgb(1.0)
+        blue = mean_rgb(3.7)
+        assert red[0] > 240 and red[2] < 40      # first span: red only
+        assert blue[2] > 240 and blue[0] < 40    # second span: blue only
+
+    def test_an_untimed_layer_covers_the_whole_clip(self, sample_video, tmp_path):
+        import photo_engine as pe
+        from PIL import Image
+
+        info = ve.probe(sample_video)
+        stamp = pe.render_overlay_png(
+            [{"kind": "rect", "x": 0, "y": 0, "width": info.width, "height": info.height,
+              "color": [0, 255, 0], "filled": True, "opacity": 1.0}],
+            (info.width, info.height), tmp_path / "green.png",
+        )
+        out = ve.burn_overlay(sample_video, tmp_path / "stamped.mp4",
+                              overlays=[ve.OverlayLayer(png=stamp)])
+        for at in (0.2, 2.5, 4.5):
+            frame = tmp_path / f"s{at}.png"
+            subprocess.run([ve._ffmpeg(), "-y", "-ss", str(at), "-i", str(out),
+                            "-frames:v", "1", str(frame)], check=True, capture_output=True)
+            pixels = list(Image.open(frame).convert("RGB").getdata())
+            assert sum(p[1] for p in pixels) / len(pixels) > 240
+
+    def test_a_region_at_the_frame_edge_does_not_kill_the_encode(self, sample_video, tmp_path):
+        # ffmpeg's crop refuses a size larger than the input and takes the whole
+        # encode down with it, and it silently *clamps* an out-of-range offset,
+        # which is worse: the blur lands somewhere the reader did not put it.
+        info = ve.probe(sample_video)
+        for region in (
+            ve.BlurRegion(x=0, y=0, width=info.width, height=info.height),
+            ve.BlurRegion(x=0, y=0, width=info.width + 400, height=info.height + 200),
+            ve.BlurRegion(x=-40, y=-40, width=200, height=200),
+            ve.BlurRegion(x=info.width - 8, y=0, width=200, height=100),
+            ve.BlurRegion(x=10, y=10, width=20, height=20, strength=60),
+            ve.BlurRegion(x=0, y=0, width=info.width, height=3),
+        ):
+            assert ve.burn_overlay(sample_video, tmp_path / "edge.mp4",
+                                   blur_regions=[region]).exists()
+
+    def test_a_region_too_small_to_blur_is_painted_out_not_skipped(self, sample_video, tmp_path):
+        # A redaction that silently does nothing is the one outcome that must
+        # never happen, so a sliver too narrow for boxblur becomes a solid box.
+        from PIL import Image
+
+        out = ve.burn_overlay(sample_video, tmp_path / "sliver.mp4",
+                              blur_regions=[ve.BlurRegion(x=20, y=20, width=4, height=40)])
+        frame = tmp_path / "sliver.png"
+        subprocess.run([ve._ffmpeg(), "-y", "-ss", "1", "-i", str(out),
+                        "-frames:v", "1", str(frame)], check=True, capture_output=True)
+        patch = Image.open(frame).convert("L").crop((21, 25, 23, 55))
+        assert max(patch.getdata()) < 60
