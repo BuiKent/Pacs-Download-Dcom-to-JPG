@@ -172,3 +172,98 @@ class TestTranscode:
                       progress_cb=lambda pct, elapsed: progress_values.append(pct))
         assert progress_values, "progress_cb must be called at least once"
         assert max(progress_values) > 0.9, "progress must approach 100% on completion"
+
+
+class TestBurnOverlay:
+    """
+    Compositing a drawn layer onto a clip.
+
+    Arrows and freehand cannot be expressed as drawtext filters at all, so the
+    layer is rasterised once by photo_engine and overlaid as a single still —
+    and the blur regions, which must not be faked with a picture of a blur, go
+    through their own crop/boxblur chain.
+    """
+
+    def test_burns_a_drawn_layer_and_keeps_the_clip_length(self, sample_video, tmp_path):
+        import photo_engine as pe
+
+        info = ve.probe(sample_video)
+        overlay = pe.render_overlay_png(
+            [{"kind": "arrow", "x1": 60, "y1": 300, "x2": 320, "y2": 120,
+              "color": [255, 59, 48], "stroke_width": 5}],
+            (info.width, info.height), tmp_path / "layer.png",
+        )
+        out = ve.burn_overlay(sample_video, tmp_path / "burned.mp4", overlay_png=overlay)
+        assert out.exists()
+        # The overlay is a single still. Looped as an endless input it would
+        # keep the encode running until it was killed; the output must end with
+        # the video.
+        assert ve.probe(out).duration_s == pytest.approx(info.duration_s, abs=0.5)
+
+    def test_a_time_gated_layer_only_marks_the_span_it_was_drawn_for(self, sample_video, tmp_path):
+        import photo_engine as pe
+
+        info = ve.probe(sample_video)
+        overlay = pe.render_overlay_png(
+            [{"kind": "rect", "x": 0, "y": 0, "width": info.width, "height": info.height,
+              "color": [255, 0, 0], "filled": True, "opacity": 1.0}],
+            (info.width, info.height), tmp_path / "full.png",
+        )
+        out = ve.burn_overlay(sample_video, tmp_path / "gated.mp4",
+                              overlay_png=overlay, start_s=2.0, end_s=4.0)
+
+        def mean_red(at: float) -> float:
+            frame = tmp_path / f"f{at}.png"
+            subprocess.run([ve._ffmpeg(), "-y", "-ss", str(at), "-i", str(out),
+                            "-frames:v", "1", str(frame)], check=True, capture_output=True)
+            from PIL import Image
+            pixels = list(Image.open(frame).convert("RGB").getdata())
+            return sum(p[0] for p in pixels) / len(pixels)
+
+        # A marker pointing at the moment a duct is clipped must not sit on
+        # screen for the whole operation.
+        assert mean_red(3.0) > 240
+        assert mean_red(0.5) < 240
+
+    def test_a_blur_region_filters_the_frames_rather_than_covering_them(self, sample_video, tmp_path):
+        out = ve.burn_overlay(
+            sample_video, tmp_path / "blurred.mp4",
+            blur_regions=[ve.BlurRegion(x=0, y=0, width=320, height=180, strength=20)],
+        )
+        frame = tmp_path / "blurred.png"
+        subprocess.run([ve._ffmpeg(), "-y", "-ss", "1", "-i", str(out),
+                        "-frames:v", "1", str(frame)], check=True, capture_output=True)
+        from PIL import Image
+        region = Image.open(frame).convert("L").crop((10, 10, 310, 170))
+        row = list(region.crop((0, 80, 300, 81)).getdata())
+        # Detail is gone, but the region is not painted out: a black box would
+        # be a redaction, and this is a blur.
+        assert max(abs(a - b) for a, b in zip(row, row[1:])) < 120
+        assert sum(row) / len(row) > 10
+
+    def test_a_solid_region_blacks_the_area_out_completely(self, sample_video, tmp_path):
+        out = ve.burn_overlay(
+            sample_video, tmp_path / "redacted.mp4",
+            blur_regions=[ve.BlurRegion(x=0, y=0, width=200, height=100, mode="solid")],
+        )
+        frame = tmp_path / "redacted.png"
+        subprocess.run([ve._ffmpeg(), "-y", "-ss", "1", "-i", str(out),
+                        "-frames:v", "1", str(frame)], check=True, capture_output=True)
+        from PIL import Image
+        strip = Image.open(frame).convert("L").crop((10, 10, 190, 90))
+        assert max(strip.getdata()) < 40
+
+    def test_refuses_a_request_with_nothing_to_apply(self, sample_video, tmp_path):
+        with pytest.raises(ve.VideoEngineError):
+            ve.burn_overlay(sample_video, tmp_path / "nothing.mp4")
+
+    def test_reports_a_missing_overlay_file_instead_of_failing_inside_ffmpeg(self, sample_video, tmp_path):
+        with pytest.raises(ve.VideoEngineError):
+            ve.burn_overlay(sample_video, tmp_path / "x.mp4",
+                            overlay_png=tmp_path / "does_not_exist.png")
+
+    def test_leaves_the_source_clip_untouched(self, sample_video, tmp_path):
+        before = sample_video.read_bytes()
+        ve.burn_overlay(sample_video, tmp_path / "copy.mp4",
+                        blur_regions=[ve.BlurRegion(x=0, y=0, width=64, height=64)])
+        assert sample_video.read_bytes() == before

@@ -2946,20 +2946,43 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .surgery-video-stage {
   flex: 1;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   background: #05080c;
   position: relative;
   min-width: 0;
+  padding: 10px;
+  overflow: hidden;
 }
 
 .surgery-video-element {
+  display: block;
   max-width: 100%;
   max-height: 100%;
   outline: none;
   background: #000;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8);
+}
+
+/* The filmstrip is a row of seek targets, not decoration. */
+.surgery-video-filmstrip {
+  display: flex;
+  gap: 6px;
+  padding: 6px 12px;
+  background: #05080c;
+  border-top: 1px solid #182736;
+  overflow-x: auto;
+  flex: none;
+}
+
+.surgery-video-filmstrip img {
+  height: 48px;
+  border-radius: 4px;
+  border: 1px solid #203548;
+  cursor: pointer;
+}
+
+.surgery-video-filmstrip img:hover {
+  border-color: #4da3ff;
 }
 
 .surgery-video-controls {
@@ -3001,9 +3024,43 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 
 .surgery-video-controls .video-scrubber {
-  flex: 1;
+  width: 100%;
   accent-color: #3b82f6;
   cursor: pointer;
+  position: relative;
+  z-index: 1;
+}
+
+/* The scrubber and the in/out band share one box so the band can be positioned
+   as a percentage of the clip and sit under the thumb. */
+.video-scrubber-wrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 120px;
+}
+
+/* The marked span, drawn on the track itself. Trimming used to be two prompt()
+   boxes asking for decimal seconds, so the reader never saw what they had
+   selected until the cut had already happened. */
+.video-range-band {
+  position: absolute;
+  top: 50%;
+  height: 5px;
+  transform: translateY(-50%);
+  border-radius: 3px;
+  background: #4da3ff;
+  pointer-events: none;
+  /* Above the input: a native range track paints opaquely, so a band drawn
+     underneath it is simply invisible. The thumb is taller than the band and
+     still reads through. */
+  z-index: 2;
+}
+
+.surgery-video-controls .control-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .surgery-video-controls .video-time {
@@ -3012,6 +3069,18 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   color: #89a3b8;
   min-width: 90px;
   text-align: center;
+}
+
+/* `.empty-state` is written for the reading canvas: `position: absolute;
+   inset: 0` over a near-black ground. Dropped into the bookmark list — whose
+   nearest positioned ancestor is the studio body — it painted over the tool
+   rail and the player itself, and an operative video looked like it had failed
+   to load. Same trap the Worklist hit, same scoped fix (CLAUDE.md §5). */
+.surgery-video-bookmarks .empty-state {
+  position: static;
+  inset: auto;
+  background: transparent;
+  height: auto;
 }
 
 .surgery-video-sidebar {
@@ -3072,41 +3141,101 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   color: #cbdceb;
 }
 
-/* Photo & Doc Studio */
+/* Photo & Doc Studio.
+   The whole studio is the diagnostic surface, so every colour here is a literal
+   rather than a chrome token (CLAUDE.md §5): a light shell must never lift the
+   ground the reader is judging tissue colour against. */
+.photo-editor-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
 .photo-editor-stage {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #05080c;
+  /* A zoomed photo is bigger than the pane; the stage is what scrolls, and the
+     padding keeps the edge of the image off the rail. */
   overflow: auto;
+  padding: 12px;
   position: relative;
 }
 
 .photo-editor-canvas-wrap {
   position: relative;
   display: inline-block;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8);
+  line-height: 0;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.8);
+  /* The wrap tracks the image, so a zoomed photo pushes the stage's scrollbars
+     instead of being squashed back to the pane width. */
+  flex: none;
+  max-width: 100%;
+  max-height: 100%;
 }
 
 .photo-editor-image {
   display: block;
   max-width: 100%;
-  max-height: 80vh;
+  max-height: 100%;
   object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
+/* The drawing layer. Sits exactly over the image's own box — the surface
+   positions it — and takes every pointer event, which is what lets a shape be
+   drawn, grabbed and moved without the browser starting an image drag. */
+.photo-annotation-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+/* Typing happens on the photo, at the size and colour that will be burned in,
+   so the note is composed in place instead of in a prompt() box. */
+.photo-text-input {
+  position: absolute;
+  z-index: 5;
+  margin: 0;
+  padding: 2px 4px;
+  border: 1px dashed rgba(120, 190, 255, 0.9);
+  border-radius: 3px;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+  line-height: 1.25;
+  caret-color: currentColor;
+}
+
+/* --- toolbar row --- */
 .photo-editor-toolbar {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 14px;
+  padding: 7px 12px;
   background: #0b131b;
   border-bottom: 1px solid #182736;
+  flex: none;
+  flex-wrap: wrap;
   z-index: 10;
 }
 
-.photo-editor-toolbar .tool-btn {
+/* `display: flex` on the button would otherwise beat the `[hidden]` rule in the
+   reset, and the crop button — which only belongs to the crop tool — stayed on
+   screen under every other tool. */
+.photo-editor-toolbar .tool-btn[hidden],
+.photo-props .tool-btn[hidden] {
+  display: none;
+}
+
+.photo-editor-toolbar .tool-btn,
+.photo-props .tool-btn {
   background: #142330;
   border: 1px solid #203548;
   color: #e1e9f0;
@@ -3117,17 +3246,200 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   display: flex;
   align-items: center;
   gap: 5px;
+  white-space: nowrap;
 }
 
-.photo-editor-toolbar .tool-btn:hover {
+.photo-editor-toolbar .tool-btn:hover:not(:disabled),
+.photo-props .tool-btn:hover:not(:disabled) {
   background: #1f364a;
   border-color: #3b82f6;
 }
 
-.photo-editor-toolbar .tool-btn.active {
+.photo-editor-toolbar .tool-btn:disabled,
+.photo-props .tool-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.photo-editor-toolbar .tool-btn.active,
+.photo-editor-toolbar .tool-btn.primary {
   background: #1a73e8;
-  color: #fff;
+  color: #ffffff;
   border-color: transparent;
+}
+
+.photo-editor-toolbar .tool-btn.primary:hover:not(:disabled) {
+  background: #2b81f0;
+}
+
+.photo-props-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: #223547;
+}
+
+/* --- properties row --- */
+.photo-props {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  row-gap: 5px;
+  padding: 6px 12px;
+  background: #0e1822;
+  border-bottom: 1px solid #182736;
+  color: #b8c7d6;
+  font-size: 11px;
+  flex: none;
+  flex-wrap: wrap;
+}
+
+.photo-props-label {
+  color: #8ea3b8;
+  letter-spacing: 0.2px;
+}
+
+.photo-swatches {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.photo-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  cursor: pointer;
+}
+
+.photo-swatch:hover {
+  transform: scale(1.12);
+}
+
+/* The chosen swatch is marked with a ring set off the colour itself, because a
+   border drawn in white vanishes on the white swatch and one drawn in black
+   vanishes on the black one. */
+.photo-swatch.active {
+  outline: 2px solid #4da3ff;
+  outline-offset: 1px;
+}
+
+.photo-color-input {
+  width: 26px;
+  height: 22px;
+  padding: 0 1px;
+  background: #142330;
+  border: 1px solid #203548;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.photo-props-field,
+.photo-props-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #b8c7d6;
+}
+
+.photo-props-field input[type="range"] {
+  width: 74px;
+  accent-color: #4da3ff;
+}
+
+/* The buttons that remove things sit at the far end, away from the sliders the
+   hand is moving between. */
+.photo-props-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.photo-props-field b {
+  min-width: 30px;
+  color: #e1e9f0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A control that does not apply to the armed tool is dimmed rather than hidden:
+   a properties bar that changes shape every time a tool is picked makes the
+   reader re-find the slider they were just using. */
+.photo-props-field.muted {
+  opacity: 0.42;
+}
+
+.photo-props-check input {
+  accent-color: #4da3ff;
+}
+
+/* --- tool rail --- */
+.photo-tool-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 4px;
+  background: #0b131b;
+  border-right: 1px solid #182736;
+  flex: none;
+  overflow-y: auto;
+}
+
+.photo-tool {
+  width: 34px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #c3d2e0;
+  cursor: pointer;
+}
+
+.photo-tool svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The redaction glyph is a solid bar, so it fills instead of strokes. */
+.photo-tool svg [fill="currentColor"] {
+  fill: currentColor;
+  stroke: none;
+}
+
+.photo-tool:hover {
+  background: #16242f;
+  color: #ffffff;
+}
+
+.photo-tool.active {
+  background: #1a73e8;
+  border-color: transparent;
+  color: #ffffff;
+}
+
+/* --- status row --- */
+.photo-editor-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 12px;
+  background: #0b131b;
+  border-top: 1px solid #182736;
+  color: #8ea3b8;
+  font-size: 11px;
+  flex: none;
+  font-variant-numeric: tabular-nums;
 }
 
 .concat-modal-card {
@@ -3876,15 +4188,6 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .tl-item.editing .tl-edit-cancel { display: block; }
 .tl-item.pdf .tl-open > i { background: var(--m-doc, #7f8c8d); }
 
-/* Drag-selection rectangle on the photo editor. */
-.photo-editor-canvas-wrap { position: relative; }
-.photo-selection {
-  position: absolute;
-  border: 1px dashed #4da3ff;
-  background: rgba(77, 163, 255, 0.16);
-  pointer-events: none;
-}
-.photo-editor-image { cursor: crosshair; user-select: none; }
 
 /* Attachment notification card. Lives in the download panel, so it follows the
    light chrome palette rather than the dark reading-area colours. */

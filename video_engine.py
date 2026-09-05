@@ -626,3 +626,135 @@ def transcode(
         stderr = process.stderr.read() if process.stderr else ""
         raise EncodeFailedError("Xuất video thất bại.", "\n".join(stderr.splitlines()[-12:]))
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# Drawn overlays
+# ---------------------------------------------------------------------------
+#
+# Arrows, circles, freehand and notes on a surgical video are the same shapes
+# the photo studio draws, so they are not re-implemented as drawtext filters
+# here. `photo_engine.render_overlay_png` rasterises the layer once, at the
+# clip's own resolution, and ffmpeg composites that single transparent frame —
+# which is both faster than a filter per shape and pixel-identical to what the
+# reader approved on screen.
+#
+# Blur and redaction cannot work that way. Covering a face with a picture of a
+# blur leaves the face in the file underneath; these filter the frames.
+
+
+@dataclass
+class BlurRegion:
+    """A rectangle whose pixels are destroyed, optionally only for a while."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+    mode: str = "blur"  # "blur" mosaics the frames, "solid" paints them out
+    strength: int = 12
+    start_s: float | None = None
+    end_s: float | None = None
+
+
+def _enable_clause(start_s: float | None, end_s: float | None) -> str:
+    """The `enable=` fragment that time-gates a filter, empty when it is always on."""
+    if start_s is None or end_s is None or end_s <= start_s:
+        return ""
+    return f":enable='between(t,{max(0.0, float(start_s)):.3f},{float(end_s):.3f})'"
+
+
+def _even(value: int) -> int:
+    """Crop and overlay want even offsets on chroma-subsampled video."""
+    return max(2, int(value) // 2 * 2)
+
+
+def _blur_filters(regions: list[BlurRegion], label: str) -> tuple[list[str], str]:
+    """
+    Build the filter chain that destroys each region, returning it and the last label.
+
+    Each blurred region needs the frame split in two — one copy to crop and
+    blur, one to paste it back onto — because a filter graph edge can only be
+    consumed once.
+    """
+    filters: list[str] = []
+    current = label
+    for index, region in enumerate(regions):
+        gate = _enable_clause(region.start_s, region.end_s)
+        x, y = _even(region.x), _even(region.y)
+        width, height = _even(region.width), _even(region.height)
+        if width < 2 or height < 2:
+            continue
+        if region.mode == "solid":
+            nxt = f"bx{index}"
+            filters.append(
+                f"[{current}]drawbox=x={x}:y={y}:w={width}:h={height}"
+                f":color=black@1:t=fill{gate}[{nxt}]"
+            )
+            current = nxt
+            continue
+        keep, work, blurred, nxt = f"bk{index}", f"bw{index}", f"bb{index}", f"bo{index}"
+        strength = max(2, min(60, int(region.strength)))
+        filters.append(f"[{current}]split=2[{keep}][{work}]")
+        filters.append(
+            f"[{work}]crop={width}:{height}:{x}:{y},boxblur={strength}:2[{blurred}]"
+        )
+        filters.append(f"[{keep}][{blurred}]overlay={x}:{y}{gate}[{nxt}]")
+        current = nxt
+    return filters, current
+
+
+def burn_overlay(
+    src: str | Path,
+    out_path: str | Path,
+    overlay_png: str | Path | None = None,
+    start_s: float | None = None,
+    end_s: float | None = None,
+    blur_regions: list[BlurRegion] = (),
+    crf: int = 20,
+    timeout: int = _DEFAULT_TIMEOUT_S,
+) -> Path:
+    """
+    Composite a drawn layer onto a clip, and blur or black out what must go.
+
+    `start_s`/`end_s` gate the drawn layer only: a marker pointing at the moment
+    the duct is clipped should not sit on screen for the whole operation. Blur
+    regions carry their own gates, because a face that must be hidden is usually
+    hidden for a different span than an arrow is shown.
+    """
+    src, out_path = Path(src), Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    regions = list(blur_regions or [])
+    if overlay_png is None and not regions:
+        raise VideoEngineError("Chưa có nét vẽ hoặc vùng che nào để áp dụng lên video.")
+
+    filters, label = _blur_filters(regions, "0:v")
+    inputs = ["-i", str(src)]
+    if overlay_png is not None:
+        overlay_png = Path(overlay_png)
+        if not overlay_png.exists():
+            raise VideoEngineError(f"Không tìm thấy file lớp vẽ: {overlay_png.name}")
+        # A single still frame, deliberately not looped: overlay's default
+        # eof_action=repeat holds the last frame for the rest of the clip.
+        # Looping it instead makes an endless input, and the encode then runs
+        # until it is killed rather than ending with the video.
+        inputs += ["-i", str(overlay_png)]
+        filters.append(f"[{label}][1:v]overlay=0:0{_enable_clause(start_s, end_s)}[vout]")
+        label = "vout"
+    elif filters:
+        filters.append(f"[{label}]null[vout]")
+        label = "vout"
+
+    cmd = [
+        _ffmpeg(), "-y", *inputs,
+        "-filter_complex", ";".join(filters),
+        "-map", f"[{label}]", "-map", "0:a?",
+        "-c:v", "libx264", "-preset", "fast", "-crf", str(max(0, min(51, int(crf)))),
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        str(out_path),
+    ]
+    proc = _run(cmd, timeout=timeout, gate=_heavy_gate)
+    if proc.returncode != 0 or not out_path.exists():
+        raise EncodeFailedError("Áp dụng nét vẽ lên video thất bại.", _stderr_tail(proc))
+    return out_path

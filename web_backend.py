@@ -2677,6 +2677,35 @@ def _as_index(value: Any) -> int:
     return index if index >= 0 else 0
 
 
+def _snake_keys(payload: Any) -> dict:
+    """
+    A media payload with its camelCase keys renamed to the engines' snake_case.
+
+    The web client writes `fontSize` and `fontColor`; `photo_engine` and
+    `video_engine` are dataclasses with `font_size` and `color`. Expanding one
+    into the other with `**` raised TypeError, which is why both the photo text
+    tool and the video stamp failed on every single use while their unit tests —
+    which built the dataclasses directly — stayed green.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    renamed: dict = {}
+    for key, value in payload.items():
+        snake = _CAMEL_RE.sub(lambda m: f"_{m.group(0).lower()}", str(key))
+        renamed[_MEDIA_KEY_ALIASES.get(snake, snake)] = value
+    return renamed
+
+
+_CAMEL_RE = re.compile(r"(?<!^)[A-Z]")
+
+# Keys whose client name is not merely a case variant of the engine's.
+_MEDIA_KEY_ALIASES = {
+    "font_color": "color",
+    "start_seconds": "start_s",
+    "end_seconds": "end_s",
+}
+
+
 def _is_writable_dir(folder: Path) -> bool:
     """Whether a new folder can be created inside `folder`.
 
@@ -5214,10 +5243,23 @@ class LocalApiServer:
                     import photo_engine as pe
                     src = self._resolve_media_path(payload.get("path"), catalog)
                     out = self._new_media_work_path(src.suffix or ".jpg")
-                    texts = [pe.TextAnnotation(**t) for t in payload.get("texts", [])]
-                    arrows = [pe.ArrowAnnotation(**a) for a in payload.get("arrows", [])]
+                    # The client writes camelCase and the dataclasses are
+                    # snake_case; passing the payload straight through raised
+                    # TypeError on every text annotation ever attempted.
+                    texts = [pe.TextAnnotation(**_snake_keys(t)) for t in payload.get("texts", [])]
+                    arrows = [pe.ArrowAnnotation(**_snake_keys(a)) for a in payload.get("arrows", [])]
                     boxes = [pe.BoxAnnotation(rect=pe.Rect(**b["rect"]), color=tuple(b.get("color", (255, 70, 70))), width=b.get("width", 3)) for b in payload.get("boxes", [])]
                     pe.annotate(src, out, texts=texts, arrows=arrows, boxes=boxes)
+                    return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
+                if path == "/api/media/photo/shapes":
+                    # The whole drawing layer in one call: the file is decoded,
+                    # painted and re-encoded exactly once no matter how many
+                    # arrows, notes and redactions the reader placed.
+                    import photo_engine as pe
+                    src = self._resolve_media_path(payload.get("path"), catalog)
+                    out = self._new_media_work_path(src.suffix or ".jpg")
+                    pe.draw_shapes(src, out, payload.get("shapes", []),
+                                   quality=int(payload.get("quality", 92)))
                     return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 if path == "/api/media/photo/export-pdf":
                     import photo_engine as pe
@@ -5272,14 +5314,47 @@ class LocalApiServer:
                     import video_engine as ve
                     src = self._resolve_media_path(payload.get("path"), catalog)
                     out = self._new_media_work_path(".mp4")
-                    overlays = [ve.TextOverlay(**o) for o in payload.get("overlays", [])]
+                    overlays = [ve.TextOverlay(**_snake_keys(o)) for o in payload.get("overlays", [])]
                     ve.burn_text(src, out, overlays)
+                    return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
+                if path == "/api/media/video/burn-overlay":
+                    # The drawing the reader made over the player, rendered once
+                    # at the clip's own resolution and composited by ffmpeg —
+                    # rather than a drawtext filter per shape, which cannot draw
+                    # an arrow or a freehand stroke at all.
+                    import photo_engine as pe
+                    import video_engine as ve
+                    src = self._resolve_media_path(payload.get("path"), catalog)
+                    info = ve.probe(src)
+                    drawn, destructive = pe.split_destructive(payload.get("shapes", []))
+                    start_s = payload.get("startSeconds")
+                    end_s = payload.get("endSeconds")
+                    overlay = None
+                    if drawn:
+                        overlay = self._new_media_work_path(".png")
+                        pe.render_overlay_png(drawn, (info.width, info.height), overlay)
+                    regions = [
+                        ve.BlurRegion(
+                            x=shape.x, y=shape.y, width=shape.width, height=shape.height,
+                            mode="solid" if shape.kind == "redact" else "blur",
+                            strength=max(2, shape.stroke_width * 3),
+                            start_s=start_s, end_s=end_s,
+                        )
+                        for shape in destructive
+                    ]
+                    out = self._new_media_work_path(".mp4")
+                    ve.burn_overlay(src, out, overlay_png=overlay,
+                                    start_s=start_s, end_s=end_s, blur_regions=regions)
                     return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 if path == "/api/media/video/transcode":
                     import video_engine as ve
                     src = self._resolve_media_path(payload.get("path"), catalog)
                     out = self._new_media_work_path(".mp4")
-                    ve.transcode(src, out, bool(payload.get("useHw", False)), int(payload.get("crf", 20)))
+                    # Both spellings are accepted: the studio has always sent
+                    # use_hw, so reading only useHw silently disabled hardware
+                    # encoding for every transcode the app ever ran.
+                    use_hw = payload.get("useHw", payload.get("use_hw", False))
+                    ve.transcode(src, out, bool(use_hw), int(payload.get("crf", 20)))
                     return {"outputPath": str(out), "url": f"/api/media/work-file?name={out.name}"}
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/annotations", path)
                 if match:

@@ -14,7 +14,10 @@ import {
   renderWorkspacePane,
   loadTextContent,
   renderViewer,
+  photoLayer,
+  selectedSeries,
 } from "./main.js";
+import { createShape, defaultStyle } from "./photo-annotator.js";
 
 describe("Media Studio Detection & Layouts", () => {
   beforeEach(() => {
@@ -82,17 +85,25 @@ describe("Media Studio Detection & Layouts", () => {
     expect(html).toContain("frame_1.jpg");
   });
 
-  it("renders photo editor studio layout with all tools", () => {
+  it("renders the photo studio with a tool rail, a properties bar and a canvas", () => {
     const series = { id: "photo_01", patientName: "Tran Van B", mediaType: "photo" };
     const html = renderPhotoEditorStudio(series);
     expect(html).toContain("photo-editor-studio");
     expect(html).toContain("photo-rotate-cw");
-    expect(html).toContain("photo-tool-crop");
-    expect(html).toContain("photo-tool-redact");
-    expect(html).toContain("photo-tool-arrow");
-    expect(html).toContain("photo-tool-box");
-    expect(html).toContain("photo-tool-text");
     expect(html).toContain("photo-export-pdf");
+    // The drawing layer needs its own canvas over the image; without it every
+    // tool is back to acting on one dragged rectangle.
+    expect(html).toContain("photo-annotation-canvas");
+    expect(html).toContain("photo-tool-rail");
+    for (const tool of ["arrow", "text", "marker", "pen", "crop", "redact"]) {
+      expect(html).toContain(`data-tool="${tool}"`);
+    }
+    // Colour and size were compiled into the old tools, so two findings on one
+    // photo could not be told apart.
+    expect(html).toContain("data-field=\"photo-color\"");
+    expect(html).toContain("data-field=\"photo-stroke\"");
+    expect(html).toContain("data-field=\"photo-font\"");
+    expect(html).toContain("photo-pick-color");
   });
 });
 
@@ -156,7 +167,9 @@ describe("Photo Studio Action Handlers", () => {
     state.photoWorkingPath = "D:/storage/photo_01.jpg";
     state.mediaIndex = {};
     state.mediaEdits = {};
-    state.photoSelection = null;
+    state.photoLayers = {};
+    state.photoTool = "select";
+    state.photoStyle = defaultStyle();
     document.body.innerHTML = `
       <div id="app">
         <div id="workspace"></div>
@@ -193,98 +206,102 @@ describe("Photo Studio Action Handlers", () => {
     );
   });
 
-  it("photo-tool-crop crops the region the reader dragged", async () => {
+  it("sends the whole drawing layer in one call instead of one call per shape", async () => {
+    // Every shape used to be its own POST and its own JPEG re-encode: three
+    // arrows meant three generations of lossy re-compression of the patient's
+    // photo. The layer is flattened once.
     const fetchMock = vi.fn().mockResolvedValue(
-      mockJsonResponse({ outputPath: "D:/storage/cropped_01.jpg", url: "/api/media/work-file?name=cropped_01.jpg" })
+      mockJsonResponse({ outputPath: "D:/storage/drawn_01.jpg", url: "/api/media/work-file?name=drawn_01.jpg" })
     );
     global.fetch = fetchMock;
-    state.photoSelection = { x: 120, y: 90, width: 300, height: 240 };
+    const layer = photoLayer(selectedSeries());
+    layer.shapes = [
+      createShape("arrow", { x: 200, y: 160 }, defaultStyle()),
+      createShape("text", { x: 40, y: 40 }, defaultStyle()),
+    ];
+    Object.assign(layer.shapes[0], { x2: 500, y2: 400 });
+    layer.shapes[1].text = "Tổn thương";
 
-    await action("photo-tool-crop");
+    await action("photo-apply-shapes");
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/media/photo/crop"),
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ path: "D:/storage/photo_01.jpg", rect: state.photoSelection }),
-      })
-    );
-    expect(state.photoWorkingPath).toBe("D:/storage/cropped_01.jpg");
+    const shapeCalls = fetchMock.mock.calls
+      .filter(([url]) => String(url).includes("/api/media/photo/shapes"));
+    expect(shapeCalls).toHaveLength(1);
+    const body = JSON.parse(shapeCalls[0][1].body);
+    expect(body.path).toBe("D:/storage/photo_01.jpg");
+    expect(body.shapes).toHaveLength(2);
+    // The engine is a set of snake_case dataclasses. Sending camelCase is what
+    // made the old text tool raise TypeError on the server every single time.
+    expect(body.shapes[0]).toMatchObject({ kind: "arrow", x1: 200, y1: 160, x2: 500, y2: 400 });
+    expect(body.shapes[1]).toMatchObject({ kind: "text", text: "Tổn thương", font_size: 28 });
+    expect(body.shapes[1].color).toEqual([255, 59, 48]);
+    expect(state.photoWorkingPath).toBe("D:/storage/drawn_01.jpg");
+    // The shapes are pixels now, so the layer must not still be holding them.
+    expect(photoLayer(selectedSeries()).shapes).toHaveLength(0);
   });
 
-  it("refuses to act on a made-up region when nothing is selected", async () => {
-    // The old code cropped a fixed 5% off each edge and always redacted the
-    // top-left corner, so the result had no relation to what was meant.
+  it("does not call the server when nothing has been drawn", async () => {
     const fetchMock = vi.fn();
     global.fetch = fetchMock;
-    state.photoSelection = null;
+    photoLayer(selectedSeries()).shapes = [];
 
-    for (const tool of ["photo-tool-crop", "photo-tool-redact", "photo-tool-box", "photo-tool-arrow"]) {
-      await action(tool);
-    }
+    await action("photo-apply-shapes");
+
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("photo-tool-redact covers exactly the selected region", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      mockJsonResponse({ outputPath: "D:/storage/redacted_01.jpg", url: "/api/media/work-file?name=redacted_01.jpg" })
-    );
+  it("drops shapes too small to be deliberate rather than flattening them", async () => {
+    // A click that never became a drag leaves a zero-size object; burning it in
+    // would put an invisible mark on a clinical photo.
+    const fetchMock = vi.fn();
     global.fetch = fetchMock;
-    state.photoSelection = { x: 8, y: 12, width: 260, height: 44 };
+    const layer = photoLayer(selectedSeries());
+    layer.shapes = [createShape("rect", { x: 10, y: 10 }, defaultStyle())];
 
-    await action("photo-tool-redact");
+    await action("photo-apply-shapes");
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/media/photo/redact"),
-      expect.objectContaining({
-        body: JSON.stringify({
-          path: "D:/storage/photo_01.jpg",
-          regions: [state.photoSelection],
-          fill: [0, 0, 0],
-        }),
-      })
-    );
-    expect(state.photoWorkingPath).toBe("D:/storage/redacted_01.jpg");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("photo-tool-arrow, photo-tool-box, photo-tool-text call annotate API", async () => {
+  it("burns the pending drawing in before rotating, so nothing lands askew", async () => {
+    // Rotation moves every pixel. A shape held as coordinates across it would
+    // point at whatever ended up in that corner afterwards.
     const fetchMock = vi.fn().mockImplementation(async (url) => {
-      if (String(url).includes("/info")) {
-        return mockJsonResponse({ info: { width: 1000, height: 800 } });
+      if (String(url).includes("/api/media/work-file")) {
+        return { ok: true, status: 200, headers: { get: () => "image/jpeg" }, blob: async () => new Blob([1]) };
       }
-      return mockJsonResponse({ outputPath: "D:/storage/annotated_01.jpg", url: "/api/media/work-file?name=annotated_01.jpg" });
+      if (String(url).includes("/shapes")) {
+        return mockJsonResponse({ outputPath: "D:/storage/drawn_01.jpg", url: "/api/media/work-file?name=drawn_01.jpg" });
+      }
+      return mockJsonResponse({ outputPath: "D:/storage/rotated_01.jpg", url: "/api/media/work-file?name=rotated_01.jpg" });
     });
     global.fetch = fetchMock;
-    state.photoSelection = { x: 200, y: 160, width: 300, height: 240 };
+    global.URL.createObjectURL = vi.fn(() => "blob:rotated");
+    const layer = photoLayer(selectedSeries());
+    const arrow = createShape("arrow", { x: 10, y: 10 }, defaultStyle());
+    Object.assign(arrow, { x2: 200, y2: 200 });
+    layer.shapes = [arrow];
 
-    window.prompt = vi.fn().mockReturnValue("Ghi chú thử nghiệm");
+    await action("photo-rotate-cw");
 
-    await action("photo-tool-arrow");
-    // The arrow spans the drag: it points from where the reader started to
-    // where they released.
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/media/photo/annotate"),
-      expect.objectContaining({
-        body: JSON.stringify({
-          path: "D:/storage/photo_01.jpg",
-          arrows: [{ x1: 200, y1: 160, x2: 500, y2: 400, color: [255, 70, 70] }],
-          texts: [],
-          boxes: [],
-        }),
-      })
-    );
+    const apiCalls = fetchMock.mock.calls.map(([url]) => String(url));
+    const flattenAt = apiCalls.findIndex((url) => url.includes("/api/media/photo/shapes"));
+    const rotateAt = apiCalls.findIndex((url) => url.includes("/api/media/photo/rotate"));
+    expect(flattenAt).toBeGreaterThanOrEqual(0);
+    expect(rotateAt).toBeGreaterThan(flattenAt);
+    // Rotation works on the flattened file, not on the one under it.
+    expect(JSON.parse(fetchMock.mock.calls[rotateAt][1].body))
+      .toEqual({ path: "D:/storage/drawn_01.jpg", degrees: 90 });
+  });
 
-    await action("photo-tool-box");
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/media/photo/annotate"),
-      expect.objectContaining({ method: "POST" })
-    );
-
-    await action("photo-tool-text");
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/media/photo/annotate"),
-      expect.objectContaining({ method: "POST" })
-    );
+  it("keeps a drawing layer per file, so paging away does not lose it", async () => {
+    state.archive.series[0].sliceCount = 3;
+    const first = photoLayer(selectedSeries());
+    first.shapes = [createShape("marker", { x: 5, y: 5 }, defaultStyle(), { label: 1 })];
+    state.mediaIndex = { series_photo_1: 1 };
+    expect(photoLayer(selectedSeries()).shapes).toHaveLength(0);
+    state.mediaIndex = { series_photo_1: 0 };
+    expect(photoLayer(selectedSeries()).shapes).toHaveLength(1);
   });
 });
 
@@ -301,6 +318,10 @@ describe("Surgery Video Studio Action Handlers", () => {
     state.mediaEdits = {};
     state.isError = false;
     state.videoBookmarks = [];
+    state.photoLayers = {};
+    state.videoIn = null;
+    state.videoOut = null;
+    state.photoStyle = defaultStyle();
     document.body.innerHTML = `
       <div id="app">
         <div id="workspace"></div>
@@ -309,15 +330,13 @@ describe("Surgery Video Studio Action Handlers", () => {
     `;
   });
 
-  it("video-tool-trim calls trim API and updates video player src", async () => {
+  it("cuts the span marked on the timeline, not one typed into a prompt", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ outputPath: "D:/storage/trimmed_01.mp4", url: "/api/media/work-file?name=trimmed_01.mp4" })
     );
     global.fetch = fetchMock;
-
-    window.prompt = vi.fn()
-      .mockReturnValueOnce("2.0")  // start
-      .mockReturnValueOnce("10.0"); // end
+    state.videoIn = 2.0;
+    state.videoOut = 10.0;
 
     await action("video-tool-trim");
 
@@ -329,25 +348,91 @@ describe("Surgery Video Studio Action Handlers", () => {
       })
     );
     expect(state.videoWorkingPath).toBe("D:/storage/trimmed_01.mp4");
+    // The cut file starts at zero, so the old points name nothing any more.
+    expect(state.videoIn).toBe(null);
+    expect(state.videoOut).toBe(null);
   });
 
-  it("video-tool-burn-text calls burn-text API", async () => {
+  it("refuses to cut before a span has been marked", async () => {
+    // It used to open two prompt() boxes and ask a surgeon to read the clock
+    // and type a decimal; with nothing marked there is simply nothing to cut.
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock;
+    state.videoIn = null;
+    state.videoOut = null;
+
+    await action("video-tool-trim");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("marks in and out points from the playhead and keeps them ordered", async () => {
+    const player = document.querySelector("#surgery-video-player");
+    Object.defineProperty(player, "currentTime", { value: 12.5, writable: true });
+    state.videoIn = null;
+    state.videoOut = null;
+
+    await action("video-set-in");
+    expect(state.videoIn).toBe(12.5);
+
+    // An out point at or before the in point would leave an inverted range no
+    // button could act on.
+    player.currentTime = 4;
+    await action("video-set-out");
+    expect(state.videoOut).toBe(null);
+
+    player.currentTime = 30;
+    await action("video-set-out");
+    expect(state.videoOut).toBe(30);
+
+    await action("video-clear-range");
+    expect(state.videoIn).toBe(null);
+    expect(state.videoOut).toBe(null);
+  });
+
+  it("burns the drawn layer into the clip in one pass, gated to the marked span", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ outputPath: "D:/storage/drawn_01.mp4", url: "/api/media/work-file?name=drawn_01.mp4" })
+    );
+    global.fetch = fetchMock;
+    state.videoIn = 3;
+    state.videoOut = 8;
+    const layer = photoLayer(selectedSeries());
+    const arrow = createShape("arrow", { x: 40, y: 60 }, defaultStyle());
+    Object.assign(arrow, { x2: 300, y2: 220 });
+    layer.shapes = [arrow];
+
+    await action("video-apply-shapes");
+
+    const [, options] = fetchMock.mock.calls
+      .find(([url]) => String(url).includes("/api/media/video/burn-overlay"));
+    const body = JSON.parse(options.body);
+    expect(body.shapes).toHaveLength(1);
+    expect(body.shapes[0]).toMatchObject({ kind: "arrow", x1: 40, y1: 60, x2: 300, y2: 220 });
+    expect(body).toMatchObject({ startSeconds: 3, endSeconds: 8 });
+    expect(state.videoWorkingPath).toBe("D:/storage/drawn_01.mp4");
+    expect(photoLayer(selectedSeries()).shapes).toHaveLength(0);
+  });
+
+  it("stamps the record's own identity, in the field names the engine has", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ outputPath: "D:/storage/burned_01.mp4", url: "/api/media/work-file?name=burned_01.mp4" })
     );
     global.fetch = fetchMock;
 
-    window.prompt = vi.fn().mockReturnValue("Bệnh nhân: BN 02 - Mô tả phẫu thuật");
-
     await action("video-tool-burn-text");
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/media/video/burn-text"),
-      expect.objectContaining({
-        method: "POST",
-        body: expect.stringContaining("Bệnh nhân: BN 02 - Mô tả phẫu thuật"),
-      })
-    );
+    const [url, options] = fetchMock.mock.calls
+      .find(([called]) => String(called).includes("/api/media/video/burn-text"));
+    expect(url).toContain("/api/media/video/burn-text");
+    const overlay = JSON.parse(options.body).overlays[0];
+    // The patient's name comes from the record, never from something typed
+    // into a prompt box that nothing validates.
+    expect(overlay.text).toContain("BN 02");
+    // video_engine.TextOverlay has `color`, not `font_color`. Sending the wrong
+    // spelling made every stamp fail with a TypeError server-side.
+    expect(overlay).toHaveProperty("color");
+    expect(overlay).not.toHaveProperty("font_color");
     expect(state.videoWorkingPath).toBe("D:/storage/burned_01.mp4");
   });
 

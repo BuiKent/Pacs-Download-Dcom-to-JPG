@@ -146,7 +146,7 @@ describe("Authenticated media delivery", () => {
     state.selectedId = "series_photo_1";
     state.photoWorkingPath = null;
     state.mediaEdits = {};
-    state.photoSelection = { x: 10, y: 10, width: 50, height: 50 };
+    state.photoLayers = {};
     document.body.innerHTML = `<div id="app"><div id="workspace"></div></div>`;
 
     let step = 0;
@@ -161,8 +161,8 @@ describe("Authenticated media delivery", () => {
       });
     });
 
-    await action("photo-tool-crop");
-    await action("photo-tool-redact");
+    await action("photo-rotate-cw");
+    await action("photo-rotate-ccw");
     expect(state.photoWorkingPath).toBe("D:/tmp/edit_2.jpg");
     expect(canUndoMediaEdit(series)).toBe(true);
     expect(canRedoMediaEdit(series)).toBe(false);
@@ -183,7 +183,7 @@ describe("Authenticated media delivery", () => {
     expect(state.photoWorkingPath).toBe("D:/tmp/edit_1.jpg");
 
     // Editing after stepping back drops the branch that was undone.
-    await action("photo-tool-crop");
+    await action("photo-rotate-cw");
     expect(state.photoWorkingPath).toBe("D:/tmp/edit_3.jpg");
     expect(editHistoryFor(series.id).steps.length).toBe(2);
     expect(canRedoMediaEdit(series)).toBe(false);

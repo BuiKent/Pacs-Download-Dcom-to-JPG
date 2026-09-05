@@ -55,3 +55,4 @@ webui/dist/
 scratch/
 scratch_test_downloads/
 Upgrade/reference_projects/
+.pytest_cache/

@@ -52,6 +52,24 @@ import {
   undoLastAnnotation,
   viewerDiagnostics,
 } from "./viewer.js";
+import {
+  ANNOTATOR_COLORS,
+  ANNOTATOR_TOOLS,
+  canRedoLayer,
+  canUndoLayer,
+  createLayer,
+  defaultStyle,
+  isShapeUsable,
+  layerPayload,
+  redoLayer,
+  toolById,
+  undoLayer,
+} from "./photo-annotator.js";
+import {
+  createAnnotatorSurface,
+  currentSurface,
+  destroyActiveSurface,
+} from "./photo-editor.js";
 
 let app = typeof document !== "undefined" ? document.querySelector("#app") : null;
 
@@ -105,10 +123,21 @@ const state = {
   // The text/JSON file currently in the reading pane: { seriesId, index, name,
   // language, text }. Null until a text series is opened.
   textDoc: null,
-  // Rectangle the user dragged on the photo, in source-image pixels. Null when
-  // nothing is selected: the editing tools then say so rather than inventing a
-  // region, which is what the fixed 5% crop used to do.
-  photoSelection: null,
+  // The photo studio's drawing layers, one per file, keyed `seriesId:index`
+  // exactly like the edit history. A layer holds the shapes the reader has
+  // drawn but not yet flattened, so switching pages and coming back does not
+  // throw the annotation away.
+  photoLayers: {},
+  // Which drawing tool the pointer is holding, and the style new shapes take.
+  photoTool: "select",
+  photoStyle: defaultStyle(),
+  // Display zoom for the photo stage. 0 means fit the image to the stage.
+  photoZoom: 0,
+  // In and out points on the surgical player, in seconds. They drive both the
+  // trim and the span a drawn overlay is shown for; null means unmarked.
+  videoIn: null,
+  videoOut: null,
+  videoDuration: 0,
   // Series shown beside the primary one; index 0 is pane B, index 1 is pane C.
   compareIds: ["", ""],
   scrollSync: true,
@@ -681,6 +710,69 @@ function formatVideoTime(seconds) {
   return `${mm}:${ss}`;
 }
 
+/**
+ * The in/out selection on the timeline, or null when nothing is marked.
+ *
+ * Trimming used to ask for the two times in a pair of `prompt()` boxes, so a
+ * surgeon cutting a clip had to read the clock, dismiss the player, type a
+ * decimal, and hope. The points are set from the playhead with one key each and
+ * shown on the scrubber, which is how every editor does it.
+ */
+function videoRange() {
+  const start = Number(state.videoIn);
+  const end = Number(state.videoOut);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  return { start, end };
+}
+
+/** The in/out band drawn over the scrubber track. */
+function renderVideoRangeBand() {
+  const range = videoRange();
+  const duration = Number(state.videoDuration) || 0;
+  if (!range || !duration) return "";
+  const left = Math.max(0, Math.min(100, (range.start / duration) * 100));
+  const width = Math.max(0.5, Math.min(100 - left, ((range.end - range.start) / duration) * 100));
+  return `<span class="video-range-band" style="left:${left}%; width:${width}%"></span>`;
+}
+
+/**
+ * Repaint the in/out selection without rebuilding the studio.
+ *
+ * A full `render()` would replace the `<video>` element, which drops the
+ * decoded buffer and jumps the playhead back to zero — marking a point must
+ * never cost the reader their place in the operation.
+ */
+function syncVideoRangeUI() {
+  const root = getDomRoot();
+  const wrap = root?.querySelector(".video-scrubber-wrap");
+  if (!wrap) return;
+  const range = videoRange();
+  const duration = Number(state.videoDuration) || 0;
+  let band = wrap.querySelector(".video-range-band");
+  if (!range || !duration) {
+    band?.remove();
+  } else {
+    if (!band) {
+      band = document.createElement("span");
+      band.className = "video-range-band";
+      wrap.prepend(band);
+    }
+    const left = Math.max(0, Math.min(100, (range.start / duration) * 100));
+    band.style.left = `${left}%`;
+    band.style.width = `${Math.max(0.5, Math.min(100 - left, ((range.end - range.start) / duration) * 100))}%`;
+  }
+  const readout = root.querySelector("#video-range-readout");
+  if (readout) {
+    readout.textContent = range
+      ? `${formatVideoTime(range.start)} → ${formatVideoTime(range.end)}`
+      : t("Chưa chọn đoạn");
+  }
+  const clear = root.querySelector("[data-action='video-clear-range']");
+  if (clear) clear.disabled = !range;
+  const trim = root.querySelector("[data-action='video-tool-trim']");
+  if (trim) trim.disabled = !range;
+}
+
 function renderSurgeryVideoStudio(series) {
   if (!series) return `<div class="empty-state"><b>${escapeHtml(t("Chưa có video nào"))}</b></div>`;
   // A work file is served by its random name; both work and archive streams
@@ -690,23 +782,36 @@ function renderSurgeryVideoStudio(series) {
   const workName = workFileName(state.videoWorkingPath);
   const bookmarks = state.videoBookmarks || [];
   const filmstrip = state.videoFilmstrip || [];
+  const range = videoRange();
+  const pending = pendingShapeCount(series);
   return `
     <div class="surgery-video-studio">
-      <div class="surgery-video-toolbar" style="display:flex; gap:8px; padding:8px 12px; background:var(--bg-card); border-bottom:1px solid var(--border-subtle); align-items:center; flex-wrap:wrap;">
+      <div class="photo-editor-toolbar">
         ${renderMediaFileNav(series)}
         ${renderEditHistoryNav(series)}
-        <button class="tool-btn" data-action="video-tool-trim" title="${escapeHtml(t("Cắt đoạn video"))}">✂ ${escapeHtml(t("Cắt đoạn"))}</button>
+        <span class="photo-props-divider"></span>
+        <button class="tool-btn" data-action="video-tool-trim" ${range ? "" : "disabled"}
+          title="${escapeHtml(t("Cắt giữ lại đoạn đã đánh dấu"))}">✂ ${escapeHtml(t("Cắt đoạn"))}</button>
         <button class="tool-btn" data-action="video-tool-concat" title="${escapeHtml(t("Ghép các clip video"))}">🔗 ${escapeHtml(t("Ghép clips"))}</button>
         <button class="tool-btn" data-action="video-tool-burn-text" title="${escapeHtml(t("Đóng dấu / Chèn thông tin phẫu thuật"))}">🏷 ${escapeHtml(t("Đóng dấu thông tin"))}</button>
         <button class="tool-btn" data-action="video-tool-thumb" title="${escapeHtml(t("Trích xuất ảnh đại diện Thumbnail"))}">🖼 ${escapeHtml(t("Tạo Thumbnail"))}</button>
         <button class="tool-btn" data-action="video-tool-filmstrip" title="${escapeHtml(t("Tạo chuỗi ảnh Filmstrip"))}">🎞 ${escapeHtml(t("Tạo Filmstrip"))}</button>
         <button class="tool-btn" data-action="video-tool-transcode" title="${escapeHtml(t("Tối ưu hoá mã hoá MP4 (H.264)"))}">⚡ ${escapeHtml(t("Tối ưu MP4"))}</button>
         <span style="flex:1;"></span>
+        <button class="tool-btn primary" data-action="video-apply-shapes" id="photo-apply-shapes"
+          ${pending ? "" : "disabled"} title="${escapeHtml(t("Ghi nét vẽ vĩnh viễn vào video"))}">
+          ${escapeHtml(t("Áp dụng lên video"))}${pending ? ` (${pending})` : ""}
+        </button>
         <div id="video-meta-badge" class="badge" style="font-size:11px; padding:4px 8px; opacity:0.85;">🎬 ${escapeHtml(series.patientName || "Video Phẫu Thuật")}</div>
       </div>
+      ${renderPhotoProperties(series)}
       <div class="surgery-video-body">
+        ${renderPhotoToolRail()}
         <div class="surgery-video-stage">
-          <video id="surgery-video-player" class="surgery-video-element" src="${escapeHtml(videoStreamUrl(series, workName))}" playsinline preload="metadata"></video>
+          <div class="photo-editor-canvas-wrap" id="photo-editor-canvas">
+            <video id="surgery-video-player" class="surgery-video-element" src="${escapeHtml(videoStreamUrl(series, workName))}" playsinline preload="metadata"></video>
+            <canvas id="photo-annotation-canvas" class="photo-annotation-canvas"></canvas>
+          </div>
         </div>
         <aside class="surgery-video-sidebar">
           <div class="surgery-video-sidebar-header">
@@ -714,7 +819,7 @@ function renderSurgeryVideoStudio(series) {
             <button class="control-btn primary" data-action="add-video-bookmark">+ ${escapeHtml(t("Đánh dấu mốc"))}</button>
           </div>
           <div class="surgery-video-bookmarks">
-            ${bookmarks.length === 0 ? `<div class="empty-state" style="padding:20px; font-size:12px;">${escapeHtml(t("Chưa có mốc ghi chú nào"))}</div>` : bookmarks.map((bm, i) => `
+            ${bookmarks.length === 0 ? `<div class="empty-state" style="padding:20px; font-size:12px;">${escapeHtml(t("Chưa có mốc ghi chú nào"))}</div>` : bookmarks.map((bm) => `
               <div class="surgery-bookmark-card" data-action="seek-video" data-time="${bm.time}">
                 <div class="surgery-bookmark-time">⏱ ${formatVideoTime(bm.time)}</div>
                 <div class="surgery-bookmark-text">${escapeHtml(bm.text || t("Mốc phẫu thuật"))}</div>
@@ -724,11 +829,11 @@ function renderSurgeryVideoStudio(series) {
         </aside>
       </div>
       ${filmstrip.length > 0 ? `
-        <div class="surgery-video-filmstrip" style="display:flex; gap:6px; padding:6px 12px; background:var(--bg-canvas); overflow-x:auto; border-top:1px solid var(--border-subtle);">
+        <div class="surgery-video-filmstrip">
           ${filmstrip.map((framePath, idx) => {
             const frameName = framePath.split(/[\\/]/).pop();
             const frameUrl = mediaAuthUrl(`/api/media/work-file?name=${encodeURIComponent(frameName)}`);
-            return `<img src="${escapeHtml(frameUrl)}" style="height:48px; border-radius:4px; cursor:pointer; border:1px solid var(--border-subtle);" title="Frame ${idx + 1}" data-action="seek-filmstrip-idx" data-idx="${idx}" data-total="${filmstrip.length}" />`;
+            return `<img src="${escapeHtml(frameUrl)}" title="Frame ${idx + 1}" data-action="seek-filmstrip-idx" data-idx="${idx}" data-total="${filmstrip.length}" />`;
           }).join("")}
         </div>
       ` : ""}
@@ -737,8 +842,22 @@ function renderSurgeryVideoStudio(series) {
         <button class="control-btn" data-action="video-rewind-5" title="${escapeHtml(t("Tua lùi 5s"))}">-5s</button>
         <button class="control-btn" data-action="video-forward-5" title="${escapeHtml(t("Tua tới 5s"))}">+5s</button>
         <span id="video-time-display" class="video-time">00:00 / 00:00</span>
-        <input type="range" id="surgery-video-scrubber" class="video-scrubber" min="0" max="100" step="0.1" value="0">
-        <select id="video-speed-select" class="control-btn" title="${escapeHtml(t("Tốc độ"))}">
+        <span class="video-scrubber-wrap">
+          ${renderVideoRangeBand()}
+          <input type="range" id="surgery-video-scrubber" class="video-scrubber" min="0" max="100" step="0.1" value="0"
+            aria-label="${escapeHtml(t("Thanh tua video"))}">
+        </span>
+        <button class="control-btn" data-action="video-set-in" title="${escapeHtml(t("Đặt điểm đầu tại vị trí đang xem"))} (I)">⇤ ${escapeHtml(t("Đầu"))}</button>
+        <button class="control-btn" data-action="video-set-out" title="${escapeHtml(t("Đặt điểm cuối tại vị trí đang xem"))} (O)">${escapeHtml(t("Cuối"))} ⇥</button>
+        <span class="video-time" id="video-range-readout">${
+          range
+            ? `${formatVideoTime(range.start)} → ${formatVideoTime(range.end)}`
+            : escapeHtml(t("Chưa chọn đoạn"))
+        }</span>
+        <button class="control-btn" data-action="video-clear-range" ${range ? "" : "disabled"}
+          title="${escapeHtml(t("Bỏ đoạn đã đánh dấu"))}">✕</button>
+        <select id="video-speed-select" class="control-btn" title="${escapeHtml(t("Tốc độ"))}"
+          aria-label="${escapeHtml(t("Tốc độ"))}">
           <option value="0.5">0.5x</option>
           <option value="1.0" selected>1.0x</option>
           <option value="1.25">1.25x</option>
@@ -795,32 +914,174 @@ function renderMediaFileNav(series) {
   `;
 }
 
+/**
+ * Icons for the drawing tools, in the same 24px stroked style as the viewer's.
+ *
+ * A tool rail of emoji reads as a chat window; these are the glyphs every
+ * drawing application uses, so a surgeon who has ever opened one recognises the
+ * rail without reading a single label.
+ */
+const toolIcons = {
+  cursor: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51z"/></svg>`,
+  arrow: `<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="19" y1="5" x2="5" y2="19"/><polyline points="19 13 19 5 11 5"/></svg>`,
+  line: `<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="5" y1="19" x2="19" y2="5"/></svg>`,
+  rect: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="1"/></svg>`,
+  ellipse: `<svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="12" rx="9" ry="7"/></svg>`,
+  pen: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.63l4.35-1.33a2 2 0 0 0 .83-.5z"/><path d="m15 5 4 4"/></svg>`,
+  text: `<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/></svg>`,
+  marker: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M10 9.5 12 8v8"/><path d="M10.5 16h3"/></svg>`,
+  highlight: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 11-6 6v3h3l6-6"/><path d="m14.5 5.5 4 4"/><path d="M13 3 21 11l-7.5 7.5-8-8z"/></svg>`,
+  pixelate: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="1"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>`,
+  redact: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="10" rx="1" fill="currentColor"/></svg>`,
+  crop: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>`,
+};
+
+/** The layer key for a file: the same `seriesId:index` the edit history uses. */
+function photoLayerKey(series) {
+  return `${series?.id || ""}:${mediaFileIndex(series)}`;
+}
+
+/**
+ * The drawing layer for the file on screen, created on first use.
+ *
+ * A layer belongs to a file, not to the studio: paging to photo 3 of an
+ * operative set and back must not lose what was drawn on photo 1.
+ */
+function photoLayer(series) {
+  if (!series) return null;
+  const all = state.photoLayers || (state.photoLayers = {});
+  const key = photoLayerKey(series);
+  return all[key] || (all[key] = createLayer());
+}
+
+function photoShapes(series) {
+  return photoLayer(series)?.shapes || [];
+}
+
+/** How many shapes are waiting to be burned into the file. */
+function pendingShapeCount(series) {
+  return photoShapes(series).filter(isShapeUsable).length;
+}
+
+/** The vertical tool rail, the part of the studio the hand lives on. */
+function renderPhotoToolRail() {
+  return `
+    <div class="photo-tool-rail" role="toolbar" aria-label="${escapeHtml(t("Công cụ vẽ"))}">
+      ${ANNOTATOR_TOOLS.map((tool) => {
+        const active = state.photoTool === tool.id;
+        const title = `${t(tool.label)} (${tool.key})`;
+        return `<button class="photo-tool ${active ? "active" : ""}" data-action="photo-pick-tool"
+          data-tool="${tool.id}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"
+          aria-pressed="${active ? "true" : "false"}">${toolIcons[tool.icon] || ""}</button>`;
+      }).join("")}
+    </div>
+  `;
+}
+
+/**
+ * The properties bar.
+ *
+ * Colour and size were compiled into the old tools — every arrow was the same
+ * red, every note the same 24px yellow — so two findings on one photo could not
+ * be told apart. These controls set what the next shape will look like and
+ * restyle whatever is selected, which is the behaviour of every drawing
+ * application and the thing a reader reaches for first.
+ */
+function renderPhotoProperties(series) {
+  const style = state.photoStyle;
+  const shapes = pendingShapeCount(series);
+  return `
+    <div class="photo-props" id="photo-props">
+      <span class="photo-props-label">${escapeHtml(t("Màu"))}</span>
+      <span class="photo-swatches">
+        ${ANNOTATOR_COLORS.map((color) => `
+          <button class="photo-swatch ${style.color.toLowerCase() === color ? "active" : ""}"
+            data-action="photo-pick-color" data-color="${color}"
+            style="background:${color}" title="${color}" aria-label="${color}"></button>
+        `).join("")}
+        <input type="color" class="photo-color-input" data-field="photo-color"
+          value="${escapeHtml(style.color)}" title="${escapeHtml(t("Chọn màu tuỳ ý"))}"
+          aria-label="${escapeHtml(t("Chọn màu tuỳ ý"))}">
+      </span>
+      <span class="photo-props-divider"></span>
+      <label class="photo-props-field">
+        <span>${escapeHtml(t("Nét"))}</span>
+        <input type="range" min="1" max="32" step="1" value="${style.strokeWidth}" data-field="photo-stroke">
+        <b id="photo-stroke-value">${style.strokeWidth}</b>
+      </label>
+      <label class="photo-props-field" id="photo-font-field">
+        <span>${escapeHtml(t("Cỡ chữ"))}</span>
+        <input type="range" min="10" max="160" step="2" value="${style.fontSize}" data-field="photo-font">
+        <b id="photo-font-value">${style.fontSize}</b>
+      </label>
+      <label class="photo-props-field">
+        <span>${escapeHtml(t("Độ đậm"))}</span>
+        <input type="range" min="20" max="100" step="5" value="${Math.round(style.opacity * 100)}" data-field="photo-opacity">
+        <b id="photo-opacity-value">${Math.round(style.opacity * 100)}%</b>
+      </label>
+      <label class="photo-props-check">
+        <input type="checkbox" data-field="photo-fill" ${style.filled ? "checked" : ""}>
+        <span>${escapeHtml(t("Tô đặc"))}</span>
+      </label>
+      <span class="photo-props-actions">
+        <button class="tool-btn" data-action="photo-apply-crop" id="photo-apply-crop" hidden>
+          ✂ ${escapeHtml(t("Cắt theo vùng chọn"))}
+        </button>
+        <button class="tool-btn" data-action="photo-delete-shape" id="photo-delete-shape" disabled>
+          ${escapeHtml(t("Xoá hình đang chọn"))}
+        </button>
+        <button class="tool-btn" data-action="photo-clear-shapes" ${shapes ? "" : "disabled"}>
+          ${escapeHtml(t("Xoá hết nét vẽ"))}
+        </button>
+      </span>
+    </div>
+  `;
+}
+
 function renderPhotoEditorStudio(series) {
   if (!series) return `<div class="empty-state"><b>${escapeHtml(t("Chưa có ảnh nào"))}</b></div>`;
   // Naming the edit in the markup is what makes undo work and what stops any
   // re-render from silently dropping back to the untouched file.
   const workName = workFileName(state.photoWorkingPath);
   const source = workName ? `work:${workName}` : `${series.id}:${mediaFileIndex(series)}`;
+  const pending = pendingShapeCount(series);
   return `
     <div class="photo-editor-studio">
       <div class="photo-editor-toolbar">
         ${renderMediaFileNav(series)}
         ${renderEditHistoryNav(series)}
-        <button class="tool-btn" data-action="photo-rotate-cw">↻ ${escapeHtml(t("Xoay 90°"))}</button>
-        <button class="tool-btn" data-action="photo-tool-crop">✂ ${escapeHtml(t("Cắt vùng chọn"))}</button>
-        <button class="tool-btn" data-action="photo-tool-redact">⬛ ${escapeHtml(t("Che tên/danh tính"))}</button>
-        <button class="tool-btn" data-action="photo-tool-arrow">↗ ${escapeHtml(t("Vẽ mũi tên"))}</button>
-        <button class="tool-btn" data-action="photo-tool-box">▢ ${escapeHtml(t("Khoanh vùng"))}</button>
-        <button class="tool-btn" data-action="photo-tool-text">T ${escapeHtml(t("Ghi chú chữ"))}</button>
+        <span class="photo-props-divider"></span>
+        <button class="tool-btn" data-action="photo-rotate-ccw" title="${escapeHtml(t("Xoay trái 90°"))}">↺</button>
+        <button class="tool-btn" data-action="photo-rotate-cw" title="${escapeHtml(t("Xoay phải 90°"))}">↻</button>
+        <span class="photo-props-divider"></span>
+        <button class="tool-btn" data-action="photo-zoom-out" title="${escapeHtml(t("Thu nhỏ"))}">−</button>
+        <button class="tool-btn" data-action="photo-zoom-fit" id="photo-zoom-label"
+          title="${escapeHtml(t("Vừa khung"))}">${state.photoZoom ? `${Math.round(state.photoZoom * 100)}%` : escapeHtml(t("Vừa khung"))}</button>
+        <button class="tool-btn" data-action="photo-zoom-in" title="${escapeHtml(t("Phóng to"))}">+</button>
         <span style="flex:1;"></span>
+        <button class="tool-btn primary" data-action="photo-apply-shapes" id="photo-apply-shapes"
+          ${pending ? "" : "disabled"} title="${escapeHtml(t("Vẽ đè vĩnh viễn lên ảnh"))}">
+          ${escapeHtml(t("Áp dụng lên ảnh"))}${pending ? ` (${pending})` : ""}
+        </button>
         <button class="tool-btn" data-action="photo-save-edit" ${state.photoWorkingPath ? "" : "disabled"}>💾 ${escapeHtml(t("Lưu vào hồ sơ"))}</button>
-        <button class="tool-btn primary" data-action="photo-export-pdf">📄 ${escapeHtml(t("Xuất file PDF"))}</button>
+        <button class="tool-btn" data-action="photo-export-image">⬇ ${escapeHtml(t("Tải ảnh về"))}</button>
+        <button class="tool-btn" data-action="photo-export-pdf">📄 ${escapeHtml(t("Xuất file PDF"))}</button>
       </div>
-      <div class="photo-editor-stage">
-        <div class="photo-editor-canvas-wrap" id="photo-editor-canvas">
-          <img id="photo-editor-img" class="photo-editor-image" data-media-src="${escapeHtml(source)}" style="transform: rotate(${state.photoRotation || 0}deg);" alt="${escapeHtml(series.description || "")}">
-          <div id="photo-selection" class="photo-selection" hidden></div>
+      ${renderPhotoProperties(series)}
+      <div class="photo-editor-body">
+        ${renderPhotoToolRail()}
+        <div class="photo-editor-stage" id="photo-editor-stage">
+          <div class="photo-editor-canvas-wrap" id="photo-editor-canvas">
+            <img id="photo-editor-img" class="photo-editor-image" data-media-src="${escapeHtml(source)}" alt="${escapeHtml(series.description || "")}">
+            <canvas id="photo-annotation-canvas" class="photo-annotation-canvas"></canvas>
+          </div>
         </div>
+      </div>
+      <div class="photo-editor-status">
+        <span id="photo-status-hint">${escapeHtml(t(toolById(state.photoTool).label))}</span>
+        <span style="flex:1;"></span>
+        <span id="photo-status-size"></span>
+        <span id="photo-status-count">${pending ? tf("{} nét chưa áp dụng", pending) : escapeHtml(t("Chưa vẽ gì"))}</span>
       </div>
     </div>
   `;
@@ -1080,25 +1341,72 @@ function restoreMediaEditState(series) {
   }
 }
 
+/**
+ * One undo button over two stacks.
+ *
+ * A photo now has both a vector layer that has not been flattened yet and a
+ * chain of files already written. Offering two separate undo controls would
+ * make the reader guess which one owns their last action, so the pair drives
+ * whichever stack actually holds it: the drawing first, because a shape drawn a
+ * second ago is always more recent than the file written before it.
+ */
+function canUndoPhotoStep(series) {
+  return canUndoLayer(photoLayer(series)) || canUndoMediaEdit(series);
+}
+
+function canRedoPhotoStep(series) {
+  return canRedoLayer(photoLayer(series)) || canRedoMediaEdit(series);
+}
+
+function isPhotoStudio(series) {
+  return ["photo", "doc"].includes(getSeriesMediaType(series));
+}
+
+/** Every studio that mounts the drawing layer: photos, documents and video. */
+function isDrawStudio(series) {
+  return isPhotoStudio(series) || getSeriesMediaType(series) === "video";
+}
+
 /** Keep the two arrows in step with the history without a full re-render. */
 function syncEditHistoryButtons(series) {
   const root = getDomRoot();
   if (!root) return;
+  const photo = isDrawStudio(series);
   const undo = root.querySelector("[data-action='media-edit-undo']");
   const redo = root.querySelector("[data-action='media-edit-redo']");
-  if (undo) undo.disabled = !canUndoMediaEdit(series);
-  if (redo) redo.disabled = !canRedoMediaEdit(series);
+  if (undo) undo.disabled = !(photo ? canUndoPhotoStep(series) : canUndoMediaEdit(series));
+  if (redo) redo.disabled = !(photo ? canRedoPhotoStep(series) : canRedoMediaEdit(series));
   const save = root.querySelector("[data-action='photo-save-edit']");
   if (save) save.disabled = !state.photoWorkingPath;
 }
 
+/**
+ * Step back one action in the photo studio, whichever stack holds it.
+ *
+ * Returns false when nothing was undone, so the caller can fall through to the
+ * file chain.
+ */
+function undoPhotoStep(series, delta) {
+  const layer = photoLayer(series);
+  const moved = delta < 0 ? undoLayer(layer) : redoLayer(layer);
+  if (!moved) return false;
+  currentSurface()?.select(null);
+  currentSurface()?.repaint();
+  syncPhotoStudioUI();
+  setStatus(t(delta < 0 ? "Đã hoàn tác nét vẽ." : "Đã vẽ lại nét vừa hoàn tác."));
+  return true;
+}
+
 /** The undo/redo pair both studios share. */
 function renderEditHistoryNav(series) {
+  const photo = isDrawStudio(series);
+  const undoable = photo ? canUndoPhotoStep(series) : canUndoMediaEdit(series);
+  const redoable = photo ? canRedoPhotoStep(series) : canRedoMediaEdit(series);
   return `
-    <button class="tool-btn" data-action="media-edit-undo" ${canUndoMediaEdit(series) ? "" : "disabled"}
-      title="${escapeHtml(t("Hoàn tác bước chỉnh sửa"))}">↶</button>
-    <button class="tool-btn" data-action="media-edit-redo" ${canRedoMediaEdit(series) ? "" : "disabled"}
-      title="${escapeHtml(t("Làm lại bước vừa hoàn tác"))}">↷</button>
+    <button class="tool-btn" data-action="media-edit-undo" ${undoable ? "" : "disabled"}
+      title="${escapeHtml(t("Hoàn tác bước chỉnh sửa"))} (Ctrl+Z)">↶</button>
+    <button class="tool-btn" data-action="media-edit-redo" ${redoable ? "" : "disabled"}
+      title="${escapeHtml(t("Làm lại bước vừa hoàn tác"))} (Ctrl+Y)">↷</button>
   `;
 }
 
@@ -3889,113 +4197,319 @@ async function refreshHistory() {
 }
 
 /**
- * Let the reader drag a rectangle on the photo.
+ * Mount the drawing surface over the photo on screen.
  *
- * The tools used to act on made-up regions — crop took a fixed 5% off each
- * edge, redact always covered the top-left corner — so what a clinician got
- * had no relation to what they meant to hide or keep. The drag is recorded in
- * source-image pixels, because that is the coordinate space the photo engine
- * works in and the displayed image is scaled to fit.
+ * What was here before let the reader drag exactly one rectangle, which every
+ * tool then had to be told to consume by pressing a toolbar button: crop, hide,
+ * arrow and box all acted on that same lone box, and the text tool ignored it
+ * entirely and dropped the note in a fixed corner. Now the pointer draws the
+ * thing itself, where it is pointing, in the colour and size on the properties
+ * bar — and what is drawn stays an object that can be picked back up.
  */
-function initPhotoSelection() {
-  const wrap = getDomRoot()?.querySelector("#photo-editor-canvas");
-  const img = getDomRoot()?.querySelector("#photo-editor-img");
-  const box = getDomRoot()?.querySelector("#photo-selection");
-  if (!wrap || !img || !box) return;
-
-  let origin = null;
-
-  /** Displayed pixels -> source-image pixels. */
-  const toSource = (rect) => {
-    const bounds = img.getBoundingClientRect();
-    if (!bounds.width || !bounds.height) return null;
-    const scaleX = (img.naturalWidth || bounds.width) / bounds.width;
-    const scaleY = (img.naturalHeight || bounds.height) / bounds.height;
-    return {
-      x: Math.max(0, Math.round(rect.left * scaleX)),
-      y: Math.max(0, Math.round(rect.top * scaleY)),
-      width: Math.max(1, Math.round(rect.width * scaleX)),
-      height: Math.max(1, Math.round(rect.height * scaleY)),
-    };
-  };
-
-  const paint = (rect) => {
-    box.hidden = false;
-    box.style.left = `${rect.left}px`;
-    box.style.top = `${rect.top}px`;
-    box.style.width = `${rect.width}px`;
-    box.style.height = `${rect.height}px`;
-  };
-
-  const rectFrom = (event) => {
-    const bounds = img.getBoundingClientRect();
-    const wrapBox = wrap.getBoundingClientRect();
-    const clampX = (value) => Math.min(Math.max(value, bounds.left), bounds.right);
-    const clampY = (value) => Math.min(Math.max(value, bounds.top), bounds.bottom);
-    const x1 = clampX(origin.x);
-    const y1 = clampY(origin.y);
-    const x2 = clampX(event.clientX);
-    const y2 = clampY(event.clientY);
-    return {
-      left: Math.min(x1, x2) - wrapBox.left,
-      top: Math.min(y1, y2) - wrapBox.top,
-      width: Math.abs(x2 - x1),
-      height: Math.abs(y2 - y1),
-      imageLeft: Math.min(x1, x2) - bounds.left,
-      imageTop: Math.min(y1, y2) - bounds.top,
-    };
-  };
-
-  img.addEventListener("mousedown", (event) => {
-    event.preventDefault();
-    origin = { x: event.clientX, y: event.clientY };
-    state.photoSelection = null;
-    box.hidden = true;
+function initPhotoAnnotator() {
+  const root = getDomRoot();
+  const wrap = root?.querySelector("#photo-editor-canvas");
+  // One surface, two studios: the photo pane mounts an <img>, the surgical
+  // player a <video>, and the drawing layer works the same over either.
+  const img = root?.querySelector("#photo-editor-img, #surgery-video-player");
+  const canvas = root?.querySelector("#photo-annotation-canvas");
+  if (!wrap || !img || !canvas) {
+    // Leaving the surface mounted over a pane that no longer exists keeps its
+    // window listeners alive and repaints a detached canvas on every resize.
+    destroyActiveSurface();
+    return;
+  }
+  createAnnotatorSurface({
+    wrap,
+    img,
+    canvas,
+    // Only the photo stage scrolls; the player is always sized to its pane.
+    scroller: root.querySelector("#photo-editor-stage"),
+    onZoomAt: (factor, clientX, clientY) => zoomPhotoAt(factor, clientX, clientY),
+    getLayer: () => photoLayer(selectedSeries()),
+    getStyle: () => state.photoStyle,
+    getTool: () => state.photoTool,
+    onStatus: (message) => setStatus(message),
+    onChange: () => syncPhotoStudioUI(),
+    onToolDone: (toolId) => {
+      // A shape drawn by dragging leaves the tool armed, so a reader marking
+      // four findings does not walk back to the rail four times. The two
+      // single-click tools hand the pointer back, which is what every editor
+      // does once the click has been spent.
+      if (toolId === "text" || toolId === "marker") setPhotoTool("select");
+    },
   });
+  applyPhotoZoom();
+  syncPhotoStudioUI();
+}
 
-  window.addEventListener("mousemove", (event) => {
-    if (!origin) return;
-    paint(rectFrom(event));
-  });
-
-  window.addEventListener("mouseup", (event) => {
-    if (!origin) return;
-    const rect = rectFrom(event);
-    origin = null;
-    // A click without a drag clears the selection instead of leaving a sliver.
-    if (rect.width < 4 || rect.height < 4) {
-      state.photoSelection = null;
-      box.hidden = true;
-      return;
-    }
-    state.photoSelection = toSource({
-      left: rect.imageLeft, top: rect.imageTop, width: rect.width, height: rect.height,
-    });
-    setStatus(tf(
-      "Đã chọn vùng {}×{} px. Chọn công cụ để áp dụng.",
-      state.photoSelection.width, state.photoSelection.height,
-    ));
-  });
+/** Arm a drawing tool. */
+function setPhotoTool(toolId) {
+  const tool = toolById(toolId);
+  state.photoTool = tool.id;
+  const surface = currentSurface();
+  if (tool.id !== "crop") surface?.clearCrop();
+  // Leaving a shape selected under a drawing tool shows handles the pointer can
+  // no longer grab, which reads as the tool being stuck.
+  if (tool.id !== "select") surface?.select(null);
+  syncPhotoStudioUI();
+  setStatus(t(tool.label));
 }
 
 /**
- * The rectangle a photo tool should act on.
+ * Fit the image to the stage, or show it at an explicit zoom.
  *
- * Throws rather than falling back to a default region: a redact box that lands
- * somewhere the reader did not choose can leave the patient's name on screen
- * while looking like it worked.
+ * A 4000px intra-operative photo scaled into a 900px pane cannot be annotated
+ * precisely — a 3px arrow tip covers 13 real pixels. Zoom is a plain CSS width
+ * on the image; the surface reads the element's box for its scale, so shapes
+ * follow without any coordinate rewriting.
  */
-function requirePhotoSelection() {
-  const rect = state.photoSelection;
-  if (!rect || rect.width < 1 || rect.height < 1) {
-    throw new Error(t("Hãy kéo chuột trên ảnh để chọn vùng trước."));
+function applyPhotoZoom() {
+  const img = getDomRoot()?.querySelector("#photo-editor-img");
+  if (!img) return;
+  const zoom = Number(state.photoZoom) || 0;
+  if (zoom > 0 && img.naturalWidth) {
+    img.style.maxWidth = "none";
+    img.style.maxHeight = "none";
+    img.style.width = `${Math.round(img.naturalWidth * zoom)}px`;
+    img.style.height = "auto";
+  } else {
+    img.style.maxWidth = "100%";
+    img.style.maxHeight = "100%";
+    img.style.width = "";
+    img.style.height = "";
   }
-  return rect;
+  const label = getDomRoot()?.querySelector("#photo-zoom-label");
+  if (label) label.textContent = zoom ? `${Math.round(zoom * 100)}%` : t("Vừa khung");
+  currentSurface()?.repaint();
+}
+
+/**
+ * Zoom about a point on screen, keeping what is under it under it.
+ *
+ * Zooming to the centre of the pane and then hunting the detail down again with
+ * the scrollbars is what makes a deep zoom useless. The anchor is recorded as a
+ * fraction of the image, so it survives the relayout the new width causes.
+ */
+function zoomPhotoAt(factor, clientX, clientY) {
+  const root = getDomRoot();
+  const stage = root?.querySelector("#photo-editor-stage");
+  const img = root?.querySelector("#photo-editor-img");
+  if (!stage || !img?.naturalWidth) return;
+  const before = img.getBoundingClientRect();
+  if (!before.width) return;
+  const anchorX = (clientX - before.left) / before.width;
+  const anchorY = (clientY - before.top) / before.height;
+  const current = state.photoZoom || before.width / img.naturalWidth;
+  const next = Math.max(0.05, Math.min(8, current * factor));
+  if (next === state.photoZoom) return;
+  state.photoZoom = next;
+  applyPhotoZoom();
+  const after = img.getBoundingClientRect();
+  stage.scrollLeft += after.left + anchorX * after.width - clientX;
+  stage.scrollTop += after.top + anchorY * after.height - clientY;
+  currentSurface()?.repaint();
+}
+
+/** The +/- buttons zoom about the middle of the stage. */
+function stepPhotoZoom(factor) {
+  const stage = getDomRoot()?.querySelector("#photo-editor-stage");
+  if (!stage) return;
+  const box = stage.getBoundingClientRect();
+  zoomPhotoAt(factor, box.left + box.width / 2, box.top + box.height / 2);
+}
+
+/**
+ * Push the layer's state into the controls without a full re-render.
+ *
+ * `render()` rebuilds the whole shell, which would tear the canvas down and
+ * lose the gesture in flight; selecting a shape or drawing one only has to
+ * refresh a handful of labels and disabled flags.
+ */
+function syncPhotoStudioUI() {
+  const root = getDomRoot();
+  if (!root) return;
+  const series = selectedSeries();
+  const layer = photoLayer(series);
+  const surface = currentSurface();
+  const selected = surface?.selectedShape() || null;
+  const pending = pendingShapeCount(series);
+
+  root.querySelectorAll("[data-action='photo-pick-tool']").forEach((button) => {
+    const active = button.dataset.tool === state.photoTool;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+
+  // The properties bar shows the selected shape's own style when there is one,
+  // so changing the colour of an arrow already on the photo is the same gesture
+  // as choosing the colour of the next one.
+  const style = selected || state.photoStyle;
+  const swatchColor = String(style.color || "").toLowerCase();
+  root.querySelectorAll("[data-action='photo-pick-color']").forEach((button) => {
+    button.classList.toggle("active", button.dataset.color === swatchColor);
+  });
+  setControlValue(root, "[data-field='photo-color']", style.color);
+  setControlValue(root, "[data-field='photo-stroke']", style.strokeWidth);
+  setControlValue(root, "[data-field='photo-font']", style.fontSize ?? state.photoStyle.fontSize);
+  setControlValue(root, "[data-field='photo-opacity']", Math.round((style.opacity ?? 1) * 100));
+  const fill = root.querySelector("[data-field='photo-fill']");
+  if (fill) fill.checked = Boolean(style.filled);
+  setText(root, "#photo-stroke-value", style.strokeWidth);
+  setText(root, "#photo-font-value", style.fontSize ?? state.photoStyle.fontSize);
+  setText(root, "#photo-opacity-value", `${Math.round((style.opacity ?? 1) * 100)}%`);
+
+  // Font size only means something for the two tools that draw glyphs.
+  const textual = ["text", "marker"].includes(state.photoTool)
+    || ["text", "marker"].includes(selected?.kind);
+  const fontField = root.querySelector("#photo-font-field");
+  if (fontField) fontField.classList.toggle("muted", !textual);
+
+  const cropButton = root.querySelector("#photo-apply-crop");
+  if (cropButton) {
+    cropButton.hidden = state.photoTool !== "crop";
+    cropButton.disabled = !surface?.cropRect();
+  }
+  const deleteButton = root.querySelector("#photo-delete-shape");
+  if (deleteButton) deleteButton.disabled = !selected;
+  const clearButton = root.querySelector("[data-action='photo-clear-shapes']");
+  if (clearButton) clearButton.disabled = !pending;
+
+  const apply = root.querySelector("#photo-apply-shapes");
+  if (apply) {
+    // One control, two studios: the button says what it will write to.
+    const label = getSeriesMediaType(series) === "video"
+      ? t("Áp dụng lên video")
+      : t("Áp dụng lên ảnh");
+    apply.disabled = !pending;
+    apply.textContent = pending ? `${label} (${pending})` : label;
+  }
+  setText(root, "#photo-status-hint", selected
+    ? tf("Đang chọn: {}", t(shapeKindLabel(selected.kind)))
+    : t(toolById(state.photoTool).label));
+  setText(root, "#photo-status-count", pending
+    ? tf("{} nét chưa áp dụng", pending)
+    : t("Chưa vẽ gì"));
+  const img = root.querySelector("#photo-editor-img");
+  if (img?.naturalWidth) {
+    setText(root, "#photo-status-size", `${img.naturalWidth}×${img.naturalHeight} px`);
+  }
+  syncEditHistoryButtons(series);
+  void layer;
+}
+
+function setControlValue(root, selector, value) {
+  const element = root.querySelector(selector);
+  if (element && value !== undefined && value !== null) element.value = String(value);
+}
+
+function setText(root, selector, value) {
+  const element = root.querySelector(selector);
+  if (element) element.textContent = String(value);
+}
+
+/** What a shape is called in the status line. */
+function shapeKindLabel(kind) {
+  const tool = ANNOTATOR_TOOLS.find((item) => item.shape === kind);
+  return tool ? tool.label : kind;
+}
+
+/**
+ * Restyle the selection, and make the same style the default for what comes next.
+ *
+ * Doing only the first would mean the reader restyles one arrow and the next
+ * one comes out red again; doing only the second would make the properties bar
+ * useless for fixing something already drawn.
+ */
+function applyPhotoStyle(patch) {
+  Object.assign(state.photoStyle, patch);
+  currentSurface()?.restyleSelected(patch);
+  syncPhotoStudioUI();
+}
+
+/**
+ * Burn the drawing layer into a new working file and return its path.
+ *
+ * This is the one place a photo is re-encoded. Every shape the reader drew goes
+ * over in a single pass at full resolution, so a photo carrying a dozen
+ * annotations has been through the JPEG encoder once rather than twelve times —
+ * the old tools re-compressed the whole picture for every arrow.
+ *
+ * With nothing drawn it is a no-op that just reports the current file, which is
+ * what lets crop, rotate and export call it unconditionally.
+ */
+async function flattenPhotoLayer(series, { silent = false } = {}) {
+  const path = await getPhotoSourcePath(series);
+  if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
+  const layer = photoLayer(series);
+  const shapes = layerPayload(layer?.shapes || []);
+  if (!shapes.length) return path;
+  if (!silent) setStatus(tf("Đang vẽ {} chi tiết lên ảnh...", shapes.length));
+  const res = await api("/api/media/photo/shapes", {
+    method: "POST",
+    body: JSON.stringify({ path, shapes }),
+  });
+  state.photoWorkingPath = res.outputPath;
+  pushMediaEdit(series, res);
+  // The shapes are pixels now. Their vector history goes with them: stepping
+  // back is the file chain's job from here, and keeping both would offer two
+  // undo stacks that disagree about what the last action was.
+  layer.shapes = [];
+  layer.past = [];
+  layer.future = [];
+  currentSurface()?.select(null);
+  setMediaElementSrc(getDomRoot()?.querySelector("#photo-editor-img"), res.url);
+  syncPhotoStudioUI();
+  return res.outputPath;
+}
+
+/**
+ * Live-wire the properties bar.
+ *
+ * Sliders report on `input`, not on `change`, so a stroke width or a font size
+ * is seen changing on the photo while the thumb is still under the finger —
+ * choosing a size by watching the result is the whole reason the control exists.
+ */
+function initPhotoProperties() {
+  const root = getDomRoot();
+  const props = root?.querySelector("#photo-props");
+  if (!props) return;
+  const bind = (selector, handler) => {
+    const element = props.querySelector(selector);
+    if (element) element.oninput = () => handler(element);
+  };
+  bind("[data-field='photo-color']", (input) => applyPhotoStyle({ color: input.value }));
+  bind("[data-field='photo-stroke']", (input) =>
+    applyPhotoStyle({ strokeWidth: Number(input.value) || 1 }));
+  bind("[data-field='photo-font']", (input) =>
+    applyPhotoStyle({ fontSize: Number(input.value) || 28 }));
+  bind("[data-field='photo-opacity']", (input) =>
+    applyPhotoStyle({ opacity: Math.max(0.05, (Number(input.value) || 100) / 100) }));
+  bind("[data-field='photo-fill']", (input) => applyPhotoStyle({ filled: input.checked }));
+}
+
+/** Turn the photo a quarter, keeping anything drawn on it aligned. */
+async function rotateWorkingPhoto(degrees) {
+  const series = selectedSeries();
+  if (!series) return;
+  // Rotation moves every pixel, so pending shapes are burned in first rather
+  // than left holding coordinates for an orientation that no longer exists.
+  const path = await flattenPhotoLayer(series, { silent: true });
+  setStatus(t("Đang xoay ảnh 90°..."));
+  const res = await api("/api/media/photo/rotate", {
+    method: "POST",
+    body: JSON.stringify({ path, degrees }),
+  });
+  state.photoWorkingPath = res.outputPath;
+  pushMediaEdit(series, res);
+  setMediaElementSrc(getDomRoot()?.querySelector("#photo-editor-img"), res.url);
+  setStatus(t("Đã xoay ảnh 90° thành công."));
 }
 
 function initMediaEvents() {
   hydrateMediaSources();
-  initPhotoSelection();
+  initPhotoAnnotator();
+  initPhotoProperties();
   const video = app.querySelector("#surgery-video-player");
   if (video) {
     const timeDisplay = app.querySelector("#video-time-display");
@@ -4010,6 +4524,16 @@ function initMediaEvents() {
         scrubber.value = String((video.currentTime / video.duration) * 100);
       }
     };
+
+    // The in/out band is positioned as a percentage of the clip, so it cannot
+    // be drawn until the duration is known — which is after the metadata
+    // arrives, not when the markup lands.
+    video.onloadedmetadata = () => {
+      state.videoDuration = Number(video.duration) || 0;
+      syncVideoRangeUI();
+      currentSurface()?.repaint();
+    };
+    if (video.readyState >= 1) video.onloadedmetadata();
 
     if (scrubber) {
       scrubber.oninput = () => {
@@ -4392,7 +4916,11 @@ async function action(name, element = null) {
       return;
     }
     if (name === "media-edit-undo" || name === "media-edit-redo") {
-      stepMediaEdit(selectedSeries(), name === "media-edit-redo" ? 1 : -1);
+      const series = selectedSeries();
+      const delta = name === "media-edit-redo" ? 1 : -1;
+      // The unflattened drawing is always the newer of the two stacks.
+      if (isDrawStudio(series) && undoPhotoStep(series, delta)) return;
+      stepMediaEdit(series, delta);
       return;
     }
     if (name === "media-file-prev" || name === "media-file-next") {
@@ -5019,35 +5547,100 @@ async function action(name, element = null) {
       }
       return;
     }
+    if (name === "video-set-in" || name === "video-set-out") {
+      const video = getDomRoot()?.querySelector("#surgery-video-player");
+      const at = Number(video?.currentTime) || 0;
+      if (name === "video-set-in") {
+        state.videoIn = at;
+        // A start past the end would leave an inverted range that no button
+        // could act on; the reader is marking a new selection, so the old end
+        // simply goes.
+        if (state.videoOut !== null && state.videoOut <= at) state.videoOut = null;
+      } else {
+        if (state.videoIn === null || at <= state.videoIn) {
+          throw new Error(t("Hãy đặt điểm đầu trước, ở vị trí sớm hơn điểm cuối."));
+        }
+        state.videoOut = at;
+      }
+      syncVideoRangeUI();
+      setStatus(name === "video-set-in"
+        ? tf("Đã đặt điểm đầu tại {}.", formatVideoTime(at))
+        : tf("Đã chọn đoạn {} → {}.", formatVideoTime(state.videoIn), formatVideoTime(at)));
+      return;
+    }
+    if (name === "video-clear-range") {
+      state.videoIn = null;
+      state.videoOut = null;
+      syncVideoRangeUI();
+      setStatus(t("Đã bỏ đoạn đã đánh dấu."));
+      return;
+    }
+    if (name === "video-apply-shapes") {
+      const series = selectedSeries();
+      if (!series) return;
+      const layer = photoLayer(series);
+      const shapes = layerPayload(layer?.shapes || []);
+      if (!shapes.length) throw new Error(t("Chưa vẽ gì trên video để áp dụng."));
+      const path = await getVideoSourcePath(series);
+      if (!path) throw new Error(t("Không tìm thấy đường dẫn video gốc."));
+      const range = videoRange();
+      setStatus(range
+        ? tf("Đang ghi {} nét vẽ vào video ({} → {})...", shapes.length,
+          formatVideoTime(range.start), formatVideoTime(range.end))
+        : tf("Đang ghi {} nét vẽ vào toàn bộ video...", shapes.length));
+      const res = await api("/api/media/video/burn-overlay", {
+        method: "POST",
+        body: JSON.stringify({
+          path,
+          shapes,
+          // No marked range means the drawing belongs to the whole clip, which
+          // is what a permanent stamp or a blurred face usually is.
+          startSeconds: range ? range.start : null,
+          endSeconds: range ? range.end : null,
+        }),
+      });
+      state.videoWorkingPath = res.outputPath;
+      pushMediaEdit(series, res);
+      layer.shapes = [];
+      layer.past = [];
+      layer.future = [];
+      currentSurface()?.select(null);
+      setVideoElementSrc(getDomRoot()?.querySelector("#surgery-video-player"), res.url);
+      syncPhotoStudioUI();
+      setStatus(tf("Đã ghi {} nét vẽ vào video.", shapes.length));
+      return;
+    }
     if (name === "video-tool-trim") {
       const series = selectedSeries();
       if (!series) return;
-      const domRoot = getDomRoot();
-      const video = domRoot?.querySelector("#surgery-video-player");
-      const current = video ? video.currentTime : 0;
-      const duration = video ? video.duration || 60 : 60;
-      const startStr = prompt(t("Nhập thời gian bắt đầu (giây):"), Math.max(0, current - 5).toFixed(1));
-      if (startStr === null) return;
-      const endStr = prompt(t("Nhập thời gian kết thúc (giây):"), Math.min(duration, current + 5).toFixed(1));
-      if (endStr === null) return;
-      const startSeconds = parseFloat(startStr);
-      const endSeconds = parseFloat(endStr);
-      if (isNaN(startSeconds) || isNaN(endSeconds) || startSeconds >= endSeconds) {
-        throw new Error(t("Thời gian cắt không hợp lệ (Bắt đầu phải nhỏ hơn Kết thúc)."));
+      // The two `prompt()` boxes this used to open asked a surgeon to read the
+      // clock, dismiss the player and type a decimal. The points are marked on
+      // the timeline with one key each instead.
+      const range = videoRange();
+      if (!range) {
+        throw new Error(t("Hãy đánh dấu điểm đầu (I) và điểm cuối (O) trên thanh tua trước."));
       }
       setStatus(t("Đang cắt video bằng FFmpeg..."));
       const path = await getVideoSourcePath(series);
       if (!path) throw new Error(t("Không tìm thấy đường dẫn video gốc."));
       const res = await api("/api/media/video/trim", {
         method: "POST",
-        body: JSON.stringify({ path, startSeconds, endSeconds, reencode: false }),
+        body: JSON.stringify({
+          path,
+          startSeconds: range.start,
+          endSeconds: range.end,
+          reencode: false,
+        }),
       });
       state.videoWorkingPath = res.outputPath;
       pushMediaEdit(series, res);
-      if (video) {
-        setVideoElementSrc(video, res.url);
-      }
-      setStatus(tf("Đã cắt đoạn video ({:.1f}s - {:.1f}s) thành công.", startSeconds, endSeconds));
+      // The cut file starts at zero, so points into the old timeline no longer
+      // name anything.
+      state.videoIn = null;
+      state.videoOut = null;
+      setVideoElementSrc(getDomRoot()?.querySelector("#surgery-video-player"), res.url);
+      syncVideoRangeUI();
+      setStatus(tf("Đã cắt đoạn video ({:.1f}s - {:.1f}s) thành công.", range.start, range.end));
       return;
     }
     if (name === "video-tool-burn-text") {
@@ -5055,8 +5648,12 @@ async function action(name, element = null) {
       if (!series) return;
       const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
       const video = domRoot?.querySelector("#surgery-video-player");
-      const text = prompt(t("Nhập nội dung đóng dấu / thông tin phẫu thuật:"), `${series.patientName || "BN"} - ${new Date().toLocaleDateString()}`);
-      if (!text) return;
+      // The stamp is the record's own identity, not free text: it is what the
+      // clip has to carry to be filed. Asking for it in a prompt() only ever
+      // offered this exact string as the default and gave the reader a text
+      // box to accidentally mistype a patient's name into. Anything else they
+      // want to write goes on with the text tool, where they can see it.
+      const text = `${series.patientName || "BN"} - ${new Date().toLocaleDateString()}`;
       setStatus(t("Đang đóng dấu thông tin lên video..."));
       const path = await getVideoSourcePath(series);
       if (!path) throw new Error(t("Không tìm thấy đường dẫn video gốc."));
@@ -5064,7 +5661,9 @@ async function action(name, element = null) {
         method: "POST",
         body: JSON.stringify({
           path,
-          overlays: [{ text, x: 24, y: 24, font_size: 24, font_color: "yellow", box: true }],
+          // The engine's dataclass field is `color`; sending `font_color` made
+          // every stamp fail server-side with a TypeError.
+          overlays: [{ text, x: 24, y: 24, fontSize: 24, color: "yellow", box: true }],
         }),
       });
       state.videoWorkingPath = res.outputPath;
@@ -5209,29 +5808,61 @@ async function action(name, element = null) {
     }
 
     if (name === "photo-rotate-cw") {
-      const series = selectedSeries();
-      if (!series) return;
-      setStatus(t("Đang xoay ảnh 90°..."));
-      const path = await getPhotoSourcePath(series);
-      if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
-      const res = await api("/api/media/photo/rotate", {
-        method: "POST",
-        body: JSON.stringify({ path, degrees: 90 }),
-      });
-      state.photoWorkingPath = res.outputPath;
-      pushMediaEdit(series, res);
-      const domRoot = getDomRoot();
-      const img = domRoot?.querySelector("#photo-editor-img");
-      setMediaElementSrc(img, res.url);
-      setStatus(t("Đã xoay ảnh 90° thành công."));
+      await rotateWorkingPhoto(90);
       return;
     }
-    if (name === "photo-tool-crop") {
+    if (name === "photo-rotate-ccw") {
+      await rotateWorkingPhoto(-90);
+      return;
+    }
+    if (name === "photo-pick-tool") {
+      setPhotoTool(element?.dataset?.tool || "select");
+      return;
+    }
+    if (name === "photo-pick-color") {
+      applyPhotoStyle({ color: String(element?.dataset?.color || "#ff3b30") });
+      return;
+    }
+    if (name === "photo-delete-shape") {
+      currentSurface()?.deleteSelected();
+      return;
+    }
+    if (name === "photo-clear-shapes") {
+      currentSurface()?.clearShapes();
+      setStatus(t("Đã xoá các nét vẽ chưa áp dụng."));
+      return;
+    }
+    if (name === "photo-zoom-in") {
+      stepPhotoZoom(1.25);
+      return;
+    }
+    if (name === "photo-zoom-out") {
+      stepPhotoZoom(0.8);
+      return;
+    }
+    if (name === "photo-zoom-fit") {
+      state.photoZoom = 0;
+      applyPhotoZoom();
+      return;
+    }
+    if (name === "photo-apply-shapes") {
       const series = selectedSeries();
       if (!series) return;
-      const path = await getPhotoSourcePath(series);
-      if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
-      const rect = requirePhotoSelection();
+      const count = pendingShapeCount(series);
+      if (!count) throw new Error(t("Chưa vẽ gì trên ảnh để áp dụng."));
+      await flattenPhotoLayer(series);
+      setStatus(tf("Đã vẽ {} chi tiết lên ảnh.", count));
+      return;
+    }
+    if (name === "photo-apply-crop") {
+      const series = selectedSeries();
+      if (!series) return;
+      const rect = currentSurface()?.cropRect();
+      if (!rect) throw new Error(t("Hãy kéo chuột trên ảnh để chọn vùng cần cắt."));
+      // Anything already drawn is burned in first: the crop rewrites the
+      // coordinate space, so shapes carried across it would land somewhere the
+      // reader never put them.
+      const path = await flattenPhotoLayer(series, { silent: true });
       setStatus(t("Đang cắt ảnh..."));
       const res = await api("/api/media/photo/crop", {
         method: "POST",
@@ -5239,100 +5870,27 @@ async function action(name, element = null) {
       });
       state.photoWorkingPath = res.outputPath;
       pushMediaEdit(series, res);
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
-      const img = domRoot?.querySelector("#photo-editor-img");
-      setMediaElementSrc(img, res.url);
-      setStatus(t("Đã cắt vùng chọn ảnh thành công."));
+      currentSurface()?.clearCrop();
+      setMediaElementSrc(getDomRoot()?.querySelector("#photo-editor-img"), res.url);
+      setPhotoTool("select");
+      setStatus(tf("Đã cắt ảnh còn {}×{} px.", rect.width, rect.height));
       return;
     }
-    if (name === "photo-tool-redact") {
+    if (name === "photo-export-image") {
       const series = selectedSeries();
       if (!series) return;
-      const path = await getPhotoSourcePath(series);
-      if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
-      const regions = [requirePhotoSelection()];
-      setStatus(t("Đang che vùng thông tin định danh..."));
-      const res = await api("/api/media/photo/redact", {
-        method: "POST",
-        body: JSON.stringify({ path, regions, fill: [0, 0, 0] }),
-      });
-      state.photoWorkingPath = res.outputPath;
-      pushMediaEdit(series, res);
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
-      const img = domRoot?.querySelector("#photo-editor-img");
-      setMediaElementSrc(img, res.url);
-      setStatus(t("Đã che vùng danh tính (ĐÃ CHE) thành công."));
-      return;
-    }
-    if (name === "photo-tool-arrow") {
-      const series = selectedSeries();
-      if (!series) return;
-      const path = await getPhotoSourcePath(series);
-      if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
-      // The drag names the arrow: it runs from where the reader started to
-      // where they released, so it points at what they were pointing at.
-      const sel = requirePhotoSelection();
-      const arrows = [{
-        x1: sel.x, y1: sel.y,
-        x2: sel.x + sel.width, y2: sel.y + sel.height,
-        color: [255, 70, 70],
-      }];
-      setStatus(t("Đang chèn mũi tên chỉ điểm..."));
-      const res = await api("/api/media/photo/annotate", {
-        method: "POST",
-        body: JSON.stringify({ path, arrows, texts: [], boxes: [] }),
-      });
-      state.photoWorkingPath = res.outputPath;
-      pushMediaEdit(series, res);
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
-      const img = domRoot?.querySelector("#photo-editor-img");
-      setMediaElementSrc(img, res.url);
-      setStatus(t("Đã chèn mũi tên chỉ điểm thành công."));
-      return;
-    }
-    if (name === "photo-tool-box") {
-      const series = selectedSeries();
-      if (!series) return;
-      const path = await getPhotoSourcePath(series);
-      if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
-      const boxes = [{ rect: requirePhotoSelection(), color: [255, 70, 70], width: 3 }];
-      setStatus(t("Đang khoanh vùng tổn thương..."));
-      const res = await api("/api/media/photo/annotate", {
-        method: "POST",
-        body: JSON.stringify({ path, boxes, texts: [], arrows: [] }),
-      });
-      state.photoWorkingPath = res.outputPath;
-      pushMediaEdit(series, res);
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
-      const img = domRoot?.querySelector("#photo-editor-img");
-      setMediaElementSrc(img, res.url);
-      setStatus(t("Đã khoanh vùng tổn thương thành công."));
-      return;
-    }
-    if (name === "photo-tool-text") {
-      const series = selectedSeries();
-      if (!series) return;
-      const path = await getPhotoSourcePath(series);
-      if (!path) throw new Error(t("Không tìm thấy đường dẫn ảnh gốc."));
-      const textInput = prompt(t("Nhập ghi chú chữ:")) || t("Ghi chú lâm sàng");
-      setStatus(t("Đang chèn chữ..."));
-      const info = await api("/api/media/photo/info", {
-        method: "POST",
-        body: JSON.stringify({ path }),
-      });
-      const w = info?.info?.width || 800;
-      const h = info?.info?.height || 600;
-      const texts = [{ text: textInput, x: Math.round(w * 0.1), y: Math.round(h * 0.9), fontSize: 24, color: [255, 255, 0] }];
-      const res = await api("/api/media/photo/annotate", {
-        method: "POST",
-        body: JSON.stringify({ path, texts, arrows: [], boxes: [] }),
-      });
-      state.photoWorkingPath = res.outputPath;
-      pushMediaEdit(series, res);
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
-      const img = domRoot?.querySelector("#photo-editor-img");
-      setMediaElementSrc(img, res.url);
-      setStatus(t("Đã chèn ghi chú chữ thành công."));
+      // Export means "what I am looking at", so the layer goes on first.
+      await flattenPhotoLayer(series, { silent: true });
+      const path = state.photoWorkingPath;
+      if (!path) {
+        throw new Error(t("Ảnh chưa có chỉnh sửa nào; hãy mở file gốc trong thư mục hồ sơ."));
+      }
+      const workName = workFileName(path);
+      await downloadApiFile(
+        `/api/media/work-file?name=${encodeURIComponent(workName)}`,
+        `${series.patientName || "anh"}_${Date.now()}.jpg`,
+      );
+      setStatus(t("Đã tải ảnh đã chỉnh sửa về máy."));
       return;
     }
     if (name === "photo-export-pdf") {
@@ -5430,6 +5988,12 @@ function saveMediaWorkspaceToTab(tab) {
   if (!tab) return;
   tab.mediaIndex = state.mediaIndex || {};
   tab.mediaEdits = state.mediaEdits || {};
+  // The unflattened drawing belongs to the record it was drawn on. Left in the
+  // shared state it would follow the reader to the next patient's tab and put
+  // one patient's annotations over another's photo.
+  tab.photoLayers = state.photoLayers || {};
+  tab.videoIn = state.videoIn;
+  tab.videoOut = state.videoOut;
   tab.photoWorkingPath = state.photoWorkingPath || null;
   tab.videoWorkingPath = state.videoWorkingPath || null;
   tab.videoBookmarks = state.videoBookmarks || [];
@@ -5447,7 +6011,13 @@ function restoreMediaWorkspaceFromTab(tab) {
   state.videoFilmstrip = tab?.videoFilmstrip || [];
   state._lastPhotoSeriesId = tab?.lastMediaSeriesId || "";
   state.textDoc = tab?.textDoc || null;
-  state.photoSelection = null;
+  state.photoLayers = tab?.photoLayers || {};
+  state.videoIn = tab?.videoIn ?? null;
+  state.videoOut = tab?.videoOut ?? null;
+  state.videoDuration = 0;
+  state.photoTool = "select";
+  state.photoZoom = 0;
+  destroyActiveSurface();
   state.showConcatModal = false;
   state.concatClips = [];
 }
@@ -5618,6 +6188,9 @@ function applyArchive(archive, sessionId = "", folder = "") {
       patientEditDraft: null,
       mediaIndex: state.mediaIndex,
       mediaEdits: state.mediaEdits,
+      photoLayers: {},
+      videoIn: null,
+      videoOut: null,
       photoWorkingPath: null,
       videoWorkingPath: null,
       videoBookmarks: [],
@@ -5835,6 +6408,95 @@ function isTypingTarget(target) {
   return Boolean(target?.closest?.("input, textarea, select"));
 }
 
+/**
+ * Keys the photo studio claims while it is the pane on screen.
+ *
+ * The reading-view shortcuts are single letters — r resets, c is the crosshair,
+ * p captures — and every drawing application binds those same letters to tools.
+ * Both sets can exist because only one pane is ever mounted: this runs first and
+ * says whether it consumed the key, and the viewer's bindings are left untouched
+ * for the reading canvas.
+ *
+ * Returns true when the key was handled.
+ */
+function handlePhotoStudioKey(event) {
+  const series = selectedSeries();
+  if (!isDrawStudio(series) || !currentSurface()) return false;
+
+  if (event.ctrlKey || event.metaKey) {
+    const key = event.key.toLowerCase();
+    if (key === "z") {
+      event.preventDefault();
+      action(event.shiftKey ? "media-edit-redo" : "media-edit-undo");
+      return true;
+    }
+    if (key === "y") {
+      event.preventDefault();
+      action("media-edit-redo");
+      return true;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      action("photo-apply-shapes");
+      return true;
+    }
+    return false;
+  }
+  if (event.altKey) return false;
+
+  if (event.key === "Delete" || event.key === "Backspace") {
+    event.preventDefault();
+    action("photo-delete-shape");
+    return true;
+  }
+  if (event.key === "Escape") {
+    currentSurface()?.clearCrop();
+    currentSurface()?.select(null);
+    syncPhotoStudioUI();
+    return true;
+  }
+  if (event.key === "+" || event.key === "=") {
+    action("photo-zoom-in");
+    return true;
+  }
+  if (event.key === "-" || event.key === "_") {
+    action("photo-zoom-out");
+    return true;
+  }
+  if (event.key === "0") {
+    action("photo-zoom-fit");
+    return true;
+  }
+  if (event.key === " " && isPhotoStudio(series)) {
+    // The surface reads the held key directly; this only stops the page from
+    // scrolling and stops the reading view from starting a cine loop.
+    event.preventDefault();
+    return true;
+  }
+  // In and out points belong to the player, so they are only claimed there.
+  if (getSeriesMediaType(series) === "video") {
+    if (event.key.toLowerCase() === "i") {
+      action("video-set-in");
+      return true;
+    }
+    if (event.key.toLowerCase() === "o") {
+      action("video-set-out");
+      return true;
+    }
+    if (event.key === " ") {
+      event.preventDefault();
+      action("video-play-pause");
+      return true;
+    }
+  }
+  const tool = ANNOTATOR_TOOLS.find((item) => item.key.toLowerCase() === event.key.toLowerCase());
+  if (tool) {
+    setPhotoTool(tool.id);
+    return true;
+  }
+  return false;
+}
+
 function installKeyboardShortcuts() {
   window.addEventListener("keydown", (event) => {
     // F11 / Esc zen mode — works even in text fields
@@ -5849,7 +6511,9 @@ function installKeyboardShortcuts() {
       return;
     }
     if (isTypingTarget(event.target)) return;
-    
+
+    if (handlePhotoStudioKey(event)) return;
+
     if (event.key === "Tab" && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
       if (document.querySelector(".viewport-maximized")) {
         event.preventDefault();
@@ -6227,6 +6891,10 @@ export {
   syncToolHighlight,
   renderSurgeryVideoStudio,
   renderPhotoEditorStudio,
+  photoLayer,
+  pendingShapeCount,
+  selectedSeries,
+  setPhotoTool,
   renderTextViewer,
   renderWorkspacePane,
   renderPatientRail,
