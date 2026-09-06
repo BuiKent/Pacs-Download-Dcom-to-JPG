@@ -1074,6 +1074,18 @@ class SeriesRecord:
     # slice is expensive and the strip re-requests it on every re-render.
     thumbnail_bytes: Optional[bytes] = None
 
+    def files_playable(self) -> list[bool]:
+        """Per file, whether the browser can decode it.
+
+        Per file rather than per series: a `Video trong mổ` folder routinely
+        holds two MP4s the browser plays and one .wmv it cannot, and marking the
+        whole series unplayable would put a conversion prompt over clips that
+        were about to play perfectly well.
+        """
+        if self.resolved_media_type() != "video":
+            return [True] * len(self.images)
+        return [Path(image).suffix.lower() in BROWSER_PLAYABLE_VIDEO for image in self.images]
+
     def resolved_media_type(self) -> str:
         """Which viewer this series opens in.
 
@@ -1117,6 +1129,11 @@ class SeriesRecord:
             # The frontend routes on this. It is computed from the files on
             # disk, never from the wording of a description.
             "mediaType": self.resolved_media_type(),
+            # Whether the browser can decode the files this series holds. A
+            # theatre recorder's .wmv or .mts is listed like any other clip —
+            # hiding it was the old bug — but the studio has to say it needs
+            # converting rather than mounting a player that will show nothing.
+            "filesPlayable": self.files_playable(),
             "studyGroup": self.study_group,
             "studyDate": self.study_date or m.get("study_date") or m.get("studyDate", ""),
             "studyDescription": self.study_label(),

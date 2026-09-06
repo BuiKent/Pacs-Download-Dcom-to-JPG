@@ -780,6 +780,24 @@ function syncVideoRangeUI() {
   syncPhotoStudioUI();
 }
 
+/**
+ * Whether the browser can decode the clip currently on screen.
+ *
+ * The worklist lists what a theatre recorder writes — .wmv, .mpg, .mts — because
+ * hiding the file was worse than showing one that needs converting. But no
+ * browser decodes those, so the studio has to say so instead of mounting a
+ * player that will stay black. The backend reports this per file: one folder
+ * routinely holds two MP4s that play and one .wmv that does not.
+ */
+function currentClipPlayable(series) {
+  const flags = series?.filesPlayable;
+  if (!Array.isArray(flags) || !flags.length) return true;
+  // A file the studio has already converted is a work file, and that is always
+  // an MP4 whatever the archive holds.
+  if (state.videoWorkingPath) return true;
+  return flags[mediaFileIndex(series)] !== false;
+}
+
 function renderSurgeryVideoStudio(series) {
   if (!series) return `<div class="empty-state"><b>${escapeHtml(t("Chưa có video nào"))}</b></div>`;
   // A work file is served by its random name; both work and archive streams
@@ -819,6 +837,15 @@ function renderSurgeryVideoStudio(series) {
             <video id="surgery-video-player" class="surgery-video-element" src="${escapeHtml(videoStreamUrl(series, workName))}" playsinline preload="metadata"></video>
             <canvas id="photo-annotation-canvas" class="photo-annotation-canvas"></canvas>
           </div>
+          ${currentClipPlayable(series) ? "" : `
+            <div class="video-unplayable">
+              <b>${escapeHtml(t("Trình duyệt không mở được định dạng này"))}</b>
+              <p>${escapeHtml(t("File vẫn còn nguyên trong hồ sơ. Chuyển sang MP4 để xem, cắt và vẽ lên nó."))}</p>
+              <button class="control-btn primary" data-action="video-tool-transcode">
+                ⚡ ${escapeHtml(t("Chuyển sang MP4"))}
+              </button>
+            </div>
+          `}
         </div>
         <aside class="surgery-video-sidebar">
           <div class="surgery-video-sidebar-header">

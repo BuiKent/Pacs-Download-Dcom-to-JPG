@@ -28,13 +28,91 @@ class TestVideoContainers(unittest.TestCase):
         for extension in (".mp4", ".webm", ".avi", ".mov", ".mkv"):
             self.assertIn(extension, web_backend.VIDEO_EXTENSIONS, extension)
 
-    def test_names_the_ones_a_browser_cannot_decode(self):
-        # The studio offers the MP4 conversion for these rather than showing a
-        # black player and letting the reader conclude the file is corrupt.
-        self.assertIn(".mp4", web_backend.BROWSER_PLAYABLE_VIDEO)
-        self.assertNotIn(".wmv", web_backend.BROWSER_PLAYABLE_VIDEO)
-        self.assertNotIn(".mpg", web_backend.BROWSER_PLAYABLE_VIDEO)
-        self.assertTrue(web_backend.BROWSER_PLAYABLE_VIDEO <= web_backend.VIDEO_EXTENSIONS)
+    def test_the_record_says_which_files_the_browser_cannot_decode(self):
+        # Asserting the contents of BROWSER_PLAYABLE_VIDEO passes whether or not
+        # anything reads it — which is how the constant sat there unused. This
+        # goes through the record the studio is actually built from.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "2605030698-NGUYEN VAN X-53t"
+            theatre = root / "Video trong mổ"
+            theatre.mkdir(parents=True)
+            # Named so the sort order is mp4, mp4, wmv.
+            for name in ("a_clip.mp4", "b_clip.mp4", "c_camera.wmv"):
+                (theatre / name).write_bytes(bytes(64))
+
+            video = next(s for s in ArchiveCatalog().open(root)["series"]
+                         if s["mediaType"] == "video")
+            # Per file, not per series: marking the whole folder unplayable
+            # would put a conversion prompt over the two clips that play.
+            self.assertEqual(video["filesPlayable"], [True, True, False])
+
+    def test_nothing_but_video_is_ever_marked_unplayable(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "2605030698-NGUYEN VAN X-53t"
+            photos = root / "19.05.2026-trước mổ"
+            photos.mkdir(parents=True)
+            for index in range(2):
+                Image.new("RGB", (32, 24), (10, 20, 30)).save(photos / f"IM{index}.jpg")
+
+            photo = next(s for s in ArchiveCatalog().open(root)["series"]
+                         if s["mediaType"] == "photo")
+            self.assertEqual(photo["filesPlayable"], [True, True])
+
+
+class TestWorklistStudyRows(unittest.TestCase):
+    """
+    The rows the worklist table is actually built from.
+
+    `_leading_folder_date` was added and unit-tested on its own, and it passed
+    while the date column on screen stayed empty — because the worklist is built
+    by `WorklistScanner._scan_study`, which was still using its own regex and
+    never called the new parser. A helper nobody calls satisfies a test that
+    calls it directly, so these go through the scanner instead.
+    """
+
+    def _rows(self, names):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "2605030698-NGUYEN VAN X-53t"
+            root.mkdir()
+            scanner = web_backend.WorklistScanner(web_backend.WebController())
+            rows = {}
+            for name in names:
+                (root / name).mkdir()
+                rows[name] = scanner._scan_study(root / name, {})
+            return rows
+
+    def test_the_date_column_is_filled_for_a_hand_named_study_folder(self):
+        rows = self._rows([
+            "19.05.2026-trước mổ, DTI",
+            "09.07.2026-sau mổ 1 tháng",
+            "30.05.2026-sau mổ 24h",
+        ])
+        self.assertEqual(rows["19.05.2026-trước mổ, DTI"]["studyDate"], "19/05/2026")
+        self.assertEqual(rows["09.07.2026-sau mổ 1 tháng"]["studyDate"], "09/07/2026")
+        self.assertEqual(rows["30.05.2026-sau mổ 24h"]["studyDate"], "30/05/2026")
+
+    def test_the_rows_sort_by_the_date_they_show(self):
+        # The column sorts on `studyDateSort`, not on the displayed dd/mm/yyyy.
+        # An empty sort key puts a dated study at the bottom of the patient's
+        # timeline, which is the wrong end for the most recent scan.
+        rows = self._rows(["19.05.2026-trước mổ, DTI", "09.07.2026-sau mổ 1 tháng"])
+        self.assertEqual(rows["19.05.2026-trước mổ, DTI"]["studyDateSort"], "20260519")
+        self.assertEqual(rows["09.07.2026-sau mổ 1 tháng"]["studyDateSort"], "20260709")
+
+    def test_the_date_is_stripped_off_the_name_it_prefixes(self):
+        # Otherwise the row reads "19.05.2026-trước mổ, DTI" beside a date
+        # column already saying 19/05/2026.
+        rows = self._rows(["19.05.2026-trước mổ, DTI", "2026-05-19 - MR so nao"])
+        self.assertEqual(rows["19.05.2026-trước mổ, DTI"]["studyName"], "trước mổ, DTI")
+        self.assertEqual(rows["2026-05-19 - MR so nao"]["studyName"], "MR so nao")
+
+    def test_a_folder_with_no_date_in_its_name_keeps_an_empty_column(self):
+        # `CONTENT` is the IHE PDI disc folder; inventing a date for it would
+        # put a study on a day nothing happened.
+        rows = self._rows(["CONTENT", "Video trong mổ"])
+        for name in ("CONTENT", "Video trong mổ"):
+            self.assertEqual(rows[name]["studyDate"], "")
+            self.assertEqual(rows[name]["studyName"], name)
 
 
 class TestFolderDates(unittest.TestCase):
@@ -48,18 +126,6 @@ class TestFolderDates(unittest.TestCase):
     def test_still_reads_the_dicom_spellings(self):
         self.assertEqual(web_backend._leading_folder_date("2026-05-19 - MR"), "2026-05-19")
         self.assertEqual(web_backend._leading_folder_date("20260519_MR"), "20260519")
-
-    def test_scan_study_reads_vietnamese_date_and_cleans_name(self):
-        with TemporaryDirectory() as tmp:
-            study_dir = Path(tmp) / "19.05.2026-trước mổ, DTI"
-            study_dir.mkdir(parents=True)
-            ctrl = web_backend.WebController()
-            scanner = web_backend.WorklistScanner(ctrl)
-            study = scanner._scan_study(study_dir, {})
-            self.assertEqual(study["studyDate"], "19/05/2026")
-            self.assertEqual(study["studyDateSort"], "20260519")
-            self.assertEqual(study["studyName"], "trước mổ, DTI")
-
 
 
 class TestCompanionMedia(unittest.TestCase):
