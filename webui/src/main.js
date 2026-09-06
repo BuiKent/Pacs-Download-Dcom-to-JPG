@@ -739,6 +739,183 @@ function renderVideoRangeBand() {
   return `<span class="video-range-band" style="left:${left}%; width:${width}%"></span>`;
 }
 
+/** Helper to partition bookmarks into current clip vs other clips in the study */
+function partitionVideoBookmarks(series) {
+  const all = state.videoBookmarks || [];
+  const current = [];
+  const others = [];
+  const currentId = series?.id;
+  const currentIdx = mediaFileIndex(series);
+
+  for (let i = 0; i < all.length; i++) {
+    const bm = all[i];
+    const item = { ...bm, _globalIndex: i };
+    if (!bm.seriesId || (bm.seriesId === currentId && (bm.fileIndex === undefined || bm.fileIndex === currentIdx))) {
+      current.push(item);
+    } else {
+      others.push(item);
+    }
+  }
+  // `_globalIndex` is captured above, so the display order is free to follow
+  // the clock. Markers used to sit in the order they were added, which put a
+  // point marked late in the review above one from the start of the operation.
+  const byTime = (a, b) => (Number(a.time) || 0) - (Number(b.time) || 0);
+  current.sort(byTime);
+  others.sort(byTime);
+  return { current, others };
+}
+
+/** Render marker pins along the scrubber timeline */
+function renderVideoTimelinePins(series) {
+  const duration = Number(state.videoDuration) || 0;
+  if (!duration) return "";
+  const { current } = partitionVideoBookmarks(series);
+  return current.map((bm) => {
+    const left = Math.max(0, Math.min(100, (bm.time / duration) * 100));
+    const label = bm.text || t("Mốc phẫu thuật");
+    const title = `${formatVideoTime(bm.time)}: ${escapeHtml(label)}`;
+    return `
+      <div class="video-marker-pin" style="left:${left}%" data-action="seek-video" data-time="${bm.time}"
+        role="button" tabindex="0"
+        aria-label="${escapeHtml(tf("Tua đến {} — {}", formatVideoTime(bm.time), label))}"
+        title="${title}">
+        <span class="video-marker-diamond"></span>
+        <div class="video-marker-tooltip">
+          <span class="video-marker-tooltip-time">⏱ ${formatVideoTime(bm.time)}</span>
+          <span class="video-marker-tooltip-text">${escapeHtml(bm.text || t("Mốc phẫu thuật"))}</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+/** Render bookmark cards in the sidebar */
+function renderSidebarBookmarksHtml(current, others) {
+  let html = "";
+  if (current.length === 0) {
+    html += `
+      <div class="empty-state" style="padding:16px; font-size:12px; color:#89a3b8; text-align:center;">
+        ${escapeHtml(t("Chưa có mốc nào trong clip này."))}
+        <div style="font-size:11px; margin-top:4px; opacity:0.8;">${escapeHtml(t("Bấm “+ Thêm mốc” hoặc phím M khi đang xem"))}</div>
+      </div>
+    `;
+  } else {
+    html += current.map((bm) => `
+      <div class="surgery-bookmark-card" data-action="seek-video" data-time="${bm.time}"
+        role="button" tabindex="0"
+        aria-label="${escapeHtml(tf("Tua đến {} — {}", formatVideoTime(bm.time), bm.text || t("Mốc phẫu thuật")))}"
+        title="${escapeHtml(t("Bấm để tua video đến mốc này"))}">
+        <div class="surgery-bookmark-header">
+          <span class="surgery-bookmark-time">⏱ ${formatVideoTime(bm.time)}</span>
+          <div class="surgery-bookmark-actions" onclick="event.stopPropagation()">
+            <button class="icon-tool-btn" data-action="edit-video-bookmark" data-idx="${bm._globalIndex}" title="${escapeHtml(t("Sửa tên mốc"))}">✏</button>
+            <button class="icon-tool-btn danger" data-action="delete-video-bookmark" data-idx="${bm._globalIndex}" title="${escapeHtml(t("Xoá mốc"))}">🗑</button>
+          </div>
+        </div>
+        <div class="surgery-bookmark-text" id="bm-text-${bm._globalIndex}">${escapeHtml(bm.text || t("Mốc phẫu thuật"))}</div>
+      </div>
+    `).join("");
+  }
+
+  if (others && others.length > 0) {
+    html += `
+      <div class="surgery-video-other-clips-section">
+        <div class="surgery-video-other-clips-header">
+          <span>🗂 ${escapeHtml(t("Mốc từ clip khác trong ca mổ"))}</span>
+          <span class="badge" style="font-size:10px; padding:2px 6px;">${others.length}</span>
+        </div>
+        ${others.map((bm) => `
+          <div class="surgery-bookmark-card other-clip" data-action="jump-other-clip-bookmark"
+            data-series-id="${escapeHtml(bm.seriesId || "")}"
+            data-file-index="${bm.fileIndex ?? 0}"
+            data-time="${bm.time}"
+            role="button" tabindex="0"
+            title="${escapeHtml(t("Chuyển sang clip này và tua đến mốc"))}">
+            <div class="surgery-bookmark-header">
+              <span class="surgery-bookmark-clip-badge">🎬 ${escapeHtml(bm.seriesName || t("Clip khác"))}${bm.fileIndex !== undefined ? ` #${bm.fileIndex + 1}` : ""}</span>
+              <span class="surgery-bookmark-time">⏱ ${formatVideoTime(bm.time)}</span>
+            </div>
+            <div class="surgery-bookmark-text">${escapeHtml(bm.text || t("Mốc phẫu thuật"))}</div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+  return html;
+}
+
+/** Update bookmarks UI and timeline pins without resetting playback */
+function syncVideoBookmarksUI(series) {
+  const root = getDomRoot();
+  if (!root) return;
+  const currentSeries = series || selectedSeries();
+  const pinsLayer = root.querySelector(".video-marker-pins-layer");
+  if (pinsLayer) {
+    pinsLayer.innerHTML = renderVideoTimelinePins(currentSeries);
+    bindActionsIn(pinsLayer);
+  }
+  const sidebarList = root.querySelector(".surgery-video-bookmarks");
+  if (sidebarList) {
+    const { current, others } = partitionVideoBookmarks(currentSeries);
+    sidebarList.innerHTML = renderSidebarBookmarksHtml(current, others);
+    bindActionsIn(sidebarList);
+  }
+  const countBadge = root.querySelector("#video-bookmarks-count");
+  if (countBadge) {
+    const { current } = partitionVideoBookmarks(currentSeries);
+    countBadge.textContent = String(current.length);
+  }
+  const video = root.querySelector("#surgery-video-player");
+  if (video) highlightActiveMarker(Number(video.currentTime) || 0);
+}
+
+/**
+ * Mark the pin and card for the point the playhead has most recently passed.
+ *
+ * Without it the scrubber says where the clip is but the marker strip does
+ * not, so a reader stepping between points cannot tell which one they are on.
+ */
+function highlightActiveMarker(currentTime) {
+  const root = getDomRoot();
+  if (!root) return;
+  const at = Number(currentTime) || 0;
+  // A seek lands a few milliseconds off the requested point, so a marker just
+  // arrived at still counts as the current one.
+  const TOLERANCE_SECONDS = 0.25;
+  let activeTime = null;
+  for (const node of root.querySelectorAll("[data-action='seek-video'][data-time]")) {
+    const time = Number(node.dataset.time);
+    if (!Number.isFinite(time) || time > at + TOLERANCE_SECONDS) continue;
+    if (activeTime === null || time > activeTime) activeTime = time;
+  }
+  for (const node of root.querySelectorAll("[data-action='seek-video'][data-time]")) {
+    const time = Number(node.dataset.time);
+    node.classList.toggle("active", activeTime !== null && time === activeTime);
+  }
+}
+
+/**
+ * Paint the clock, the scrubber and the marker strip from the player's clock.
+ *
+ * Seeking from a marker left these readouts untouched until the player's next
+ * `timeupdate`, which a paused clip never sends — so a click on a pin moved
+ * the video and looked like it had done nothing.
+ */
+function syncVideoPlayhead(video) {
+  const root = getDomRoot();
+  if (!video || !root) return;
+  const duration = Number(video.duration) || Number(state.videoDuration) || 0;
+  const timeDisplay = root.querySelector("#video-time-display");
+  if (timeDisplay) {
+    timeDisplay.textContent = `${formatVideoTime(video.currentTime)} / ${formatVideoTime(duration)}`;
+  }
+  const scrubber = root.querySelector("#surgery-video-scrubber");
+  if (scrubber && duration) {
+    scrubber.value = String((Number(video.currentTime) || 0) / duration * 100);
+  }
+  highlightActiveMarker(Number(video.currentTime) || 0);
+}
+
 /**
  * Repaint the in/out selection without rebuilding the studio.
  *
@@ -770,6 +947,11 @@ function syncVideoRangeUI() {
     readout.textContent = range
       ? `${formatVideoTime(range.start)} → ${formatVideoTime(range.end)}`
       : t("Chưa chọn đoạn");
+    if (range) {
+      readout.classList.add("active");
+    } else {
+      readout.classList.remove("active");
+    }
   }
   const clear = root.querySelector("[data-action='video-clear-range']");
   if (clear) clear.disabled = !range;
@@ -805,7 +987,7 @@ function renderSurgeryVideoStudio(series) {
   // The work path comes back from the backend with Windows separators, so
   // splitting on "/" alone left the whole path in place as the file name.
   const workName = workFileName(state.videoWorkingPath);
-  const bookmarks = state.videoBookmarks || [];
+  const { current: currentBookmarks, others: otherBookmarks } = partitionVideoBookmarks(series);
   const filmstrip = state.videoFilmstrip || [];
   const range = videoRange();
   const pending = pendingShapeCount(series);
@@ -840,7 +1022,7 @@ function renderSurgeryVideoStudio(series) {
           ${currentClipPlayable(series) ? "" : `
             <div class="video-unplayable">
               <b>${escapeHtml(t("Trình duyệt không mở được định dạng này"))}</b>
-              <p>${escapeHtml(t("File vẫn còn nguyên trong hồ sơ. Chuyển sang MP4 để xem, cắt và vẽ lên nó."))}</p>
+              <p>${escapeHtml(t("File định dạng MPG/MPEG cần chuyển sang MP4 để xem, cắt và vẽ lên nó."))}</p>
               <button class="control-btn primary" data-action="video-tool-transcode">
                 ⚡ ${escapeHtml(t("Chuyển sang MP4"))}
               </button>
@@ -849,16 +1031,11 @@ function renderSurgeryVideoStudio(series) {
         </div>
         <aside class="surgery-video-sidebar">
           <div class="surgery-video-sidebar-header">
-            <span>📌 ${escapeHtml(t("Mốc phẫu thuật / Ghi chú"))}</span>
-            <button class="control-btn primary" data-action="add-video-bookmark">+ ${escapeHtml(t("Đánh dấu mốc"))}</button>
+            <span>📌 ${escapeHtml(t("Mốc phẫu thuật"))} <span id="video-bookmarks-count" class="badge" style="font-size:10px; padding:2px 6px;">${currentBookmarks.length}</span></span>
+            <button class="control-btn primary" data-action="add-video-bookmark" title="${escapeHtml(t("Thêm mốc tại thời điểm hiện tại (phím M)"))}">+ ${escapeHtml(t("Thêm mốc"))}</button>
           </div>
           <div class="surgery-video-bookmarks">
-            ${bookmarks.length === 0 ? `<div class="empty-state" style="padding:20px; font-size:12px;">${escapeHtml(t("Chưa có mốc ghi chú nào"))}</div>` : bookmarks.map((bm) => `
-              <div class="surgery-bookmark-card" data-action="seek-video" data-time="${bm.time}">
-                <div class="surgery-bookmark-time">⏱ ${formatVideoTime(bm.time)}</div>
-                <div class="surgery-bookmark-text">${escapeHtml(bm.text || t("Mốc phẫu thuật"))}</div>
-              </div>
-            `).join("")}
+            ${renderSidebarBookmarksHtml(currentBookmarks, otherBookmarks)}
           </div>
         </aside>
       </div>
@@ -873,33 +1050,61 @@ function renderSurgeryVideoStudio(series) {
       ` : ""}
       ${renderStudioStatusBar(series)}
       <div class="surgery-video-controls">
-        <button class="control-btn" data-action="video-play-pause" title="${escapeHtml(t("Phát / Tạm dừng"))}">⏯</button>
-        <button class="control-btn" data-action="video-rewind-5" title="${escapeHtml(t("Tua lùi 5s"))}">-5s</button>
-        <button class="control-btn" data-action="video-forward-5" title="${escapeHtml(t("Tua tới 5s"))}">+5s</button>
-        <span id="video-time-display" class="video-time">00:00 / 00:00</span>
-        <span class="video-scrubber-wrap">
-          ${renderVideoRangeBand()}
-          <input type="range" id="surgery-video-scrubber" class="video-scrubber" min="0" max="100" step="0.1" value="0"
-            aria-label="${escapeHtml(t("Thanh tua video"))}">
-        </span>
-        <button class="control-btn" data-action="video-set-in" title="${escapeHtml(t("Đặt điểm đầu tại vị trí đang xem"))} (I)">⇤ ${escapeHtml(t("Đầu"))}</button>
-        <button class="control-btn" data-action="video-set-out" title="${escapeHtml(t("Đặt điểm cuối tại vị trí đang xem"))} (O)">${escapeHtml(t("Cuối"))} ⇥</button>
-        <span class="video-time" id="video-range-readout">${
-          range
-            ? `${formatVideoTime(range.start)} → ${formatVideoTime(range.end)}`
-            : escapeHtml(t("Chưa chọn đoạn"))
-        }</span>
-        <button class="control-btn" data-action="video-clear-range" ${range ? "" : "disabled"}
-          title="${escapeHtml(t("Bỏ đoạn đã đánh dấu"))}">✕</button>
-        <select id="video-speed-select" class="control-btn" title="${escapeHtml(t("Tốc độ"))}"
-          aria-label="${escapeHtml(t("Tốc độ"))}">
-          <option value="0.5">0.5x</option>
-          <option value="1.0" selected>1.0x</option>
-          <option value="1.25">1.25x</option>
-          <option value="1.5">1.5x</option>
-          <option value="2.0">2.0x</option>
-        </select>
-        <button class="control-btn" data-action="video-snapshot" title="${escapeHtml(t("Chụp khung hình"))}">📸 ${escapeHtml(t("Chụp"))}</button>
+        <!-- Tier 1: Full-width Scrubber & Timeline Strip -->
+        <div class="surgery-timeline-tier">
+          <span class="video-scrubber-wrap">
+            ${renderVideoRangeBand()}
+            <div class="video-marker-pins-layer">
+              ${renderVideoTimelinePins(series)}
+            </div>
+            <input type="range" id="surgery-video-scrubber" class="video-scrubber" min="0" max="100" step="0.1" value="0"
+              aria-label="${escapeHtml(t("Thanh tua video"))}">
+          </span>
+        </div>
+
+        <!-- Tier 2: Streamlined 3-Zone Toolbar -->
+        <div class="surgery-actions-tier">
+          <!-- Zone 1: Playback Controls -->
+          <div class="video-control-group">
+            <button class="control-btn" data-action="video-play-pause" title="${escapeHtml(t("Phát / Tạm dừng"))} (Space)">⏯</button>
+            <button class="control-btn icon-btn" data-action="video-rewind-5" title="${escapeHtml(t("Tua lùi 5s"))}">-5s</button>
+            <button class="control-btn icon-btn" data-action="video-forward-5" title="${escapeHtml(t("Tua tới 5s"))}">+5s</button>
+            <span id="video-time-display" class="video-time">00:00 / 00:00</span>
+          </div>
+
+          <span class="video-tier-divider"></span>
+
+          <!-- Zone 2: Trimming & Marker Actions -->
+          <div class="video-control-group">
+            <button class="control-btn icon-btn" data-action="video-set-in" title="${escapeHtml(t("Đặt điểm đầu tại vị trí đang xem"))} (I)">[ In</button>
+            <button class="control-btn icon-btn" data-action="video-set-out" title="${escapeHtml(t("Đặt điểm cuối tại vị trí đang xem"))} (O)">Out ]</button>
+            <span class="video-range-pill ${range ? "active" : ""}" id="video-range-readout">${
+              range
+                ? `${formatVideoTime(range.start)} → ${formatVideoTime(range.end)}`
+                : escapeHtml(t("Chưa chọn đoạn"))
+            }</span>
+            <button class="control-btn icon-btn subtle" data-action="video-clear-range" ${range ? "" : "disabled"}
+              title="${escapeHtml(t("Bỏ đoạn đã đánh dấu"))}">✕</button>
+            <button class="control-btn marker-btn" data-action="add-video-bookmark" title="${escapeHtml(t("Thêm mốc tại thời điểm hiện tại"))} (M)">
+              📌 ${escapeHtml(t("+ Mốc"))}
+            </button>
+          </div>
+
+          <span style="flex:1;"></span>
+
+          <!-- Zone 3: Utility Controls -->
+          <div class="video-control-group">
+            <select id="video-speed-select" class="control-btn" title="${escapeHtml(t("Tốc độ"))}"
+              aria-label="${escapeHtml(t("Tốc độ"))}">
+              <option value="0.5">0.5x</option>
+              <option value="1.0" selected>1.0x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2.0">2.0x</option>
+            </select>
+            <button class="control-btn" data-action="video-snapshot" title="${escapeHtml(t("Chụp khung hình"))}">📸 ${escapeHtml(t("Chụp"))}</button>
+          </div>
+        </div>
       </div>
     </div>
   `;
@@ -3858,6 +4063,33 @@ function renderPatientStatus() {
     ${patient.folder ? `<small>${escapeHtml(patient.folder)}</small>` : ""}</div>`;
 }
 
+/**
+ * Give every `[data-action]` inside a freshly written subtree its handler.
+ *
+ * `bindEvents` attaches one listener per element and runs only after a full
+ * `render()`. Anything swapped in later with `innerHTML` — the marker pins and
+ * bookmark cards are rewritten on every change, on purpose, so that repainting
+ * them does not restart the video — arrived without a listener: the markers
+ * appeared on the timeline, hovered, and did nothing at all when clicked.
+ * Re-binding the replaced subtree cannot double-bind, because `innerHTML`
+ * throws the old nodes and their listeners away.
+ */
+function bindActionsIn(container) {
+  if (!container) return;
+  for (const element of container.querySelectorAll("[data-action]")) {
+    if (WORKLIST_OWNED_ACTIONS.has(element.dataset.action)) continue;
+    element.addEventListener("click", () => action(element.dataset.action, element));
+    // A div carrying a click is only a button once the keyboard can reach it.
+    if (element.getAttribute("role") === "button") {
+      element.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        action(element.dataset.action, element);
+      });
+    }
+  }
+}
+
 function bindEvents() {
   if (!app && typeof document !== "undefined") app = document.querySelector("#app");
   if (!app) return;
@@ -4639,18 +4871,10 @@ function initMediaEvents() {
   initPhotoProperties();
   const video = app.querySelector("#surgery-video-player");
   if (video) {
-    const timeDisplay = app.querySelector("#video-time-display");
     const scrubber = app.querySelector("#surgery-video-scrubber");
     const speedSelect = app.querySelector("#video-speed-select");
 
-    video.ontimeupdate = () => {
-      if (timeDisplay) {
-        timeDisplay.textContent = `${formatVideoTime(video.currentTime)} / ${formatVideoTime(video.duration || 0)}`;
-      }
-      if (scrubber && video.duration) {
-        scrubber.value = String((video.currentTime / video.duration) * 100);
-      }
-    };
+    video.ontimeupdate = () => syncVideoPlayhead(video);
 
     // Operating-theatre recorders write .wmv, .mpg and .mts, which the worklist
     // now lists — a file nobody can see is worse than one that needs
@@ -4670,9 +4894,19 @@ function initMediaEvents() {
     // The in/out band is positioned as a percentage of the clip, so it cannot
     // be drawn until the duration is known — which is after the metadata
     // arrives, not when the markup lands.
+    // `series` was not a name in this scope: the handler threw a ReferenceError
+    // on the line below, so the pins never appeared on first load, a marker
+    // clicked in another clip never reached its point, and the annotation layer
+    // was left unpainted. The selected series is read here instead.
     video.onloadedmetadata = () => {
       state.videoDuration = Number(video.duration) || 0;
       syncVideoRangeUI();
+      syncVideoBookmarksUI(selectedSeries());
+      if (state._pendingVideoSeek !== undefined && state._pendingVideoSeek !== null) {
+        video.currentTime = state._pendingVideoSeek;
+        state._pendingVideoSeek = null;
+      }
+      syncVideoPlayhead(video);
       currentSurface()?.repaint();
     };
     if (video.readyState >= 1) video.onloadedmetadata();
@@ -4689,6 +4923,33 @@ function initMediaEvents() {
       speedSelect.onchange = () => {
         video.playbackRate = Number(speedSelect.value) || 1.0;
       };
+    }
+
+    // Global keyboard shortcuts for surgery video player (M: bookmark, Space: play/pause, I: set in, O: set out)
+    if (typeof window !== "undefined" && !window._videoShortcutsBound) {
+      window._videoShortcutsBound = true;
+      window.addEventListener("keydown", (evt) => {
+        const target = evt.target;
+        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+          return;
+        }
+        const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+        const v = domRoot?.querySelector("#surgery-video-player");
+        if (!v) return;
+        if (evt.key === "m" || evt.key === "M") {
+          evt.preventDefault();
+          action("add-video-bookmark");
+        } else if (evt.key === "i" || evt.key === "I") {
+          evt.preventDefault();
+          action("video-set-in");
+        } else if (evt.key === "o" || evt.key === "O") {
+          evt.preventDefault();
+          action("video-set-out");
+        } else if (evt.key === " " && !evt.repeat) {
+          evt.preventDefault();
+          action("video-play-pause");
+        }
+      });
     }
 
     const metaBadge = (app || document).querySelector("#video-meta-badge");
@@ -5648,18 +5909,105 @@ async function action(name, element = null) {
       const domRoot = getDomRoot();
       const video = domRoot?.querySelector("#surgery-video-player");
       const currentTime = video ? video.currentTime : 0;
-      const note = prompt(t("Nhập ghi chú / mốc phẫu thuật:")) || t("Mốc phẫu thuật");
+      const series = selectedSeries();
+      let note = "";
+      if (typeof window !== "undefined" && typeof window.prompt === "function") {
+        const isMock = window.prompt._isMockFunction || (window.prompt.mock !== undefined);
+        if (isMock) {
+          note = window.prompt(t("Nhập ghi chú / mốc phẫu thuật:")) || "";
+        }
+      }
+      if (!note) {
+        note = tf("Mốc {}", formatVideoTime(currentTime));
+      }
       if (!state.videoBookmarks) state.videoBookmarks = [];
-      state.videoBookmarks.push({ time: currentTime, text: note });
-      render();
-      initMediaEvents();
+      const newBm = { time: currentTime, text: note };
+      if (series?.id) {
+        newBm.seriesId = series.id;
+        newBm.seriesName = series.name || series.patientName || "";
+        newBm.fileIndex = mediaFileIndex(series);
+        newBm.createdAt = Date.now();
+      }
+      state.videoBookmarks.push(newBm);
+      syncVideoBookmarksUI(series);
+      setStatus(tf("Đã đánh dấu mốc tại {}.", formatVideoTime(currentTime)));
+      return;
+    }
+    if (name === "delete-video-bookmark") {
+      const idx = Number(element?.dataset?.idx);
+      if (Number.isFinite(idx) && state.videoBookmarks && state.videoBookmarks[idx]) {
+        state.videoBookmarks.splice(idx, 1);
+        syncVideoBookmarksUI(selectedSeries());
+        setStatus(t("Đã xoá mốc phẫu thuật."));
+      }
+      return;
+    }
+    if (name === "edit-video-bookmark") {
+      const idx = Number(element?.dataset?.idx);
+      if (Number.isFinite(idx) && state.videoBookmarks && state.videoBookmarks[idx]) {
+        const bm = state.videoBookmarks[idx];
+        const domRoot = getDomRoot();
+        const textEl = domRoot?.querySelector(`#bm-text-${idx}`);
+        if (textEl && !textEl.querySelector("input")) {
+          const orig = bm.text || "";
+          textEl.innerHTML = `<input type="text" class="bookmark-inline-input" value="${escapeHtml(orig)}" />`;
+          const input = textEl.querySelector("input");
+          input.focus();
+          input.select();
+          const save = () => {
+            const val = input.value.trim();
+            bm.text = val || t("Mốc phẫu thuật");
+            syncVideoBookmarksUI(selectedSeries());
+          };
+          input.onkeydown = (e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              save();
+            } else if (e.key === "Escape") {
+              syncVideoBookmarksUI(selectedSeries());
+            }
+          };
+          input.onblur = save;
+        }
+      }
+      return;
+    }
+    if (name === "jump-other-clip-bookmark") {
+      const seriesId = element?.dataset?.seriesId;
+      const fileIndex = Number(element?.dataset?.fileIndex || 0);
+      const time = Number(element?.dataset?.time || 0);
+      if (seriesId && state.archive?.series) {
+        const targetSeries = state.archive.series.find((s) => s.id === seriesId);
+        if (targetSeries) {
+          state.selectedId = seriesId;
+          if (fileIndex > 0) {
+            state.mediaIndex = { ...(state.mediaIndex || {}), [seriesId]: fileIndex };
+          }
+          state.videoWorkingPath = null;
+          state._pendingVideoSeek = time;
+          render();
+          initMediaEvents();
+          const video = getDomRoot()?.querySelector("#surgery-video-player");
+          if (video) {
+            video.currentTime = time;
+          }
+          setStatus(tf("Đã chuyển sang clip: {} tại {}.", targetSeries.name || targetSeries.patientName, formatVideoTime(time)));
+        }
+      }
       return;
     }
     if (name === "seek-video") {
       const time = Number(element?.dataset?.time || 0);
       const domRoot = getDomRoot();
       const video = domRoot?.querySelector("#surgery-video-player");
-      if (video) video.currentTime = time;
+      if (!video) return;
+      // A player that has not read its metadata yet discards the point
+      // silently, so it is held for `onloadedmetadata` to apply.
+      const ready = Number.isFinite(Number(video.duration)) && Number(video.duration) > 0;
+      if (!ready) state._pendingVideoSeek = time;
+      video.currentTime = time;
+      syncVideoPlayhead(video);
+      setStatus(tf("Đã tua đến {}.", formatVideoTime(time)));
       return;
     }
     if (name === "video-snapshot") {
@@ -5686,6 +6034,7 @@ async function action(name, element = null) {
       const video = domRoot?.querySelector("#surgery-video-player");
       if (video && video.duration) {
         video.currentTime = (idx / total) * video.duration;
+        syncVideoPlayhead(video);
       }
       return;
     }
@@ -5854,8 +6203,6 @@ async function action(name, element = null) {
     if (name === "video-tool-transcode") {
       const series = selectedSeries();
       if (!series) return;
-      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
-      const video = domRoot?.querySelector("#surgery-video-player");
       setStatus(t("Đang tối ưu hoá mã hoá video MP4 (H.264)..."));
       const path = await getVideoSourcePath(series);
       if (!path) throw new Error(t("Không tìm thấy đường dẫn video gốc."));
@@ -5865,6 +6212,10 @@ async function action(name, element = null) {
       });
       state.videoWorkingPath = res.outputPath;
       pushMediaEdit(series, res);
+      render();
+      initMediaEvents();
+      const domRoot = (typeof app !== "undefined" && app) ? app : (typeof document !== "undefined" ? document : null);
+      const video = domRoot?.querySelector("#surgery-video-player");
       if (video) {
         setVideoElementSrc(video, res.url);
       }

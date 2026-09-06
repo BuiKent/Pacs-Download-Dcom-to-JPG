@@ -514,7 +514,30 @@ describe("Surgery Video Studio Action Handlers", () => {
     await action("add-video-bookmark");
 
     expect(state.videoBookmarks.length).toBe(1);
-    expect(state.videoBookmarks[0]).toEqual({ time: 15.5, text: "Rạch da bộc lộ tổn thương" });
+    expect(state.videoBookmarks[0]).toMatchObject({
+      time: 15.5,
+      text: "Rạch da bộc lộ tổn thương",
+      seriesId: "series_video_1",
+    });
+  });
+
+  it("segregates bookmarks across different clips and deletes bookmarks cleanly", async () => {
+    state.videoBookmarks = [
+      { time: 10, text: "Clip 1 mark", seriesId: "series_video_1" },
+      { time: 20, text: "Clip 2 mark", seriesId: "series_video_2", seriesName: "clip2.mp4" },
+    ];
+    const series1 = { id: "series_video_1", name: "clip1.mp4", mediaType: "video" };
+    const html1 = renderSurgeryVideoStudio(series1);
+    expect(html1).toContain("Clip 1 mark");
+    expect(html1).toContain("Mốc từ clip khác trong ca mổ");
+    expect(html1).toContain("Clip 2 mark");
+
+    // Test delete-video-bookmark
+    const delBtn = document.createElement("button");
+    delBtn.dataset.idx = "0";
+    await action("delete-video-bookmark", delBtn);
+    expect(state.videoBookmarks.length).toBe(1);
+    expect(state.videoBookmarks[0].text).toBe("Clip 2 mark");
   });
 
   it("video-tool-concat opens modal, allows reordering and selection, and start-concat-video calls concat API", async () => {
@@ -639,6 +662,119 @@ describe("Surgery Video Studio Action Handlers", () => {
 
     await action("seek-filmstrip-idx", { dataset: { idx: "2", total: "4" } });
     expect(video.currentTime).toBe(50);
+  });
+
+  /**
+   * Mount the parts of the studio the marker strip writes into.
+   *
+   * The tests above call `action()` by hand, which proves the handler and
+   * nothing about whether a marker on screen ever reaches it. Marking a point
+   * rewrites the pin layer and the sidebar with `innerHTML`, and the click
+   * listeners are attached per element by `bindEvents` at render time — so the
+   * markers drew, hovered, and did nothing when clicked. These tests click the
+   * real node.
+   */
+  function mountVideoStudioChrome(durationSeconds) {
+    document.body.innerHTML = `
+      <div id="app">
+        <video id="surgery-video-player" src="/placeholder.mp4"></video>
+        <span class="video-scrubber-wrap">
+          <div class="video-marker-pins-layer"></div>
+          <input type="range" id="surgery-video-scrubber" min="0" max="100" step="0.1" value="0">
+        </span>
+        <span id="video-time-display">00:00 / 00:00</span>
+        <span id="video-bookmarks-count">0</span>
+        <div class="surgery-video-bookmarks"></div>
+      </div>
+    `;
+    const video = document.querySelector("#surgery-video-player");
+    Object.defineProperty(video, "currentTime", { value: 0, writable: true });
+    Object.defineProperty(video, "duration", { value: durationSeconds, writable: true });
+    state.videoDuration = durationSeconds;
+    return video;
+  }
+
+  it("seeks the player when a timeline pin drawn after the last render is clicked", async () => {
+    const video = mountVideoStudioChrome(120);
+
+    video.currentTime = 30;
+    await action("add-video-bookmark");
+    video.currentTime = 0;
+
+    const pin = document.querySelector(".video-marker-pin");
+    expect(pin).not.toBeNull();
+    expect(pin.dataset.time).toBe("30");
+
+    pin.click();
+    expect(video.currentTime).toBe(30);
+    // The clock and scrubber follow the seek even though a paused clip sends
+    // no `timeupdate` of its own.
+    expect(document.querySelector("#video-time-display").textContent).toBe("00:30 / 02:00");
+    expect(Number(document.querySelector("#surgery-video-scrubber").value)).toBeCloseTo(25, 5);
+  });
+
+  it("seeks the player when a sidebar bookmark card is clicked or activated by keyboard", async () => {
+    const video = mountVideoStudioChrome(120);
+
+    video.currentTime = 45;
+    await action("add-video-bookmark");
+    video.currentTime = 0;
+
+    const card = document.querySelector(".surgery-bookmark-card");
+    expect(card).not.toBeNull();
+    card.click();
+    expect(video.currentTime).toBe(45);
+
+    video.currentTime = 0;
+    card.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(video.currentTime).toBe(45);
+  });
+
+  it("orders markers by the clock and flags the one the playhead is on", async () => {
+    const video = mountVideoStudioChrome(120);
+
+    // Marked out of order, the way a reader jumping around a recording does.
+    video.currentTime = 90;
+    await action("add-video-bookmark");
+    video.currentTime = 10;
+    await action("add-video-bookmark");
+    video.currentTime = 50;
+    await action("add-video-bookmark");
+
+    const times = [...document.querySelectorAll(".video-marker-pin")]
+      .map((pin) => Number(pin.dataset.time));
+    expect(times).toEqual([10, 50, 90]);
+
+    // Marking at 50 leaves the playhead there, so that point is the current one.
+    const active = [...document.querySelectorAll(".video-marker-pin.active")]
+      .map((pin) => Number(pin.dataset.time));
+    expect(active).toEqual([50]);
+
+    document.querySelector(".video-marker-pin[data-time='90']").click();
+    expect(video.currentTime).toBe(90);
+    expect([...document.querySelectorAll(".video-marker-pin.active")]
+      .map((pin) => Number(pin.dataset.time))).toEqual([90]);
+  });
+
+  it("keeps edit and delete on a bookmark card working after the list is rewritten", async () => {
+    const video = mountVideoStudioChrome(120);
+
+    video.currentTime = 20;
+    await action("add-video-bookmark");
+    video.currentTime = 60;
+    await action("add-video-bookmark");
+    expect(document.querySelectorAll(".surgery-bookmark-card").length).toBe(2);
+
+    // The second card was written by the sync that followed the first mark, so
+    // its buttons only work if that subtree was re-bound.
+    const cards = [...document.querySelectorAll(".surgery-bookmark-card")];
+    const secondDelete = cards[1].querySelector("[data-action='delete-video-bookmark']");
+    expect(secondDelete).not.toBeNull();
+    secondDelete.click();
+
+    expect(state.videoBookmarks.length).toBe(1);
+    expect(state.videoBookmarks[0].time).toBe(20);
+    expect(document.querySelectorAll(".surgery-bookmark-card").length).toBe(1);
   });
 });
 

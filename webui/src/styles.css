@@ -3025,14 +3025,157 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 
 .surgery-video-controls {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 16px 10px;
   background: #0b131b;
   border-top: 1px solid #182736;
   color: #e1e9f0;
   font-size: 12px;
   z-index: 10;
+  user-select: none;
+}
+
+/* Tier 1: Scrubber Strip */
+.surgery-timeline-tier {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  position: relative;
+  height: 24px;
+}
+
+.surgery-video-controls .video-scrubber-wrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+}
+
+.surgery-video-controls .video-scrubber {
+  width: 100%;
+  accent-color: #3b82f6;
+  cursor: pointer;
+  position: relative;
+  z-index: 3;
+  margin: 0;
+  height: 6px;
+}
+
+/* Marker pins layer positioned directly over the track */
+.video-marker-pins-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.video-marker-pin {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 14px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.video-marker-diamond {
+  width: 8px;
+  height: 8px;
+  background: #f59e0b;
+  border: 1.5px solid #fff;
+  border-radius: 1px;
+  transform: rotate(45deg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+
+.video-marker-pin:hover .video-marker-diamond,
+.video-marker-pin:focus-visible .video-marker-diamond {
+  transform: rotate(45deg) scale(1.35);
+  background: #fbbf24;
+  border-color: #fff;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.8);
+}
+
+.video-marker-pin:focus-visible {
+  outline: 2px solid #60c5ff;
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+/* The point the playhead is on, so the strip and the clip agree. */
+.video-marker-pin.active .video-marker-diamond {
+  background: #38bdf8;
+  transform: rotate(45deg) scale(1.35);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.9);
+}
+
+/* Marker Tooltip on hover */
+.video-marker-tooltip {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid #334155;
+  color: #f8fafc;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 20;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.video-marker-pin:hover .video-marker-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(-2px);
+}
+
+.video-marker-tooltip-time {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: #38bdf8;
+  font-weight: 600;
+}
+
+.video-marker-tooltip-text {
+  color: #e2e8f0;
+}
+
+/* Tier 2: Streamlined 3-Zone Toolbar */
+.surgery-actions-tier {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.video-control-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.video-tier-divider {
+  width: 1px;
+  height: 18px;
+  background: #1e293b;
+  margin: 0 4px;
 }
 
 .surgery-video-controls .control-btn {
@@ -3061,39 +3204,33 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   border-color: transparent;
 }
 
-.surgery-video-controls .video-scrubber {
-  width: 100%;
-  accent-color: #3b82f6;
-  cursor: pointer;
-  position: relative;
-  z-index: 1;
+.surgery-video-controls .control-btn.icon-btn {
+  padding: 5px 8px;
+  min-width: 32px;
 }
 
-/* The scrubber and the in/out band share one box so the band can be positioned
-   as a percentage of the clip and sit under the thumb. */
-.video-scrubber-wrap {
-  flex: 1;
-  position: relative;
-  display: flex;
-  align-items: center;
-  min-width: 120px;
+.surgery-video-controls .control-btn.marker-btn {
+  background: #1e293b;
+  border-color: #f59e0b44;
+  color: #fcd34d;
 }
 
-/* The marked span, drawn on the track itself. Trimming used to be two prompt()
-   boxes asking for decimal seconds, so the reader never saw what they had
-   selected until the cut had already happened. */
-.video-range-band {
-  position: absolute;
-  top: 50%;
-  height: 5px;
-  transform: translateY(-50%);
-  border-radius: 3px;
-  background: #4da3ff;
-  pointer-events: none;
-  /* Above the input: a native range track paints opaquely, so a band drawn
-     underneath it is simply invisible. The thumb is taller than the band and
-     still reads through. */
-  z-index: 2;
+.surgery-video-controls .control-btn.marker-btn:hover {
+  background: #334155;
+  border-color: #f59e0b;
+  color: #fbbf24;
+}
+
+.surgery-video-controls .control-btn.subtle {
+  background: transparent;
+  border-color: transparent;
+  color: #94a3b8;
+  padding: 4px 6px;
+}
+
+.surgery-video-controls .control-btn.subtle:hover:not(:disabled) {
+  background: #1e293b;
+  color: #f8fafc;
 }
 
 .surgery-video-controls .control-btn:disabled {
@@ -3109,11 +3246,39 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   text-align: center;
 }
 
-/* `.empty-state` is written for the reading canvas: `position: absolute;
-   inset: 0` over a near-black ground. Dropped into the bookmark list — whose
-   nearest positioned ancestor is the studio body — it painted over the tool
-   rail and the player itself, and an operative video looked like it had failed
-   to load. Same trap the Worklist hit, same scoped fix (CLAUDE.md §5). */
+/* Range Pill */
+.video-range-pill {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  color: #64748b;
+  padding: 3px 8px;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.video-range-pill.active {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.1);
+  border-color: rgba(56, 189, 248, 0.3);
+  font-weight: 500;
+}
+
+/* The marked span, drawn on the track itself */
+.video-range-band {
+  position: absolute;
+  top: 50%;
+  height: 6px;
+  transform: translateY(-50%);
+  border-radius: 3px;
+  background: #38bdf8;
+  pointer-events: none;
+  z-index: 2;
+  box-shadow: 0 0 6px rgba(56, 189, 248, 0.4);
+}
+
+/* `.empty-state` is written for the reading canvas */
 .surgery-video-bookmarks .empty-state {
   position: static;
   inset: auto;
@@ -3159,12 +3324,31 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   display: flex;
   flex-direction: column;
   gap: 4px;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .surgery-bookmark-card:hover {
   background: #182c3f;
   border-color: #3b82f6;
+}
+
+.surgery-bookmark-card:focus-visible {
+  outline: 2px solid #60c5ff;
+  outline-offset: 2px;
+}
+
+/* The point the playhead is on, so the strip and the clip agree. */
+.surgery-bookmark-card.active {
+  background: #17293a;
+  border-color: #f59e0b;
+  box-shadow: inset 3px 0 0 #f59e0b;
+}
+
+.surgery-bookmark-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
 }
 
 .surgery-bookmark-time {
@@ -3174,9 +3358,100 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   font-weight: 600;
 }
 
+.surgery-bookmark-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+}
+
+.surgery-bookmark-card:hover .surgery-bookmark-actions {
+  opacity: 1;
+}
+
+.icon-tool-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 1;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.icon-tool-btn:hover {
+  background: #1e293b;
+  color: #f8fafc;
+}
+
+.icon-tool-btn.danger:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.bookmark-inline-input {
+  width: 100%;
+  background: #090f16;
+  border: 1px solid #3b82f6;
+  color: #fff;
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 12px;
+  outline: none;
+}
+
 .surgery-bookmark-text {
   font-size: 12px;
   color: #cbdceb;
+  word-break: break-word;
+}
+
+/* Other Clips Section in Bookmark Sidebar */
+.surgery-video-other-clips-section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #1e293b;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.surgery-video-other-clips-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 4px;
+}
+
+.surgery-bookmark-card.other-clip {
+  background: #0b131c;
+  border-color: #1e293b;
+  opacity: 0.85;
+}
+
+.surgery-bookmark-card.other-clip:hover {
+  background: #132230;
+  border-color: #0ea5e9;
+  opacity: 1;
+}
+
+.surgery-bookmark-clip-badge {
+  font-size: 10px;
+  font-weight: 500;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+  padding: 1px 5px;
+  border-radius: 3px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Photo & Doc Studio.

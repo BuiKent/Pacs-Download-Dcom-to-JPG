@@ -246,6 +246,8 @@ def _run(
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 check=False,
             )
@@ -607,7 +609,14 @@ def transcode(
     total_us = info.duration_s * 1_000_000
     start = time.time()
     with _heavy_gate:
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         assert process.stdout is not None
         for line in process.stdout:
             if line.startswith("out_time_us=") and total_us > 0:
