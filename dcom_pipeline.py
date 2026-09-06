@@ -5008,9 +5008,9 @@ def _study_date_token(value: Any) -> str:
 
 def study_folder_base_name(study: dict) -> str:
     """Readable study folder name, without the UID collision token."""
-    modality = _safe_name(study.get("modality") or "UNKNOWN")[:12]
-    description = _safe_name(study.get("desc") or "KHONG_RO_MO_TA")[:40]
-    return f"{_study_date_token(study.get('date'))} - {modality} - {description}"
+    modality = _safe_name(study.get("modality") or "UNKNOWN")[:12].strip(". ")
+    description = _safe_name(study.get("desc") or "KHONG_RO_MO_TA")[:40].strip(". ")
+    return f"{_study_date_token(study.get('date'))} - {modality} - {description}".strip(". ")
 
 
 def study_archive_folder_name(study: dict) -> str:
@@ -5029,7 +5029,7 @@ def resolve_study_folder_name(patient_folder: Path, study: dict) -> str:
     known = (_read_patient_manifest(patient_folder) or {}).get("studies") or {}
     entry = known.get(uid) if uid else None
     if isinstance(entry, dict) and str(entry.get("folder") or "").strip():
-        return str(entry["folder"])
+        return str(entry["folder"]).strip(". ")
 
     plain = study_folder_base_name(study)
     taken = {
