@@ -3,6 +3,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -3176,6 +3177,8 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertTrue(is_document_folder(Path("Ho so benh an")))
         self.assertTrue(is_document_folder(Path("doc")))
         self.assertTrue(is_document_folder(Path("Documents")))
+        self.assertTrue(is_document_folder(Path("Data EMR")))
+        self.assertTrue(is_document_folder(Path("EMR")))
 
         # 3. Verify scanner counts converted JPG slices of a Clariscan study as photo, not doc
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -3196,6 +3199,16 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
             result = scanner._scan_study(study_dir, {})
             self.assertEqual(result["mediaCounts"]["doc"], 0)
             self.assertEqual(result["mediaCounts"]["photo"], 4)
+
+            # 4. Verify medical record photos inside a Data EMR folder are classified as 'Bệnh án' (doc)
+            emr_dir = Path(tmp_dir) / "Data EMR"
+            emr_patient = emr_dir / "Hoang_Minh_Thiep"
+            emr_patient.mkdir(parents=True, exist_ok=True)
+            (emr_patient / "scan_1.jpg").write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00")
+            emr_result = scanner._scan_study(emr_patient, {})
+            self.assertEqual(emr_result["mediaCounts"]["doc"], 1)
+            self.assertEqual(emr_result["modality"], "Bệnh án")
+            self.assertEqual(emr_result["primaryMediaType"], "doc")
 
     def test_dicom_cache_portable_and_auto_remap_on_folder_move(self):
         from web_backend import (
@@ -3257,7 +3270,190 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
             self.assertTrue(remapped.images[0].is_file())
             self.assertEqual(remapped.images[0], root_new / "Study_1" / "DICOM" / "Series_1" / "IM_0001.dcm")
 
+    def test_a_patient_folder_named_scan_does_not_turn_their_films_into_paperwork(self):
+        """The grandparent names what the pictures are; the parent names the patient.
 
+        Reading the folder above a study for a document hint is what lets
+        `Data EMR/<case>/<pictures>` be recognised at all — the case folder is
+        named after a person and says nothing. But `scan` reads both ways in
+        Vietnamese: scanned paperwork, and a scan taken of the patient. Read
+        loosely one level up, a patient folder called `... - Scan cũ` sent every
+        MRI they had to the document reader instead of the reading canvas.
+        """
+        from web_backend import WorklistScanner, is_document_folder
+
+        # The word is still trusted on the folder the pictures actually sit in.
+        self.assertTrue(is_document_folder(Path("Scan cu")))
+        self.assertFalse(is_document_folder(Path("Scan cu"), strict=True))
+        # An explicit marker is trusted either way.
+        self.assertTrue(is_document_folder(Path("Data EMR"), strict=True))
+        self.assertTrue(is_document_folder(Path("benh_an"), strict=True))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            scanner = WorklistScanner(WebController())
+
+            def study_with_images(parent_name, study_name):
+                folder = root / parent_name / study_name
+                folder.mkdir(parents=True, exist_ok=True)
+                for index in range(3):
+                    (folder / f"IM{index}.jpg").write_bytes(bytes.fromhex("ffd8ffe00010") + b"JFIF")
+                return scanner._scan_study(folder, {})
+
+            films = study_with_images("2606033997 - NGUYEN VAN A - 40T - Scan cu", "19.05.2026-truoc mo")
+            self.assertEqual(films["primaryMediaType"], "photo")
+
+            records = study_with_images("Data EMR", "Hoang_Minh_Thiep")
+            self.assertEqual(records["primaryMediaType"], "doc")
+            self.assertEqual(records["modality"], "Bệnh án")
+
+    def test_category_folder_patient_discovery(self):
+        """When patients are placed inside category subfolders (e.g. 'U tủy'),
+        the category folder must not be treated as a fake patient, and all inner
+        patients must be discovered with their category preserved."""
+        from web_backend import WorklistScanner
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            # Patient 1: directly at root
+            p1 = root / "BN-1111 - NGUYEN VAN A"
+            p1.mkdir()
+            (p1 / "patient-index.json").write_text(json.dumps({
+                "patientId": "BN-1111",
+                "patientName": "NGUYEN VAN A",
+                "studies": {}
+            }), encoding="utf-8")
+
+            # Category folder: 'U tủy' containing Patient 2 and Patient 3
+            cat_dir = root / "U tủy"
+            p2 = cat_dir / "2306037440 - PHAM VAN COI"
+            p2.mkdir(parents=True)
+            (p2 / "patient-index.json").write_text(json.dumps({
+                "patientId": "2306037440",
+                "patientName": "PHAM VAN COI",
+                "studies": {}
+            }), encoding="utf-8")
+
+            p3 = cat_dir / "2408016229 - LUYEN THI DUC"
+            p3.mkdir(parents=True)
+            (p3 / "patient-index.json").write_text(json.dumps({
+                "patientId": "2408016229",
+                "patientName": "LUYEN THI DUC",
+                "studies": {}
+            }), encoding="utf-8")
+
+            controller = WebController()
+            controller.output_root = root
+            controller.source_folders = []
+            scanner = WorklistScanner(controller)
+            patients = scanner.scan()
+
+            # Must discover 3 distinct patients, NOT a fake patient named "U tủy"
+            self.assertEqual(len(patients), 3)
+            ids = {p["patientId"] for p in patients}
+            self.assertEqual(ids, {"BN-1111", "2306037440", "2408016229"})
+
+            p_map = {p["patientId"]: p for p in patients}
+            self.assertEqual(p_map["BN-1111"]["category"], "")
+            self.assertEqual(p_map["2306037440"]["category"], "U tủy")
+            self.assertEqual(p_map["2408016229"]["category"], "U tủy")
+
+    def test_a_pre_manifest_case_filed_into_a_category_is_still_found(self):
+        """A folder with no `patient-index.json` is a patient wherever it sits.
+
+        Discovery rescued those only at the top level, so the moment a doctor
+        dragged an older case into a new disease folder it left the worklist
+        without a word — the same silent disappearance the category work was
+        meant to end.
+        """
+        from web_backend import WorklistScanner
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            category = root / "U tủy"
+            (category / "3333 - PHAM VAN COI").mkdir(parents=True)
+            (category / "3333 - PHAM VAN COI" / "patient-index.json").write_text(
+                json.dumps({"patientId": "3333", "patientName": "PHAM VAN COI", "studies": {}}),
+                encoding="utf-8",
+            )
+            # Filed into the same category, but from before the manifest existed.
+            (category / "4444 - LUYEN THI DUC - 55T" / "01.06.2026-sau mo").mkdir(parents=True)
+
+            scanner = WorklistScanner(WebController())
+            found = scanner._discover_patient_archives(root)
+            by_name = {path.name: cat for path, cat in found}
+            self.assertIn("4444 - LUYEN THI DUC - 55T", by_name)
+            self.assertEqual(by_name["4444 - LUYEN THI DUC - 55T"], "U tủy")
+            self.assertEqual(by_name["3333 - PHAM VAN COI"], "U tủy")
+
+    def test_a_category_nested_two_deep_still_resolves(self):
+        from web_backend import WorklistScanner
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            deep = root / "U não" / "Cavernoma" / "5555 - LE VAN E"
+            deep.mkdir(parents=True)
+            (deep / "patient-index.json").write_text(
+                json.dumps({"patientId": "5555", "patientName": "LE VAN E", "studies": {}}),
+                encoding="utf-8",
+            )
+            found = WorklistScanner(WebController())._discover_patient_archives(root)
+            self.assertEqual([(p.name, c) for p, c in found],
+                             [("5555 - LE VAN E", "U não/Cavernoma")])
+
+    def test_discovery_does_not_stat_every_slice_in_the_archive(self):
+        """Deciding what is a patient is a question about folders, not files.
+
+        Answering it with `Path.iterdir()` plus `is_dir()` stats every entry it
+        walks past: on an archive of a hundred thousand slices that is a hundred
+        thousand stats before the scan proper begins, and on a Drive mount each
+        one can be a network round-trip.
+        """
+        from web_backend import WorklistScanner
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            series = root / "2222 - TRAN THI B" / "19.05.2026-truoc mo" / "DICOM_SERIES"
+            series.mkdir(parents=True)
+            for index in range(400):
+                (series / f"IM{index:05d}.jpg").write_bytes(b"x")
+
+            calls = {"n": 0}
+            original = Path.is_dir
+
+            def counting_is_dir(self, *args, **kwargs):
+                calls["n"] += 1
+                return original(self, *args, **kwargs)
+
+            Path.is_dir = counting_is_dir
+            try:
+                found = WorklistScanner(WebController())._discover_patient_archives(root)
+            finally:
+                Path.is_dir = original
+
+            self.assertEqual([p.name for p, _ in found], ["2222 - TRAN THI B"])
+            # A handful of folder checks, not one per slice.
+            self.assertLess(calls["n"], 50)
+
+    def test_a_shortcut_pointing_back_at_the_archive_does_not_loop(self):
+        from web_backend import WorklistScanner
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            patient = root / "U tủy" / "1111 - A"
+            patient.mkdir(parents=True)
+            (patient / "patient-index.json").write_text(
+                json.dumps({"patientId": "1111", "patientName": "A", "studies": {}}),
+                encoding="utf-8",
+            )
+            link = root / "U tủy" / "shortcut"
+            made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(root)],
+                                  capture_output=True, text=True).returncode == 0
+            if not made:
+                self.skipTest("junctions not available on this machine")
+
+            found = WorklistScanner(WebController())._discover_patient_archives(root)
+            self.assertEqual([p.name for p, _ in found], ["1111 - A"])
 
 
 if __name__ == "__main__":

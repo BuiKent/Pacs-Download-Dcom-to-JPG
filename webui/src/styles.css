@@ -104,6 +104,11 @@
   --list-border: #e9e9e7;
   --list-bg: #ffffff;
   --list-item-border: #f1f1ef;
+  /* The folder a patient is grouped under, badged beside their name. Opaque
+     rather than a translucent blue: the card underneath is white today, and a
+     badge whose contrast depends on whatever is behind it cannot be checked. */
+  --category-fg: #1d4ed8;
+  --category-bg: #e7effe;
   --pill-new-fg: #356a4c;
   --pill-new-bg: #dbeddb;
   --pill-downloaded-fg: #63615d;
@@ -4234,6 +4239,23 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .tl-item.editing .tl-edit-cancel { display: block; }
 .tl-item.pdf .tl-open > i { background: var(--m-doc, #7f8c8d); }
 
+
+/* The grouping folder a patient sits in — `U tủy`, `U não/Cavernoma`. Part of
+   the Worklist's light chrome, so it takes chrome tokens (CLAUDE.md §5). */
+.badge-category {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--category-bg, #e7effe);
+  color: var(--category-fg, #1d4ed8);
+  border: 1px solid var(--category-border, #bcd2fb);
+  font-size: 10.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
 
 /* Attachment notification card. Lives in the download panel, so it follows the
    light chrome palette rather than the dark reading-area colours. */

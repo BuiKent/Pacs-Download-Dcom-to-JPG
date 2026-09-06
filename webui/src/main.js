@@ -2013,7 +2013,7 @@ function filteredPatientList() {
   }
   if (search) {
     patients = patients.filter((p) => {
-      const pText = `${p.patientId || ""} ${p.patientName || ""} ${p.hospital || ""} ${p.gender || ""} ${p.birthYear || ""}`.toLowerCase();
+      const pText = `${p.category || ""} ${p.patientId || ""} ${p.patientName || ""} ${p.hospital || ""} ${p.gender || ""} ${p.birthYear || ""}`.toLowerCase();
       if (pText.includes(search)) return true;
       return (p.studies || []).some((s) => {
         const sText = `${s.studyDate || ""} ${s.studyName || ""} ${s.modality || ""} ${s.folder || ""}`.toLowerCase();
@@ -2214,6 +2214,10 @@ function renderWorklistTreeInner() {
             <span class="who copyable-cell" title="${escapeHtml(patientName)}">
               <span class="who-main">
                 <b>${escapeHtml(patientName)}</b>
+                ${p.category ? `
+                  <span class="badge-category" title="${escapeHtml(tf("Nhóm: {}", p.category))}"
+                    >📁 ${escapeHtml(p.category)}</span>
+                ` : ""}
                 ${(p.patientName || p.patientId) ? `
                   <button class="cell-copy-btn" type="button" data-action="copy-cell"
                     data-copy-text="${escapeHtml(p.patientName || p.patientId)}"

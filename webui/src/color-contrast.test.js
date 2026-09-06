@@ -53,6 +53,7 @@ const PAIRS = [
   ["--ok-fg", "--ok-bg", "Chưa tải badge"],
   ["--warn-fg", "--warn-bg", "Tải chưa hoàn tất badge"],
   ["--bad-fg", "--bad-bg", "Thiếu folder badge"],
+  ["--category-fg", "--category-bg", "the grouping folder badge on a patient row"],
   ["--pill-new-fg", "--pill-new-bg", "new study pill"],
   ["--pill-downloaded-fg", "--pill-downloaded-bg", "downloaded study pill"],
   ["--pill-incomplete-fg", "--pill-incomplete-bg", "incomplete study pill"],

@@ -340,6 +340,7 @@ const EN = {
   "Hãy đánh dấu điểm đầu (I) và điểm cuối (O) trên thanh tua trước.": "Mark the in (I) and out (O) points on the scrubber first.",
   "Hiện": "Show for",
   "Toàn bộ": "Whole clip",
+  "Nhóm: {}": "Group: {}",
   "suốt video": "for the whole clip",
   "Trình duyệt không mở được định dạng này": "The browser cannot open this format",
   "File vẫn còn nguyên trong hồ sơ. Chuyển sang MP4 để xem, cắt và vẽ lên nó.": "The file is untouched in the record. Convert it to MP4 to view, trim and draw on it.",

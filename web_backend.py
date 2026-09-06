@@ -79,15 +79,16 @@ TEXT_MAX_BYTES = 2 * 1024 * 1024
 # Matched against the folder name only — never against a study description,
 # because "sau mổ" in a study description describes a scan of a patient, not a
 # video of an operation.
-DOC_FOLDER_HINTS = {"doc", "docs", "benh_an", "benh-an", "benhan", "scan", "scans", "hoso", "ho_so"}
+DOC_FOLDER_HINTS = {"doc", "docs", "benh_an", "benh-an", "benhan", "scan", "scans", "hoso", "ho_so", "emr"}
 DOC_FOLDER_WORDS = {
     "doc", "docs", "document", "documents",
     "scan", "scans",
-    "benhan", "hoso", "giayto",
+    "benhan", "hoso", "giayto", "emr",
 }
 DOC_FOLDER_COMPOUNDS = {
     "benh_an", "benh-an", "ho_so", "ho-so", "giay_to", "giay-to",
     "tai_lieu", "tai-lieu", "don_thuoc", "don-thuoc", "ra_vien", "ra-vien",
+    "data_emr", "data-emr",
 }
 IMAGING_MODALITY_TOKENS = {
     "ct", "mr", "mri", "xray", "x-ray", "xquang", "x-quang", "pet", "spect", "us", "sieuam", "sieu_am",
@@ -136,12 +137,24 @@ def media_type_for_file(path: Path) -> str:
     return ""
 
 
-def is_document_folder(folder: Path) -> bool:
+# `scan` reads both ways in a Vietnamese folder name: paperwork that was
+# scanned, and a scan taken of the patient ("phim scan lại"). It is only safe to
+# read it as paperwork on the folder the pictures sit in, where the operator was
+# naming those exact files.
+AMBIGUOUS_DOC_WORDS = {"scan", "scans"}
+
+
+def is_document_folder(folder: Path, *, strict: bool = False) -> bool:
     """Whether a folder of images holds scanned paperwork rather than photos or diagnostic scans.
 
     Read off the folder name alone. Photographs and scanned records are both
     JPEGs, so the only honest signal available without opening every file is
     where the operator filed them.
+
+    `strict` drops the words that read both ways. It is what the check on a
+    *patient* folder uses: one folder named `... - Scan cũ` would otherwise turn
+    every MRI that patient has into paperwork and open their films in the
+    document reader instead of the reading canvas.
     """
     name = folder.name.casefold()
     # A DICOM series or converted JPG series is diagnostic imaging, never paperwork
@@ -153,7 +166,8 @@ def is_document_folder(folder: Path) -> bool:
         return True
 
     tokens = set(re.split(r"[^a-z0-9]+", name))
-    if any(word in tokens for word in DOC_FOLDER_WORDS):
+    words = DOC_FOLDER_WORDS - AMBIGUOUS_DOC_WORDS if strict else DOC_FOLDER_WORDS
+    if any(word in tokens for word in words):
         # 'CT Scan' or 'MRI scan' is diagnostic imaging, not scanned paperwork
         if "scan" in tokens and any(m in tokens for m in IMAGING_MODALITY_TOKENS):
             return False
@@ -177,6 +191,13 @@ def _is_document_image(study_dir: Path, root_path: Path, filename: str) -> bool:
         if is_document_folder(curr):
             return True
         if curr == study_dir or curr.parent == curr:
+            # One level above the study: a folder of medical-record photos is
+            # filed as `Data EMR/<case>/<pictures>`, so the only name that says
+            # what they are sits on the grandparent. Read strictly there — the
+            # patient folder is named after the patient and their diagnosis, not
+            # after what the pictures inside are.
+            if curr.parent and is_document_folder(curr.parent, strict=True):
+                return True
             break
         curr = curr.parent
 
@@ -3248,6 +3269,103 @@ class WorklistScanner:
             "isRead": bool(str(record.get("readAt") or "").strip()),
         }
 
+    # Folders that belong to a patient's own material rather than being another
+    # patient. Kept in one place so discovery and the study scan agree.
+    _NON_PATIENT_DIRS = {
+        "DICOM", "JPG", "RAW_JPG", "VIDEO", "PHOTO", "ATTACHMENTS", "__PYCACHE__",
+    }
+
+    @staticmethod
+    def _child_dirs(folder: Path) -> list[Path]:
+        """The sub-folders worth looking at, read in one directory pass.
+
+        `os.scandir` carries the entry type from the directory read itself, so
+        this costs one read per folder. The obvious `Path.iterdir()` plus
+        `is_dir()` costs an extra stat *per entry*: on an archive of a hundred
+        thousand slices that is a hundred thousand stats, and on a Drive mount
+        each one can be a network round-trip.
+        """
+        found: list[Path] = []
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    name = entry.name
+                    if name.startswith(".") or name.upper() in WorklistScanner._NON_PATIENT_DIRS:
+                        continue
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            found.append(Path(entry.path))
+                    except OSError:
+                        continue
+        except OSError:
+            return []
+        return found
+
+    @staticmethod
+    def _is_patient_archive(folder: Path) -> bool:
+        # The pipeline owns the name; hard-coding a second copy of it here is
+        # how the two drift apart.
+        return (folder / dcom_pipeline.PATIENT_MANIFEST_NAME).is_file()
+
+    def _is_category_folder(self, folder: Path, budget: int) -> bool:
+        """True when `folder` groups patients rather than being one.
+
+        `budget` is how many levels further down a patient may sit, so a chain
+        of grouping folders as deep as the walk allows still resolves — `U não/
+        Cavernoma/<patient>` and deeper alike.
+
+        The cost is one directory read per folder visited, never a stat per
+        file: the earlier version asked this question with `Path.iterdir()` and
+        `is_dir()`, which stat every slice in the archive to answer a question
+        about folders.
+        """
+        if budget < 1:
+            return False
+        children = self._child_dirs(folder)
+        if any(self._is_patient_archive(child) for child in children):
+            return True
+        return any(self._is_category_folder(child, budget - 1) for child in children)
+
+    def _discover_patient_archives(self, root: Path, max_depth: int = 4) -> list[tuple[Path, str]]:
+        """Every patient archive under `root`, with the folder that groups it.
+
+        A folder carrying `patient-index.json` is a patient. A folder that holds
+        patients is a category — `U tủy`, `U não/Cavernoma` — and its name is
+        recorded so the worklist can badge and filter by it. Anything else at any
+        depth inside is taken to be a patient folder from before the manifest
+        existed: dropping those is how a case a doctor had just filed into a new
+        category disappeared from the worklist without a word.
+        """
+        if self._is_patient_archive(root):
+            return [(root, "")]
+
+        archives: list[tuple[Path, str]] = []
+        # Junctions and symlinked shortcuts are common in a Drive folder, and a
+        # loop would otherwise be walked until the depth limit caught it.
+        seen: set[str] = set()
+
+        def _walk(folder: Path, category: str, depth: int) -> None:
+            try:
+                key = str(folder.resolve()).casefold()
+            except OSError:
+                return
+            if key in seen:
+                return
+            seen.add(key)
+
+            for child in self._child_dirs(folder):
+                if self._is_patient_archive(child):
+                    archives.append((child, category))
+                    continue
+                if depth < max_depth and self._is_category_folder(child, max_depth - depth):
+                    label = child.name if not category else f"{category}/{child.name}"
+                    _walk(child, label, depth + 1)
+                    continue
+                archives.append((child, category))
+
+        _walk(root, "", 1)
+        return archives
+
     def scan(self) -> list[dict]:
         roots_to_scan = []
         for r in self.controller.get_all_source_roots():
@@ -3288,10 +3406,10 @@ class WorklistScanner:
 
         for root in roots_to_scan:
             try:
-                children = list(root.iterdir())
+                discovered = self._discover_patient_archives(root)
             except OSError:
                 continue
-            for child in children:
+            for child, category in discovered:
                 if not child.is_dir() or child.name.startswith("."):
                     continue
                 try:
@@ -3301,10 +3419,14 @@ class WorklistScanner:
                         patient_map[key] = {
                             "id": f"p_{hashlib.sha256(key.encode()).hexdigest()[:12]}",
                             **meta,
+                            "category": category,
                             "folder": str(child),
                             "exists": True,
                             "studies": [],
                         }
+                    elif category and not patient_map[key].get("category"):
+                        patient_map[key]["category"] = category
+
                     records = self._manifest_studies_for(child)
                     subdirs = [s for s in child.iterdir() if s.is_dir() and not s.name.startswith(".")]
                     study_subdirs = [s for s in subdirs if not s.name.upper() in {"DICOM", "JPG", "VIDEO", "PHOTO"}]
@@ -3371,6 +3493,7 @@ class WorklistScanner:
                 "video": video_tot,
                 "doc": doc_tot,
             }
+            p["category"] = str(p.get("category") or "")
             # `studyDate` is already formatted dd/mm/yyyy for display, so
             # sorting it as text ordered by day and put 20/06/2026 ahead of
             # 06/08/2026. `studyDateSort` is the same date as YYYYMMDD.

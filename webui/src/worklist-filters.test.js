@@ -190,3 +190,57 @@ describe("Study rows carry their read state", () => {
     expect(html).toContain("Bỏ đánh dấu đã đọc");
   });
 });
+
+describe("the folder a patient is grouped under", () => {
+  /**
+   * A doctor filing cases by disease gets `U tủy/<patient>` on disk. The scanner
+   * reports that folder as the patient's `category`; the row has to show it and
+   * the search box has to find it, or the grouping exists only in Explorer.
+   */
+  beforeEach(() => {
+    setLanguage("vi");
+    state.worklistPatients = [
+      { ...structuredClone(PATIENT), id: "p1", patientId: "1111", category: "U tủy" },
+      { ...structuredClone(PATIENT), id: "p2", patientId: "2222", category: "U não/Cavernoma" },
+      { ...structuredClone(PATIENT), id: "p3", patientId: "3333", category: "" },
+    ];
+    state.worklistLoaded = true;
+    state.worklistLoading = false;
+    state.worklistError = "";
+    state.worklistSearch = "";
+    state.worklistModality = "";
+    state.worklistPeriod = "all";
+    state.worklistRead = "all";
+    state.expandedPatients = {};
+  });
+
+  it("badges the row with the group, and leaves an ungrouped patient unbadged", () => {
+    const html = renderWorklistTreeInner();
+    expect(html).toContain("badge-category");
+    expect(html).toContain("U tủy");
+    expect(html).toContain("U não/Cavernoma");
+    // Three patients, two of them grouped.
+    expect(html.split("badge-category").length - 1).toBe(2);
+  });
+
+  it("finds a whole group from the search box", () => {
+    state.worklistSearch = "u tủy";
+    expect(filteredPatientList().map((p) => p.patientId)).toEqual(["1111"]);
+  });
+
+  it("finds a nested group by either half of its path", () => {
+    state.worklistSearch = "cavernoma";
+    expect(filteredPatientList().map((p) => p.patientId)).toEqual(["2222"]);
+    state.worklistSearch = "u não";
+    expect(filteredPatientList().map((p) => p.patientId)).toEqual(["2222"]);
+  });
+
+  it("carries no styling of its own in the markup", () => {
+    // The badge lives in the stylesheet, so `color-contrast.test.js` can check
+    // it. Inline colours are invisible to that check — and this one sat exactly
+    // on the 4.5:1 line, where any theme tweak would have pushed it under.
+    const html = renderWorklistTreeInner();
+    const badge = html.slice(html.indexOf("badge-category"));
+    expect(badge.slice(0, 200)).not.toContain("style=");
+  });
+});
