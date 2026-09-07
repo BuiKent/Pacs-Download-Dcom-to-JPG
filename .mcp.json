@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "cmd.exe",
+      "args": ["/c", "npx", "-y", "chrome-devtools-mcp@1.8.0", "--isolated"]
+    }
+  }
+}

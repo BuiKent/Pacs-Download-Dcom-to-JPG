@@ -38,8 +38,6 @@ npm run --silent lint --prefix "$repo_root/webui"
 echo "pre-commit: Cổng 2 — test WebUI..."
 npm test --silent --prefix "$repo_root/webui"
 
-# Gate 3 cannot be judged here: a stale bundle is a valid intermediate state
-# while rebasing or reverting. This only says so out loud.
 if git diff --cached --name-only | grep -q '^webui/src/' \
   && ! git diff --cached --name-only | grep -q '^web_dist/'; then
   echo ""
@@ -47,4 +45,14 @@ if git diff --cached --name-only | grep -q '^webui/src/' \
   echo "  Chạy 'npm run build --prefix webui' rồi 'git add web_dist' nếu commit này để chạy thật."
 fi
 
-echo "pre-commit: Cổng 1 và 2 đã qua."
+if git diff --cached --name-only | grep -q '^web_dist/'; then
+  echo "pre-commit: Cổng 3 — Smoke test trình duyệt thật..."
+  if [ -f "$repo_root/.venv/Scripts/python.exe" ]; then
+    "$repo_root/.venv/Scripts/python.exe" "$repo_root/tools/smoke_browser.py"
+  else
+    python "$repo_root/tools/smoke_browser.py"
+  fi
+  echo "pre-commit: Cổng 1, 2 và 3 đã qua toàn bộ."
+else
+  echo "pre-commit: Cổng 1 và 2 đã qua."
+fi

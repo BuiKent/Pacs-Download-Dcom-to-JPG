@@ -66,11 +66,16 @@ môi trường. Đừng đi "sửa" những test đó — chúng đang chạy t�
   npm run build --prefix webui
   ```
   Không build thì `web_dist/` vẫn là bundle cũ và app chạy code cũ.
-- **Chạy thực tế / Smoke test**: Khi bổ sung luồng UI mới hoặc tính năng lớn, khởi chạy xem trước (`python tools/run_web_preview.py --static web_dist`), kiểm tra không có uncaught exception hoặc console error.
+- **Kiểm thử trình duyệt thực tự động (Browser Smoke Test)**: Chạy smoke test tự động trên trình duyệt Chrome thật để đảm bảo bundle production hoạt động hoàn hảo, không bị đứt listener khi chuyển đổi clip/tab, và sạch 100% console error:
+  ```bash
+  python tools/smoke_browser.py
+  # hoặc: npm run test:smoke --prefix webui
+  ```
+- **Xem trước thủ công (Manual Preview)**: Khi cần kiểm tra tương tác mắt thấy tai nghe: `python tools/run_web_preview.py --static web_dist`.
 
 ### 🎯 Định nghĩa Hoàn thành (Definition of Done - DoD)
 Agent **CHỈ ĐƯỢC PHÉP** thông báo xong việc hoặc sẵn sàng commit khi:
-`Lint sạch 0 lỗi` ➔ `Test 100% pass với DOM thật` ➔ `npm run build hoàn tất` ➔ `App chạy thực tế không lỗi`.
+`Lint sạch 0 lỗi` ➔ `Test 100% pass với DOM thật` ➔ `npm run build hoàn tất` ➔ `Smoke test trình duyệt thật (tools/smoke_browser.py) đạt 0 lỗi`.
 
 ## 3. Không bịa dữ liệu lâm sàng
 

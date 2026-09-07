@@ -53,11 +53,11 @@ Every agent (Gemini, Claude, Codex, etc.) across any interaction is **strictly f
 
 ### Gate 3: Production Build & Real Runtime Sanity
 - **Production Asset Compilation**: Any frontend change must successfully compile into the production bundle (`npm run build --prefix webui`).
-- **Runtime Sanity & Smoke Check**: Verify real execution (via preview server `tools/run_web_preview.py` or dev server). Console must be clean with zero fatal exceptions or unhandled promise rejections.
+- **Real Browser Runtime Sanity & Smoke Check**: Run automated smoke test in a real headless Chrome browser (`python tools/smoke_browser.py` or `npm run test:smoke --prefix webui`). Guarantees that app mounts, clips can be swapped in studio without event listener detachment, and console is 100% clean with zero fatal exceptions, unhandled promise rejections, or console errors.
 
 ### 🎯 Definition of Done (DoD)
 A task is ONLY complete when all three gates have been executed sequentially and verified with evidence:
-`Gate 1 (Lint Clean)` ➔ `Gate 2 (Real DOM Tests Pass)` ➔ `Gate 3 (Production Bundle Builds & Runtime Verified)`.
+`Gate 1 (Lint Clean)` ➔ `Gate 2 (Real DOM Tests Pass)` ➔ `Gate 3 (Production Bundle Builds & Real Browser Smoke Test Passes)`.
 
 ---
 
