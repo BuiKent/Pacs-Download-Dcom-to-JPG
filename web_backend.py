@@ -1398,7 +1398,7 @@ class ArchiveCatalog:
         # `JPG` holds slices converted from the DICOM beside it, which the DICOM
         # series already represents. Everything else — intra-operative photos,
         # scanned records — is its own material and must still be listed.
-        blocked = {"DICOM", "RAW_JPG", "JPG"}
+        blocked = {"DICOM", "RAW_JPG", "JPG", "DCOM", "DCM"}
         for current, dirnames, _filenames in os.walk(root):
             if should_stop and should_stop():
                 break
@@ -2125,7 +2125,7 @@ class ArchiveCatalog:
 
         records: dict[str, SeriesRecord] = {}
         scanned = 0
-        blocked = {"DICOM", "RAW_JPG"}
+        blocked = {"DICOM", "RAW_JPG", "DCOM", "DCM"}
         for current, dirnames, _filenames in os.walk(root):
             if should_stop and should_stop():
                 return self.snapshot()
@@ -2624,7 +2624,7 @@ class HistoryStore:
             return match.get("url", "") if match else ""
 
 
-_STUDY_FOLDER_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s*-\s*([^-]+?)\s*-\s*(.+)$")
+_STUDY_FOLDER_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4})\s*-\s*([^-]+?)\s*-\s*(.+)$")
 _LEADING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|\d{8})")
 # `19.05.2026-trước mổ, DTI` — how a clinician names a folder by hand. Only the
 # DICOM spellings were recognised, so every hand-named study folder came into
@@ -2712,6 +2712,51 @@ def _is_real_date(digits: str) -> bool:
     except ValueError:
         return False
     return 1900 <= parsed.year <= datetime.date.today().year + 1
+
+
+def _extract_folder_created_date(patient_dir: Path, manifest_data: Optional[dict] = None) -> tuple[str, str]:
+    """Returns (display_string, sort_key) for when the patient folder was created.
+
+    Prefers manifest createdAt, falls back to date in folder name, and then to
+    filesystem creation timestamp.
+    """
+    if manifest_data and isinstance(manifest_data, dict):
+        raw_created = str(manifest_data.get("createdAt") or "").strip()
+        if raw_created:
+            try:
+                dt = datetime.datetime.fromisoformat(raw_created)
+                return dt.strftime("%d/%m/%Y"), dt.strftime("%Y%m%d%H%M%S")
+            except Exception:
+                m = re.match(r"(\d{4})-(\d{2})-(\d{2})", raw_created)
+                if m:
+                    y, mo, d = m.groups()
+                    return f"{d}/{mo}/{y}", f"{y}{mo}{d}000000"
+
+    # Fallback 1: Date in folder name
+    # E.g. '2607053993 - PHAN THI YEN LY - 27T - 2026-09-06'
+    name = patient_dir.name
+    m_iso = re.search(r"(?:^|[\s_-])(\d{4})[-_](\d{2})[-_](\d{2})(?:$|[\s_-])", name)
+    if m_iso:
+        y, mo, d = m_iso.groups()
+        if _is_real_date(f"{y}{mo}{d}"):
+            return f"{d}/{mo}/{y}", f"{y}{mo}{d}000000"
+    m_dmy = re.search(r"(?:^|[\s_-])(\d{2})[-_](\d{2})[-_](\d{4})(?:$|[\s_-])", name)
+    if m_dmy:
+        d, mo, y = m_dmy.groups()
+        if _is_real_date(f"{y}{mo}{d}"):
+            return f"{d}/{mo}/{y}", f"{y}{mo}{d}000000"
+
+    # Fallback 2: Filesystem stat
+    try:
+        st = patient_dir.stat()
+        t = st.st_ctime if st.st_ctime > 0 else st.st_mtime
+        if t > 0:
+            dt = datetime.datetime.fromtimestamp(t)
+            return dt.strftime("%d/%m/%Y"), dt.strftime("%Y%m%d%H%M%S")
+    except OSError:
+        pass
+
+    return "", ""
 
 
 def _study_from_folder_path(start: Path) -> tuple[str, str, str]:
@@ -2816,7 +2861,7 @@ def _redirect_plan(
 ) -> tuple[list[tuple[Path, Path]], Path]:
     """Re-aim a side-by-side plan at `base`, keeping each study's own folder."""
     redirected = [
-        (source, base / (source.parent.name if source.name.casefold() == "dicom" else source.name) / "JPG")
+        (source, base / (source.parent.name if source.name.casefold() in {"dicom", "dcom", "dcm"} else source.name) / "JPG")
         for source, _ in pairs
     ]
     return redirected, base
@@ -2830,19 +2875,25 @@ def _local_import_plan(source: Path) -> tuple[list[tuple[Path, Path]], Path]:
     patient folder finds them. Returns those (dicom, jpg) pairs plus the
     folder the viewer should open once the conversion finishes.
     """
-    if source.name.casefold() == "dicom":
+    if source.name.casefold() in {"dicom", "dcom", "dcm"}:
         destination = source.parent / "JPG"
         return [(source, destination)], destination
-    if (source / "DICOM").is_dir():
-        destination = source / "JPG"
-        return [(source / "DICOM", destination)], destination
-    nested = sorted(item for item in source.glob("**/DICOM") if item.is_dir() and item != source)
+    for d_name in ("DICOM", "Dcom", "DCOM", "dcom", "dcm"):
+        d_child = source / d_name
+        if d_child.is_dir():
+            destination = source / "JPG"
+            return [(d_child, destination)], destination
+    nested = sorted(
+        item for item in source.glob("**/*")
+        if item.is_dir() and item.name.casefold() in {"dicom", "dcom", "dcm"} and item != source
+    )
     if nested:
         # A patient folder holding several studies: each study keeps its own
         # JPG sibling, so the viewer opens the patient folder as a whole.
         return [(folder, folder.parent / "JPG") for folder in nested], source
     destination = source / "JPG"
     return [(source, destination)], destination
+
 
 
 def _format_file_size(size_bytes: int) -> str:
@@ -2900,6 +2951,7 @@ class WorklistScanner:
             ),
             "hospital": str(data.get("hospitalName") or "").strip(),
             "hospitalKey": str(data.get("hospitalKey") or "").strip(),
+            "createdAt": str(data.get("createdAt") or "").strip(),
         }
 
     def _manifest_studies_for(self, patient_dir: Path) -> dict[str, dict]:
@@ -2951,7 +3003,22 @@ class WorklistScanner:
         Accepts either a DICOM DA or the dd/mm/yyyy the display field carries,
         so both call sites can hand it whatever they already have.
         """
-        digits = re.sub(r"\D", "", str(raw or ""))
+        text = str(raw or "").strip()
+        if not text:
+            return ""
+        m_ymd = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", text)
+        if m_ymd:
+            y, m, d = m_ymd.groups()
+            stamp = f"{y}{int(m):02d}{int(d):02d}"
+            if _is_real_date(stamp):
+                return stamp
+        m_dmy = re.search(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})", text)
+        if m_dmy:
+            d, m, y = m_dmy.groups()
+            stamp = f"{y}{int(m):02d}{int(d):02d}"
+            if _is_real_date(stamp):
+                return stamp
+        digits = re.sub(r"\D", "", text)
         if len(digits) != 8:
             return ""
         if _is_real_date(digits):
@@ -2962,15 +3029,34 @@ class WorklistScanner:
 
     @staticmethod
     def _format_study_date(raw: str) -> str:
-        """DICOM DA (or an ISO-ish variant) as dd/mm/yyyy; "" when unusable.
+        """DICOM DA (or an ISO/Vietnamese variant) as dd/mm/yyyy; "" when unusable.
 
         An unparseable date returns empty rather than today's date: the study
         date is a field a clinician reads to tell two scans of the same patient
         apart, so a plausible-looking wrong one is worse than a blank.
         """
-        digits = re.sub(r"\D", "", str(raw or ""))
-        if _is_real_date(digits):
-            return f"{digits[6:8]}/{digits[4:6]}/{digits[0:4]}"
+        text = str(raw or "").strip()
+        if not text:
+            return ""
+        m_ymd = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", text)
+        if m_ymd:
+            y, m, d = m_ymd.groups()
+            stamp = f"{y}{int(m):02d}{int(d):02d}"
+            if _is_real_date(stamp):
+                return f"{int(d):02d}/{int(m):02d}/{y}"
+        m_dmy = re.search(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})", text)
+        if m_dmy:
+            d, m, y = m_dmy.groups()
+            stamp = f"{y}{int(m):02d}{int(d):02d}"
+            if _is_real_date(stamp):
+                return f"{int(d):02d}/{int(m):02d}/{y}"
+        digits = re.sub(r"\D", "", text)
+        if len(digits) == 8:
+            if _is_real_date(digits):
+                return f"{digits[6:8]}/{digits[4:6]}/{digits[0:4]}"
+            reordered = f"{digits[4:8]}{digits[2:4]}{digits[0:2]}"
+            if _is_real_date(reordered):
+                return f"{digits[0:2]}/{digits[2:4]}/{digits[4:8]}"
         return ""
 
     def _patient_meta_for(self, patient_dir: Path) -> dict:
@@ -2988,7 +3074,10 @@ class WorklistScanner:
         """
         guessed = self._parse_patient_meta(patient_dir.name)
         recorded = self._manifest_patient_meta(patient_dir)
+        created_display, created_sort = _extract_folder_created_date(patient_dir, recorded)
         if not recorded:
+            guessed["folderCreatedAt"] = created_display
+            guessed["folderCreatedAtSort"] = created_sort
             return guessed
         result = {
             key: str(recorded.get(key) or "").strip()
@@ -2999,6 +3088,8 @@ class WorklistScanner:
             folder_code = _identity_code(guessed.get("patientId"))
             if recorded_code and recorded_code == folder_code:
                 result["patientName"] = guessed["patientName"]
+        result["folderCreatedAt"] = created_display
+        result["folderCreatedAtSort"] = created_sort
         return result
 
     def _parse_patient_meta(self, folder_name: str) -> dict:
@@ -3013,7 +3104,10 @@ class WorklistScanner:
         # chunk, not by its length: a code carries a digit, a name does not.
         if (
             len(primary_chunks) >= 4
-            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", primary_chunks[-1])
+            and (
+                re.fullmatch(r"\d{4}-\d{2}-\d{2}", primary_chunks[-1])
+                or re.fullmatch(r"\d{2}-\d{2}-\d{4}", primary_chunks[-1])
+            )
         ):
             if (
                 _PATIENT_CODE_RE.match(primary_chunks[0])
@@ -3174,7 +3268,11 @@ class WorklistScanner:
                 root_path = Path(root)
                 rel = root_path.relative_to(study_dir)
                 if len(rel.parts) == 1:
-                    series_folders.add(rel.parts[0])
+                    if rel.parts[0].upper() not in {"DICOM", "JPG", "RAW_JPG", "DCOM", "DCM"}:
+                        series_folders.add(rel.parts[0])
+                elif len(rel.parts) == 2:
+                    if rel.parts[0].upper() in {"DICOM", "JPG", "RAW_JPG", "DCOM", "DCM"}:
+                        series_folders.add(rel.parts[1])
                 for f in files:
                     fp = root_path / f
                     try:
@@ -3281,7 +3379,7 @@ class WorklistScanner:
     # Folders that belong to a patient's own material rather than being another
     # patient. Kept in one place so discovery and the study scan agree.
     _NON_PATIENT_DIRS = {
-        "DICOM", "JPG", "RAW_JPG", "VIDEO", "PHOTO", "ATTACHMENTS", "__PYCACHE__",
+        "DICOM", "JPG", "RAW_JPG", "VIDEO", "PHOTO", "ATTACHMENTS", "__PYCACHE__", "DCOM", "DCM",
     }
 
     @staticmethod
@@ -3455,13 +3553,13 @@ class WorklistScanner:
             # Walk up to find if hpath belongs to an existing patient archive folder
             patient_dir = hpath
             for candidate in (hpath, *hpath.parents):
-                if candidate.name.casefold() in {"dicom", "jpg"}:
+                if candidate.name.casefold() in {"dicom", "jpg", "dcom", "dcm", "raw_jpg"}:
                     continue
                 if (candidate / "patient-index.json").is_file() or archive_key(candidate) in patient_map:
                     patient_dir = candidate
                     break
             else:
-                if hpath.name.casefold() in {"dicom", "jpg"}:
+                if hpath.name.casefold() in {"dicom", "jpg", "dcom", "dcm", "raw_jpg"}:
                     patient_dir = hpath.parent
             key = archive_key(patient_dir)
             meta = self._patient_meta_for(patient_dir)
@@ -3478,12 +3576,23 @@ class WorklistScanner:
             # here listed the whole archive as a fifth "study" beside its own
             # four — with every image counted twice. A patient directory only
             # stands in as a study when the scan found no study folders in it.
+            # Format/slice folders like JPG, DICOM, Dcom are never standalone studies:
+            target_study_path = hpath
+            while (
+                target_study_path.name.casefold() in {"dicom", "jpg", "dcom", "dcm", "raw_jpg"}
+                and target_study_path != target_study_path.parent
+            ):
+                target_study_path = target_study_path.parent
             already_scanned = (
-                archive_key(hpath) == key and bool(patient_map[key]["studies"])
+                archive_key(target_study_path) == key and bool(patient_map[key]["studies"])
             )
-            if not already_scanned and str(hpath).casefold() not in existing_folders:
+            if (
+                not already_scanned
+                and str(target_study_path).casefold() not in existing_folders
+                and archive_key(target_study_path) != key
+            ):
                 records = self._manifest_studies_for(patient_dir)
-                st = self._scan_study(hpath, meta, self._lookup_record(records, hpath))
+                st = self._scan_study(target_study_path, meta, self._lookup_record(records, target_study_path))
                 patient_map[key]["studies"].append(st)
 
         patients = []
@@ -3902,12 +4011,16 @@ class WebController:
                         study_dir = dst_jpg.parent
                         # A study folder inside an archive this app already
                         # manages belongs to that archive, not to a second index
-                        # nested one level down.
-                        parent_managed = dcom_pipeline._read_patient_manifest(
-                            study_dir.parent
-                        ) is not None
-                        patient_folder = study_dir.parent if parent_managed else study_dir
+                        # nested one or more levels down.
+                        patient_folder = study_dir
+                        current = study_dir.parent
+                        while current != current.parent:
+                            if dcom_pipeline._read_patient_manifest(current) is not None:
+                                patient_folder = current
+                                break
+                            current = current.parent
                         archives.append((patient_folder, [(study_dir, groups[0])]))
+
 
             if not self.job.stop_event.is_set() and total_stats.converted <= 0:
                 raise ValueError(

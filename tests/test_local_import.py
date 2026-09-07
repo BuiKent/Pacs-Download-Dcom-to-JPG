@@ -22,6 +22,7 @@ from pydicom.uid import ExplicitVRLittleEndian, MRImageStorage, generate_uid
 
 import dcom_pipeline
 import dicom_io
+import web_backend
 from web_backend import WebController
 
 
@@ -216,7 +217,7 @@ class StudyIndexTests(unittest.TestCase):
             groups = dcom_pipeline.index_local_dicom_studies(root, log=lambda _msg: None)
             names = {dcom_pipeline.study_folder_base_name(g.as_study()) for g in groups}
             self.assertEqual(len(names), 2)
-            self.assertTrue(all(name.startswith("2026-07-2") for name in names))
+            self.assertTrue(all("-07-2026" in name for name in names))
 
     def test_identity_is_read_from_the_tags(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -546,6 +547,80 @@ class ImportJobTests(unittest.TestCase):
             self.assertEqual(acquisition["repetitionTime"], 2000.0)
             self.assertEqual(acquisition["echoTime"], 95.0)
             self.assertEqual(acquisition["sliceThickness"], 5.0)
+
+    def test_local_import_plan_recognizes_dcom_and_pairs_with_sibling_jpg(self):
+        """A folder named 'Dcom' or holding 'Dcom' places JPG beside it, never nested inside."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            study = root / "2026-07-30 - MR - BRAIN"
+            dcom_folder = study / "Dcom"
+            dcom_folder.mkdir(parents=True)
+
+            pairs, open_path = web_backend._local_import_plan(dcom_folder)
+            self.assertEqual(1, len(pairs))
+            self.assertEqual(dcom_folder, pairs[0][0])
+            self.assertEqual(study / "JPG", pairs[0][1])
+            self.assertEqual(study / "JPG", open_path)
+
+            pairs2, open_path2 = web_backend._local_import_plan(study)
+            self.assertEqual(1, len(pairs2))
+            self.assertEqual(dcom_folder, pairs2[0][0])
+            self.assertEqual(study / "JPG", pairs2[0][1])
+
+    def test_start_local_import_updates_multilevel_patient_manifest(self):
+        """Converting a Dcom subfolder updates the enclosing patient-index.json at patient root."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            patient_root = root / "BN001 - NGUYEN VAN A - 27T - 2026-09-06"
+            study_folder = patient_root / "2026-07-30 - MR - BRAIN"
+            dcom_folder = study_folder / "Dcom"
+            dcom_folder.mkdir(parents=True)
+
+            study_uid = generate_uid()
+            write_disc_image(
+                dcom_folder / "000001",
+                study_uid=study_uid,
+                series_uid=generate_uid(),
+                patient_id="BN001",
+                patient_name="NGUYEN^VAN^A",
+            )
+
+            # Patient root already has patient-index.json with status incomplete
+            patient_manifest = {
+                "format": "dcom-patient-index-v1",
+                "patientId": "BN001",
+                "patientName": "NGUYEN VAN A",
+                "studies": {
+                    study_uid: {
+                        "studyUid": study_uid,
+                        "date": "2026-07-30",
+                        "modality": "MR",
+                        "description": "BRAIN",
+                        "folder": study_folder.name,
+                        "status": "incomplete",
+                        "imageCount": 0,
+                    }
+                }
+            }
+            (patient_root / "patient-index.json").write_text(
+                json.dumps(patient_manifest), encoding="utf-8"
+            )
+
+            controller = WebController()
+            controller.output_root = root
+            finished = self._run(controller, dcom_folder)
+
+            self.assertEqual("complete", finished["status"], finished["logs"])
+            self.assertTrue((study_folder / "JPG").is_dir())
+            self.assertFalse((dcom_folder / "JPG").exists())
+
+            # Confirm enclosing patient-index.json was updated to complete
+            updated_manifest = json.loads(
+                (patient_root / "patient-index.json").read_text(encoding="utf-8")
+            )
+            study_rec = updated_manifest["studies"][study_uid]
+            self.assertEqual("complete", study_rec["status"])
+            self.assertGreater(study_rec["imageCount"], 0)
 
 
 if __name__ == "__main__":

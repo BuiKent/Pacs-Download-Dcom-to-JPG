@@ -39,7 +39,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from typing import Any, Callable, Optional
 import unicodedata
@@ -4919,6 +4919,51 @@ def _is_redacted_patient_value(value: Any) -> bool:
     }
 
 
+def _format_dmy_date(value: Any) -> str:
+    """Format any valid date representation to DD-MM-YYYY, or empty string if invalid."""
+    if not value:
+        return ""
+    dt = _parse_date_flexible(value)
+    if dt is not None:
+        return f"{dt.day:02d}-{dt.month:02d}-{dt.year:04d}"
+    return ""
+
+
+
+def _parse_date_flexible(value: Any) -> Optional[date]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%Y%m%d", "%d/%m/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text[:10] if len(text) >= 10 else text, fmt).date()
+        except ValueError:
+            pass
+    m = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})", text)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+    m = re.search(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})", text)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            pass
+    digits = re.sub(r"\D", "", text)
+    if len(digits) >= 8:
+        try:
+            return datetime.strptime(digits[:8], "%Y%m%d").date()
+        except ValueError:
+            pass
+    return None
+
+
 def _normalise_dicom_date(value: Any) -> str:
     digits = re.sub(r"\D", "", str(value or ""))
     if len(digits) < 8:
@@ -4952,12 +4997,9 @@ def _normalise_manual_birth_date(dob: str) -> str:
 
 def _age_from_dates(birth_date: str, study_date: str) -> tuple[str, Optional[int]]:
     """Return a human label and completed years at the study date."""
-    try:
-        birth = datetime.strptime(birth_date, "%Y-%m-%d").date()
-        study = datetime.strptime(study_date, "%Y-%m-%d").date()
-    except ValueError:
-        return "", None
-    if study < birth:
+    birth = _parse_date_flexible(birth_date)
+    study = _parse_date_flexible(study_date)
+    if not birth or not study or study < birth:
         return "", None
     years = study.year - birth.year - ((study.month, study.day) < (birth.month, birth.day))
     if years > 0:
@@ -5000,9 +5042,9 @@ def _now_local() -> str:
 
 
 def _study_date_token(value: Any) -> str:
-    digits = re.sub(r"\D", "", str(value or ""))
-    if len(digits) >= 8:
-        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    token = _format_dmy_date(value)
+    if token:
+        return token
     return _safe_name(value or "KHONG_RO_NGAY")
 
 
@@ -5302,7 +5344,7 @@ def ensure_patient_archive(
             f"đã lưu '{manifest.get('patientName')}', RIS trả '{patient_name}'. Không tự động gộp."
         )
     if folder is None:
-        created_date = datetime.now().strftime("%Y-%m-%d")
+        created_date = datetime.now().strftime("%d-%m-%Y")
         display_name = patient_name or "KHONG_RO_TEN"
         pid = patient_id or "KHONG_RO_ID"
         folder_name = " - ".join((
@@ -6575,9 +6617,9 @@ def patient_download_folder_name(metadata: dict, download_date: str = "") -> str
     patient_id = _safe_name(
         "KHONG_RO_ID" if _is_redacted_patient_value(raw_id) else raw_id
     )
-    date = _normalise_dicom_date(download_date) or datetime.now().strftime("%Y-%m-%d")
+    date = _format_dmy_date(download_date) or datetime.now().strftime("%d-%m-%Y")
     current_age, _current_age_years = _age_from_dates(
-        _normalise_dicom_date(metadata.get("PatientBirthDate")),
+        metadata.get("PatientBirthDate"),
         date,
     )
     age = _safe_name(current_age or metadata.get("PatientAge") or "KHONG_RO_TUOI")

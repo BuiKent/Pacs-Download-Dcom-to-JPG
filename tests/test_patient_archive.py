@@ -64,6 +64,23 @@ class PatientArchiveTests(unittest.TestCase):
             time.sleep(0.01)
         return controller.job.snapshot()
 
+    def test_format_dmy_date_calendar_validation(self):
+        # Valid calendar dates in various formats format to DD-MM-YYYY
+        self.assertEqual("01-08-2026", dcom_pipeline._format_dmy_date("2026-08-01"))
+        self.assertEqual("01-08-2026", dcom_pipeline._format_dmy_date("01-08-2026"))
+        self.assertEqual("01-08-2026", dcom_pipeline._format_dmy_date("20260801"))
+        self.assertEqual("01-08-2026", dcom_pipeline._format_dmy_date("01/08/2026"))
+        self.assertEqual("29-02-2024", dcom_pipeline._format_dmy_date("2024-02-29"))  # Leap year
+
+        # Impossible dates must return empty string, never fabricate an invalid date
+        self.assertEqual("", dcom_pipeline._format_dmy_date("2026-02-31"))
+        self.assertEqual("", dcom_pipeline._format_dmy_date("31-02-2026"))
+        self.assertEqual("", dcom_pipeline._format_dmy_date("2026-13-01"))
+        self.assertEqual("", dcom_pipeline._format_dmy_date("2026-00-01"))
+        self.assertEqual("", dcom_pipeline._format_dmy_date("2026-02-29"))  # 2026 is not a leap year
+        self.assertEqual("", dcom_pipeline._format_dmy_date("not-a-date"))
+        self.assertEqual("", dcom_pipeline._format_dmy_date(""))
+
     def test_patient_folder_is_reused_and_studies_are_classified(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -139,7 +156,7 @@ class PatientArchiveTests(unittest.TestCase):
     def test_study_folder_contains_only_requested_metadata(self):
         first = dcom_pipeline.study_archive_folder_name(study("1.2.840.113619.2.1.100"))
         second = dcom_pipeline.study_archive_folder_name(study("1.2.840.113619.2.1.200"))
-        self.assertEqual("2026-08-02 - MR - MR BRAIN", first)
+        self.assertEqual("02-08-2026 - MR - MR BRAIN", first)
         self.assertEqual(first, second)
         self.assertNotRegex(first, r"[0-9a-f]{8,10}$")
 
@@ -150,7 +167,7 @@ class PatientArchiveTests(unittest.TestCase):
             second = study("1.2.3.200")
 
             first_name = dcom_pipeline.resolve_study_folder_name(folder, first)
-            self.assertEqual("2026-08-02 - MR - MR BRAIN", first_name)
+            self.assertEqual("02-08-2026 - MR - MR BRAIN", first_name)
 
             (folder / first_name).mkdir()
             dcom_pipeline._write_patient_manifest(folder, {
@@ -566,7 +583,7 @@ class PatientDemographicsTests(unittest.TestCase):
             self.assertEqual("", metadata["PatientBirthDate"])
             self.assertEqual("55T", metadata["PatientAge"])
             self.assertEqual(
-                "KHONG_RO_ID - KHONG_RO_TEN - 55T - 2026-08-09",
+                "KHONG_RO_ID - KHONG_RO_TEN - 55T - 09-08-2026",
                 folder,
             )
 
@@ -588,7 +605,7 @@ class PatientDemographicsTests(unittest.TestCase):
 
             self.assertEqual("NGUYEN THI CAM TU", metadata["PatientName"])
             self.assertEqual(
-                "2606033997 - NGUYEN THI CAM TU - 23T - 2026-08-09",
+                "2606033997 - NGUYEN THI CAM TU - 23T - 09-08-2026",
                 folder,
             )
 
@@ -878,7 +895,7 @@ class PatientDemographicsTests(unittest.TestCase):
 
             self.assertEqual(3, attempts)
             self.assertEqual(
-                "BN001 - NGUYEN VAN A - 23T - 2026-08-09",
+                "BN001 - NGUYEN VAN A - 23T - 09-08-2026",
                 renamed.name,
             )
             self.assertEqual(renamed / "JPG", remapped_jpg)
@@ -1081,7 +1098,7 @@ class PatientDemographicsTests(unittest.TestCase):
         )
         self.assertIn(" - 25T - ", name)
         self.assertIn("BN001", name)
-        self.assertTrue(name.endswith("2026-08-09"))
+        self.assertTrue(name.endswith("09-08-2026"))
 
     def test_patient_manifest_rejects_conflicting_birth_date(self):
         with tempfile.TemporaryDirectory() as tmp:

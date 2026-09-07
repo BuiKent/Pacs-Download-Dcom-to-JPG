@@ -1020,7 +1020,10 @@ class ServerSecurityTests(unittest.TestCase):
 
     def tearDown(self):
         self.server.stop()
-        self.tmp.cleanup()
+        try:
+            self.tmp.cleanup()
+        except Exception:
+            pass
 
     def request(self, path, token=None, extra=None):
         headers = dict(extra or {})
@@ -1932,6 +1935,35 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         patients = WorklistScanner(self.controller).scan()
         patient = next(item for item in patients if item["patientId"] == "TEST-0003")
         self.assertEqual(len(patient["studies"]), 1)
+
+    def test_history_pointing_to_jpg_or_dicom_subfolder_does_not_create_phantom_study(self) -> None:
+        """A history entry for Study/JPG or Study/Dcom/JPG does not become a phantom study named 'JPG'."""
+        from web_backend import WorklistScanner
+
+        p_dir = self.temp_dir / "TEST-0004_PHAM THI D - Nu - 1995 - BV E"
+        study = p_dir / "2026-07-30 - MR - BRAIN"
+        dcom = study / "Dcom"
+        jpg = study / "JPG"
+        dcom.mkdir(parents=True, exist_ok=True)
+        jpg.mkdir(parents=True, exist_ok=True)
+        (dcom / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+        (jpg / "IM_0001.jpg").write_bytes(b"\xFF\xD8\xFF\xE0" + b"\0" * 100)
+
+        self.controller.output_root = self.temp_dir
+        # History records the JPG output folder after conversion
+        self.controller.history.add(jpg)
+        self.controller.history.add(dcom)
+
+        patients = WorklistScanner(self.controller).scan()
+        patient = next(item for item in patients if item["patientId"] == "TEST-0004")
+
+        # Exactly one study must be listed, not duplicate or phantom 'JPG' study
+        self.assertEqual(len(patient["studies"]), 1)
+        st = patient["studies"][0]
+        self.assertNotEqual("JPG", st["studyName"])
+        self.assertEqual("MR - BRAIN", st["studyName"])
+        self.assertEqual(Path(st["folder"]).resolve(), study.resolve())
+
 
     def test_api_worklist_endpoints(self) -> None:
         # Test GET /api/worklist
@@ -3535,6 +3567,42 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
 
             found = WorklistScanner(WebController())._discover_patient_archives(root)
             self.assertEqual([p.name for p, _ in found], ["1111 - A"])
+
+    def test_patient_folder_created_date_extraction_and_sort_key(self):
+        from web_backend import WorklistScanner
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            # Case 1: Manifest has createdAt
+            p1 = root / "P1 - NGUYEN A"
+            p1.mkdir(parents=True)
+            (p1 / "patient-index.json").write_text(
+                json.dumps({
+                    "patientId": "P1",
+                    "patientName": "NGUYEN A",
+                    "createdAt": "2026-09-06T23:29:04+07:00",
+                    "studies": {},
+                }),
+                encoding="utf-8",
+            )
+
+            # Case 2: No manifest, date in folder name
+            p2 = root / "P2 - TRAN B - 25T - 2026-08-15"
+            p2.mkdir(parents=True)
+
+            controller = WebController()
+            controller.output_root = root
+            controller.source_folders = [str(root)]
+            scanner = WorklistScanner(controller)
+            patients = {p["patientId"]: p for p in scanner.scan()}
+
+            self.assertIn("P1", patients)
+            self.assertEqual(patients["P1"]["folderCreatedAt"], "06/09/2026")
+            self.assertEqual(patients["P1"]["folderCreatedAtSort"], "20260906232904")
+
+            self.assertIn("P2", patients)
+            self.assertEqual(patients["P2"]["folderCreatedAt"], "15/08/2026")
+            self.assertEqual(patients["P2"]["folderCreatedAtSort"], "20260815000000")
 
 
 if __name__ == "__main__":
