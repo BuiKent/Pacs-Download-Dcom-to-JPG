@@ -3296,6 +3296,24 @@ function renderActivityPanelInner() {
         </div>
       `).join("")}
     </div>
+
+    <div class="activity-head-row">
+      <div class="activity-head">${escapeHtml(t("Nhật ký phiên làm việc (Logs)"))}</div>
+      <button class="mini-btn primary" type="button" data-action="open-logs" title="${escapeHtml(t("Mở thư mục nhật ký"))}">
+        📋 ${escapeHtml(t("Mở thư mục Log"))}
+      </button>
+    </div>
+    <div class="activity-source-folders">
+      <div class="activity-folder-row">
+        <span class="folder-icon">📝</span>
+        <span class="folder-path" title="${escapeHtml(t("Ghi log tự động mỗi lần khởi chạy — lưu tại thư mục logs/"))}">
+          ${escapeHtml(t("Ghi log tự động mỗi lần khởi chạy — lưu tại thư mục logs/"))}
+        </span>
+        <span class="folder-actions">
+          <button class="mini-btn icon-btn" type="button" data-action="open-logs" title="${escapeHtml(t("Mở thư mục Log trong Explorer"))}">📂</button>
+        </span>
+      </div>
+    </div>
   `;
 }
 
@@ -3544,6 +3562,8 @@ function render() {
             ) : ""}
             ${iconButton("choose-archive", icons.folder, t("Mở folder hồ sơ: phim, ảnh, video và văn bản đều được nhận diện"))}
             ${iconButton("refresh-archive", "⟳", t("Quét lại thư mục hiện tại"), false, !state.archive.root)}
+            <button class="soft-button" data-action="open-logs"
+              title="${escapeHtml(t("Mở thư mục nhật ký (log) phiên làm việc"))}">📋 ${escapeHtml(t("Log"))}</button>
             <button class="soft-button" data-action="toggle-language"
               title="${escapeHtml(t("Chuyển sang tiếng Anh"))}">${getLanguage() === "en" ? "VI" : "EN"}</button>
           </div>
@@ -5556,6 +5576,15 @@ async function action(name, element = null) {
     }
     if (name === "refresh-worklist") {
       await refreshWorklist();
+      return;
+    }
+    if (name === "open-logs") {
+      try {
+        const res = await api("/api/logs/reveal", {});
+        setStatus(tf("Đã mở thư mục nhật ký: {}", res.folder || "logs"));
+      } catch (err) {
+        setStatus(t("Không thể mở thư mục nhật ký: ") + (err?.message || ""), true);
+      }
       return;
     }
     if (name === "export-patient-record") {

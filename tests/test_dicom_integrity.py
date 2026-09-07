@@ -375,5 +375,80 @@ class DecodeShieldTests(unittest.TestCase):
             self.assertIn("không toàn vẹn", str(ctx.exception))
 
 
+class ContinuityAndParityIntegrityTests(unittest.TestCase):
+    def test_download_stats_requires_distinct_instances(self):
+        stats = DownloadStats(expected=50)
+        stats.completed_tasks = 50
+        stats.dicom = 1  # 49 duplicate responses from PACS
+        self.assertFalse(stats.is_complete())
+        self.assertEqual(stats.status, "partial")
+
+        stats.dicom = 50
+        self.assertTrue(stats.is_complete())
+        self.assertEqual(stats.status, "complete")
+
+    def test_continuity_fails_on_duplicate_instance_number(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dcm_dir = Path(tmp_dir) / "DICOM" / "Series1"
+            dcm_dir.mkdir(parents=True, exist_ok=True)
+            # Create two files with same InstanceNumber=7
+            for idx, fn in enumerate(["f1.dcm", "f2.dcm"]):
+                p = dcm_dir / fn
+                sop_uid = f"1.2.3.4.5.{idx}"
+                file_meta = FileMetaDataset()
+                file_meta.MediaStorageSOPClassUID = MRImageStorage
+                file_meta.MediaStorageSOPInstanceUID = sop_uid
+                file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+                ds = FileDataset(str(p), {}, file_meta=file_meta, preamble=b"\0" * 128)
+                ds.SOPClassUID = MRImageStorage
+                ds.SOPInstanceUID = sop_uid
+                ds.StudyInstanceUID = "1.2.840.1111"
+                ds.SeriesInstanceUID = "1.2.840.2222"
+                ds.InstanceNumber = 7  # Both have instance number 7!
+                ds.Modality = "MR"
+                ds.save_as(str(p))
+
+            is_cont, rep = dcom_pipeline.verify_study_slice_continuity(dcm_dir)
+            self.assertFalse(is_cont)
+            self.assertEqual(len(rep["gaps_found"]), 1)
+            self.assertTrue(rep["gaps_found"][0].get("conflict"))
+            self.assertIn("Trùng lặp", rep["gaps_found"][0]["reason"])
+
+    def test_parity_fails_on_extraneous_jpg(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            study_dir = Path(tmp_dir)
+            dcm_dir = study_dir / "DICOM"
+            jpg_dir = study_dir / "JPG"
+            dcm_dir.mkdir(parents=True, exist_ok=True)
+            jpg_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create 2 mock DICOMs
+            for idx in [1, 2]:
+                p = dcm_dir / f"img_{idx}.dcm"
+                sop_uid = f"1.2.3.4.5.{idx}"
+                file_meta = FileMetaDataset()
+                file_meta.MediaStorageSOPClassUID = MRImageStorage
+                file_meta.MediaStorageSOPInstanceUID = sop_uid
+                file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+                ds = FileDataset(str(p), {}, file_meta=file_meta, preamble=b"\0" * 128)
+                ds.SOPClassUID = MRImageStorage
+                ds.SOPInstanceUID = sop_uid
+                ds.StudyInstanceUID = "1.2.840.1111"
+                ds.SeriesInstanceUID = "1.2.840.2222"
+                ds.InstanceNumber = idx
+                ds.Modality = "MR"
+                ds.save_as(str(p))
+
+            # Create 3 JPGs (1 extraneous JPG)
+            for idx in [1, 2, 3]:
+                (jpg_dir / f"img_{idx}.jpg").write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00")
+
+            is_par, rep = dcom_pipeline.verify_study_dicom_jpg_parity(study_dir)
+            self.assertFalse(is_par)
+            self.assertEqual(rep["dicom_count"], 2)
+            self.assertEqual(rep["jpg_count"], 3)
+            self.assertEqual(rep["extra_jpg"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

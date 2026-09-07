@@ -60,6 +60,11 @@ def _default_log(msg: str) -> None:
         print(msg, flush=True)
     except Exception:
         pass
+    try:
+        import app_logging
+        app_logging.get_logger().info(msg, source="PIPELINE")
+    except Exception:
+        pass
 
 
 # DICOM objects that carry NO pixels: structured reports (a CT "Dose SR", say),
@@ -1560,15 +1565,17 @@ class DownloadStats:
         """Check completeness based on manifest expected count, error rate, or validated slice continuity."""
         if self.cancelled or self.failed > 0:
             return False
-        if self.dicom <= 0 and self.completed_tasks <= 0 and (self.jpg > 0 or self.png > 0):
+        if self.dicom <= 0 and (self.jpg > 0 or self.png > 0):
             return False
-        counted = self.completed_tasks or self.dicom
-        if counted <= 0:
+        if self.dicom <= 0 and self.completed_tasks <= 0:
             return False
         if self.continuity_valid is True and self.failed == 0:
             return True
         if self.expected > 0:
-            return counted >= self.expected
+            # Completeness requires having at least `expected` distinct DICOM images on disk,
+            # not duplicate responses satisfying arbitrary task counts.
+            distinct_count = self.dicom or self.completed_tasks
+            return distinct_count >= self.expected
         return False
 
     @property
@@ -1589,8 +1596,8 @@ class DownloadStats:
             if self.continuity_valid is True and self.failed == 0:
                 return "complete"
             if self.expected > 0:
-                counted = self.completed_tasks or self.dicom
-                if counted >= self.expected and self.failed == 0:
+                distinct_count = self.dicom or self.completed_tasks
+                if distinct_count >= self.expected and self.failed == 0:
                     return "complete"
                 return "partial"
             return "partial_unknown"
@@ -1708,7 +1715,64 @@ def verify_study_slice_continuity(dicom_dir: Path | str) -> tuple[bool, dict[str
         instances = [it["instance_number"] for it in items if it["instance_number"] is not None]
         unique_instances = sorted(set(instances))
 
-        if len(unique_instances) > 1 and len(unique_instances) == len(items):
+        if count == 1:
+            # Single-slice series (scout, localizer, or single capture)
+            series_reports.append({
+                "series_uid": series_uid,
+                "series_number": s_num,
+                "series_description": desc,
+                "count": 1,
+                "continuous": True,
+                "note": "single_slice",
+            })
+        elif len(instances) < count:
+            # Slices are missing InstanceNumber
+            is_overall_continuous = False
+            missing_tag_count = count - len(instances)
+            gap_info = {
+                "series_uid": series_uid,
+                "series_number": s_num,
+                "series_description": desc,
+                "count": count,
+                "conflict": True,
+                "missing_count": missing_tag_count,
+                "reason": f"Thiếu thẻ InstanceNumber trong {missing_tag_count}/{count} lát cắt",
+            }
+            gaps_found.append(gap_info)
+            series_reports.append({
+                "series_uid": series_uid,
+                "series_number": s_num,
+                "series_description": desc,
+                "count": count,
+                "continuous": False,
+                "conflict": True,
+                "reason": gap_info["reason"],
+            })
+        elif len(unique_instances) < count:
+            # Duplicate InstanceNumber collision! (e.g. 2 slices both having InstanceNumber=7)
+            is_overall_continuous = False
+            duplicate_count = count - len(unique_instances)
+            gap_info = {
+                "series_uid": series_uid,
+                "series_number": s_num,
+                "series_description": desc,
+                "count": count,
+                "conflict": True,
+                "missing_count": duplicate_count,
+                "reason": f"Trùng lặp InstanceNumber ({duplicate_count} lát cắt bị trùng số thứ tự)",
+            }
+            gaps_found.append(gap_info)
+            series_reports.append({
+                "series_uid": series_uid,
+                "series_number": s_num,
+                "series_description": desc,
+                "count": count,
+                "continuous": False,
+                "conflict": True,
+                "reason": gap_info["reason"],
+            })
+        else:
+            # All slices have distinct InstanceNumbers
             min_inst = min(unique_instances)
             max_inst = max(unique_instances)
             expected_range = set(range(min_inst, max_inst + 1))
@@ -1744,19 +1808,11 @@ def verify_study_slice_continuity(dicom_dir: Path | str) -> tuple[bool, dict[str
                     "min_instance": min_inst,
                     "max_instance": max_inst,
                 })
-        else:
-            series_reports.append({
-                "series_uid": series_uid,
-                "series_number": s_num,
-                "series_description": desc,
-                "count": count,
-                "continuous": True,
-            })
 
     details = (
         f"Hoàn toàn liên tục ({total_valid_images} ảnh, {len(series_reports)} series, 0 lỗ hổng)"
         if is_overall_continuous
-        else f"Phát hiện thiếu lát cắt trong {len(gaps_found)} series ({sum(g['missing_count'] for g in gaps_found)} lát bị khuyết)"
+        else f"Phát hiện thiếu lát cắt trong {len(gaps_found)} series ({sum(g.get('missing_count', 1) for g in gaps_found)} lát bị khuyết hoặc xung đột)"
     )
 
     return is_overall_continuous, {
@@ -1771,7 +1827,9 @@ def verify_study_slice_continuity(dicom_dir: Path | str) -> tuple[bool, dict[str
 
 def verify_study_dicom_jpg_parity(study_dir: Path | str) -> tuple[bool, dict[str, Any]]:
     """
-    Check 1-to-1 parity between valid image DICOMs and converted JPGs in a study folder.
+    Check strict 1-to-1 parity between valid image DICOMs and converted JPGs in a study folder.
+    Ensures that every DICOM image has its exact corresponding JPG representation on disk,
+    accounting for multi-frame DICOMs and guarding against extraneous or mismatched files.
     """
     path = Path(study_dir).expanduser().resolve()
     dicom_dir = path / "DICOM" if (path / "DICOM").is_dir() else path
@@ -1787,6 +1845,9 @@ def verify_study_dicom_jpg_parity(study_dir: Path | str) -> tuple[bool, dict[str
 
     import pydicom
     image_dicoms = []
+    total_expected_frames = 0
+    dicom_series_uids: set[str] = set()
+
     for df in dicom_files:
         try:
             ds = pydicom.dcmread(str(df), stop_before_pixels=True, force=True)
@@ -1794,22 +1855,36 @@ def verify_study_dicom_jpg_parity(study_dir: Path | str) -> tuple[bool, dict[str
             sop_cls = str(getattr(ds, "SOPClassUID", "") or "").strip()
             if not _is_non_image_modality(mod) and not _is_non_image_sop_class(sop_cls):
                 image_dicoms.append(df)
+                s_uid = str(getattr(ds, "SeriesInstanceUID", "") or "").strip()
+                if s_uid:
+                    dicom_series_uids.add(s_uid)
+                num_frames = getattr(ds, "NumberOfFrames", 1)
+                try:
+                    num_frames_int = int(num_frames) if num_frames is not None else 1
+                except (ValueError, TypeError):
+                    num_frames_int = 1
+                total_expected_frames += max(1, num_frames_int)
         except Exception:
             continue
 
     dicom_count = len(image_dicoms)
     jpg_count = len(jpg_files)
-    is_parity = (dicom_count > 0 and jpg_count >= dicom_count)
+    expected_jpg = total_expected_frames if total_expected_frames > 0 else dicom_count
+
+    # Strict 1-1 parity: DICOMs exist, and JPG count matches exact expected frames
+    is_parity = (dicom_count > 0 and jpg_count == expected_jpg)
 
     return is_parity, {
         "dicom_count": dicom_count,
+        "expected_jpg": expected_jpg,
         "jpg_count": jpg_count,
         "parity": is_parity,
-        "missing_jpg": max(0, dicom_count - jpg_count),
+        "missing_jpg": max(0, expected_jpg - jpg_count),
+        "extra_jpg": max(0, jpg_count - expected_jpg),
         "details": (
-            f"Đạt chuẩn 1-1 ({jpg_count}/{dicom_count} JPG)"
+            f"Đạt chuẩn 1-1 ({jpg_count}/{expected_jpg} JPG)"
             if is_parity
-            else f"Lệch số lượng JPG ({jpg_count}/{dicom_count} DICOM)"
+            else f"Lệch số lượng JPG ({jpg_count}/{expected_jpg} ảnh JPG so với {dicom_count} DICOM)"
         ),
     }
 
@@ -4082,24 +4157,62 @@ def _read_response_chunks(response, budget: Optional[DownloadBudget] = None,
 
 
 def _report_download_result(stats: DownloadStats, expected: int, log: LogFn,
-                            stop: Callable[[], bool]) -> None:
+                            stop: Callable[[], bool],
+                            study_uid: str = "", patient_id: str = "") -> None:
     """Conclude study completeness. If incomplete, report clearly as incomplete."""
     expected = int(expected or 0)
     stats.expected = max(stats.expected, expected)
     if stop():
         stats.cancelled = True
         log(f"  ⏹ Đã dừng theo yêu cầu: {stats.dicom}/{expected or '?'} ảnh.")
+        try:
+            import app_logging
+            app_logging.get_logger().download_summary(
+                study_uid=study_uid,
+                patient_id=patient_id,
+                expected=expected,
+                dicom_count=stats.dicom,
+                jpg_count=stats.jpg,
+                status="cancelled",
+                failed_count=stats.failed,
+                details=f"tasks={stats.completed_tasks}, stopped_by_user=True",
+            )
+        except Exception:
+            pass
         return
-    completed = stats.completed_tasks or stats.dicom
-    if expected and completed >= expected:
-        log(f"  ✓ Đã đủ theo manifest: {completed}/{expected} ảnh.")
+
+    distinct_count = stats.dicom or stats.completed_tasks
+    duplicate_count = max(0, stats.completed_tasks - stats.dicom) if stats.dicom > 0 else 0
+
+    if expected and stats.dicom >= expected:
+        log(f"  ✓ Đã đủ theo manifest: {stats.dicom}/{expected} ảnh DICOM thực tế.")
+        if duplicate_count > 0:
+            log(f"  ⚠ Lưu ý: Phát hiện {duplicate_count} request trả về ảnh trùng SOP/nội dung.")
+    elif expected and distinct_count >= expected and stats.dicom == 0:
+        # Fallback when DICOM count is 0 (e.g. direct rendered image download mode)
+        log(f"  ✓ Đã đủ theo manifest: {distinct_count}/{expected} ảnh.")
     elif expected:
-        log(f"  ❌ THIẾU ẢNH: mới có {completed}/{expected} "
+        log(f"  ❌ THIẾU ẢNH: mới có {distinct_count}/{expected} "
             f"(còn hỏng {stats.failed} sau khi đã thử lại). Ca này sẽ bị đánh dấu "
             f"CHƯA ĐỦ để tải bù, KHÔNG tính là hoàn tất.")
     else:
         log(f"  ⚠ Viewer không khai báo tổng số ảnh — đã lấy {stats.total()} ảnh, "
             f"không thể tự đối chiếu đủ/thiếu.")
+
+    try:
+        import app_logging
+        app_logging.get_logger().download_summary(
+            study_uid=study_uid,
+            patient_id=patient_id,
+            expected=expected,
+            dicom_count=stats.dicom,
+            jpg_count=stats.jpg,
+            status=stats.status,
+            failed_count=stats.failed,
+            details=f"tasks={stats.completed_tasks}, distinct_dicom={stats.dicom}, duplicate_sop={duplicate_count}",
+        )
+    except Exception:
+        pass
 
 
 def _vrad_image_param(manifest_value: Any, web_params: dict, key: str) -> str:
@@ -7948,7 +8061,7 @@ def download_studies_list(
             if dicom_dir.is_dir() and not stopped:
                 is_continuous, continuity_rep = verify_study_slice_continuity(dicom_dir)
                 is_parity, parity_rep = verify_study_dicom_jpg_parity(st_out_dir)
-                if not complete and is_continuous and is_parity and (dl is not None and dl.failed == 0):
+                if not complete and is_continuous and is_parity and (dl is not None and dl.failed == 0 and (dl.expected == 0 or dl.dicom >= dl.expected)):
                     complete = True
                     if dl:
                         dl.continuity_valid = True

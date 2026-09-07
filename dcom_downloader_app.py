@@ -1828,6 +1828,11 @@ class App:
 
 
 def main():
+    try:
+        from app_logging import init_app_logging
+        init_app_logging(tee_stdio=True)
+    except Exception:
+        pass
     root = tk.Tk()
     try:
         from ctypes import windll

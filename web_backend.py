@@ -2424,8 +2424,12 @@ class JobState:
 
     def __post_init__(self) -> None:
         if self.log_file_path is None:
-            app_data = Path(os.environ.get("LOCALAPPDATA") or Path.home())
-            self.log_file_path = app_data / "DCom JPG PACS" / "app.log"
+            try:
+                import app_logging
+                self.log_file_path = app_logging.get_logger().log_file
+            except Exception:
+                app_data = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+                self.log_file_path = app_data / "DCom JPG PACS" / "app.log"
         try:
             self.log_file_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -2449,6 +2453,11 @@ class JobState:
         with self.lock:
             self.logs.append(text)
             self.message = text
+        try:
+            import app_logging
+            app_logging.get_logger().job_event(self.kind or "JOB", text)
+        except Exception:
+            pass
         if self.log_file_path:
             try:
                 now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -2469,6 +2478,12 @@ class JobState:
             self.result = None
             self.started_at = time.time()
             self.finished_at = 0
+
+        try:
+            import app_logging
+            app_logging.get_logger().info(f"Bắt đầu tác vụ {kind}", source="JOB")
+        except Exception:
+            pass
 
         if self.log_file_path:
             try:
@@ -2533,11 +2548,21 @@ class JobState:
                         self.message = "Hoàn tất."
             except Exception as exc:
                 self.log(f"Lỗi: {exc}")
+                try:
+                    import app_logging
+                    app_logging.get_logger().error(f"Tác vụ {kind} gặp sự cố: {exc}", exc_info=True, source="JOB")
+                except Exception:
+                    pass
                 with self.lock:
                     self.status = "error"
             finally:
                 with self.lock:
                     self.finished_at = time.time()
+                try:
+                    import app_logging
+                    app_logging.get_logger().info(f"Tác vụ {kind} kết thúc: status={self.status}, msg={self.message}", source="JOB")
+                except Exception:
+                    pass
 
         threading.Thread(target=run, name=f"dcom-{kind}", daemon=True).start()
 
@@ -3888,6 +3913,41 @@ class WebController:
         else:
             subprocess.Popen(["xdg-open", str(target)])
         return {"revealed": True, "folder": str(target)}
+
+    def reveal_logs_folder(self) -> dict:
+        """Open the application logs folder in the OS file browser."""
+        try:
+            import app_logging
+            logger = app_logging.get_logger()
+            log_dir = logger.log_dir
+            current_log = logger.log_file
+        except Exception:
+            log_dir = Path("logs").resolve()
+            current_log = None
+        log_dir.mkdir(parents=True, exist_ok=True)
+        if sys.platform.startswith("win"):
+            os.startfile(str(log_dir))  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["xdg-open", str(log_dir)])
+        return {
+            "revealed": True,
+            "folder": str(log_dir),
+            "currentLog": str(current_log) if current_log else "",
+        }
+
+    def get_logs_info(self) -> dict:
+        """Return metadata about current active session log and historical logs."""
+        try:
+            import app_logging
+            logger = app_logging.get_logger()
+            return {
+                "logDir": str(logger.log_dir),
+                "currentLogFile": str(logger.log_file),
+                "logFileName": logger.log_file.name if logger.log_file else "",
+                "recentLogs": [f.name for f in logger.list_recent_logs(10)],
+            }
+        except Exception as exc:
+            return {"error": str(exc), "logDir": "logs", "recentLogs": []}
 
     def open_archive(self, path: str) -> dict:
         return self.catalog.open(path)
@@ -5473,6 +5533,8 @@ class LocalApiServer:
                     return {"sourceFolders": owner.controller.get_source_folders()}
                 if path == "/api/sessions":
                     return {"sessions": owner.controller.sessions.list_sessions()}
+                if path == "/api/logs/info":
+                    return owner.controller.get_logs_info()
                 if path == "/api/media/video/status":
                     import video_engine as ve
                     return {"stats": ve.concurrency_stats()}
@@ -5604,6 +5666,8 @@ class LocalApiServer:
                     )
                 if path == "/api/worklist/reveal-folder":
                     return owner.controller.reveal_folder(str(payload.get("folder") or ""))
+                if path == "/api/logs/reveal":
+                    return owner.controller.reveal_logs_folder()
                 if path == "/api/source-folders/add":
                     return owner.controller.add_source_folder(str(payload.get("folder") or ""))
                 if path == "/api/source-folders/remove":

@@ -1218,6 +1218,11 @@ def main() -> None:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
         pass
+    try:
+        from app_logging import init_app_logging
+        init_app_logging(tee_stdio=True)
+    except Exception as exc:
+        sys.stderr.write(f"Khởi tạo logging thất bại: {exc}\n")
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--debug-web", action="store_true")
     parser.add_argument("--archive", default="")
