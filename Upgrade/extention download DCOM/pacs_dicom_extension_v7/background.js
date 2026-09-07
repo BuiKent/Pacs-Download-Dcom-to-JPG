@@ -1,5 +1,5 @@
 'use strict';
-import {cleanUrl,classifyPacsUrl,viewerUrlScore,originPattern,bestDetectedRequest,safeHeaders,replayContentType,viewerStudyHint,classifyViewerShell,sanitizeSegment,computeUrlFingerprint,RecipeStoreV2} from './lib/pacs.js';
+import {cleanUrl,classifyPacsUrl,viewerUrlScore,originPattern,bestDetectedRequest,safeHeaders,replayContentType,viewerStudyHint,classifyViewerShell,sanitizeSegment,computeUrlFingerprint,RecipeStoreV2,buildStudyStoragePath} from './lib/pacs.js';
 import {matchingAdapters,adapterById} from './lib/adapters/registry.js';
 import {compatibleAdapterIds,mapSeriesSelection,tasksBelongToStudy,cumulativeAttemptCounters,inventoryIsCovered,dedupeTasksBySop} from './lib/orchestrator.js';
 import {extractManifestCandidates,candidateProbePlan,recordsForSuccessfulShapes,manifestRecipeFromDiscovery,studyProfileFromProbeDetails,looksLikeDicomJson,urlShape} from './lib/generic_discovery.js';
@@ -394,7 +394,7 @@ async function analyzeTab(tabId){
 function scheduleAnalyze(tabId,delay=500){clearTimeout(analyzeTimers.get(tabId));analyzeTimers.set(tabId,setTimeout(async()=>{analyzeTimers.delete(tabId);try{const inv=await analyzeTab(tabId);chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});}catch{}},delay));}
 
 async function ensureOffscreen(){const url=chrome.runtime.getURL('offscreen.html');const c=await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT'],documentUrls:[url]});if(c.length)return;await chrome.offscreen.createDocument({url:'offscreen.html',reasons:['BLOBS'],justification:'Download and write DICOM directly to user selected directory.'});}
-function safeFolderName(inv){const p=inv.patient||{},name=sanitizeSegment(String(p.name||'').replace(/\^+/g,' ').replace(/\s+/g,' ').trim(),'Unknown'),id=sanitizeSegment(p.id||'NoID','NoID');let d=String(p.studyDate||'').replace(/[^0-9]/g,'');const date=d.length>=8?`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`:sanitizeSegment(p.studyDate||'NoDate','NoDate');return`${name} - ${id} - ${date}`;}
+function safeFolderName(inv){const p=inv?.patient||{};return buildStudyStoragePath({patientName:p.name,patientId:p.id,birthDate:p.birthDate,age:p.age,studyDate:p.studyDate,modality:inv?.modality||inv?.series?.[0]?.modality||p.modality,description:p.description});}
 async function buildTasksForAdapter(inv,selected,adapterId){const id=adapterId||inv.adapter,state=await getTabState(inv.tabId),adapter=adapterById(id);if(!adapter)throw new Error(`Adapter ${id} not found.`);const sourceInv=id===inv.adapter?inv:inv.adapterInventories?.[id];if(!sourceInv)throw new Error(`Adapter ${id} has not successfully analyzed this study.`);const mappedSelected=id===inv.adapter?selected:mapSeriesSelection(inv,sourceInv,selected);if(!mappedSelected.length)throw new Error(`Unable to map selected series to adapter ${id}.`);const ctx=adapterContext(sourceInv.summary||inv.summary||await scanTab(inv.tabId),state);const tasks=dedupeTasksBySop(await adapter.enumerate(sourceInv,mappedSelected,ctx));if(!tasksBelongToStudy(tasks,inv.studyUid))throw new Error(`Adapter ${id} returned tasks with mismatched StudyInstanceUID.`);const learnedRoutes=RecipeStoreV2.getPreferredRoutes(recipeForUrl(inv.summary?.currentUrl||inv.context?.url||'').adapters?.[id]);return tasks.map(t=>learnedRoutes.length?{...t,tabId:inv.tabId,preferredRoutes:learnedRoutes}:{...t,tabId:inv.tabId});}
 async function buildTasks(inv,selected){return buildTasksForAdapter(inv,selected,inv.adapter);}
 
@@ -487,7 +487,7 @@ async function startJob(tabId,selected,options={}){
     tasks,
     studyFolder:safeFolderName(inv),
     subfolder:options.subfolder||'DCom to JPG',
-    folderInfo:{patientName:inv.patient?.name||'',patientId:inv.patient?.id||'',studyDate:inv.patient?.studyDate||''},
+    folderInfo:{patientName:inv.patient?.name||'',patientId:inv.patient?.id||'',studyDate:inv.patient?.studyDate||'',birthDate:inv.patient?.birthDate||'',age:inv.patient?.age||'',modality:inv.modality||inv.series?.[0]?.modality||inv.patient?.modality||'',description:inv.patient?.description||''},
     saveMode:options.saveMode==='downloads'?'downloads':'filesystem',
     concurrency:options.concurrency||6,
     frameConcurrency:options.frameConcurrency||6,
@@ -664,7 +664,7 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
                 tasks:newTasks,
                 studyFolder:safeFolderName(inv),
                 subfolder:old.options?.subfolder||'DCom to JPG',
-                folderInfo:{patientName:inv.patient?.name||'',patientId:inv.patient?.id||'',studyDate:inv.patient?.studyDate||''},
+                folderInfo:{patientName:inv.patient?.name||'',patientId:inv.patient?.id||'',studyDate:inv.patient?.studyDate||'',birthDate:inv.patient?.birthDate||'',age:inv.patient?.age||'',modality:inv.modality||inv.series?.[0]?.modality||inv.patient?.modality||'',description:inv.patient?.description||''},
                 saveMode:old.saveMode||'filesystem',
                 concurrency:old.options?.concurrency||6,
                 frameConcurrency:old.options?.frameConcurrency||6,

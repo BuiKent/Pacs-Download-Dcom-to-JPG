@@ -284,6 +284,121 @@ export function seriesFolderName(series, index=0) {
   return number ? `${ordinal} - ${sanitizeSegment(number)} - ${description}` : `${ordinal} - ${description}`;
 }
 
+export function formatDmyDate(raw, fallback = 'KHONG_RO_NGAY') {
+  if (!raw) return fallback;
+  const str = String(raw).trim();
+  const digits = str.replace(/\D/g, '');
+  if (digits.length === 8) {
+    const y1 = parseInt(digits.slice(0, 4), 10);
+    const m1 = parseInt(digits.slice(4, 6), 10);
+    const d1 = parseInt(digits.slice(6, 8), 10);
+    if (y1 >= 1900 && y1 <= 2100 && m1 >= 1 && m1 <= 12 && d1 >= 1 && d1 <= 31) {
+      return `${digits.slice(6, 8)}-${digits.slice(4, 6)}-${digits.slice(0, 4)}`;
+    }
+    const d2 = parseInt(digits.slice(0, 2), 10);
+    const m2 = parseInt(digits.slice(2, 4), 10);
+    const y2 = parseInt(digits.slice(4, 8), 10);
+    if (y2 >= 1900 && y2 <= 2100 && m2 >= 1 && m2 <= 12 && d2 >= 1 && d2 <= 31) {
+      return `${digits.slice(0, 2)}-${digits.slice(2, 4)}-${digits.slice(4, 8)}`;
+    }
+  }
+  const mIso = str.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (mIso) {
+    return `${mIso[3].padStart(2, '0')}-${mIso[2].padStart(2, '0')}-${mIso[1]}`;
+  }
+  const mDmy = str.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+  if (mDmy) {
+    return `${mDmy[1].padStart(2, '0')}-${mDmy[2].padStart(2, '0')}-${mDmy[3]}`;
+  }
+  return sanitizeSegment(str, fallback);
+}
+
+export function computePatientAge(birthDate, studyDate, declaredAge) {
+  if (declaredAge) {
+    const clean = String(declaredAge).trim().toUpperCase();
+    const m = clean.match(/^0*(\d+)\s*([TYMD]?)$/);
+    if (m) {
+      const val = m[1];
+      const unit = m[2];
+      if (unit === 'M') return `${val} tháng`;
+      if (unit === 'W') return `${val} tuần`;
+      if (unit === 'D') return `${val} ngày`;
+      return `${val}T`;
+    }
+    if (clean && clean !== 'KHONG_RO_TUOI') return sanitizeSegment(clean, 'KHONG_RO_TUOI');
+  }
+  if (birthDate) {
+    const bDigits = String(birthDate).replace(/\D/g, '');
+    let sDigits = String(studyDate || '').replace(/\D/g, '');
+    if (!sDigits || (sDigits.length !== 4 && sDigits.length < 8)) {
+      const now = new Date();
+      sDigits = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+    }
+    let bYear = 0, sYear = 0;
+    if (bDigits.length === 4) {
+      const y = parseInt(bDigits, 10);
+      if (y >= 1900 && y <= 2100) bYear = y;
+    } else if (bDigits.length === 8) {
+      const y1 = parseInt(bDigits.slice(0, 4), 10);
+      bYear = (y1 >= 1900 && y1 <= 2100) ? y1 : parseInt(bDigits.slice(4, 8), 10);
+    }
+    if (sDigits.length === 4) {
+      const y = parseInt(sDigits, 10);
+      if (y >= 1900 && y <= 2100) sYear = y;
+    } else if (sDigits.length >= 8) {
+      const y2 = parseInt(sDigits.slice(0, 4), 10);
+      sYear = (y2 >= 1900 && y2 <= 2100) ? y2 : parseInt(sDigits.slice(4, 8), 10);
+    }
+    if (bYear >= 1900 && sYear >= bYear) {
+      const diff = sYear - bYear;
+      if (diff >= 0 && diff <= 130) {
+        return `${diff}T`;
+      }
+    }
+  }
+  return 'KHONG_RO_TUOI';
+}
+
+export function buildPatientFolderName(info = {}) {
+  const name = sanitizeSegment(
+    String(info.patientName || info.name || '').replace(/\^+/g, ' ').replace(/\s+/g, ' ').trim(),
+    'KHONG_RO_TEN'
+  );
+  const id = sanitizeSegment(info.patientId || info.id || 'KHONG_RO_ID', 'KHONG_RO_ID');
+  const age = computePatientAge(
+    info.birthDate || info.patientBirthDate,
+    info.studyDate,
+    info.age || info.patientAge
+  );
+  
+  let downloadDate = info.downloadDate;
+  if (!downloadDate) {
+    const now = new Date();
+    downloadDate = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}-${now.getFullYear()}`;
+  } else {
+    downloadDate = formatDmyDate(downloadDate);
+  }
+  return `${id} - ${name} - ${age} - ${downloadDate}`;
+}
+
+export function buildStudyFolderName(info = {}) {
+  const date = formatDmyDate(info.studyDate, 'KHONG_RO_NGAY');
+  let modality = sanitizeSegment(String(info.modality || '').trim().toUpperCase(), '');
+  if (!modality) modality = 'DICOM';
+  const desc = sanitizeSegment(
+    String(info.description || info.studyDescription || info.desc || '').trim(),
+    'KHONG_RO_MO_TA'
+  );
+  return `${date} - ${modality} - ${desc}`;
+}
+
+export function buildStudyStoragePath(info = {}) {
+  const patientFolder = buildPatientFolderName(info);
+  const studyFolder = buildStudyFolderName(info);
+  return `${patientFolder}/${studyFolder}/DICOM`;
+}
+
+
 /**
  * GE Centricity Universal Viewer (ZFP) streams pixel data via WebSocket `image-provider`
  * accompanied by private JSON metadata. This helper converts that structure to DICOM+JSON

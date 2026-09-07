@@ -1,6 +1,6 @@
 'use strict';
 import { buildPart10FromFrames, isPart10, parseMultipart, numberOfFrames, validatePart10, parseDicomMeta } from './lib/dicom.js';
-import { zfpMetaToDicomJson } from './lib/pacs.js';
+import { zfpMetaToDicomJson, buildStudyStoragePath } from './lib/pacs.js';
 import { AsyncSemaphore, sleepAbortable, fetchStreamWithTimeout } from './lib/semaphore.js';
 import { dicomTaskIdentityError, orderRoutes } from './lib/orchestrator.js';
 
@@ -96,7 +96,8 @@ async function getPathRoot(root,studyFolder,subfolder='DCom to JPG'){
     const segs=sub.split('/').filter(Boolean);
     for(const s of segs)d=await getDir(d,s);
   }
-  d=await getDir(d,studyFolder);
+  const folderSegs=String(studyFolder||'').split('/').filter(Boolean);
+  for(const s of folderSegs)d=await getDir(d,s);
   return d;
 }
 async function resolveDir(root,segments){let d=root;for(const s of segments)d=await getDir(d,s);return d;}
@@ -211,12 +212,12 @@ async function runZfpJob(job,tasks){
 }
 
 function safeSegment(text,fallback){const s=String(text||'').normalize('NFKC').replace(/[<>:"/\\|?*\x00-\x1F]/g,'_').replace(/\s+/g,' ').trim().replace(/[. ]+$/g,'');return(s||fallback).slice(0,120);}
-function studyFolderFromInfo(info={}){const name=safeSegment(String(info.patientName||'').replace(/\^+/g,' ').replace(/\s+/g,' ').trim(),'Unknown'),id=safeSegment(info.patientId||'NoID','NoID'),raw=String(info.studyDate||'').replace(/[^0-9]/g,''),date=raw.length>=8?`${raw.slice(0,4)}-${raw.slice(4,6)}-${raw.slice(6,8)}`:safeSegment(info.studyDate||'NoDate','NoDate');return`${name} - ${id} - ${date}`;}
+function studyFolderFromInfo(info={}){return buildStudyStoragePath({patientName:info.patientName,patientId:info.patientId,birthDate:info.birthDate,age:info.age,studyDate:info.studyDate,modality:info.modality,description:info.description});}
 
 async function runJob(spec){
   const saveMode=spec.saveMode==='downloads'?'downloads':'filesystem',root=saveMode==='filesystem'?await ensureWritableRoot():null;const controller=new AbortController();const prefetched=new Map();const info={...(spec.folderInfo||{})};let resolvedMeta={};
   const isZfp=spec.tasks.some(t=>t.strategy==='zfp-image');
-  if(!isZfp&&spec.tasks.length&&(!info.patientName||!info.patientId||!info.studyDate||!spec.studyUid)){try{const first=await prepareTask(spec.tasks[0],controller.signal,Math.min(6,Math.max(2,Number(spec.frameConcurrency)||6)));prefetched.set(0,first);const m=first.meta||{};resolvedMeta=m;if(!info.patientName&&m.patientName)info.patientName=m.patientName;if(!info.patientId&&m.patientId)info.patientId=m.patientId;if(!info.studyDate&&m.studyDate)info.studyDate=m.studyDate;}catch{}}
+  if(!isZfp&&spec.tasks.length&&(!info.patientName||!info.patientId||!info.studyDate||!spec.studyUid)){try{const first=await prepareTask(spec.tasks[0],controller.signal,Math.min(6,Math.max(2,Number(spec.frameConcurrency)||6)));prefetched.set(0,first);const m=first.meta||{};resolvedMeta=m;if(!info.patientName&&m.patientName)info.patientName=m.patientName;if(!info.patientId&&m.patientId)info.patientId=m.patientId;if(!info.studyDate&&m.studyDate)info.studyDate=m.studyDate;if(!info.birthDate&&m.patientBirthDate)info.birthDate=m.patientBirthDate;if(!info.age&&m.patientAge)info.age=m.patientAge;if(!info.modality&&m.modality)info.modality=m.modality;if(!info.description&&m.studyDescription)info.description=m.studyDescription;}catch{}}
   const subfolder=safeSegment(spec.subfolder||'DCom to JPG','DCom to JPG');
   const studyFolder=studyFolderFromInfo(info)||spec.studyFolder;
   const studyRoot=saveMode==='filesystem'?await getPathRoot(root,studyFolder,subfolder):null;
