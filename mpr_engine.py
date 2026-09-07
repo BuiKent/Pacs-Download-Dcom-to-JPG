@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -702,13 +703,16 @@ def convert_mpr_candidate(
         invert = _text(getattr(ds, "PhotometricInterpretation", "")) == "MONOCHROME1"
         image = Image.fromarray(_to_uint8(arr, low, high, invert), mode="L")
         filename = f"MPR_{index:04d}.jpg"
+        target_path = series_folder / filename
+        part_path = series_folder / f"{filename}.part"
         image.save(
-            series_folder / filename,
+            part_path,
             "JPEG",
             quality=max(70, min(int(quality), 100)),
             optimize=True,
             subsampling=0,
         )
+        os.replace(part_path, target_path)
         ordered_files.append({
             "file": filename,
             "position": [float(v) for v in item.image_position],

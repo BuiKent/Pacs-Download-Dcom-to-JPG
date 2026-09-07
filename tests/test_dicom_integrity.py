@@ -449,6 +449,207 @@ class ContinuityAndParityIntegrityTests(unittest.TestCase):
             self.assertEqual(rep["jpg_count"], 3)
             self.assertEqual(rep["extra_jpg"], 1)
 
+    def test_convert_all_prevents_overwrite_on_duplicate_instance_number(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            dcm_dir = tmp / "DICOM"
+            jpg_dir = tmp / "JPG"
+            dcm_dir.mkdir(parents=True, exist_ok=True)
+            jpg_dir.mkdir(parents=True, exist_ok=True)
+
+            dcm_files = []
+            for idx in [1, 2]:
+                p = dcm_dir / f"slice_{idx}.dcm"
+                sop_uid = f"1.2.840.10008.5.1.{idx}"
+                file_meta = FileMetaDataset()
+                file_meta.MediaStorageSOPClassUID = MRImageStorage
+                file_meta.MediaStorageSOPInstanceUID = sop_uid
+                file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+                ds = FileDataset(str(p), {}, file_meta=file_meta, preamble=b"\0" * 128)
+                ds.SOPClassUID = MRImageStorage
+                ds.SOPInstanceUID = sop_uid
+                ds.StudyInstanceUID = "1.2.840.1000"
+                ds.SeriesInstanceUID = "1.2.840.2000"
+                ds.SeriesNumber = 1
+                ds.SeriesDescription = "Sagittal T1"
+                ds.InstanceNumber = 7  # Duplicate instance number 7 for both slices!
+                ds.Modality = "MR"
+                ds.PhotometricInterpretation = "MONOCHROME2"
+                ds.Rows = 16
+                ds.Columns = 16
+                ds.BitsAllocated = 16
+                ds.BitsStored = 16
+                ds.HighBit = 15
+                ds.PixelRepresentation = 0
+                ds.SamplesPerPixel = 1
+                ds.PixelData = b"\x10\x20" * (16 * 16)
+                ds.save_as(str(p))
+                dcm_files.append(p)
+
+            stats = dcom_pipeline.convert_all(dcm_dir, jpg_dir)
+            self.assertEqual(stats.converted, 2)
+
+            # Both files must exist on disk — neither should overwrite the other
+            saved_jpgs = list(jpg_dir.rglob("*.jpg"))
+            self.assertEqual(len(saved_jpgs), 2)
+            names = [f.name for f in saved_jpgs]
+            self.assertTrue(all("IM_00007_" in n for n in names))
+            # Filenames must be distinct
+            self.assertNotEqual(names[0], names[1])
+
+    def test_record_patient_study_destickifies_on_incomplete_run(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            patient_folder = tmp / "BN_123_TEST"
+            patient_folder.mkdir(parents=True, exist_ok=True)
+            study_folder = patient_folder / "Study_1"
+            study_folder.mkdir(parents=True, exist_ok=True)
+
+            manifest = {
+                "format": "dcom-patient-index-v1",
+                "patientId": "BN123",
+                "patientName": "TEST PATIENT",
+                "studies": {},
+            }
+            dcom_pipeline._write_patient_manifest(patient_folder, manifest)
+
+            study_dict = {
+                "study_uid": "1.2.840.1111",
+                "date": "2026-08-01",
+                "modality": "MR",
+                "desc": "Brain Scan",
+            }
+
+            # 1. First run: complete
+            dcom_pipeline.record_patient_study(
+                patient_folder,
+                study_dict,
+                study_folder,
+                complete=True,
+                image_count=100,
+            )
+            data1 = dcom_pipeline._read_patient_manifest(patient_folder)
+            st1 = data1["studies"]["1.2.840.1111"]
+            self.assertEqual(st1["status"], "complete")
+            self.assertEqual(st1["imageCount"], 100)
+            self.assertTrue(st1["downloadHistory"]["everCompleted"])
+
+            # 2. Subsequent run interrupted or missing slices (complete=False, image_count=25)
+            dcom_pipeline.record_patient_study(
+                patient_folder,
+                study_dict,
+                study_folder,
+                complete=False,
+                image_count=25,
+            )
+            data2 = dcom_pipeline._read_patient_manifest(patient_folder)
+            st2 = data2["studies"]["1.2.840.1111"]
+            # Must de-stickify to partial rather than falsely staying complete
+            self.assertEqual(st2["status"], "partial")
+            self.assertEqual(st2["imageCount"], 25)
+            # Historical flag everCompleted is still remembered
+            self.assertTrue(st2["downloadHistory"]["everCompleted"])
+
+    def test_sanitize_viewer_url_strips_sensitive_query_parameters(self):
+        raw_url = "https://pacs.hospital.vn/viewer?studyUID=1.2.840.111&token=secretToken123&signature=abc999&sig=xyz&seriesUID=1.2.3&password=pass&session=sess"
+        clean_url = dcom_pipeline.sanitize_viewer_url(raw_url)
+        self.assertIn("studyUID=1.2.840.111", clean_url)
+        self.assertIn("seriesUID=1.2.3", clean_url)
+        self.assertNotIn("secretToken123", clean_url)
+        self.assertNotIn("token=", clean_url)
+        self.assertNotIn("signature=", clean_url)
+        self.assertNotIn("sig=", clean_url)
+        self.assertNotIn("password=", clean_url)
+        self.assertNotIn("session=", clean_url)
+
+    def test_concurrent_patient_manifest_writes(self):
+        import concurrent.futures
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            patient_folder = Path(tmp_dir) / "Patient_Concurrent"
+            patient_folder.mkdir(parents=True, exist_ok=True)
+            manifest = {
+                "format": "dcom-patient-index-v1",
+                "patientId": "BN_CONCURRENT",
+                "patientName": "CONCURRENT PATIENT",
+                "studies": {},
+            }
+            dcom_pipeline._write_patient_manifest(patient_folder, manifest)
+
+            def record_study(idx):
+                study_uid = f"1.2.840.{idx}"
+                study_folder = patient_folder / f"Study_{idx}"
+                study_folder.mkdir(parents=True, exist_ok=True)
+                study_dict = {
+                    "study_uid": study_uid,
+                    "date": "2026-08-01",
+                    "modality": "MR",
+                    "desc": f"Scan {idx}",
+                }
+                dcom_pipeline.record_patient_study(
+                    patient_folder,
+                    study_dict,
+                    study_folder,
+                    complete=True,
+                    image_count=idx * 10,
+                )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                list(executor.map(record_study, range(1, 16)))
+
+            final_manifest = dcom_pipeline._read_patient_manifest(patient_folder)
+            self.assertIsNotNone(final_manifest)
+            self.assertEqual(len(final_manifest["studies"]), 15)
+            for idx in range(1, 16):
+                uid = f"1.2.840.{idx}"
+                self.assertIn(uid, final_manifest["studies"])
+                self.assertEqual(final_manifest["studies"][uid]["imageCount"], idx * 10)
+
+    def test_timeline_key_distinguishes_studies_with_same_date_and_modality(self):
+        rec1 = web_backend.SeriesRecord(
+            series_id="s1",
+            name="Axial T1",
+            folder=Path("/dummy/path1"),
+            images=[Path("/dummy/path1/IM_1.jpg")],
+            manifest={"study_instance_uid": "1.2.840.11111", "study_date": "2026-08-01"},
+            mpr_ready=False,
+            mpr_reason="",
+            modality="MR",
+            study_group="2026-08-01 - MR - Brain Scan",
+            study_date="2026-08-01",
+            study_uid="1.2.840.11111",
+        )
+        rec2 = web_backend.SeriesRecord(
+            series_id="s2",
+            name="Sagittal T2",
+            folder=Path("/dummy/path2"),
+            images=[Path("/dummy/path2/IM_2.jpg")],
+            manifest={"study_instance_uid": "1.2.840.22222", "study_date": "2026-08-01"},
+            mpr_ready=False,
+            mpr_reason="",
+            modality="MR",
+            study_group="2026-08-01 - MR - Brain Scan",
+            study_date="2026-08-01",
+            study_uid="1.2.840.22222",
+        )
+        self.assertNotEqual(rec1.timeline_key(), rec2.timeline_key())
+
+    def test_direct_download_reconciles_signed_url_resume(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_root = Path(tmp_dir)
+            backend = web_backend.WebController()
+
+            url_run1 = "https://pacs.example.com/viewer?studyUID=1.2.3&token=expired_token_111&sig=sig1"
+            folder1, is_resume1 = backend._direct_download_root(out_root, url_run1, resume=True)
+            self.assertFalse(is_resume1)
+            folder1.mkdir(parents=True, exist_ok=True)
+            backend._write_direct_download_marker(folder1, url_run1)
+
+            # User resumes next morning with fresh signed token and signature:
+            url_run2 = "https://pacs.example.com/viewer?studyUID=1.2.3&token=fresh_token_222&sig=sig2"
+            folder2, is_resume2 = backend._direct_download_root(out_root, url_run2, resume=True)
+            self.assertTrue(is_resume2)
+            self.assertEqual(folder1.resolve(), folder2.resolve())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,7 @@ without one, messages are printed.
 from __future__ import annotations
 
 import base64
+import contextlib
 import copy
 import hashlib
 import http.client
@@ -34,6 +35,7 @@ import math
 import os
 import re
 import urllib.request
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 import socket
 import sys
 import threading
@@ -5282,16 +5284,101 @@ def _legacy_patient_identity(folder: Path) -> tuple[str, str]:
     return "", ""
 
 
+_manifest_thread_lock = threading.RLock()
+
+
+@contextlib.contextmanager
+def _manifest_file_lock(folder: Path, timeout: float = 10.0):
+    """File lock around patient-index.json to prevent inter-process races."""
+    folder = Path(folder)
+    lock_file = folder / ".patient-index.lock"
+    end_time = time.monotonic() + timeout
+    fd = None
+    acquired = False
+    while time.monotonic() < end_time:
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            acquired = True
+            break
+        except (FileExistsError, OSError):
+            # Check for stale lock (older than 60s)
+            try:
+                st = lock_file.stat()
+                if time.time() - st.st_mtime > 60:
+                    lock_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+        if acquired:
+            try:
+                lock_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+SENSITIVE_URL_PARAMS = frozenset({
+    "token", "access_token", "auth", "signature", "sig",
+    "key", "apikey", "api_key", "secret", "password", "pass", "pwd",
+    "session", "sessionid", "session_id", "bearer",
+    "x-amz-signature", "x-amz-security-token", "x-amz-credential", "x-amz-date",
+})
+
+
+def sanitize_viewer_url(url: str) -> str:
+    """Strip sensitive credentials and tokens from URLs before storing on disk."""
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+        if not parsed.query:
+            return url
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        cleaned = []
+        for k, v in pairs:
+            kn = k.strip().lower()
+            if kn in SENSITIVE_URL_PARAMS or any(s in kn for s in ("token", "signature", "secret", "password")):
+                continue
+            cleaned.append((k, v))
+        new_query = urlencode(cleaned)
+        return urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            new_query,
+            parsed.fragment,
+        ))
+    except Exception:
+        return url
+
+
 def _write_patient_manifest(folder: Path, manifest: dict) -> None:
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / PATIENT_MANIFEST_NAME
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temporary.replace(path)
+    unique_suffix = f".tmp.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}"
+    temporary = folder / f"{PATIENT_MANIFEST_NAME}{unique_suffix}"
+    try:
+        temporary.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            try:
+                temporary.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _manifest_identity_matches(manifest: dict, patient_id: str, hospital_key: str) -> bool:
@@ -5517,30 +5604,32 @@ def set_study_read_state(study_folder: Path, read: bool) -> dict:
     # further would start marking studies in an unrelated archive above it.
     candidates = [study_folder, *list(study_folder.parents)[:4]]
     for candidate in candidates:
-        manifest = _read_patient_manifest(candidate)
-        if manifest is None:
-            continue
-        for record in (manifest.get("studies") or {}).values():
-            if not isinstance(record, dict):
-                continue
-            relative = str(record.get("folder") or "").strip()
-            if not relative:
-                continue
-            try:
-                resolved = (candidate / relative).resolve()
-            except OSError:
-                continue
-            if resolved != study_folder:
-                continue
-            record["readAt"] = _now_local() if read else ""
-            manifest["updatedAt"] = _now_local()
-            _write_patient_manifest(candidate, manifest)
-            return {
-                "folder": str(study_folder),
-                "readAt": record["readAt"],
-                "isRead": bool(record["readAt"]),
-            }
-        break
+        with _manifest_thread_lock:
+            with _manifest_file_lock(candidate):
+                manifest = _read_patient_manifest(candidate)
+                if manifest is None:
+                    continue
+                for record in (manifest.get("studies") or {}).values():
+                    if not isinstance(record, dict):
+                        continue
+                    relative = str(record.get("folder") or "").strip()
+                    if not relative:
+                        continue
+                    try:
+                        resolved = (candidate / relative).resolve()
+                    except OSError:
+                        continue
+                    if resolved != study_folder:
+                        continue
+                    record["readAt"] = _now_local() if read else ""
+                    manifest["updatedAt"] = _now_local()
+                    _write_patient_manifest(candidate, manifest)
+                    return {
+                        "folder": str(study_folder),
+                        "readAt": record["readAt"],
+                        "isRead": bool(record["readAt"]),
+                    }
+                break
     raise ValueError(
         "Ca chụp này chưa có trong patient-index.json nên không lưu được trạng thái đã đọc."
     )
@@ -5570,95 +5659,118 @@ def record_patient_study(
     selection_complete: bool = False,
     patient_metadata: Optional[dict] = None,
 ) -> None:
-    manifest = _read_patient_manifest(patient_folder)
-    if manifest is None:
-        raise ValueError("Thiếu patient-index.json khi cập nhật study.")
-    uid = str(study.get("study_uid") or "").strip()
-    if not uid:
-        raise ValueError("Study thiếu StudyInstanceUID.")
-    previous = manifest["studies"].get(uid) or {}
-    metadata = patient_metadata or {}
-    if metadata:
-        _assert_patient_metadata_matches(
-            str(manifest.get("patientId") or ""),
-            str(manifest.get("patientName") or ""),
-            metadata,
-            str(manifest.get("patientBirthDate") or ""),
-            str(manifest.get("patientSex") or ""),
-        )
-        _merge_manifest_demographics(manifest, metadata)
-    selected = sorted({
-        *(str(value) for value in (previous.get("selectedSeries") or []) if str(value)),
-        *(str(value) for value in (selected_series_ids or []) if str(value)),
-    })
-    if complete or previous.get("status") == "complete":
-        status = "complete"
-    elif selection_complete:
-        status = "selected"
-    else:
-        status = previous.get("status", "incomplete")
-    viewer_url = str(
-        study.get("viewer_url")
-        or study.get("viewerUrl")
-        or study.get("url")
-        or study.get("direct_url")
-        or study.get("download_url")
-        or study.get("downloadUrl")
-        or previous.get("viewerUrl")
-        or previous.get("downloadUrl")
-        or ""
-    ).strip()
-    patient_code = str(
-        study.get("patient_id")
-        or study.get("patientId")
-        or manifest.get("patientId")
-        or previous.get("patientCode")
-        or ""
-    ).strip()
-    accession_no = str(
-        study.get("accession_number")
-        or study.get("accessionNumber")
-        or study.get("accession_no")
-        or metadata.get("AccessionNumber")
-        or previous.get("accessionNumber")
-        or ""
-    ).strip()
-    media_type = str(study.get("media_type") or study.get("mediaType") or previous.get("mediaType") or "dicom").strip().lower()
-    duration_sec = study.get("duration_seconds") if study.get("duration_seconds") is not None else study.get("durationSeconds")
-    if duration_sec is None:
-        duration_sec = previous.get("durationSeconds")
-    manifest["studies"][uid] = {
-        "studyUid": uid,
-        "date": study.get("date") or "",
-        "modality": study.get("modality") or "",
-        "description": study.get("desc") or "",
-        "folder": str(Path(study_folder).relative_to(patient_folder)),
-        "status": status,
-        "imageCount": max(int(image_count or 0), int(previous.get("imageCount") or 0)),
-        "mediaType": media_type,
-        "durationSeconds": int(duration_sec) if duration_sec is not None else None,
-        "downloadedAt": _now_local() if (complete or selection_complete) else previous.get("downloadedAt", ""),
-        "selectedSeries": selected,
-        "downloadUrl": viewer_url,
-        "viewerUrl": viewer_url,
-        "patientCode": patient_code,
-        "accessionNumber": accession_no,
-        "downloadType": _download_type_for(str(manifest.get("hospitalKey") or "")),
-        "hospitalKey": str(study.get("hospital_key") or manifest.get("hospitalKey") or ""),
-        "hospitalName": str(study.get("hospital_name") or manifest.get("hospitalName") or ""),
-        "patientAgeRaw": metadata.get("PatientAgeRaw") or previous.get("patientAgeRaw", ""),
-        "patientAgeAtStudy": metadata.get("PatientAge") or previous.get("patientAgeAtStudy", ""),
-        "patientAgeAtStudyYears": (
-            metadata.get("PatientAgeYears")
-            if metadata.get("PatientAgeYears") is not None
-            else previous.get("patientAgeAtStudyYears")
-        ),
-        "patientAgeSource": metadata.get("PatientAgeSource") or previous.get("patientAgeSource", ""),
-        "patientBirthDate": metadata.get("PatientBirthDate") or previous.get("patientBirthDate", ""),
-        "patientSex": metadata.get("PatientSex") or previous.get("patientSex", ""),
-    }
-    manifest["updatedAt"] = _now_local()
-    _write_patient_manifest(patient_folder, manifest)
+    with _manifest_thread_lock:
+        with _manifest_file_lock(patient_folder):
+            manifest = _read_patient_manifest(patient_folder)
+            if manifest is None:
+                raise ValueError("Thiếu patient-index.json khi cập nhật study.")
+            uid = str(study.get("study_uid") or "").strip()
+            if not uid:
+                raise ValueError("Study thiếu StudyInstanceUID.")
+            previous = manifest["studies"].get(uid) or {}
+            metadata = patient_metadata or {}
+            if metadata:
+                _assert_patient_metadata_matches(
+                    str(manifest.get("patientId") or ""),
+                    str(manifest.get("patientName") or ""),
+                    metadata,
+                    str(manifest.get("patientBirthDate") or ""),
+                    str(manifest.get("patientSex") or ""),
+                )
+                _merge_manifest_demographics(manifest, metadata)
+            selected = sorted({
+                *(str(value) for value in (previous.get("selectedSeries") or []) if str(value)),
+                *(str(value) for value in (selected_series_ids or []) if str(value)),
+            })
+            current_count = int(image_count or 0)
+            prev_count = int(previous.get("imageCount") or 0)
+
+            if complete:
+                status = "complete"
+            elif selection_complete:
+                status = "selected"
+            else:
+                # If not complete, only maintain previous complete if this was purely a metadata update (current_count == 0)
+                if current_count == 0 and previous.get("status") == "complete":
+                    status = "complete"
+                elif current_count > 0:
+                    status = "partial" if current_count < prev_count else "incomplete"
+                else:
+                    status = previous.get("status", "incomplete")
+
+            final_image_count = current_count if current_count > 0 else prev_count
+
+            download_history = previous.get("downloadHistory")
+            if not isinstance(download_history, dict):
+                download_history = {}
+            if complete or previous.get("status") == "complete":
+                download_history["everCompleted"] = True
+            if complete or selection_complete:
+                download_history["lastSuccessfulDownloadAt"] = _now_local()
+            viewer_url = str(
+                study.get("viewer_url")
+                or study.get("viewerUrl")
+                or study.get("url")
+                or study.get("direct_url")
+                or study.get("download_url")
+                or study.get("downloadUrl")
+                or previous.get("viewerUrl")
+                or previous.get("downloadUrl")
+                or ""
+            ).strip()
+            sanitized_url = sanitize_viewer_url(viewer_url)
+            patient_code = str(
+                study.get("patient_id")
+                or study.get("patientId")
+                or manifest.get("patientId")
+                or previous.get("patientCode")
+                or ""
+            ).strip()
+            accession_no = str(
+                study.get("accession_number")
+                or study.get("accessionNumber")
+                or study.get("accession_no")
+                or metadata.get("AccessionNumber")
+                or previous.get("accessionNumber")
+                or ""
+            ).strip()
+            media_type = str(study.get("media_type") or study.get("mediaType") or previous.get("mediaType") or "dicom").strip().lower()
+            duration_sec = study.get("duration_seconds") if study.get("duration_seconds") is not None else study.get("durationSeconds")
+            if duration_sec is None:
+                duration_sec = previous.get("durationSeconds")
+            manifest["studies"][uid] = {
+                "studyUid": uid,
+                "date": study.get("date") or "",
+                "modality": study.get("modality") or "",
+                "description": study.get("desc") or "",
+                "folder": str(Path(study_folder).relative_to(patient_folder)),
+                "status": status,
+                "imageCount": final_image_count,
+                "downloadHistory": download_history,
+                "mediaType": media_type,
+                "durationSeconds": int(duration_sec) if duration_sec is not None else None,
+                "downloadedAt": _now_local() if (complete or selection_complete) else previous.get("downloadedAt", ""),
+                "selectedSeries": selected,
+                "downloadUrl": sanitized_url,
+                "viewerUrl": sanitized_url,
+                "patientCode": patient_code,
+                "accessionNumber": accession_no,
+                "downloadType": _download_type_for(str(manifest.get("hospitalKey") or "")),
+                "hospitalKey": str(study.get("hospital_key") or manifest.get("hospitalKey") or ""),
+                "hospitalName": str(study.get("hospital_name") or manifest.get("hospitalName") or ""),
+                "patientAgeRaw": metadata.get("PatientAgeRaw") or previous.get("patientAgeRaw", ""),
+                "patientAgeAtStudy": metadata.get("PatientAge") or previous.get("patientAgeAtStudy", ""),
+                "patientAgeAtStudyYears": (
+                    metadata.get("PatientAgeYears")
+                    if metadata.get("PatientAgeYears") is not None
+                    else previous.get("patientAgeAtStudyYears")
+                ),
+                "patientAgeSource": metadata.get("PatientAgeSource") or previous.get("patientAgeSource", ""),
+                "patientBirthDate": metadata.get("PatientBirthDate") or previous.get("patientBirthDate", ""),
+                "patientSex": metadata.get("PatientSex") or previous.get("patientSex", ""),
+            }
+            manifest["updatedAt"] = _now_local()
+            _write_patient_manifest(patient_folder, manifest)
 
 
 # --------------------------------------------------------------------------- #
@@ -6460,17 +6572,30 @@ def convert_all(
                 if img.mode not in ("L", "RGB"):
                     img = img.convert("L")
 
+                sop_uid_str = str(getattr(ds, "SOPInstanceUID", "") or "").strip()
+                sop_token = hashlib.sha1(sop_uid_str.encode("utf-8")).hexdigest()[:8] if sop_uid_str else ""
+
                 inst = str(instance_number)
-                base = (f"IM_{int(inst):04d}" if inst.isdigit()
-                        else f"IM_{_safe_name(inst)}")
+                inst_token = f"{int(inst):05d}" if inst.isdigit() else f"{stats.converted + 1:05d}"
+                if sop_token:
+                    base = f"IM_{inst_token}_{sop_token}"
+                else:
+                    base = f"IM_{inst_token}"
+
                 if multi:
                     base += f"_F{fidx:03d}"
 
                 filename = f"{base}.jpg"
-                img.save(series_folder / filename, "JPEG",
+                final_jpg = series_folder / filename
+                part_jpg = series_folder / f"{filename}.part"
+                img.save(part_jpg, "JPEG",
                          quality=quality, optimize=True, subsampling=0)
+                os.replace(part_jpg, final_jpg)
                 if save_png:
-                    img.save(series_folder / f"{base}.png", "PNG", optimize=True)
+                    final_png = series_folder / f"{base}.png"
+                    part_png = series_folder / f"{base}.png.part"
+                    img.save(part_png, "PNG", optimize=True)
+                    os.replace(part_png, final_png)
 
                 stats.converted += 1
                 generic_outputs[manifest_path].append(filename)
@@ -7566,9 +7691,11 @@ def _query_ris_studies(page, patient_id: str) -> dict:
         async (patientId) => {
             const encoded = encodeURIComponent(patientId);
             const urls = [
-                '/ris/rest/study?pid=' + encoded + '&dateFrom=2019-1-1&dateTo=2030-12-31&status=all&limit=200',
-                '/ris/rest/study?keyword=' + encoded + '&fromDate=2019-01-01&toDate=2030-12-31&limit=200',
-                '/ris/rest/study?patientId=' + encoded + '&limit=200',
+                '/ris/rest/study?pid=' + encoded + '&dateFrom=1990-01-01&dateTo=2099-12-31&status=all&limit=1000',
+                '/ris/rest/study?keyword=' + encoded + '&fromDate=1990-01-01&toDate=2099-12-31&limit=1000',
+                '/ris/rest/study?pid=' + encoded + '&status=all&limit=1000',
+                '/ris/rest/study?keyword=' + encoded + '&limit=1000',
+                '/ris/rest/study?patientId=' + encoded + '&limit=1000',
             ];
             const statuses = [];
             for (const url of urls) {

@@ -1103,6 +1103,7 @@ class SeriesRecord:
     # JPEG preview of the middle slice, built on first request. Decoding a
     # slice is expensive and the strip re-requests it on every re-render.
     thumbnail_bytes: Optional[bytes] = None
+    study_uid: str = ""
 
     def files_playable(self) -> list[bool]:
         """Per file, whether the browser can decode it.
@@ -1227,25 +1228,31 @@ class SeriesRecord:
 
         Groups series by study group / folder and exam date so localizers, DWI,
         and post-processed reconstructions belong to the same clinical study row.
+        Prioritizes StudyInstanceUID when available so distinct studies on the
+        same date with the same modality are not collapsed together.
         """
         manifest = self.manifest or {}
         date = str(self.study_date or manifest.get("study_date") or "").strip()
-        group = str(self.study_group or "").strip()
-        cleaned_group = group
-        if " - OT - " in group:
-            cleaned_group = group.replace(" - OT - ", " - MR - ")
-        if cleaned_group and cleaned_group != "Không rõ ca chụp":
-            identity = f"group:{date}|{cleaned_group}"
-        elif self.folder:
-            identity = f"folder:{str(self.folder).casefold()}"
+        study_uid = str(
+            getattr(self, "study_uid", "")
+            or manifest.get("study_instance_uid")
+            or manifest.get("studyInstanceUID")
+            or manifest.get("study_uid")
+            or ""
+        ).strip()
+        if study_uid:
+            identity = f"uid:{study_uid}"
         else:
-            study_uid = str(
-                manifest.get("study_instance_uid")
-                or manifest.get("studyInstanceUID")
-                or manifest.get("study_uid")
-                or ""
-            ).strip()
-            identity = f"uid:{study_uid}" if study_uid else f"date:{date}"
+            group = str(self.study_group or "").strip()
+            cleaned_group = group
+            if " - OT - " in group:
+                cleaned_group = group.replace(" - OT - ", " - MR - ")
+            if cleaned_group and cleaned_group != "Không rõ ca chụp":
+                identity = f"group:{date}|{cleaned_group}"
+            elif self.folder:
+                identity = f"folder:{str(self.folder).casefold()}"
+            else:
+                identity = f"date:{date}"
         raw = f"{identity}|{self.resolved_media_type()}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
 
@@ -1331,6 +1338,7 @@ def _serialize_series_record(rec: SeriesRecord, root: Optional[Path] = None) -> 
         "pixel_data": rec.pixel_data,
         "study_group": rec.study_group,
         "study_date": rec.study_date,
+        "study_uid": rec.study_uid,
         "acquisition": rec.acquisition,
     }
 
@@ -1350,6 +1358,7 @@ def _deserialize_series_record(item: dict, root: Optional[Path] = None) -> Serie
         pixel_data=item.get("pixel_data"),
         study_group=str(item.get("study_group") or ""),
         study_date=str(item.get("study_date") or ""),
+        study_uid=str(item.get("study_uid") or ""),
         acquisition=item.get("acquisition") or {},
     )
 
@@ -1568,17 +1577,41 @@ class ArchiveCatalog:
             )
             if not instance:
                 return None
-            base = (
+            sop_uid = str(item.get("sop_instance_uid") or "").strip()
+            sop_token = hashlib.sha1(sop_uid.encode("utf-8")).hexdigest()[:8] if sop_uid else ""
+
+            image = None
+            # Match strategy 1: legacy IM_0007.jpg
+            base_legacy = (
                 f"IM_{int(instance):04d}"
                 if instance.isdigit()
                 else f"IM_{dcom_pipeline._safe_name(instance)}"
             )
-            name = f"{base}.jpg"
-            key = name.casefold()
-            image = available.get(key)
-            if image is None or key in used:
+            key_legacy = f"{base_legacy}.jpg".casefold()
+            if key_legacy in available and key_legacy not in used:
+                image = available[key_legacy]
+                used.add(key_legacy)
+
+            # Match strategy 2: modern IM_00007_soptoken.jpg
+            if image is None and instance.isdigit():
+                if sop_token:
+                    key_sop = f"im_{int(instance):05d}_{sop_token}.jpg".casefold()
+                    if key_sop in available and key_sop not in used:
+                        image = available[key_sop]
+                        used.add(key_sop)
+
+            # Match strategy 3: prefix matching by instance number
+            if image is None and instance.isdigit():
+                pref5 = f"im_{int(instance):05d}_"
+                pref4 = f"im_{int(instance):04d}_"
+                for cand_key, cand_path in available.items():
+                    if cand_key not in used and (cand_key.startswith(pref5) or cand_key.startswith(pref4)):
+                        image = cand_path
+                        used.add(cand_key)
+                        break
+
+            if image is None:
                 return None
-            used.add(key)
             images.append(image)
             ordered.append({
                 "file": image.name,
@@ -1834,6 +1867,7 @@ class ArchiveCatalog:
                 source_type="dicom",
                 study_group=study_group,
                 study_date=study_date,
+                study_uid=first.study_uid,
                 pixel_data={
                     "rows": first.rows,
                     "columns": first.columns,
@@ -3359,8 +3393,10 @@ class WorklistScanner:
         manifest_status = str(record.get("status") or "").strip().lower()
         if manifest_status == "selected":
             status, status_label = "part", "Đã tải series đã chọn"
-        elif manifest_status == "incomplete":
+        elif manifest_status in ("incomplete", "partial"):
             status, status_label = "part", "Chưa hoàn tất"
+        elif slice_count == 0:
+            status, status_label = "miss", "Folder trống"
         else:
             status, status_label = "done", "Đã tải"
 
@@ -4817,10 +4853,14 @@ class WebController:
         """
         output_root = Path(output_root).expanduser()
         resolved_output_root = output_root.resolve()
-        link_token = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
+        canonical_url = dcom_pipeline.sanitize_viewer_url(url)
+        link_token = hashlib.sha256(canonical_url.encode("utf-8")).hexdigest()[:8]
+        raw_token = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
         if resume:
             for entry in self.history.snapshot():
-                if entry.get("url") == url:
+                entry_url = entry.get("url") or ""
+                entry_canon = dcom_pipeline.sanitize_viewer_url(entry_url)
+                if entry_url == url or (entry_canon and entry_canon == canonical_url):
                     folder = Path(entry["folder"]).expanduser()
                     resolved_folder = folder.resolve()
                     try:
@@ -4841,31 +4881,40 @@ class WebController:
                     data = json.loads(marker.read_text(encoding="utf-8"))
                 except (OSError, ValueError, TypeError):
                     continue
-                if data.get("linkHash") == link_token:
+                marker_canon = dcom_pipeline.sanitize_viewer_url(data.get("url") or data.get("downloadUrl") or "")
+                if (
+                    data.get("linkHash") in (link_token, raw_token)
+                    or (marker_canon and marker_canon == canonical_url)
+                ):
                     marked.append(item)
             if marked:
                 marked.sort(key=lambda item: item.stat().st_mtime)
                 return marked[-1], True
 
             # Compatibility fallback for folders created before patient naming.
-            existing = sorted(
-                (item for item in output_root.glob(f"LINK_*_{link_token}") if item.is_dir()),
-                key=lambda item: item.name,
-            )
-            if existing:
-                return existing[-1], True
+            for token in (link_token, raw_token):
+                existing = sorted(
+                    (item for item in output_root.glob(f"LINK_*_{token}") if item.is_dir()),
+                    key=lambda item: item.name,
+                )
+                if existing:
+                    return existing[-1], True
 
         stamp = time.strftime("%Y%m%d_%H%M%S")
         return output_root / f"LINK_{stamp}_{link_token}", False
 
     def _write_direct_download_marker(self, folder: Path, url: str) -> None:
-        marker = Path(folder) / DIRECT_DOWNLOAD_META_NAME
-        temporary = marker.with_suffix(marker.suffix + ".tmp")
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+        marker = folder / DIRECT_DOWNLOAD_META_NAME
+        unique_suffix = f".tmp.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}"
+        temporary = folder / f"{DIRECT_DOWNLOAD_META_NAME}{unique_suffix}"
+        canonical_url = dcom_pipeline.sanitize_viewer_url(url)
         payload = {
             "format": "dcom-direct-download-v1",
-            "url": url,
-            "downloadUrl": url,
-            "linkHash": hashlib.sha256(url.encode("utf-8")).hexdigest()[:8],
+            "url": canonical_url,
+            "downloadUrl": canonical_url,
+            "linkHash": hashlib.sha256(canonical_url.encode("utf-8")).hexdigest()[:8],
             "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         try:
@@ -4873,9 +4922,15 @@ class WebController:
                 json.dumps(payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            temporary.replace(marker)
+            os.replace(temporary, marker)
         except OSError as exc:
             self.job.log(f"Không thể ghi metadata tải tiếp: {exc}")
+        finally:
+            if temporary.exists():
+                try:
+                    temporary.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     def start_direct_download(self, payload: dict) -> dict:
         url = str(payload.get("url") or "").strip()
