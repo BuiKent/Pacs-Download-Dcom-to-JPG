@@ -82,18 +82,19 @@ def create_synthetic_smoke_archive(root: Path) -> Path:
         "birthYear": "1980",
         "studies": {
             "study-video-1": {
-                "folderName": "01.09.2026-video-phau-thuat",
+                "folder": "01.09.2026-video-phau-thuat",
                 "studyDate": "2026-09-01",
                 "modality": "VIDEO",
                 "description": "Video phẫu thuật nội soi",
                 "status": "complete",
             },
             "study-video-2": {
-                "folderName": "02.09.2026-video-phau-thuat-2",
+                "folder": "02.09.2026-video-phau-thuat-2",
                 "studyDate": "2026-09-02",
                 "modality": "VIDEO",
                 "description": "Video phẫu thuật thì hai",
-                "status": "complete",
+                "status": "incomplete",
+                "viewerUrl": "https://pacs.example.invalid/viewer/smoke-study",
             },
         },
     }
@@ -134,6 +135,8 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
         create_synthetic_smoke_archive(archive_root)
 
         controller = WebController()
+        controller.output_root = archive_root
+        controller.source_folders = [str(archive_root)]
         controller.open_archive(str(archive_root))
         server = LocalApiServer(controller, static_dir)
         app_url = server.start()
@@ -179,7 +182,7 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                 if not is_studio:
                     print("   Warning: Studio element not immediately found, checking app-shell...")
 
-                # 3. Test Worklist Tab Navigation
+                # 3. Test Worklist Tab Navigation & Column Resizers
                 worklist_tab = require(
                     page, ".winbar-tab[data-tab-id='worklist'], .winbar-tab:has-text('Worklist')",
                     "tab Worklist",
@@ -188,6 +191,132 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                 worklist_tab.click()
                 page.wait_for_selector(".worklist-view, .worklist-tree", timeout=5000)
                 print("   Switched to Worklist (view mounted).")
+
+                # 3b. Verify Column Resizers in real browser DOM
+                page.wait_for_selector(".plist-header", timeout=10000)
+                resizers = page.query_selector_all(".col-resizer")
+                if len(resizers) != 8:
+                    raise AssertionError(
+                        f"Gate 3: Worklist must expose 8 column resize handles, found {len(resizers)}."
+                    )
+                accessible_resizers = page.evaluate(
+                    """() => [...document.querySelectorAll('.col-resizer')].every((handle) =>
+                        handle.getAttribute('role') === 'separator'
+                        && handle.tabIndex === 0
+                        && Boolean(handle.getAttribute('aria-label'))
+                        && Boolean(handle.getAttribute('aria-valuenow'))
+                    )"""
+                )
+                if not accessible_resizers:
+                    raise AssertionError("Gate 3: Worklist resize handles are not keyboard/screen-reader ready.")
+                print(f"   Found {len(resizers)} column resize handles in Worklist header.")
+
+                resizer_c1 = require(page, ".col-resizer[data-col='c1']", "resizer c1")
+                box = resizer_c1.bounding_box()
+                if not box:
+                    raise AssertionError("Gate 3: Worklist name-column resize handle has no visible box.")
+                before_width = page.evaluate(
+                    "() => parseFloat(document.querySelector('.worklist-tree')?.style.getPropertyValue('--wl-c1') || '0')"
+                )
+                page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                page.mouse.down()
+                page.mouse.move(box["x"] + box["width"] / 2 + 50, box["y"] + box["height"] / 2)
+                page.mouse.up()
+                after_width = page.evaluate(
+                    "() => parseFloat(document.querySelector('.worklist-tree')?.style.getPropertyValue('--wl-c1') || '0')"
+                )
+                if after_width < before_width + 45:
+                    raise AssertionError(
+                        f"Gate 3: dragging c1 did not resize it by 50px ({before_width} -> {after_width})."
+                    )
+                print(f"   Dragging c1 changed its width: {before_width}px -> {after_width}px.")
+
+                action_resizer = require(page, ".col-resizer[data-col='c7']", "resizer Action")
+                action_resizer.focus()
+                before_action = page.evaluate(
+                    "() => parseFloat(document.querySelector('.worklist-tree')?.style.getPropertyValue('--wl-c7') || '0')"
+                )
+                page.keyboard.press("ArrowRight")
+                after_action = page.evaluate(
+                    "() => parseFloat(document.querySelector('.worklist-tree')?.style.getPropertyValue('--wl-c7') || '0')"
+                )
+                if after_action <= before_action:
+                    raise AssertionError(
+                        f"Gate 3: keyboard did not resize Action column ({before_action} -> {after_action})."
+                    )
+                expected_persisted_name = page.evaluate(
+                    "() => parseFloat(document.querySelector('.worklist-tree')?.style.getPropertyValue('--wl-c1') || '0')"
+                )
+
+                # A persisted preference must survive a full page reconstruction,
+                # not merely an in-place Worklist refresh.
+                page.reload(wait_until="domcontentloaded", timeout=15000)
+                page.wait_for_selector("#app", timeout=10000)
+                require(
+                    page, ".winbar-tab[data-tab-id='worklist'], .winbar-tab:has-text('Worklist')",
+                    "tab Worklist after reload",
+                ).click()
+                page.wait_for_selector(".plist-header", timeout=10000)
+                collapsed_patient = page.query_selector(".prow[aria-expanded='false']")
+                if collapsed_patient:
+                    collapsed_patient.click()
+                persisted_width = page.evaluate(
+                    "() => parseFloat(document.querySelector('.worklist-tree')?.style.getPropertyValue('--wl-c1') || '0')"
+                )
+                if persisted_width != expected_persisted_name:
+                    raise AssertionError(
+                        "Gate 3: resized Worklist widths were not restored after reload "
+                        f"({expected_persisted_name} -> {persisted_width})."
+                    )
+
+                for viewport_width in (1440, 1024, 800):
+                    page.set_viewport_size({"width": viewport_width, "height": 800})
+                    layout = page.evaluate(
+                        """() => {
+                          const header = [...document.querySelectorAll('.plist-header > *')];
+                          const row = [...document.querySelectorAll('.srow')]
+                            .find((candidate) => candidate.getBoundingClientRect().height > 0)
+                            || document.querySelector('.prow');
+                          const cells = row ? [...row.children] : [];
+                          const deltas = header.map((cell, index) => {
+                            const h = cell.getBoundingClientRect();
+                            const r = cells[index]?.getBoundingClientRect();
+                            return r ? Math.abs(h.left - r.left) : 999;
+                          });
+                          const incompleteActions = [...document.querySelectorAll('.srow .rowacts')]
+                            .find((actions) => actions.querySelector('[data-action="resume-study-download"]'));
+                          const buttons = incompleteActions
+                            ? [...incompleteActions.querySelectorAll('button')].map((button) => button.getBoundingClientRect())
+                            : [];
+                          const buttonsOverlap = buttons.some((button, index) =>
+                            index > 0 && button.left < buttons[index - 1].right - 0.5
+                          );
+                          return {
+                            headerCount: header.length,
+                            rowCount: cells.length,
+                            maxGridLineDelta: Math.max(...deltas),
+                            headerWidths: header.map((cell) => cell.getBoundingClientRect().width),
+                            rowWidths: cells.map((cell) => cell.getBoundingClientRect().width),
+                            actionCount: buttons.length,
+                            buttonsOverlap,
+                            stickyHeader: getComputedStyle(document.querySelector('.plist-header')).position === 'sticky',
+                          };
+                        }"""
+                    )
+                    if (
+                        layout["headerCount"] != 8
+                        or layout["rowCount"] != 8
+                        or layout["maxGridLineDelta"] > 1
+                        or layout["actionCount"] != 4
+                        or layout["buttonsOverlap"]
+                        or not layout["stickyHeader"]
+                    ):
+                        raise AssertionError(
+                            f"Gate 3: Worklist layout failed at {viewport_width}px: {layout}"
+                        )
+                page.set_viewport_size({"width": 1280, "height": 800})
+                print("   Mouse, keyboard, ARIA handles and reload persistence verified.")
+                print("   Grid alignment, sticky header and 4 actions verified at 1440/1024/800px.")
 
                 # 4. Switch back to Patient / Studio Tab
                 print("4. Switching back to Patient / Studio tab...")

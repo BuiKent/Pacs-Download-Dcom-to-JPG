@@ -3893,20 +3893,54 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 
 /* ================= Multi-level Study List tree ================= */
+.worklist-tree {
+  --wl-c0: 38px;
+  --wl-c1: 210px;              /* Họ tên */
+  --wl-c2: 100px;              /* Mã BN */
+  --wl-c3: 95px;               /* Ngày chụp */
+  --wl-c4: 95px;               /* Ngày thêm */
+  --wl-c5: 120px;              /* Định dạng */
+  --wl-c6: 105px;              /* Trạng thái */
+  --wl-c7: 240px;              /* Action */
+  --wl-grid-min-width: calc(
+    var(--wl-c0) + var(--wl-c1) + var(--wl-c2) + var(--wl-c3) +
+    var(--wl-c4) + var(--wl-c5) + var(--wl-c6) + var(--wl-c7)
+  );
+
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
 .plist-header,
 .prow, .srow {
   display: grid;
   align-items: stretch;
   gap: 0;
   padding: 0;
-  grid-template-columns: 38px minmax(160px, 1fr) 105px 95px 125px 95px 175px;
-  min-width: 793px;
+  grid-template-columns:
+    var(--wl-c0)
+    var(--wl-c1)
+    var(--wl-c2)
+    var(--wl-c3)
+    var(--wl-c4)
+    var(--wl-c5)
+    var(--wl-c6)
+    minmax(var(--wl-c7), 1fr);
+  min-width: var(--wl-grid-min-width);
   border-bottom: 1px solid var(--chrome-border, #e9e9e7);
   box-sizing: border-box;
   width: 100%;
 }
 
 .plist-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   background: var(--control-bg, #f8fafc);
   border-top: 1px solid var(--chrome-border, #e9e9e7);
   font-size: 10.5px;
@@ -3929,10 +3963,60 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   overflow: hidden;
 }
 
+.plist-header > * {
+  position: relative;
+  overflow: visible;
+}
+
 .plist-header > *:last-child,
 .prow > *:last-child,
 .srow > *:last-child {
   border-right: none;
+  overflow: visible;
+}
+
+.col-resizer {
+  position: absolute;
+  top: 0;
+  right: -6px;
+  width: 12px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+  user-select: none;
+  touch-action: none;
+}
+
+.col-resizer::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 5px;
+  width: 2px;
+  background: transparent;
+  transition: background 120ms ease;
+  pointer-events: none;
+}
+
+.col-resizer:hover::after,
+.col-resizer.resizing::after,
+.col-resizer:focus-visible::after {
+  background: var(--sort-active-fg, #0284c7);
+}
+
+.col-resizer:focus-visible {
+  outline: none;
+}
+
+.col-resizer:focus-visible::after {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--sort-active-fg, #0284c7) 24%, transparent);
+}
+
+html.is-column-resizing,
+html.is-column-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 .plist-header .col-stt {
@@ -4176,7 +4260,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 
 .pid-col.copyable-cell,
-.date-col.copyable-cell {
+.date-col.copyable-cell,
+.created-col.copyable-cell {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4184,7 +4269,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 
 .pid-col.copyable-cell .copyable-text,
-.date-col.copyable-cell .copyable-text {
+.date-col.copyable-cell .copyable-text,
+.created-col.copyable-cell .copyable-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4197,7 +4283,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   font-variant-numeric: tabular-nums;
 }
 
-.date-col {
+.date-col,
+.created-col {
   white-space: nowrap;
 }
 

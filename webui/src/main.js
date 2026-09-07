@@ -2179,6 +2179,7 @@ function refreshStudyListPanel() {
   const tree = root?.querySelector(".worklist-tree");
   if (!tree) return;
   tree.innerHTML = renderWorklistTreeInner();
+  applyWorklistColumnWidths(tree);
   bindWorklistOpenButtons(tree);
 
   const filters = root.querySelector(".worklist-filter-bar.secondary");
@@ -2332,6 +2333,10 @@ function filteredPatientList() {
       const dateA = patientLatestStudyDate(a);
       const dateB = patientLatestStudyDate(b);
       cmp = dateA - dateB;
+    } else if (sortCol === "created") {
+      const createdA = String(a.folderCreatedAtSort || a.folderCreatedAt || "");
+      const createdB = String(b.folderCreatedAtSort || b.folderCreatedAt || "");
+      cmp = createdA.localeCompare(createdB);
     }
     return sortOrder === "desc" ? -cmp : cmp;
   });
@@ -2432,6 +2437,240 @@ function patientFormatBadges(patient) {
   return tags.join(" ");
 }
 
+export const WORKLIST_COL_STORAGE_KEY = "worklist_column_widths";
+export const DEFAULT_WORKLIST_COL_WIDTHS = {
+  c0: 38,
+  c1: 210,
+  c2: 100,
+  c3: 95,
+  c4: 95,
+  c5: 120,
+  c6: 105,
+  c7: 240,
+};
+export const WORKLIST_COL_MIN_WIDTHS = {
+  c0: 30,
+  c1: 140,
+  c2: 80,
+  c3: 80,
+  c4: 80,
+  c5: 90,
+  c6: 90,
+  c7: 240,
+};
+export const WORKLIST_COL_MAX_WIDTHS = {
+  c0: 72,
+  c1: 900,
+  c2: 240,
+  c3: 200,
+  c4: 200,
+  c5: 240,
+  c6: 280,
+  c7: 900,
+};
+const WORKLIST_COL_KEYS = Object.keys(DEFAULT_WORKLIST_COL_WIDTHS);
+
+function clampWorklistColumnWidth(colKey, value) {
+  const fallback = DEFAULT_WORKLIST_COL_WIDTHS[colKey];
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(
+    WORKLIST_COL_MAX_WIDTHS[colKey],
+    Math.max(WORKLIST_COL_MIN_WIDTHS[colKey], Math.round(value)),
+  );
+}
+
+export function normalizeWorklistColumnWidths(candidate) {
+  const input = candidate && typeof candidate === "object" && !Array.isArray(candidate)
+    ? candidate
+    : {};
+  return Object.fromEntries(WORKLIST_COL_KEYS.map((colKey) => [
+    colKey,
+    clampWorklistColumnWidth(colKey, input[colKey] ?? DEFAULT_WORKLIST_COL_WIDTHS[colKey]),
+  ]));
+}
+
+export function getSavedWorklistColumnWidths() {
+  try {
+    if (typeof localStorage !== "undefined") {
+      const raw = localStorage.getItem(WORKLIST_COL_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return normalizeWorklistColumnWidths(parsed);
+      }
+    }
+  } catch (_) {}
+  return normalizeWorklistColumnWidths();
+}
+
+export function saveWorklistColumnWidths(widths) {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(
+        WORKLIST_COL_STORAGE_KEY,
+        JSON.stringify(normalizeWorklistColumnWidths(widths)),
+      );
+    }
+  } catch (_) {}
+}
+
+export function applyWorklistColumnWidths(tree, widths) {
+  const normalized = normalizeWorklistColumnWidths(widths || getSavedWorklistColumnWidths());
+  if (!tree) return normalized;
+  WORKLIST_COL_KEYS.forEach((colKey) => {
+    tree.style.setProperty(`--wl-${colKey}`, `${normalized[colKey]}px`);
+    tree.querySelector(`.col-resizer[data-col='${colKey}']`)
+      ?.setAttribute("aria-valuenow", String(normalized[colKey]));
+  });
+  return normalized;
+}
+
+export function bindWorklistColumnResizers(host) {
+  if (!host) return;
+  const tree = host.classList?.contains("worklist-tree")
+    ? host
+    : (host.closest?.(".worklist-tree") || host.querySelector?.(".worklist-tree") || getDomRoot()?.querySelector(".worklist-tree"));
+  if (!tree) return;
+
+  const currentWidths = applyWorklistColumnWidths(tree, getSavedWorklistColumnWidths());
+
+  function measureColumnWidth(colKey) {
+    const handle = tree.querySelector(`.col-resizer[data-col='${colKey}']`);
+    const width = handle?.closest(".plist-header > *")?.getBoundingClientRect().width || 0;
+    return width > 0 ? width : currentWidths[colKey];
+  }
+
+  function updateColumnWidth(colKey, requestedWidth, actionBaseline = null) {
+    let nextWidth = clampWorklistColumnWidth(colKey, requestedWidth);
+
+    if (colKey === "c7" && actionBaseline && nextWidth < actionBaseline.action) {
+      const desiredDelta = nextWidth - actionBaseline.action;
+      const nextNameWidth = clampWorklistColumnWidth(
+        "c1",
+        actionBaseline.name - desiredDelta,
+      );
+      const appliedDelta = actionBaseline.name - nextNameWidth;
+      nextWidth = clampWorklistColumnWidth("c7", actionBaseline.action + appliedDelta);
+      currentWidths.c1 = nextNameWidth;
+      tree.style.setProperty("--wl-c1", `${nextNameWidth}px`);
+      tree.querySelector(".col-resizer[data-col='c1']")
+        ?.setAttribute("aria-valuenow", String(nextNameWidth));
+    }
+
+    currentWidths[colKey] = nextWidth;
+    tree.style.setProperty(`--wl-${colKey}`, `${nextWidth}px`);
+    tree.querySelector(`.col-resizer[data-col='${colKey}']`)
+      ?.setAttribute("aria-valuenow", String(nextWidth));
+    return nextWidth;
+  }
+
+  host.querySelectorAll(".col-resizer").forEach((handle) => {
+    handle.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const colKey = handle.dataset.col;
+      if (!colKey) return;
+
+      const headerCell = handle.closest(".plist-header > *");
+      const startX = e.clientX;
+      const clientW = headerCell ? headerCell.getBoundingClientRect().width : 0;
+      const startWidth = clientW > 0 ? clientW : (currentWidths[colKey] || 100);
+      const actionBaseline = colKey === "c7"
+        ? { action: startWidth, name: measureColumnWidth("c1") }
+        : null;
+
+      handle.classList.add("resizing");
+      document.documentElement.classList.add("is-column-resizing");
+      if (typeof handle.setPointerCapture === "function") {
+        try {
+          handle.setPointerCapture(e.pointerId);
+        } catch (_) {}
+      }
+
+      function onPointerMove(ev) {
+        if (ev.pointerId !== e.pointerId) return;
+        const delta = ev.clientX - startX;
+        updateColumnWidth(colKey, startWidth + delta, actionBaseline);
+      }
+
+      function onPointerUp(ev) {
+        if (ev.pointerId !== e.pointerId) return;
+        handle.classList.remove("resizing");
+        document.documentElement.classList.remove("is-column-resizing");
+        if (typeof handle.releasePointerCapture === "function") {
+          try {
+            handle.releasePointerCapture(ev.pointerId);
+          } catch (_) {}
+        }
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+        window.removeEventListener("blur", onWindowBlur);
+        saveWorklistColumnWidths(currentWidths);
+      }
+
+      function onWindowBlur() {
+        onPointerUp(e);
+      }
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+      window.addEventListener("pointercancel", onPointerUp);
+      window.addEventListener("blur", onWindowBlur);
+    });
+
+    handle.addEventListener("keydown", (e) => {
+      const colKey = handle.dataset.col;
+      if (!colKey) return;
+      const direction = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
+      if (!direction && e.key !== "Home" && e.key !== "End") return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      const measuredWidth = measureColumnWidth(colKey);
+      const actionBaseline = colKey === "c7"
+        ? { action: measuredWidth, name: measureColumnWidth("c1") }
+        : null;
+      const requestedWidth = e.key === "Home"
+        ? WORKLIST_COL_MIN_WIDTHS[colKey]
+        : e.key === "End"
+          ? WORKLIST_COL_MAX_WIDTHS[colKey]
+          : measuredWidth + direction * (e.shiftKey ? 50 : 10);
+      updateColumnWidth(colKey, requestedWidth, actionBaseline);
+      saveWorklistColumnWidths(currentWidths);
+    });
+
+    handle.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const colKey = handle.dataset.col;
+      if (!colKey) return;
+      const measuredWidth = measureColumnWidth(colKey);
+      const actionBaseline = colKey === "c7"
+        ? { action: measuredWidth, name: measureColumnWidth("c1") }
+        : null;
+      updateColumnWidth(colKey, DEFAULT_WORKLIST_COL_WIDTHS[colKey], actionBaseline);
+      saveWorklistColumnWidths(currentWidths);
+    });
+
+    handle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+    });
+  });
+}
+
+function worklistColumnResizerMarkup(colKey, label, widths) {
+  const accessibleLabel = tf("Đổi độ rộng cột {}", label);
+  return `<span class="col-resizer" data-col="${colKey}"
+    role="separator" tabindex="0" aria-orientation="vertical"
+    aria-label="${escapeHtml(accessibleLabel)}"
+    aria-valuemin="${WORKLIST_COL_MIN_WIDTHS[colKey]}"
+    aria-valuemax="${WORKLIST_COL_MAX_WIDTHS[colKey]}"
+    aria-valuenow="${widths[colKey]}"
+    title="${escapeHtml(t("Kéo hoặc dùng phím mũi tên; nhấp đúp để đặt lại"))}"></span>`;
+}
+
 /**
  * Inner HTML of `.worklist-tree`, rendering the multi-level patient study tree.
  */
@@ -2459,6 +2698,7 @@ function renderWorklistTreeInner() {
   }
 
   state.expandedPatients = state.expandedPatients || {};
+  const columnWidths = getSavedWorklistColumnWidths();
 
   return `
     ${state.worklistError ? `<div class="worklist-scan-alert" role="status">
@@ -2466,22 +2706,38 @@ function renderWorklistTreeInner() {
       <button class="soft-button" data-action="refresh-worklist">${escapeHtml(t("Thử quét lại"))}</button>
     </div>` : ""}
     <div class="plist-header">
-      <span class="col-stt">${escapeHtml(t("STT"))}</span>
-      <button class="col-sort-btn col-who ${state.worklistSortColumn === "name" ? "sorted " + state.worklistSortOrder : ""}" type="button" data-action="sort-worklist" data-sort-col="name" title="${escapeHtml(t("Sắp xếp theo Họ và tên"))}">
-        <span>${escapeHtml(t("Họ và tên"))}</span>
-        <i class="sort-icon">${state.worklistSortColumn === "name" ? (state.worklistSortOrder === "desc" ? "▼" : "▲") : "↕"}</i>
-      </button>
-      <button class="col-sort-btn col-pid ${state.worklistSortColumn === "id" ? "sorted " + state.worklistSortOrder : ""}" type="button" data-action="sort-worklist" data-sort-col="id" title="${escapeHtml(t("Sắp xếp theo Mã BN"))}">
-        <span>${escapeHtml(t("Mã BN"))}</span>
-        <i class="sort-icon">${state.worklistSortColumn === "id" ? (state.worklistSortOrder === "desc" ? "▼" : "▲") : "↕"}</i>
-      </button>
-      <button class="col-sort-btn col-date ${state.worklistSortColumn === "date" ? "sorted " + state.worklistSortOrder : ""}" type="button" data-action="sort-worklist" data-sort-col="date" title="${escapeHtml(t("Sắp xếp theo Ngày chụp"))}">
-        <span>${escapeHtml(t("Ngày chụp"))}</span>
-        <i class="sort-icon">${state.worklistSortColumn === "date" ? (state.worklistSortOrder === "desc" ? "▼" : "▲") : "↕"}</i>
-      </button>
-      <span class="col-format">${escapeHtml(t("Định dạng"))}</span>
-      <span class="col-status">${escapeHtml(t("Trạng thái"))}</span>
-      <span class="col-acts">${escapeHtml(t("Action"))}</span>
+      <span class="col-stt">${escapeHtml(t("STT"))}${worklistColumnResizerMarkup("c0", t("STT"), columnWidths)}</span>
+      <div class="col-who">
+        <button class="col-sort-btn col-who ${state.worklistSortColumn === "name" ? "sorted " + state.worklistSortOrder : ""}" type="button" data-action="sort-worklist" data-sort-col="name" title="${escapeHtml(t("Sắp xếp theo Họ và tên"))}">
+          <span>${escapeHtml(t("Họ và tên"))}</span>
+          <i class="sort-icon">${state.worklistSortColumn === "name" ? (state.worklistSortOrder === "desc" ? "▼" : "▲") : "↕"}</i>
+        </button>
+        ${worklistColumnResizerMarkup("c1", t("Họ và tên"), columnWidths)}
+      </div>
+      <div class="col-pid">
+        <button class="col-sort-btn col-pid ${state.worklistSortColumn === "id" ? "sorted " + state.worklistSortOrder : ""}" type="button" data-action="sort-worklist" data-sort-col="id" title="${escapeHtml(t("Sắp xếp theo Mã BN"))}">
+          <span>${escapeHtml(t("Mã BN"))}</span>
+          <i class="sort-icon">${state.worklistSortColumn === "id" ? (state.worklistSortOrder === "desc" ? "▼" : "▲") : "↕"}</i>
+        </button>
+        ${worklistColumnResizerMarkup("c2", t("Mã BN"), columnWidths)}
+      </div>
+      <div class="col-date">
+        <button class="col-sort-btn col-date ${state.worklistSortColumn === "date" ? "sorted " + state.worklistSortOrder : ""}" type="button" data-action="sort-worklist" data-sort-col="date" title="${escapeHtml(t("Sắp xếp theo Ngày chụp"))}">
+          <span>${escapeHtml(t("Ngày chụp"))}</span>
+          <i class="sort-icon">${state.worklistSortColumn === "date" ? (state.worklistSortOrder === "desc" ? "▼" : "▲") : "↕"}</i>
+        </button>
+        ${worklistColumnResizerMarkup("c3", t("Ngày chụp"), columnWidths)}
+      </div>
+      <div class="col-created">
+        <button class="col-sort-btn col-created ${state.worklistSortColumn === "created" ? "sorted " + state.worklistSortOrder : ""}" type="button" data-action="sort-worklist" data-sort-col="created" title="${escapeHtml(t("Sắp xếp theo Ngày thêm"))}">
+          <span>${escapeHtml(t("Ngày thêm"))}</span>
+          <i class="sort-icon">${state.worklistSortColumn === "created" ? (state.worklistSortOrder === "desc" ? "▼" : "▲") : "↕"}</i>
+        </button>
+        ${worklistColumnResizerMarkup("c4", t("Ngày thêm"), columnWidths)}
+      </div>
+      <span class="col-format">${escapeHtml(t("Định dạng"))}${worklistColumnResizerMarkup("c5", t("Định dạng"), columnWidths)}</span>
+      <span class="col-status">${escapeHtml(t("Trạng thái"))}${worklistColumnResizerMarkup("c6", t("Trạng thái"), columnWidths)}</span>
+      <span class="col-acts">${escapeHtml(t("Action"))}${worklistColumnResizerMarkup("c7", t("Action"), columnWidths)}</span>
     </div>
     <div class="plist">
       ${patients.map((p, pIdx) => {
@@ -2500,6 +2756,7 @@ function renderWorklistTreeInner() {
         const patientName = p.patientName || p.patientId || t("Chưa rõ tên BN");
         const patientId = p.patientId || "";
         const studyDate = patientLatestStudyDateString(p);
+        const createdDate = p.folderCreatedAt || "—";
         return `
           <div class="prow" role="button" tabindex="0" aria-expanded="${isExpanded}" data-toggle-patient="${escapeHtml(p.id)}">
             <span class="stt-cell"><i class="twist">▶</i><span class="stt-num">${pIdx + 1}</span></span>
@@ -2532,6 +2789,14 @@ function renderWorklistTreeInner() {
                 <button class="cell-copy-btn" type="button" data-action="copy-cell"
                   data-copy-text="${escapeHtml(studyDate)}"
                   title="${escapeHtml(t("Sao chép ngày chụp"))}">${icons.copy}</button>
+              ` : ""}
+            </span>
+            <span class="meta created-col copyable-cell" title="${escapeHtml(createdDate)}">
+              <span>${escapeHtml(createdDate)}</span>
+              ${createdDate && createdDate !== "—" ? `
+                <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                  data-copy-text="${escapeHtml(createdDate)}"
+                  title="${escapeHtml(t("Sao chép ngày thêm"))}">${icons.copy}</button>
               ` : ""}
             </span>
             <span class="meta format-col">${patientFormatBadges(p)}</span>
@@ -2578,6 +2843,14 @@ function renderWorklistTreeInner() {
                       <button class="cell-copy-btn" type="button" data-action="copy-cell"
                         data-copy-text="${escapeHtml(s.studyDate)}"
                         title="${escapeHtml(t("Sao chép ngày chụp"))}">${icons.copy}</button>
+                    ` : ""}
+                  </span>
+                  <span class="meta created-col sub copyable-cell" title="${escapeHtml(createdDate)}">
+                    <span>—</span>
+                    ${createdDate && createdDate !== "—" ? `
+                      <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                        data-copy-text="${escapeHtml(createdDate)}"
+                        title="${escapeHtml(t("Sao chép ngày thêm"))}">${icons.copy}</button>
                     ` : ""}
                   </span>
                   <span class="meta format-col">${studyFormatBadge(s)}</span>
@@ -2763,6 +3036,8 @@ function bindWorklistOpenButtons(host) {
       resumeStudyDownload(button.dataset.url || "");
     });
   });
+
+  bindWorklistColumnResizers(host);
 }
 
 /**
@@ -2913,6 +3188,10 @@ export function renderWorklistFilters() {
 }
 
 function renderStudyListPanel() {
+  const widths = getSavedWorklistColumnWidths();
+  const inlineStyles = Object.entries(widths)
+    .map(([k, v]) => `--wl-${k}: ${v}px;`)
+    .join(" ");
   return `
     <div class="worklist-filter-bar filters">
       <input type="search" data-field="worklist-search" placeholder="${escapeHtml(t("Tìm theo tên hoặc mã bệnh nhân, đợt khám…"))}" value="${escapeHtml(state.worklistSearch || "")}">
@@ -2928,7 +3207,7 @@ function renderStudyListPanel() {
 
     ${renderWorklistFilters()}
 
-    <div class="worklist-tree">${renderWorklistTreeInner()}</div>
+    <div class="worklist-tree" style="${inlineStyles}">${renderWorklistTreeInner()}</div>
   `;
 }
 

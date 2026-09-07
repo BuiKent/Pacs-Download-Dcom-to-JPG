@@ -57,6 +57,9 @@ const EN = {
   "Sắp xếp theo Họ và tên": "Sort by Patient Name",
   "Sắp xếp theo Mã BN": "Sort by Patient ID",
   "Sắp xếp theo Ngày chụp": "Sort by Study Date",
+  "Ngày thêm": "Date added",
+  "Sắp xếp theo Ngày thêm": "Sort by Date Added",
+  "Sao chép ngày thêm": "Copy date added",
 
   // Study List filters and the read/unread mark
   "Loại chụp": "Modality",
