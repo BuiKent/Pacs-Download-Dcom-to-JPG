@@ -63,6 +63,9 @@ PDF_EXTENSIONS = {".pdf"}
 APP_METADATA_NAMES = {
     "patient-index.json",
     "viewer-annotations.json",
+    # The surgical marker sidecar. Without this the study folder lists it as a
+    # JSON "report" and every marked operation grows a document nobody wrote.
+    "surgery-bookmarks.json",
     ".direct-download.json",
     ".dicom_cache.json",
     "manifest.json",
@@ -94,6 +97,12 @@ IMAGING_MODALITY_TOKENS = {
     "ct", "mr", "mri", "xray", "x-ray", "xquang", "x-quang", "pet", "spect", "us", "sieuam", "sieu_am",
 }
 ANNOTATIONS_NAME = "viewer-annotations.json"
+# Surgical bookmarks live beside the clips they point into, not in the patient
+# manifest: the manifest is rewritten whenever the pipeline rescans a folder,
+# and a marker a surgeon placed by hand must not be a casualty of a rescan.
+# Keeping it in the study folder also means the markers travel with an
+# exported or copied record.
+SURGERY_BOOKMARKS_NAME = "surgery-bookmarks.json"
 
 
 # What a folder can hold, in the order a folder with several kinds is read.
@@ -4821,6 +4830,95 @@ class WebController:
         temporary.replace(path)
         return {"saved": True, "count": len(annotations)}
 
+    def _surgery_bookmarks_path(self, record: SeriesRecord) -> Path:
+        """The sidecar holding every marker placed in one operation's folder.
+
+        A recorder writes an operation as several clips in one folder, and the
+        studio already shows the markers of the other clips alongside the
+        current one. One file per folder keeps that view whole.
+        """
+        return record.folder / SURGERY_BOOKMARKS_NAME
+
+    @staticmethod
+    def _clean_bookmark(item: object) -> Optional[dict]:
+        """One marker, with only the fields the studio wrote and can read back.
+
+        Anything unparseable is dropped rather than repaired: a marker at a
+        guessed timestamp points at the wrong moment of an operation, which is
+        worse than a marker that is simply not there.
+        """
+        if not isinstance(item, dict):
+            return None
+        try:
+            at_seconds = float(item.get("time"))
+        except (TypeError, ValueError):
+            return None
+        if at_seconds < 0 or at_seconds != at_seconds or at_seconds in (float("inf"), float("-inf")):
+            return None
+        cleaned = {"time": at_seconds, "text": str(item.get("text") or "")[:500]}
+        series_id = str(item.get("seriesId") or "")
+        if series_id:
+            cleaned["seriesId"] = series_id[:64]
+        series_name = str(item.get("seriesName") or "")
+        if series_name:
+            cleaned["seriesName"] = series_name[:300]
+        try:
+            file_index = int(item.get("fileIndex"))
+        except (TypeError, ValueError):
+            file_index = None
+        if file_index is not None and file_index >= 0:
+            cleaned["fileIndex"] = file_index
+        try:
+            cleaned["createdAt"] = int(item.get("createdAt"))
+        except (TypeError, ValueError):
+            pass
+        return cleaned
+
+    def get_surgery_bookmarks(
+        self,
+        series_id: str,
+        catalog: Optional[ArchiveCatalog] = None,
+    ) -> dict:
+        target_catalog = catalog or self.catalog
+        record = target_catalog.get(series_id)
+        path = self._surgery_bookmarks_path(record)
+        if not path.is_file():
+            return {"version": 1, "bookmarks": []}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            # A corrupted sidecar must not keep the clip from opening.
+            return {"version": 1, "bookmarks": []}
+        raw = data.get("bookmarks") if isinstance(data, dict) else None
+        if not isinstance(raw, list):
+            return {"version": 1, "bookmarks": []}
+        cleaned = [item for item in (self._clean_bookmark(entry) for entry in raw) if item]
+        cleaned.sort(key=lambda item: item["time"])
+        return {"version": 1, "bookmarks": cleaned}
+
+    def save_surgery_bookmarks(
+        self,
+        series_id: str,
+        value: dict,
+        catalog: Optional[ArchiveCatalog] = None,
+    ) -> dict:
+        target_catalog = catalog or self.catalog
+        record = target_catalog.get(series_id)
+        raw = value.get("bookmarks")
+        if not isinstance(raw, list):
+            raise ValueError("Dữ liệu mốc phẫu thuật không hợp lệ.")
+        cleaned = [item for item in (self._clean_bookmark(entry) for entry in raw) if item]
+        cleaned.sort(key=lambda item: item["time"])
+        path = self._surgery_bookmarks_path(record)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps({"version": 1, "bookmarks": cleaned}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+        return {"saved": True, "count": len(cleaned)}
+
     def get_text_content(
         self,
         series_id: str,
@@ -5280,6 +5378,9 @@ class LocalApiServer:
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/annotations", path)
                 if match:
                     return owner.controller.get_annotations(match.group(1), catalog=catalog)
+                match = re.fullmatch(r"/api/series/([a-f0-9]{20})/surgery-bookmarks", path)
+                if match:
+                    return owner.controller.get_surgery_bookmarks(match.group(1), catalog=catalog)
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/file-paths", path)
                 if match:
                     record = catalog.get(match.group(1))
@@ -5560,6 +5661,9 @@ class LocalApiServer:
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/annotations", path)
                 if match:
                     return owner.controller.save_annotations(match.group(1), payload, catalog=catalog)
+                match = re.fullmatch(r"/api/series/([a-f0-9]{20})/surgery-bookmarks", path)
+                if match:
+                    return owner.controller.save_surgery_bookmarks(match.group(1), payload, catalog=catalog)
                 raise KeyError("API không tồn tại.")
 
             def _serve_thumbnail(self, path: str) -> bool:

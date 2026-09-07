@@ -30,30 +30,47 @@ báo cáo kết quả. Người dùng đọc tiếng Việt; mã nguồn đọc 
 | Dòng này hiện lên màn hình cho bác sĩ? | Tiếng Việt |
 | Dòng này là khoá `t("...")`? | Tiếng Việt, không được đổi |
 
-## 2. Chạy test
+## 2. Ba cổng chất lượng bắt buộc (3 Non-Negotiable Quality Gates) & Định nghĩa Hoàn thành
 
-Dự án dùng **unittest**, không phải pytest, và cần `-t tests`:
+Mọi agent (Gemini, Claude, Codex...) trước khi tuyên bố "đã xong", đề xuất commit, hoặc thực hiện commit/push **BẮT BUỘC** phải vượt qua đủ 3 cổng chất lượng sau:
 
-```bash
-C:/Python314/python.exe -m unittest discover -s tests -t tests
-```
+### 🚪 Cổng 1: Phân tích tĩnh & Sạch cú pháp (Static Analysis & Clean Lint)
+- **ESLint không lỗi (`npm run lint --prefix webui`)**: Bắt buộc đạt 0 error, 0 warning. Tuyệt đối cấm để lọt biến chưa khai báo (`no-undef`), import sai scope, trùng khoá (`no-dupe-keys`), biến gán thừa.
+- **Python syntax**: Các file Python sửa đổi phải biên dịch sạch cú pháp (`python -m py_compile <files>`).
 
-Riêng bộ media engine dùng pytest và cần ffmpeg trong PATH:
+### 🚪 Cổng 2: Kiểm thử tự động với Tương tác DOM thực (Real DOM & Behavioral Test Verification)
+- **100% Test Suite xanh**:
+  - Python tests: `python -m unittest discover -s tests -t tests` (hoặc
+    `PATH="$PWD/tools/bin:$PATH" python -m pytest tests/test_media_*.py` cho media engine).
+  - WebUI tests: `npm test --prefix webui` (100% pass, không giả lập kết quả).
 
-```bash
-PATH="$PWD/tools/bin:$PATH" python -m pytest tests/test_media_*.py
-```
+#### Đọc kết quả cho đúng — `skipped` không phải `failed`
 
-Không có ffmpeg trong PATH thì 4 test binary-config tự skip — `100 passed,
-7 skipped` và `104 passed, 3 skipped` đều là kết quả đúng, chỉ khác môi trường.
+Suite Python có **527 test và chạy khoảng 6 phút**, vượt timeout mặc định 2 phút
+của agent. **Chạy nền, đừng kết luận là treo** rồi bỏ qua Cổng 2.
 
-Sửa bất cứ thứ gì trong `webui/src/` thì **bắt buộc** chạy lại:
+Dùng `python` trong `.venv` của dự án. Đường dẫn `C:/Python314/python.exe` trong
+tài liệu cũ không còn tồn tại.
 
-```bash
-npm run build --prefix webui
-```
+Không có ffmpeg trong PATH thì 4 test binary-config **tự skip**. Cả
+`100 passed, 7 skipped` lẫn `104 passed, 3 skipped` đều là kết quả ĐÚNG, chỉ khác
+môi trường. Đừng đi "sửa" những test đó — chúng đang chạy tốt.
 
-Không build thì `web_dist/` vẫn là bundle cũ và app chạy code cũ.
+- **Luật kiểm thử DOM thực (BẮT BUỘC — ZERO TOLERANCE)**:
+  - Thứ gì người dùng bấm (nút, tab, pin timeline, thẻ danh sách, menu) thì test **PHẢI** kích hoạt qua DOM thật: `node.click()`, `fireEvent`, `dispatchEvent`.
+  - **Tuyệt đối cấm gọi tắt hàm nội bộ** với object giả lập (ví dụ `action({ dataset: ... })`). Cách gọi tắt này hoàn toàn bỏ qua việc gắn listener DOM, che giấu lỗi liệt sự kiện khi cập nhật `innerHTML` và lỗi scoping.
+
+### 🚪 Cổng 3: Build sản phẩm & Kiểm tra chạy thực (Production Build & Real Runtime Sanity)
+- **Rebuild bundle**: Sửa bất cứ thứ gì trong `webui/src/` thì **bắt buộc** chạy lại:
+  ```bash
+  npm run build --prefix webui
+  ```
+  Không build thì `web_dist/` vẫn là bundle cũ và app chạy code cũ.
+- **Chạy thực tế / Smoke test**: Khi bổ sung luồng UI mới hoặc tính năng lớn, khởi chạy xem trước (`python tools/run_web_preview.py --static web_dist`), kiểm tra không có uncaught exception hoặc console error.
+
+### 🎯 Định nghĩa Hoàn thành (Definition of Done - DoD)
+Agent **CHỈ ĐƯỢC PHÉP** thông báo xong việc hoặc sẵn sàng commit khi:
+`Lint sạch 0 lỗi` ➔ `Test 100% pass với DOM thật` ➔ `npm run build hoàn tất` ➔ `App chạy thực tế không lỗi`.
 
 ## 3. Không bịa dữ liệu lâm sàng
 

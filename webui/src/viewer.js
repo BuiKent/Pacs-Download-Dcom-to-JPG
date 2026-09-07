@@ -102,13 +102,27 @@ let engineUsable = false;
 let toolGroup = null;
 let resizeObserver = null;
 let activeElements = [];
+// Module state is declared before anything reads it, not beside the code that
+// happens to use it most. A `let` read above its own declaration line is legal
+// only while nothing reaches it during module set-up; the moment something
+// does, it throws "Cannot access before initialization" — which is exactly how
+// the surgery marker strip died.
+
+// Set from the UI so the dialog follows the selected language.
+let TEXT_PROMPT_LABEL = "Nội dung ghi chú";
+let TEXT_PROMPT_CONFIRM = "Thêm";
+let TEXT_PROMPT_CANCEL = "Bỏ";
+
+export const COMPARE_MODES = Object.freeze({ compare: 2, compare3: 3 });
+// `emptyCompareSync` is a hoisted function declaration, so this is safe here.
+let compareSync = emptyCompareSync();
+
 let activeViewportId = "";
 let maximizedViewportId = null;
 let activeSeries = null;
 let activeSeriesList = [];
 let activeMode = "single";
 let currentTool = "window";
-let mprPrimaryPlane = "axial";
 // Which toolClassesForLayout() set the live tool group was built from. A tool
 // missing from that set can never be activated, so toolFallback must know it.
 let toolGroupLayout = "stack";
@@ -796,11 +810,6 @@ function askForText(initial = "") {
   });
 }
 
-// Set from the UI so the dialog follows the selected language.
-let TEXT_PROMPT_LABEL = "Nội dung ghi chú";
-let TEXT_PROMPT_CONFIRM = "Thêm";
-let TEXT_PROMPT_CANCEL = "Bỏ";
-
 export function configureTextPrompt({ label, confirm, cancel }) {
   TEXT_PROMPT_LABEL = label || TEXT_PROMPT_LABEL;
   TEXT_PROMPT_CONFIRM = confirm || TEXT_PROMPT_CONFIRM;
@@ -1209,7 +1218,6 @@ function installSliceControl({
 }) {
   if (!Number.isFinite(count) || count < 2) return;
   const shell = element.closest(".viewport-shell");
-  const labelElement = shell?.querySelector(".viewport-label");
   if (!shell) return;
   const control = document.createElement("label");
   control.className = "slice-control";
@@ -1334,7 +1342,6 @@ export function mprPlaneLayout(plane) {
 export function setMprPrimaryPlane(plane, resize = true) {
   const layout = mprPlaneLayout(plane);
   if (!layout) return false;
-  mprPrimaryPlane = plane;
   for (const shell of document.querySelectorAll(".mode-mpr .mpr-plane")) {
     shell.classList.remove("mpr-primary", "mpr-secondary-top", "mpr-secondary-bottom");
     const positionClass = layout[shell.dataset.plane];
@@ -1707,7 +1714,6 @@ export function syncedCompareIndices(anchor, sourcePane, sourceIndex, sliceCount
 function emptyCompareSync() {
   return { enabled: false, anchor: null, viewportIds: [], seriesList: [], sliceCounts: [], spatialMode: null };
 }
-let compareSync = emptyCompareSync();
 
 function readCompareIndices() {
   return compareSync.viewportIds.map((viewportId) => (
@@ -2100,8 +2106,6 @@ function installMontageSynchronization(series, viewportIds) {
     });
   });
 }
-
-export const COMPARE_MODES = Object.freeze({ compare: 2, compare3: 3 });
 
 export async function showStacks(container, series, mode, comparison = null, tool = currentTool) {
   destroyCurrent();

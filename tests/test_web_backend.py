@@ -36,6 +36,7 @@ from web_backend import (
     _redirect_plan,
     _study_from_folder_path,
     _detached_records,
+    media_type_for_file,
 )
 
 
@@ -920,6 +921,86 @@ class CatalogTests(unittest.TestCase):
             self.assertFalse(any(source.glob("*annotations*.json")))
             self.assertTrue((controller.annotation_root / f"{series_id}.json").is_file())
             self.assertEqual(1, len(controller.get_annotations(series_id)["annotations"]))
+
+
+class SurgeryBookmarkTests(unittest.TestCase):
+    """Markers survive closing the app, and a bad one is dropped, not guessed."""
+
+    @staticmethod
+    def _video_archive(root: Path):
+        folder = root / "ca_mo"
+        folder.mkdir(parents=True)
+        (folder / "clip.mp4").write_bytes(bytes([0, 0, 0, 0x18]) + b"ftypmp42")
+        controller = WebController()
+        series_id = controller.open_archive(str(root))["series"][0]["id"]
+        return controller, series_id, folder
+
+    def test_markers_are_written_beside_the_clips_and_read_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            controller, series_id, folder = self._video_archive(Path(tmp))
+
+            controller.save_surgery_bookmarks(series_id, {"bookmarks": [
+                {"time": 96.5, "text": "Cầm máu", "seriesId": series_id, "fileIndex": 0},
+                {"time": 12.0, "text": "Rạch da", "seriesId": series_id, "fileIndex": 0},
+            ]})
+
+            sidecar = folder / "surgery-bookmarks.json"
+            self.assertTrue(sidecar.is_file())
+
+            # A second controller stands in for reopening the app entirely.
+            reopened = WebController()
+            reopened.open_archive(str(Path(tmp)))
+            stored = reopened.get_surgery_bookmarks(series_id)["bookmarks"]
+            self.assertEqual([12.0, 96.5], [item["time"] for item in stored])
+            self.assertEqual("Rạch da", stored[0]["text"])
+
+    def test_a_marker_with_no_usable_time_is_dropped_not_repaired(self):
+        # A marker at a guessed timestamp points at the wrong moment of an
+        # operation, which is worse than no marker at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            controller, series_id, _ = self._video_archive(Path(tmp))
+
+            result = controller.save_surgery_bookmarks(series_id, {"bookmarks": [
+                {"time": "khong phai so", "text": "Hỏng"},
+                {"text": "Thiếu mốc thời gian"},
+                {"time": -4, "text": "Trước khi bắt đầu"},
+                {"time": 30, "text": "Tốt"},
+            ]})
+
+            self.assertEqual(1, result["count"])
+            stored = controller.get_surgery_bookmarks(series_id)["bookmarks"]
+            self.assertEqual([{"time": 30.0, "text": "Tốt"}], stored)
+
+    def test_a_record_never_marked_reads_as_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            controller, series_id, _ = self._video_archive(Path(tmp))
+            self.assertEqual([], controller.get_surgery_bookmarks(series_id)["bookmarks"])
+
+    def test_a_corrupted_sidecar_does_not_stop_the_clip_opening(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            controller, series_id, folder = self._video_archive(Path(tmp))
+            (folder / "surgery-bookmarks.json").write_text("{ khong phai json", encoding="utf-8")
+
+            self.assertEqual([], controller.get_surgery_bookmarks(series_id)["bookmarks"])
+
+    def test_the_sidecar_is_not_listed_as_a_document_in_the_record(self):
+        # It sits in the study folder next to the clips, so without an
+        # exclusion every marked operation grows a JSON "report" nobody wrote.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller, series_id, _ = self._video_archive(root)
+            controller.save_surgery_bookmarks(series_id, {"bookmarks": [{"time": 5, "text": "x"}]})
+
+            series = ArchiveCatalog().open(root)["series"]
+
+            self.assertEqual({"video"}, {item["mediaType"] for item in series})
+            self.assertEqual("", media_type_for_file(Path("ca_mo/surgery-bookmarks.json")))
+
+    def test_a_payload_that_is_not_a_list_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            controller, series_id, _ = self._video_archive(Path(tmp))
+            with self.assertRaises(ValueError):
+                controller.save_surgery_bookmarks(series_id, {"bookmarks": "khong phai danh sach"})
 
 
 class ServerSecurityTests(unittest.TestCase):

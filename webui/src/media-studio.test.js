@@ -13,9 +13,9 @@ import {
   renderTextViewer,
   renderWorkspacePane,
   loadTextContent,
-  renderViewer,
   photoLayer,
   selectedSeries,
+  initMediaEvents,
 } from "./main.js";
 import { createShape, defaultStyle } from "./photo-annotator.js";
 
@@ -569,20 +569,37 @@ describe("Surgery Video Studio Action Handlers", () => {
     expect(state.concatClips[0].path).toBe("D:/storage/surgery_01.mp4");
     expect(state.concatClips[1].path).toBe("D:/storage/surgery_02.mp4");
 
+    // Every control below is clicked on the modal the reader sees. The modal
+    // repaints itself after each one, so each click re-reads the DOM rather
+    // than holding a node the repaint has already thrown away.
+    const control = (name, clipIdx) => {
+      const selector = clipIdx === undefined
+        ? `[data-action='${name}']`
+        : `[data-action='${name}'][data-clip-idx='${clipIdx}']`;
+      const node = document.querySelector(`.concat-modal-overlay ${selector}`);
+      expect(node).not.toBeNull();
+      return node;
+    };
+    expect(document.querySelector(".concat-modal-overlay")).not.toBeNull();
+
     // 2. Reorder clips (move clip 1 down -> swap with clip 2)
-    await action("move-concat-clip-down", { dataset: { clipIdx: "0" } });
+    control("move-concat-clip-down", 0).click();
     expect(state.concatClips[0].seriesId).toBe("series_video_2");
     expect(state.concatClips[1].seriesId).toBe("series_video_1");
 
     // 3. Toggle clip selection
-    await action("toggle-concat-clip", { dataset: { clipIdx: "1" } });
+    control("toggle-concat-clip", 1).click();
     expect(state.concatClips[1].selected).toBe(false);
-    await action("toggle-concat-clip", { dataset: { clipIdx: "1" } });
+    control("toggle-concat-clip", 1).click();
     expect(state.concatClips[1].selected).toBe(true);
 
     // 4. Start concat with reordered clips
-    await action("start-concat-video");
+    control("start-concat-video").click();
 
+    // The modal closes before the request resolves, so the settled result is
+    // what the wait has to watch for.
+    await vi.waitFor(() => expect(state.videoWorkingPath).toBe("D:/storage/concatenated.mp4"));
+    expect(state.showConcatModal).toBe(false);
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("/api/media/video/concat"),
       expect.objectContaining({
@@ -594,7 +611,6 @@ describe("Surgery Video Studio Action Handlers", () => {
         }),
       })
     );
-    expect(state.showConcatModal).toBe(false);
     expect(state.videoWorkingPath).toBe("D:/storage/concatenated.mp4");
     expect(state.isError).toBe(false);
   });
@@ -652,15 +668,25 @@ describe("Surgery Video Studio Action Handlers", () => {
     );
   });
 
-  it("seek-video and seek-filmstrip-idx set video currentTime", async () => {
+  it("seeks to a frame when its filmstrip thumbnail is clicked", async () => {
+    // The filmstrip is rendered inside the studio pane, so the thumbnails only
+    // answer a click if the swapped-in pane was wired. Reaching the handler by
+    // hand proved the arithmetic and never the wiring.
+    global.fetch = vi.fn().mockResolvedValue(mockJsonResponse({ images: [] }));
+    state.videoFilmstrip = ["/w/f0.jpg", "/w/f1.jpg", "/w/f2.jpg", "/w/f3.jpg"];
+    document.body.innerHTML = `<div id="app"><div id="workspace"></div></div>`;
+    const workspace = document.querySelector("#workspace");
+    workspace.innerHTML = renderWorkspacePane(selectedSeries());
+    initMediaEvents();
+
     const video = document.querySelector("#surgery-video-player");
     Object.defineProperty(video, "currentTime", { value: 0, writable: true });
     Object.defineProperty(video, "duration", { value: 100, writable: true });
 
-    await action("seek-video", { dataset: { time: "42.5" } });
-    expect(video.currentTime).toBe(42.5);
+    const frames = workspace.querySelectorAll("[data-action='seek-filmstrip-idx']");
+    expect(frames.length).toBe(4);
 
-    await action("seek-filmstrip-idx", { dataset: { idx: "2", total: "4" } });
+    frames[2].click();
     expect(video.currentTime).toBe(50);
   });
 
@@ -754,6 +780,80 @@ describe("Surgery Video Studio Action Handlers", () => {
     expect(video.currentTime).toBe(90);
     expect([...document.querySelectorAll(".video-marker-pin.active")]
       .map((pin) => Number(pin.dataset.time))).toEqual([90]);
+  });
+
+  it("keeps every studio button alive after moving to another clip of the same kind", async () => {
+    // Picking another clip in the series strip does not rebuild the shell when
+    // the media kind has not changed: it rewrites `#workspace` and calls
+    // `initMediaEvents()`. Every tool in the studio is a `[data-action]` bound
+    // by `bindEvents` at render time, so the swapped-in toolbar must be wired
+    // again or the whole studio goes quiet — trim, concat, export, snapshot,
+    // bookmarks, all of it.
+    global.fetch = vi.fn().mockResolvedValue(mockJsonResponse({ images: [] }));
+    document.body.innerHTML = `<div id="app"><div id="workspace"></div></div>`;
+    const workspace = document.querySelector("#workspace");
+    workspace.innerHTML = renderWorkspacePane(selectedSeries());
+    initMediaEvents();
+
+    const setIn = workspace.querySelector("[data-action='video-set-in']");
+    expect(setIn).not.toBeNull();
+    expect(state.videoIn).toBe(null);
+
+    setIn.click();
+    expect(state.videoIn).not.toBe(null);
+
+    // The marker button is the one the reader reaches for most often.
+    const addMarker = workspace.querySelector("[data-action='add-video-bookmark']");
+    expect(addMarker).not.toBeNull();
+    addMarker.click();
+    expect(state.videoBookmarks.length).toBe(1);
+  });
+
+  it("writes a marker to the sidecar beside the clips, not only into memory", async () => {
+    // Markers used to live in `state` alone: a surgeon who marked twenty
+    // points across a two-hour recording lost all of them on closing the app.
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ saved: true, count: 1 }));
+    global.fetch = fetchMock;
+    const video = mountVideoStudioChrome(120);
+
+    video.currentTime = 75;
+    await action("add-video-bookmark");
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/series/series_video_1/surgery-bookmarks"),
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const [, request] = fetchMock.mock.calls.find(([url]) => String(url).includes("surgery-bookmarks"));
+    const sent = JSON.parse(request.body).bookmarks;
+    expect(sent).toHaveLength(1);
+    expect(sent[0].time).toBe(75);
+    expect(sent[0].seriesId).toBe("series_video_1");
+  });
+
+  it("shows the markers saved beside the clips when the studio opens", async () => {
+    global.fetch = vi.fn().mockImplementation(async (url) => {
+      if (String(url).includes("surgery-bookmarks")) {
+        return mockJsonResponse({
+          version: 1,
+          bookmarks: [
+            { time: 12, text: "Rạch da", seriesId: "series_video_1", fileIndex: 0 },
+            { time: 96, text: "Cầm máu", seriesId: "series_video_1", fileIndex: 0 },
+          ],
+        });
+      }
+      return mockJsonResponse({ images: [] });
+    });
+    mountVideoStudioChrome(120);
+    state.videoBookmarks = [];
+
+    // The studio reads the sidecar as part of wiring itself up.
+    initMediaEvents();
+
+    await vi.waitFor(() => expect(state.videoBookmarks).toHaveLength(2));
+    const pins = document.querySelectorAll(".video-marker-pin");
+    expect(pins.length).toBe(2);
+    expect([...pins].map((pin) => Number(pin.dataset.time))).toEqual([12, 96]);
+    expect(document.body.textContent).toContain("Rạch da");
   });
 
   it("keeps edit and delete on a bookmark card working after the list is rewritten", async () => {

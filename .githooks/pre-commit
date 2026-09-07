@@ -1,0 +1,50 @@
+#!/bin/sh
+#
+# Gate 1 and Gate 2 of the three quality gates in CLAUDE.md, enforced.
+#
+# Written down, the gates only worked when an agent chose to read them; a
+# marker strip that drew but never answered a click still reached the branch
+# with every gate "passed". These two run in seconds-to-a-minute and cover the
+# failures that actually shipped: an undeclared variable, and a button whose
+# listener was never attached.
+#
+# The Python suite is 527 tests and about six minutes, so it stays out of the
+# commit path — run it before pushing anything that touches Python.
+#
+# To bypass for a work-in-progress commit:  SKIP_GATES=1 git commit ...
+
+set -e
+
+if [ "$SKIP_GATES" = "1" ]; then
+  echo "pre-commit: SKIP_GATES=1 — bỏ qua cổng chất lượng."
+  exit 0
+fi
+
+repo_root=$(git rev-parse --show-toplevel)
+
+# Nothing staged under webui/src means nothing these gates can judge.
+if ! git diff --cached --name-only | grep -q '^webui/src/'; then
+  exit 0
+fi
+
+if [ ! -d "$repo_root/webui/node_modules" ]; then
+  echo "pre-commit: thiếu webui/node_modules — chạy 'npm install --prefix webui' trước."
+  exit 1
+fi
+
+echo "pre-commit: Cổng 1 — ESLint..."
+npm run --silent lint --prefix "$repo_root/webui"
+
+echo "pre-commit: Cổng 2 — test WebUI..."
+npm test --silent --prefix "$repo_root/webui"
+
+# Gate 3 cannot be judged here: a stale bundle is a valid intermediate state
+# while rebasing or reverting. This only says so out loud.
+if git diff --cached --name-only | grep -q '^webui/src/' \
+  && ! git diff --cached --name-only | grep -q '^web_dist/'; then
+  echo ""
+  echo "pre-commit: CẢNH BÁO — có thay đổi webui/src/ nhưng không có web_dist/."
+  echo "  Chạy 'npm run build --prefix webui' rồi 'git add web_dist' nếu commit này để chạy thật."
+fi
+
+echo "pre-commit: Cổng 1 và 2 đã qua."

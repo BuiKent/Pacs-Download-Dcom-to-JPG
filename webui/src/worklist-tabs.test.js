@@ -4,7 +4,6 @@ import { describe, expect, it, beforeEach, vi } from "vitest";
 import { setLanguage } from "./i18n.js";
 import {
   state,
-  action,
   renderWorklistView,
   renderActivityPanelInner,
   renderWorklistTreeInner,
@@ -14,9 +13,23 @@ import {
   studyHeadingLine,
   studyCountLine,
   filteredPatientList,
-  filteredHistoryEntries,
   syncToolHighlight,
+  bindEvents,
 } from "./main.js";
+
+/**
+ * Put a piece of the worklist on screen and wire it the way the app does.
+ *
+ * Calling `action("sort-worklist", { dataset: … })` proves the handler and
+ * nothing about whether the header the reader clicks ever reaches it — and
+ * `sort-worklist` is one of the actions `bindEvents` deliberately skips,
+ * leaving it to a separate binder. Only a real click crosses that seam.
+ */
+function mountAndBind(html) {
+  document.body.innerHTML = `<div id="app">${html}</div>`;
+  bindEvents();
+  return document.querySelector("#app");
+}
 
 const PATIENTS = [
   {
@@ -164,9 +177,21 @@ describe("Worklist: Study List / Activity & Queue tabs", () => {
     expect(filteredPatientList()).toHaveLength(0);
   });
 
-  it("switches to the Activity panel through the worklist-tab action", async () => {
-    document.body.innerHTML = `<div id="app"></div>`;
-    await action("worklist-tab", { dataset: { worklistTab: "activity" } });
+  it("switches to the Activity panel when the tab is clicked", async () => {
+    state.worklistTab = "studies";
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => ({ patients: [] }),
+      text: async () => "{}",
+    });
+    const app = mountAndBind(renderWorklistView());
+
+    const activityTab = app.querySelector("[data-action='worklist-tab'][data-worklist-tab='activity']");
+    expect(activityTab).not.toBeNull();
+    activityTab.click();
+
     expect(state.worklistTab).toBe("activity");
     const html = renderWorklistView();
     expect(html).toContain('id="activity-panel"');
@@ -176,11 +201,11 @@ describe("Worklist: Study List / Activity & Queue tabs", () => {
   it("ignores a click on the tab that is already open", async () => {
     // A full render rebuilds the shell and tears down the viewer canvas, so
     // re-selecting the current tab has to be a no-op rather than a repaint.
-    document.body.innerHTML = `<div id="app"></div>`;
     state.worklistTab = "studies";
     global.fetch = vi.fn();
+    const app = mountAndBind(renderWorklistView());
 
-    await action("worklist-tab", { dataset: { worklistTab: "studies" } });
+    app.querySelector("[data-action='worklist-tab'][data-worklist-tab='studies']").click();
 
     expect(state.worklistTab).toBe("studies");
     expect(global.fetch).not.toHaveBeenCalled();
@@ -434,24 +459,32 @@ describe("Worklist: scanned data replaces the history fallback", () => {
     expect(list[1].patientId).toBe("TEST-0001");
   });
 
-  it("toggles sorting order and updates active column via sort-worklist action", async () => {
-    document.body.innerHTML = `<div id="app"><div class="worklist-tree"></div></div>`;
+  it("toggles sorting order and moves the active column when a header is clicked", async () => {
     state.worklistPatients = [PATIENTS[0], PATIENTS[1]];
     state.worklistSortColumn = "name";
     state.worklistSortOrder = "asc";
+    const app = mountAndBind(`<div class="worklist-tree">${renderWorklistTreeInner()}</div>`);
 
-    // Toggle same column -> flips to desc
-    await action("sort-worklist", { dataset: { sortCol: "name" } });
+    // The header rebuilds itself on every sort, so each click re-reads the DOM.
+    const header = (column) => {
+      const button = document.querySelector(`[data-action='sort-worklist'][data-sort-col='${column}']`);
+      expect(button).not.toBeNull();
+      return button;
+    };
+    expect(app.querySelector(".worklist-tree")).not.toBeNull();
+
+    // Same column again flips the direction.
+    header("name").click();
     expect(state.worklistSortColumn).toBe("name");
     expect(state.worklistSortOrder).toBe("desc");
 
-    // Click new column (id) -> sets id with asc
-    await action("sort-worklist", { dataset: { sortCol: "id" } });
+    // A new column starts ascending.
+    header("id").click();
     expect(state.worklistSortColumn).toBe("id");
     expect(state.worklistSortOrder).toBe("asc");
 
-    // Click date column -> sets date with default desc
-    await action("sort-worklist", { dataset: { sortCol: "date" } });
+    // The date column reads newest-first by default.
+    header("date").click();
     expect(state.worklistSortColumn).toBe("date");
     expect(state.worklistSortOrder).toBe("desc");
   });

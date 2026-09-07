@@ -428,11 +428,6 @@ export function hexToRgb(hex) {
   return [(number >> 16) & 255, (number >> 8) & 255, number & 255];
 }
 
-function withAlpha(hex, alpha) {
-  const [r, g, b] = hexToRgb(hex);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
 /** The font string a text shape paints with, at display scale. */
 export function textFont(shape, scale = 1) {
   return `600 ${Math.max(8, (shape.fontSize || 28) * scale)}px "Segoe UI", Arial, sans-serif`;

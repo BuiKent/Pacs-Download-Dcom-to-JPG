@@ -71,7 +71,31 @@ import {
   destroyActiveSurface,
 } from "./photo-editor.js";
 
+// Module tables are declared before anything reads them. A `const` read above
+// its own declaration line only works while nothing reaches it during set-up;
+// the moment something does it throws "Cannot access before initialization" —
+// the failure that killed the surgery marker strip.
+const resolvedThumbUrls = new Map();
+const CLIPBOARD_FIELDS = [
+  { id: "patient-id", kind: "patientId" },
+  { id: "direct-url", kind: "url" },
+];
+
 let app = typeof document !== "undefined" ? document.querySelector("#app") : null;
+
+/**
+ * Re-resolve `#app` whenever the cached node has left the document.
+ *
+ * `render()` and `bindEvents()` used to accept any non-null `app`, so once the
+ * shell was replaced they kept writing into the detached node they still held
+ * — painting and binding a tree nobody could see. `getDomRoot` already guarded
+ * against this; these two did not.
+ */
+function syncAppRoot() {
+  if (typeof document === "undefined") return app;
+  if (!app || !app.isConnected) app = document.querySelector("#app");
+  return app;
+}
 
 function getDomRoot() {
   if (typeof document === "undefined") return null;
@@ -842,6 +866,69 @@ function renderSidebarBookmarksHtml(current, others) {
     `;
   }
   return html;
+}
+
+/** Identity of one marker, so a reload cannot double it up. */
+function videoBookmarkKey(bookmark) {
+  const at = Number(bookmark?.time) || 0;
+  return `${bookmark?.seriesId || ""}|${bookmark?.fileIndex ?? 0}|${at.toFixed(3)}`;
+}
+
+/**
+ * Fold the markers saved beside the clips into whatever this tab already holds.
+ *
+ * The reader can mark a point before the sidecar finishes loading, so the file
+ * is merged rather than assigned: a marker placed in the last half second is
+ * not worth less than one placed last week.
+ */
+function mergeVideoBookmarks(current, saved) {
+  const merged = Array.isArray(current) ? [...current] : [];
+  const seen = new Set(merged.map(videoBookmarkKey));
+  for (const bookmark of saved) {
+    const key = videoBookmarkKey(bookmark);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(bookmark);
+  }
+  return merged;
+}
+
+/**
+ * Write the operation's markers to the sidecar beside its clips.
+ *
+ * They used to live only in `state`, so a surgeon who marked twenty points
+ * across a two-hour recording lost every one of them by closing the app. The
+ * write is immediate rather than debounced: a marker that is on screen but not
+ * yet on disk is the state this was built to remove.
+ */
+function persistVideoBookmarks(series) {
+  const target = series || selectedSeries();
+  if (!target?.id || getSeriesMediaType(target) !== "video") return;
+  api(`/api/series/${target.id}/surgery-bookmarks`, {
+    method: "POST",
+    body: JSON.stringify({ bookmarks: state.videoBookmarks || [] }),
+  }).catch((error) => {
+    setStatus(tf("Không lưu được mốc phẫu thuật: {}", humanError(error)), true);
+  });
+}
+
+/** Read the sidecar once per clip and show whatever it holds. */
+function loadVideoBookmarks(series) {
+  const target = series || selectedSeries();
+  if (!target?.id || getSeriesMediaType(target) !== "video") return;
+  if (target._bookmarksLoaded) return;
+  target._bookmarksLoaded = true;
+  api(`/api/series/${target.id}/surgery-bookmarks`)
+    .then((res) => {
+      const saved = Array.isArray(res?.bookmarks) ? res.bookmarks : [];
+      if (saved.length === 0) return;
+      state.videoBookmarks = mergeVideoBookmarks(state.videoBookmarks, saved);
+      syncVideoBookmarksUI(selectedSeries());
+    })
+    .catch(() => {
+      // A record that has never been marked has no sidecar, which is normal.
+      target._bookmarksLoaded = false;
+    });
 }
 
 /** Update bookmarks UI and timeline pins without resetting playback */
@@ -2657,7 +2744,7 @@ function bindWorklistOpenButtons(host) {
             body: JSON.stringify({ folder }),
           });
         } catch (err) {
-          log(t("Không thể mở thư mục: ") + err.message);
+          setStatus(t("Không thể mở thư mục: ") + err.message, true);
         }
       }
     });
@@ -2996,7 +3083,7 @@ function isTitlebarControl(target) {
 // the only one that turns red. Both maximise glyphs are drawn and CSS picks
 // one, so syncing the state never means rewriting markup.
 function renderWindowControls() {
-  const minimize = escapeHtml(t("Thu nhỏ"));
+  const minimize = escapeHtml(t("Thu nhỏ cửa sổ"));
   const maximize = escapeHtml(t("Phóng to / Khôi phục"));
   const close = escapeHtml(t("Đóng ứng dụng"));
   return `
@@ -3040,7 +3127,7 @@ function installTitlebarChrome() {
       window.removeEventListener("mouseup", stop, true);
     };
 
-    const onMove = (move) => {
+    function onMove(move) {
       // Waiting for real travel keeps a plain click from nudging the window,
       // and means the button is still down by the time the shell is asked —
       // its drag loop only ends on the button coming up, so one started after
@@ -3125,8 +3212,7 @@ function render() {
   const isDiagnosticSeries = getSeriesMediaType(series) === "dicom";
   const safety = isDiagnosticSeries ? seriesSafetyNotice(series) : null;
   const mprDisabled = !series?.mprReady;
-  if (!app && typeof document !== "undefined") app = document.querySelector("#app");
-  if (!app) return;
+  if (!syncAppRoot()) return;
 
   const seriesStrip = app.querySelector(".series-strip");
   const stripScrollTop = seriesStrip ? seriesStrip.scrollTop : null;
@@ -3720,7 +3806,7 @@ function renderExportModal() {
               <div class="export-card-content">
                 <div class="export-card-title">
                   <b>${escapeHtml(t("Xuất đầy đủ (Cả Web Viewer + DICOM)"))}</b>
-                  <span class="export-card-badge">${escapeHtml(t("Tất cả"))}</span>
+                  <span class="export-card-badge">${escapeHtml(t("Tất cả định dạng"))}</span>
                 </div>
                 <div class="export-card-desc">
                   ${escapeHtml(t("Bao gồm cả Web PACS Viewer xem nhanh trên trình duyệt lẫn thư mục file gốc DICOM đầy đủ cho máy trạm."))}
@@ -3852,7 +3938,6 @@ function bindTextViewerButtons(host) {
 // thumbnail is fetched once as a blob and kept as an object URL so the
 // frequent full re-renders reuse it instead of decoding the slice again.
 const seriesThumbs = new Map();
-const resolvedThumbUrls = new Map();
 
 function seriesThumbUrl(seriesId) {
   let pending = seriesThumbs.get(seriesId);
@@ -4074,10 +4159,22 @@ function renderPatientStatus() {
  * Re-binding the replaced subtree cannot double-bind, because `innerHTML`
  * throws the old nodes and their listeners away.
  */
+/**
+ * Elements that already carry the shared action listener.
+ *
+ * A node is only ever bound once, so `bindActionsIn` is safe to call over a
+ * region that is partly new and partly untouched — two calls do not mean two
+ * bookmarks per click. `innerHTML` replaces nodes rather than reusing them, so
+ * anything swapped in is genuinely absent from this set and gets wired.
+ */
+const boundActionElements = new WeakSet();
+
 function bindActionsIn(container) {
   if (!container) return;
   for (const element of container.querySelectorAll("[data-action]")) {
     if (WORKLIST_OWNED_ACTIONS.has(element.dataset.action)) continue;
+    if (boundActionElements.has(element)) continue;
+    boundActionElements.add(element);
     element.addEventListener("click", () => action(element.dataset.action, element));
     // A div carrying a click is only a button once the keyboard can reach it.
     if (element.getAttribute("role") === "button") {
@@ -4091,12 +4188,8 @@ function bindActionsIn(container) {
 }
 
 function bindEvents() {
-  if (!app && typeof document !== "undefined") app = document.querySelector("#app");
-  if (!app) return;
-  app.querySelectorAll("[data-action]").forEach((element) => {
-    if (WORKLIST_OWNED_ACTIONS.has(element.dataset.action)) return;
-    element.addEventListener("click", () => action(element.dataset.action, element));
-  });
+  if (!syncAppRoot()) return;
+  bindActionsIn(app);
   // Backdrop click closes the dialog; a click that lands inside it must not,
   // so the overlay checks the target rather than having the dialog swallow the
   // event on its way up.
@@ -4866,6 +4959,16 @@ async function rotateWorkingPhoto(degrees) {
 }
 
 function initMediaEvents() {
+  // Moving between two clips, or two photos, does not rebuild the shell: the
+  // caller rewrites `#workspace` and calls this. `bindEvents` does not run
+  // again, and every tool in the studio is a `[data-action]` it had bound — so
+  // without this the whole toolbar went quiet on the second clip. Trim,
+  // concat, export, snapshot and the marker button all looked normal and did
+  // nothing at all. Binding is per node and only ever happens once, so the
+  // call from `render()`, where `bindEvents` has already been round, adds
+  // nothing.
+  bindActionsIn(getDomRoot()?.querySelector("#workspace") || getDomRoot());
+  loadVideoBookmarks();
   hydrateMediaSources();
   initPhotoAnnotator();
   initPhotoProperties();
@@ -5930,6 +6033,7 @@ async function action(name, element = null) {
       }
       state.videoBookmarks.push(newBm);
       syncVideoBookmarksUI(series);
+      persistVideoBookmarks(series);
       setStatus(tf("Đã đánh dấu mốc tại {}.", formatVideoTime(currentTime)));
       return;
     }
@@ -5938,6 +6042,7 @@ async function action(name, element = null) {
       if (Number.isFinite(idx) && state.videoBookmarks && state.videoBookmarks[idx]) {
         state.videoBookmarks.splice(idx, 1);
         syncVideoBookmarksUI(selectedSeries());
+        persistVideoBookmarks();
         setStatus(t("Đã xoá mốc phẫu thuật."));
       }
       return;
@@ -5958,6 +6063,7 @@ async function action(name, element = null) {
             const val = input.value.trim();
             bm.text = val || t("Mốc phẫu thuật");
             syncVideoBookmarksUI(selectedSeries());
+            persistVideoBookmarks();
           };
           input.onkeydown = (e) => {
             if (e.key === "Enter") {
@@ -7202,11 +7308,6 @@ async function pollJob() {
 // each field receives only its own shape. Clipboard refresh is tied to the app
 // window regaining focus, never to input mouse events: the fields retain normal
 // caret placement, drag selection, Ctrl+V and manual editing.
-const CLIPBOARD_FIELDS = [
-  { id: "patient-id", kind: "patientId" },
-  { id: "direct-url", kind: "url" },
-];
-
 async function clipboardValueFor(kind) {
   if (!window.pywebview?.api?.read_clipboard) return "";
   try {
@@ -7360,7 +7461,7 @@ async function boot() {
   await renderViewer();
 }
 
-const isRunningInTest = (typeof process !== "undefined" && Boolean(process.env?.VITEST)) || (typeof import.meta !== "undefined" && import.meta.env?.MODE === "test");
+const isRunningInTest = (typeof globalThis.process !== "undefined" && Boolean(globalThis.process?.env?.VITEST)) || (typeof import.meta !== "undefined" && import.meta.env?.MODE === "test");
 
 if (!isRunningInTest) {
   boot().catch((error) => {
@@ -7391,6 +7492,9 @@ export {
   refreshWorklist,
   studyHeadingLine,
   studyCountLine,
+  patientIdentityLine,
+  mediaTags,
+  mediaFileUrl,
   getSeriesMediaType,
   getPhotoSourcePath,
   getVideoSourcePath,

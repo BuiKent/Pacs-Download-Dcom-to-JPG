@@ -37,7 +37,31 @@ Adhere strictly to the core workflows defined in the `agent-skills` suite:
 
 ---
 
-## 3. Communication & Execution Style
+## 3. The 3 Non-Negotiable Quality Gates & Definition of Done (CRITICAL MANDATE)
+
+Every agent (Gemini, Claude, Codex, etc.) across any interaction is **strictly forbidden** from declaring a task "finished", claiming code is "ready to commit", or attempting any git commit/push without passing all 3 quality gates:
+
+### Gate 1: Static Analysis & Clean Hygiene
+- **Frontend Linter (`npm run lint --prefix webui`)**: Must pass with 0 errors and 0 warnings. Absolutely zero undeclared variables (`no-undef`), zero scoping errors, zero duplicate keys (`no-dupe-keys`).
+- **Python Syntax (`python -m py_compile`)**: All modified Python files must compile cleanly with zero syntax errors.
+
+### Gate 2: Real DOM & Automated Behavioral Testing
+- **100% Passing Test Suites**: Both backend (`python -m unittest discover -s tests -t tests`) and frontend (`npm test --prefix webui`) must pass 100%.
+- **Real DOM Interaction Rule (ZERO TOLERANCE FOR SYNTHETIC ACTION BYPASSES)**:
+  - Any user-clickable element (buttons, tabs, timeline pins, list cards, menus) **MUST** be tested via real DOM events (`node.click()`, `fireEvent`, `dispatchEvent`).
+  - **Strictly Prohibited**: Directly invoking action handlers with fake mock objects (e.g. `action({ dataset: ... })`). Synthetic bypasses mask dead DOM event listeners, `innerHTML` replacement regressions, and lexical scoping crashes.
+
+### Gate 3: Production Build & Real Runtime Sanity
+- **Production Asset Compilation**: Any frontend change must successfully compile into the production bundle (`npm run build --prefix webui`).
+- **Runtime Sanity & Smoke Check**: Verify real execution (via preview server `tools/run_web_preview.py` or dev server). Console must be clean with zero fatal exceptions or unhandled promise rejections.
+
+### 🎯 Definition of Done (DoD)
+A task is ONLY complete when all three gates have been executed sequentially and verified with evidence:
+`Gate 1 (Lint Clean)` ➔ `Gate 2 (Real DOM Tests Pass)` ➔ `Gate 3 (Production Bundle Builds & Runtime Verified)`.
+
+---
+
+## 4. Communication & Execution Style
 
 - Be direct, factual, and concise.
 - Provide clear diffs and test logs when reporting completed work.

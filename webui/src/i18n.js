@@ -80,7 +80,7 @@ const EN = {
   "Hồ sơ này chưa có thư mục trên đĩa.": "This record has no folder on disk.",
   "Chọn thư mục xuất cần chạy trong ứng dụng WebView2.":
     "Choosing an export folder requires the WebView2 app.",
-  "Thu nhỏ": "Minimize",
+  "Thu nhỏ cửa sổ": "Minimize",
   "Phóng to / Khôi phục": "Maximize / Restore",
   "Đóng ứng dụng": "Close",
 
@@ -266,7 +266,7 @@ const EN = {
   "file DICOM": "DICOM files",
   "Dành cho bác sĩ CĐHA chuyên sâu": "For radiologists and specialized PACS viewers",
   "Xuất đầy đủ (Cả Web Viewer + DICOM)": "Complete Export (Web Viewer + DICOM)",
-  "Tất cả": "All formats",
+  "Tất cả định dạng": "All formats",
   "Bao gồm cả Web PACS Viewer xem nhanh trên trình duyệt lẫn thư mục file gốc DICOM đầy đủ cho máy trạm.": "Includes both the browser-friendly Web PACS Viewer and the complete raw DICOM folder for workstations.",
   "Cắt vùng chọn": "Crop",
   "Che tên/danh tính": "Redact / Hide Identity",
@@ -419,7 +419,6 @@ const EN = {
   "Còn {} ca đang tích chưa chọn được series nào.":
     "{} ticked studies still have no series selected.",
   ảnh: "images",
-  Khác: "Other",
   "T1 sau tiêm": "Post-contrast T1",
   "Tưới máu": "Perfusion",
   "Mạch máu": "Angiography",
