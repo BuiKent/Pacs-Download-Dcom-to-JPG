@@ -1100,21 +1100,23 @@ function renderSurgeryVideoStudio(series) {
       </div>
       ${renderPhotoProperties(series)}
       <div class="surgery-video-body">
-        ${renderPhotoToolRail()}
-        <div class="surgery-video-stage">
-          <div class="photo-editor-canvas-wrap" id="photo-editor-canvas">
-            <video id="surgery-video-player" class="surgery-video-element" src="${escapeHtml(videoStreamUrl(series, workName))}" playsinline preload="metadata"></video>
-            <canvas id="photo-annotation-canvas" class="photo-annotation-canvas"></canvas>
-          </div>
-          ${currentClipPlayable(series) ? "" : `
-            <div class="video-unplayable">
-              <b>${escapeHtml(t("Trình duyệt không mở được định dạng này"))}</b>
-              <p>${escapeHtml(t("File định dạng MPG/MPEG cần chuyển sang MP4 để xem, cắt và vẽ lên nó."))}</p>
-              <button class="control-btn primary" data-action="video-tool-transcode">
-                ⚡ ${escapeHtml(t("Chuyển sang MP4"))}
-              </button>
+        <div class="surgery-video-main">
+          ${renderPhotoToolRail()}
+          <div class="surgery-video-stage">
+            <div class="photo-editor-canvas-wrap" id="photo-editor-canvas">
+              <video id="surgery-video-player" class="surgery-video-element" src="${escapeHtml(videoStreamUrl(series, workName))}" playsinline preload="metadata"></video>
+              <canvas id="photo-annotation-canvas" class="photo-annotation-canvas"></canvas>
             </div>
-          `}
+            ${currentClipPlayable(series) ? "" : `
+              <div class="video-unplayable">
+                <b>${escapeHtml(t("Trình duyệt không mở được định dạng này"))}</b>
+                <p>${escapeHtml(t("File định dạng MPG/MPEG cần chuyển sang MP4 để xem, cắt và vẽ lên nó."))}</p>
+                <button class="control-btn primary" data-action="video-tool-transcode">
+                  ⚡ ${escapeHtml(t("Chuyển sang MP4"))}
+                </button>
+              </div>
+            `}
+          </div>
         </div>
         <aside class="surgery-video-sidebar">
           <div class="surgery-video-sidebar-header">
@@ -2705,7 +2707,8 @@ function renderWorklistTreeInner() {
       <span>${escapeHtml(t("Đang hiển thị dữ liệu lần quét trước."))} ${escapeHtml(state.worklistError)}</span>
       <button class="soft-button" data-action="refresh-worklist">${escapeHtml(t("Thử quét lại"))}</button>
     </div>` : ""}
-    <div class="plist-header">
+    <div class="worklist-table">
+      <div class="plist-header">
       <span class="col-stt">${escapeHtml(t("STT"))}${worklistColumnResizerMarkup("c0", t("STT"), columnWidths)}</span>
       <div class="col-who">
         <button class="col-sort-btn col-who ${state.worklistSortColumn === "name" ? "sorted " + state.worklistSortOrder : ""}" type="button" data-action="sort-worklist" data-sort-col="name" title="${escapeHtml(t("Sắp xếp theo Họ và tên"))}">
@@ -2757,9 +2760,10 @@ function renderWorklistTreeInner() {
         const patientId = p.patientId || "";
         const studyDate = patientLatestStudyDateString(p);
         const createdDate = p.folderCreatedAt || "—";
+        const studiesId = `worklist-patient-${pIdx}-studies`;
         return `
-          <div class="prow" role="button" tabindex="0" aria-expanded="${isExpanded}" data-toggle-patient="${escapeHtml(p.id)}">
-            <span class="stt-cell"><i class="twist">▶</i><span class="stt-num">${pIdx + 1}</span></span>
+          <div class="prow" data-patient-id="${escapeHtml(p.id)}" data-expanded="${isExpanded}">
+            <button class="stt-cell twist-btn" type="button" aria-expanded="${isExpanded}" aria-controls="${studiesId}" data-toggle-patient="${escapeHtml(p.id)}" aria-label="${escapeHtml(tf("Mở rộng hoặc thu gọn bệnh nhân {}", patientName))}"><i class="twist">▶</i><span class="stt-num">${pIdx + 1}</span></button>
             <span class="who copyable-cell" title="${escapeHtml(patientName)}">
               <span class="who-main">
                 <b>${escapeHtml(patientName)}</b>
@@ -2813,7 +2817,7 @@ function renderWorklistTreeInner() {
             </span>
           </div>
 
-          <div class="studies${isExpanded ? " on" : ""}" data-studies="${escapeHtml(p.id)}">
+          <div class="studies${isExpanded ? " on" : ""}" id="${studiesId}" data-studies="${escapeHtml(p.id)}">
             ${studies.map((s, sIdx) => {
               const studyHead = studyHeadingLine(s);
               const studyDt = s.studyDate || "—";
@@ -2881,6 +2885,7 @@ function renderWorklistTreeInner() {
           </div>
         `;
       }).join("")}
+    </div>
     </div>
   `;
 }
@@ -2954,18 +2959,25 @@ function bindWorklistOpenButtons(host) {
     });
   });
 
-  host.querySelectorAll("[data-toggle-patient]").forEach((prow) => {
+  host.querySelectorAll(".prow").forEach((prow) => {
     prow.addEventListener("click", (e) => {
-      if (e.target.closest("button, a, input, .cell-copy-btn")) return;
+      const interactive = e.target.closest("button, a, input, .cell-copy-btn");
+      if (interactive && !interactive.classList.contains("twist-btn")) return;
       const selection = window.getSelection();
       if (selection && selection.toString().trim().length > 0) return;
-      const pid = prow.dataset.togglePatient;
+      const pid = prow.dataset.patientId || prow.dataset.togglePatient;
+      if (!pid) return;
       state.expandedPatients = state.expandedPatients || {};
       state.expandedPatients[pid] = !(state.expandedPatients[pid] !== false);
+      const isExpanded = state.expandedPatients[pid];
       const studies = host.querySelector(`[data-studies='${pid}']`);
       if (studies) {
-        studies.classList.toggle("on", state.expandedPatients[pid]);
-        prow.setAttribute("aria-expanded", String(state.expandedPatients[pid]));
+        studies.classList.toggle("on", isExpanded);
+      }
+      prow.dataset.expanded = String(isExpanded);
+      const twistBtn = prow.querySelector(".twist-btn");
+      if (twistBtn) {
+        twistBtn.setAttribute("aria-expanded", String(isExpanded));
       }
     });
   });

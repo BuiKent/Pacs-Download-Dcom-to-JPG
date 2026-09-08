@@ -194,6 +194,28 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
 
                 # 3b. Verify Column Resizers in real browser DOM
                 page.wait_for_selector(".plist-header", timeout=10000)
+
+                # The native fieldset gap must be painted with the field itself.
+                # Using the surrounding panel colour leaves a visible stripe through
+                # the Patient ID and viewer-link labels.
+                if page.query_selector(".boxed-field > legend") is None:
+                    require(page, "[data-action='toggle-download']", "download panel toggle").click()
+                    page.wait_for_selector(".boxed-field > legend", timeout=5000)
+                field_colours = page.evaluate(
+                    """() => {
+                      const legend = document.querySelector('.boxed-field > legend');
+                      const field = legend?.parentElement;
+                      return legend && field ? {
+                        legend: getComputedStyle(legend).backgroundColor,
+                        field: getComputedStyle(field).backgroundColor,
+                      } : null;
+                    }"""
+                )
+                if not field_colours or field_colours["legend"] != field_colours["field"]:
+                    raise AssertionError(
+                        f"Gate 3: boxed-field legend does not mask its own border: {field_colours}"
+                    )
+
                 resizers = page.query_selector_all(".col-resizer")
                 if len(resizers) != 8:
                     raise AssertionError(
@@ -269,6 +291,55 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                         f"({expected_persisted_name} -> {persisted_width})."
                     )
 
+                # Reproduce the original dual-scroll failure under both axes:
+                # force a vertical scrollbar, maximize the flexible columns, then
+                # move to the far-right edge. Header, body, and rows must still end
+                # on the exact same pixel.
+                page.evaluate(
+                    """() => {
+                      const tree = document.querySelector('.worklist-tree');
+                      tree.style.flex = '0 0 150px';
+                      tree.style.height = '150px';
+                    }"""
+                )
+                for column in ("c1", "c7"):
+                    handle = require(page, f".col-resizer[data-col='{column}']", f"resizer {column}")
+                    handle.focus()
+                    page.keyboard.press("End")
+                page.evaluate(
+                    "() => { const tree = document.querySelector('.worklist-tree'); tree.scrollLeft = tree.scrollWidth; }"
+                )
+                stressed_layout = page.evaluate(
+                    """() => {
+                      const tree = document.querySelector('.worklist-tree');
+                      const header = document.querySelector('.plist-header');
+                      const list = document.querySelector('.plist');
+                      const row = document.querySelector('.srow, .prow');
+                      const rights = [header, list, row].map((node) => node.getBoundingClientRect().right);
+                      return {
+                        verticalOverflow: tree.scrollHeight > tree.clientHeight,
+                        horizontalOverflow: tree.scrollWidth > tree.clientWidth,
+                        rightEdgeDelta: Math.max(...rights) - Math.min(...rights),
+                      };
+                    }"""
+                )
+                if (
+                    not stressed_layout["verticalOverflow"]
+                    or not stressed_layout["horizontalOverflow"]
+                    or stressed_layout["rightEdgeDelta"] > 1.5
+                ):
+                    raise AssertionError(
+                        f"Gate 3: Worklist dual-axis scroll desynchronized: {stressed_layout}"
+                    )
+                page.evaluate(
+                    """() => {
+                      const tree = document.querySelector('.worklist-tree');
+                      tree.style.removeProperty('flex');
+                      tree.style.removeProperty('height');
+                      tree.scrollLeft = 0;
+                    }"""
+                )
+
                 for viewport_width in (1440, 1024, 800):
                     page.set_viewport_size({"width": viewport_width, "height": 800})
                     layout = page.evaluate(
@@ -291,10 +362,16 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                           const buttonsOverlap = buttons.some((button, index) =>
                             index > 0 && button.left < buttons[index - 1].right - 0.5
                           );
+                          const headerEl = document.querySelector('.plist-header');
+                          const plistEl = document.querySelector('.plist');
+                          const rightEdgeDelta = headerEl && plistEl
+                            ? Math.abs(headerEl.getBoundingClientRect().right - plistEl.getBoundingClientRect().right)
+                            : 0;
                           return {
                             headerCount: header.length,
                             rowCount: cells.length,
                             maxGridLineDelta: Math.max(...deltas),
+                            rightEdgeDelta,
                             headerWidths: header.map((cell) => cell.getBoundingClientRect().width),
                             rowWidths: cells.map((cell) => cell.getBoundingClientRect().width),
                             actionCount: buttons.length,
@@ -307,6 +384,7 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                         layout["headerCount"] != 8
                         or layout["rowCount"] != 8
                         or layout["maxGridLineDelta"] > 1
+                        or layout["rightEdgeDelta"] > 1.5
                         or layout["actionCount"] != 4
                         or layout["buttonsOverlap"]
                         or not layout["stickyHeader"]
@@ -412,6 +490,58 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                     timeout=5000,
                 )
                 print("   Marker pin is live: the playhead moved to it.")
+
+                # 8. Verify the whole Studio, not only the bottom action buttons.
+                # A previous check passed while the vertical drawing rail pushed the
+                # actual video down to 20px and collapsed the bookmark sidebar to 0px.
+                print("8. Verifying Studio responsiveness across narrow widths...")
+                for viewport_width in (1024, 980, 940, 901, 900, 800):
+                    page.set_viewport_size({"width": viewport_width, "height": 800})
+                    page.wait_for_timeout(150)
+                    studio_layout = page.evaluate(
+                        """() => {
+                          const studio = document.querySelector('.surgery-video-studio');
+                          const body = document.querySelector('.surgery-video-body');
+                          const stage = document.querySelector('.surgery-video-stage');
+                          const sidebar = document.querySelector('.surgery-video-sidebar');
+                          const tier = document.querySelector('.surgery-actions-tier');
+                          if (!studio || !body || !stage || !sidebar || !tier) return { exists: false };
+                          const studioRect = studio.getBoundingClientRect();
+                          const stageRect = stage.getBoundingClientRect();
+                          const sidebarRect = sidebar.getBoundingClientRect();
+                          const buttons = [...tier.querySelectorAll('button:not([hidden])')];
+                          const actionsVisible = buttons.length > 0 && buttons.every((button) => {
+                            const rect = button.getBoundingClientRect();
+                            return rect.width > 0 && rect.height > 0
+                              && rect.left >= studioRect.left - 1
+                              && rect.right <= studioRect.right + 1
+                              && rect.top >= studioRect.top - 1
+                              && rect.bottom <= studioRect.bottom + 1;
+                          });
+                          return {
+                            exists: true,
+                            stageWidth: stageRect.width,
+                            stageHeight: stageRect.height,
+                            sidebarHeight: sidebarRect.height,
+                            bodyOverflow: body.scrollHeight - body.clientHeight,
+                            studioOverflow: studio.scrollHeight - studio.clientHeight,
+                            actionsVisible,
+                          };
+                        }"""
+                    )
+                    if (
+                        not studio_layout.get("exists")
+                        or studio_layout["stageWidth"] < 280
+                        or studio_layout["stageHeight"] < 100
+                        or studio_layout["sidebarHeight"] < 56
+                        or studio_layout["bodyOverflow"] > 1
+                        or studio_layout["studioOverflow"] > 1
+                        or not studio_layout["actionsVisible"]
+                    ):
+                        raise AssertionError(
+                            f"Gate 3: Studio layout failed at {viewport_width}px: {studio_layout}"
+                        )
+                print("   Video stage, bookmarks, and action controls remain usable from 1024px to 800px.")
                 browser.close()
         finally:
             server.stop()

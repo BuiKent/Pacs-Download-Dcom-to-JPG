@@ -606,8 +606,7 @@ button, input, select, textarea { font: inherit; }
   flex-direction: column;
   min-width: 0;
   width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: auto;
   border: 1px solid var(--chrome-border, #e9e9e7);
   border-radius: 8px;
   background: var(--panel-bg);
@@ -1172,6 +1171,10 @@ button, input, select, textarea { font: inherit; }
   font-weight: 700;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
+.hospital-row label:has(input[type="radio"]:focus-visible) {
+  outline: 2px solid var(--sort-active-fg, #0284c7);
+  outline-offset: 1px;
+}
 .hospital-row input[type="radio"] {
   appearance: none;
   -webkit-appearance: none;
@@ -1224,19 +1227,23 @@ button, input, select, textarea { font: inherit; }
 /* line-height and the negative margin stop the legend adding a whole text line
    to the card, which made it tower over every other control. */
 .boxed-field > legend {
-  margin-left: 3px;
-  margin-bottom: -2px;
-  padding: 0 5px;
+  margin-left: 6px;
+  margin-bottom: 0;
+  padding: 0 6px;
+  background: var(--field-bg);
+  border-radius: 3px;
   color: var(--label-muted, #8fa6b8);
   font-size: 10.5px;
   font-weight: 600;
   line-height: 1;
   letter-spacing: 0.2px;
+  position: relative;
+  z-index: 2;
   transition: color var(--motion-fast) var(--ease-standard);
 }
 .boxed-field:focus-within {
   border-color: var(--field-border-focus);
-  box-shadow: 0 0 0 1px var(--field-border-focus);
+  box-shadow: 0 0 0 1px rgba(2, 132, 199, 0.25);
 }
 .boxed-field:focus-within > legend {
   color: var(--field-border-focus);
@@ -2874,6 +2881,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   overflow: hidden;
 }
 
+.surgery-video-studio {
+  container: surgery-studio / inline-size;
+}
+
 /* Text/JSON reading pane. Part of the diagnostic surface, so the colours are
    hardcoded dark alongside the other viewer panes rather than taken from the
    chrome tokens (CLAUDE.md §5). */
@@ -2946,6 +2957,14 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   flex: 1;
   min-height: 0;
   position: relative;
+}
+
+.surgery-video-main {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .surgery-video-stage {
@@ -3162,7 +3181,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
 }
 
 .video-control-group {
@@ -3293,6 +3313,26 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* React to the actual Studio width. The patient rail and series strip can make
+   the workspace narrow while the application viewport is still wide. */
+@container surgery-studio (max-width: 600px) {
+  .surgery-video-body {
+    flex-direction: column;
+  }
+  .surgery-video-main {
+    width: 100%;
+    min-height: 100px;
+  }
+  .surgery-video-sidebar {
+    width: 100%;
+    flex: 0 1 140px;
+    min-height: 56px;
+    max-height: 140px;
+    border-left: none;
+    border-top: 1px solid #182736;
+  }
 }
 
 .surgery-video-sidebar-header {
@@ -3913,7 +3953,13 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   flex-direction: column;
   overflow: auto;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+}
+
+.worklist-table {
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  min-width: 100%;
 }
 
 .plist-header,
@@ -4112,29 +4158,9 @@ html.is-column-resizing * {
   min-height: 0;
   min-width: 0;
   width: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: visible;
   border: none;
   background: var(--panel-bg);
-  scrollbar-width: thin;
-  scrollbar-color: var(--control-border, #cbd5e1) transparent;
-}
-
-.plist::-webkit-scrollbar {
-  width: 6px;
-}
-
-.plist::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.plist::-webkit-scrollbar-thumb {
-  background: var(--control-border, #cbd5e1);
-  border-radius: 3px;
-}
-
-.plist::-webkit-scrollbar-thumb:hover {
-  background: var(--label-muted, #94a3b8);
 }
 
 .prow {
@@ -4150,6 +4176,27 @@ html.is-column-resizing * {
   background: var(--control-bg-hover, #f8fafc);
 }
 
+button.stt-cell.twist-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 6px 2px;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  border-radius: 4px;
+}
+
+button.stt-cell.twist-btn:focus-visible {
+  outline: 2px solid var(--sort-active-fg, #0284c7);
+  outline-offset: -2px;
+}
+
 .prow .twist {
   color: var(--label-muted, #9b9a97);
   font-size: 10px;
@@ -4157,7 +4204,8 @@ html.is-column-resizing * {
   display: inline-block;
 }
 
-.prow[aria-expanded="true"] .twist {
+.prow[data-expanded="true"] .twist,
+.twist-btn[aria-expanded="true"] .twist {
   transform: rotate(90deg);
 }
 
@@ -4763,16 +4811,22 @@ html.is-column-resizing * {
   height: 22px;
   padding: 0;
   margin: 0;
-  border: none !important;
-  outline: none !important;
-  background: transparent !important;
-  box-shadow: none !important;
+  border: none;
+  background: transparent;
   cursor: pointer;
   opacity: 0.9;
+  border-radius: 4px;
   transition:
     opacity 0.15s ease,
     transform 0.15s cubic-bezier(0.16, 1, 0.3, 1),
-    filter 0.15s ease;
+    filter 0.15s ease,
+    outline-color 0.15s ease;
+}
+
+.job-log-icon-btn:focus-visible {
+  outline: 2px solid var(--sort-active-fg, #38bdf8);
+  outline-offset: 2px;
+  opacity: 1;
 }
 
 .job-log-icon-btn:hover {

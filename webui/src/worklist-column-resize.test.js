@@ -33,6 +33,7 @@ function mountWorklist(patients) {
   state.worklistError = "";
   state.activeTabId = "worklist";
   state.worklistTab = "studies";
+  state.expandedPatients = {};
 
   document.body.innerHTML = `
     <div id="app">
@@ -107,6 +108,31 @@ describe("Worklist Column Resizing & Four Action Buttons", () => {
       expect(Number(handle.getAttribute("aria-valuenow"))).toBeGreaterThan(0);
       expect(handle.closest("button")).toBeNull();
     });
+  });
+
+  it("keeps the header and rows in one table and uses a standalone patient toggle", () => {
+    const app = mountWorklist(SAMPLE_PATIENTS);
+    const table = app.querySelector(".worklist-table");
+    const patientRow = table.querySelector(".prow");
+    const toggle = patientRow.querySelector(".twist-btn");
+    const studies = table.querySelector(".studies");
+
+    expect(table.querySelector(":scope > .plist-header")).not.toBeNull();
+    expect(table.querySelector(":scope > .plist")).not.toBeNull();
+    expect(patientRow.hasAttribute("role")).toBe(false);
+    expect(patientRow.hasAttribute("tabindex")).toBe(false);
+    expect(toggle.tagName).toBe("BUTTON");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.getAttribute("aria-controls")).toBe(studies.id);
+
+    toggle.click();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(patientRow.hasAttribute("aria-expanded")).toBe(false);
+    expect(studies.classList.contains("on")).toBe(false);
+
+    patientRow.querySelector(".who").click();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(studies.classList.contains("on")).toBe(true);
   });
 
   it("sanitizes persisted widths before they can reach the inline grid style", () => {
