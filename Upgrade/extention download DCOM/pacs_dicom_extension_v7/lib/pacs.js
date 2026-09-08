@@ -80,7 +80,7 @@ export function viewerStudyHint(raw) {
   try {
     const u = new URL(url);
     const candidates = [];
-    for (const key of ['studyUID','studyuid','StudyUID','studies','study','id','share','session','stoken','token']) {
+    for (const key of ['studyUID','studyuid','StudyUID','StudyInstanceUIDs','studyinstanceuids','StudyInstanceUID','studyinstanceuid','studies','study','id','share','session','stoken','token']) {
       const v = u.searchParams.get(key);
       if (v) candidates.push([key.toLowerCase(), v]);
     }
@@ -90,7 +90,7 @@ export function viewerStudyHint(raw) {
     const qpos = hash.indexOf('?');
     if (qpos >= 0) {
       const hp = new URLSearchParams(hash.slice(qpos + 1));
-      for (const key of ['studyUID','studyuid','StudyUID','studies','study','id','share','session','stoken','token']) {
+      for (const key of ['studyUID','studyuid','StudyUID','StudyInstanceUIDs','studyinstanceuids','StudyInstanceUID','studyinstanceuid','studies','study','id','share','session','stoken','token']) {
         const v = hp.get(key);
         if (v) candidates.push([key.toLowerCase(), v]);
       }
@@ -272,9 +272,19 @@ export function bestDetectedRequest(requests, types) {
   return (requests || []).filter(r => wanted.has(r.type)).sort((a,b) => (b.score || 0) - (a.score || 0))[0] || null;
 }
 
+/**
+ * Mirror of the app's `_safe_name`: a run of illegal characters collapses into
+ * ONE underscore (not one each), whitespace collapses, and the result is capped
+ * at 80 characters. Keep the two in step — see PATIENT_FOLDER_NAME_MAX.
+ */
 export function sanitizeSegment(text, fallback='Unknown') {
-  const s = String(text || '').normalize('NFKC').replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\s+/g, ' ').trim().replace(/[. ]+$/g, '');
-  return (s || fallback).slice(0, 120);
+  const s = String(text || '').normalize('NFKC').replace(/[<>:"/\\|?*\x00-\x1F]+/g, '_').replace(/\s+/g, ' ').trim().replace(/[. ]+$/g, '');
+  return (s || fallback).slice(0, 80);
+}
+
+/** Strip the leading/trailing dots and spaces Windows silently drops. */
+export function trimSegmentEdges(text) {
+  return String(text || '').replace(/^[. ]+/, '').replace(/[. ]+$/, '');
 }
 
 export function seriesFolderName(series, index=0) {
@@ -313,64 +323,103 @@ export function formatDmyDate(raw, fallback = 'KHONG_RO_NGAY') {
   return sanitizeSegment(str, fallback);
 }
 
-export function computePatientAge(birthDate, studyDate, declaredAge) {
-  if (declaredAge) {
-    const clean = String(declaredAge).trim().toUpperCase();
-    const m = clean.match(/^0*(\d+)\s*([TYMD]?)$/);
-    if (m) {
-      const val = m[1];
-      const unit = m[2];
-      if (unit === 'M') return `${val} tháng`;
-      if (unit === 'W') return `${val} tuần`;
-      if (unit === 'D') return `${val} ngày`;
-      return `${val}T`;
-    }
-    if (clean && clean !== 'KHONG_RO_TUOI') return sanitizeSegment(clean, 'KHONG_RO_TUOI');
+/**
+ * Parse a date the way the app's `_parse_date_flexible` does, so both tools
+ * read the same tag identically. Returns a UTC Date or null.
+ */
+export function parseDateFlexible(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  const build = (y, m, d) => {
+    if (!(y >= 1 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return null;
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    // Reject overflow such as 31-02: Date would roll it into the next month.
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+    return dt;
+  };
+  let m;
+  if ((m = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return build(+m[1], +m[2], +m[3]);
+  if ((m = text.match(/^(\d{1,2})-(\d{1,2})-(\d{4})/))) return build(+m[3], +m[2], +m[1]);
+  if ((m = text.match(/^(\d{4})(\d{2})(\d{2})/))) return build(+m[1], +m[2], +m[3]);
+  if ((m = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/))) return build(+m[3], +m[2], +m[1]);
+  if ((m = text.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})/))) return build(+m[1], +m[2], +m[3]);
+  return null;
+}
+
+/**
+ * Age label derived from two dates — the mirror of the app's `_age_from_dates`.
+ * Returns '' when the dates cannot carry an answer.
+ */
+export function ageFromDates(birthDate, referenceDate) {
+  const birth = parseDateFlexible(birthDate);
+  const ref = parseDateFlexible(referenceDate);
+  if (!birth || !ref || ref < birth) return '';
+  const bY = birth.getUTCFullYear(), bM = birth.getUTCMonth() + 1, bD = birth.getUTCDate();
+  const rY = ref.getUTCFullYear(), rM = ref.getUTCMonth() + 1, rD = ref.getUTCDate();
+  let years = rY - bY - ((rM < bM || (rM === bM && rD < bD)) ? 1 : 0);
+  if (years > 0) return `${years}T`;
+  let months = (rY - bY) * 12 + rM - bM - (rD < bD ? 1 : 0);
+  if (months > 0) return `${months} tháng`;
+  return `${Math.round((ref - birth) / 86400000)} ngày`;
+}
+
+/**
+ * Patient age exactly as the app's `_normalise_patient_age` writes it: the two
+ * dates win when they can answer, otherwise the DICOM `AS` tag ("045Y").
+ * The reference date is the download date, matching the folder's own suffix.
+ */
+/** A bare `1999` means that year — RIS pages often carry only a birth year. */
+export function expandYearOnlyDate(value) {
+  const text = String(value || '').trim();
+  if (/^\d{4}$/.test(text) && +text >= 1900 && +text <= 2100) return `${text}0101`;
+  return value;
+}
+
+export function computePatientAge(birthDate, referenceDate, declaredAge) {
+  const derived = ageFromDates(expandYearOnlyDate(birthDate), referenceDate);
+  if (derived) return derived;
+  const raw = String(declaredAge || '').trim().toUpperCase();
+  // An age already formatted by either tool, fed back in: keep it rather than
+  // downgrading a known age to "KHONG_RO_TUOI" on a second pass.
+  let already = raw.match(/^(\d+)\s*T$/);
+  if (already) return `${parseInt(already[1], 10)}T`;
+  already = raw.match(/^(\d+)\s*(THÁNG|TUẦN|NGÀY)$/);
+  if (already) {
+    const unit = {'THÁNG': 'tháng', 'TUẦN': 'tuần', 'NGÀY': 'ngày'}[already[2]];
+    return `${parseInt(already[1], 10)} ${unit}`;
   }
-  if (birthDate) {
-    const bDigits = String(birthDate).replace(/\D/g, '');
-    let sDigits = String(studyDate || '').replace(/\D/g, '');
-    if (!sDigits || (sDigits.length !== 4 && sDigits.length < 8)) {
-      const now = new Date();
-      sDigits = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const m = raw.match(/^(\d{3})([DWMY])$/);
+  if (m) {
+    const value = parseInt(m[1], 10);
+    const unit = m[2];
+    if (value > 0) {
+      if (unit === 'Y') return `${value}T`;
+      if (unit === 'M') return `${value} tháng`;
+      if (unit === 'W') return `${value} tuần`;
+      if (unit === 'D') return `${value} ngày`;
     }
-    let bYear = 0, sYear = 0;
-    if (bDigits.length === 4) {
-      const y = parseInt(bDigits, 10);
-      if (y >= 1900 && y <= 2100) bYear = y;
-    } else if (bDigits.length === 8) {
-      const y1 = parseInt(bDigits.slice(0, 4), 10);
-      bYear = (y1 >= 1900 && y1 <= 2100) ? y1 : parseInt(bDigits.slice(4, 8), 10);
-    }
-    if (sDigits.length === 4) {
-      const y = parseInt(sDigits, 10);
-      if (y >= 1900 && y <= 2100) sYear = y;
-    } else if (sDigits.length >= 8) {
-      const y2 = parseInt(sDigits.slice(0, 4), 10);
-      sYear = (y2 >= 1900 && y2 <= 2100) ? y2 : parseInt(sDigits.slice(4, 8), 10);
-    }
-    if (bYear >= 1900 && sYear >= bYear) {
-      const diff = sYear - bYear;
-      if (diff >= 0 && diff <= 130) {
-        return `${diff}T`;
-      }
-    }
+    return {Y: '0T', M: '0 tháng', W: '0 tuần', D: '0 ngày'}[unit];
   }
   return 'KHONG_RO_TUOI';
 }
 
+// Field widths shared with the app (`dcom_pipeline.PATIENT_FOLDER_NAME_MAX` and
+// friends). Both tools build the same folder pair, and a name differing by one
+// character files the same patient twice. `tests/test_folder_name_parity.py`
+// fails if these drift apart.
+export const PATIENT_FOLDER_NAME_MAX = 40;
+export const STUDY_FOLDER_MODALITY_MAX = 12;
+export const STUDY_FOLDER_DESC_MAX = 40;
+
 export function buildPatientFolderName(info = {}) {
-  const name = sanitizeSegment(
+  const name = trimSegmentEdges(sanitizeSegment(
     String(info.patientName || info.name || '').replace(/\^+/g, ' ').replace(/\s+/g, ' ').trim(),
     'KHONG_RO_TEN'
-  );
-  const id = sanitizeSegment(info.patientId || info.id || 'KHONG_RO_ID', 'KHONG_RO_ID');
-  const age = computePatientAge(
-    info.birthDate || info.patientBirthDate,
-    info.studyDate,
-    info.age || info.patientAge
-  );
-  
+  ).slice(0, PATIENT_FOLDER_NAME_MAX)) || 'KHONG_RO_TEN';
+  const id = trimSegmentEdges(
+    sanitizeSegment(info.patientId || info.id || 'KHONG_RO_ID', 'KHONG_RO_ID')
+  ) || 'KHONG_RO_ID';
+
   let downloadDate = info.downloadDate;
   if (!downloadDate) {
     const now = new Date();
@@ -378,18 +427,95 @@ export function buildPatientFolderName(info = {}) {
   } else {
     downloadDate = formatDmyDate(downloadDate);
   }
+  // Age is measured at the download date, which is the very date this folder
+  // name ends with — the app does the same.
+  const age = trimSegmentEdges(computePatientAge(
+    info.birthDate || info.patientBirthDate,
+    downloadDate,
+    info.age || info.patientAge
+  )) || 'KHONG_RO_TUOI';
   return `${id} - ${name} - ${age} - ${downloadDate}`;
 }
 
 export function buildStudyFolderName(info = {}) {
   const date = formatDmyDate(info.studyDate, 'KHONG_RO_NGAY');
-  let modality = sanitizeSegment(String(info.modality || '').trim().toUpperCase(), '');
-  if (!modality) modality = 'DICOM';
-  const desc = sanitizeSegment(
+  let modality = trimSegmentEdges(sanitizeSegment(
+    String(info.modality || '').trim().toUpperCase(), ''
+  ).slice(0, STUDY_FOLDER_MODALITY_MAX));
+  if (!modality) modality = 'UNKNOWN';
+  const desc = trimSegmentEdges(sanitizeSegment(
     String(info.description || info.studyDescription || info.desc || '').trim(),
     'KHONG_RO_MO_TA'
-  );
-  return `${date} - ${modality} - ${desc}`;
+  ).slice(0, STUDY_FOLDER_DESC_MAX)) || 'KHONG_RO_MO_TA';
+  return trimSegmentEdges(`${date} - ${modality} - ${desc}`);
+}
+
+// Mirror of `dcom_pipeline.sanitize_viewer_url`. The sidecar we leave beside a
+// study ends up on the reader's disk, so it must never carry the credential the
+// viewer handed us — while still keeping a share link whose token IS the only
+// thing identifying the study, or "Tải tiếp" would have nothing to reopen.
+const STUDY_LOCATOR_QUERY_KEYS = new Set([
+  'studyinstanceuids', 'studyinstanceuid', 'study_uid', 'studyuid', 'study', 'studyid', 'siuid',
+  'accessionnumber', 'accession', 'accession_no', 'acc',
+  'patientid', 'patient_id', 'pid',
+  'seriesinstanceuids', 'seriesinstanceuid', 'seriesuid', 'series', 'seriesid',
+]);
+const SENSITIVE_URL_PARAMS = new Set([
+  'token', 'access_token', 'auth', 'signature', 'sig',
+  'key', 'apikey', 'api_key', 'secret', 'password', 'pass', 'pwd',
+  'session', 'sessionid', 'session_id', 'bearer',
+  'x-amz-signature', 'x-amz-security-token', 'x-amz-credential', 'x-amz-date',
+]);
+const ALWAYS_SENSITIVE_PARAMS = new Set([
+  'password', 'pass', 'pwd', 'secret', 'bearer',
+  'x-amz-signature', 'x-amz-security-token', 'x-amz-credential', 'x-amz-date',
+]);
+
+export function sanitizeViewerUrl(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    const rawQuery = parsed.search.startsWith('?') ? parsed.search.slice(1) : parsed.search;
+    const rawFragment = parsed.hash.startsWith('#') ? parsed.hash.slice(1) : parsed.hash;
+    const hasQuery = Boolean(rawQuery);
+    const hasFragQuery = rawFragment.includes('?');
+    if (!hasQuery && !hasFragQuery) return url;
+
+    const queryPairs = hasQuery ? [...new URLSearchParams(rawQuery)] : [];
+    let fragPath = rawFragment, fragPairs = [];
+    if (hasFragQuery) {
+      const cut = rawFragment.indexOf('?');
+      fragPath = rawFragment.slice(0, cut);
+      fragPairs = [...new URLSearchParams(rawFragment.slice(cut + 1))];
+    }
+
+    const allKeys = new Set([...queryPairs, ...fragPairs].map(([k]) => k.trim().toLowerCase()));
+    const hasStudyLocator = [...allKeys].some(k => STUDY_LOCATOR_QUERY_KEYS.has(k));
+
+    const shouldStrip = (key) => {
+      const kn = String(key).trim().toLowerCase();
+      if (ALWAYS_SENSITIVE_PARAMS.has(kn)) return true;
+      if (['signature', 'secret', 'password'].some(s => kn.includes(s))) return true;
+      if (hasStudyLocator) {
+        if (SENSITIVE_URL_PARAMS.has(kn) || kn.includes('token') || kn.includes('session')) return true;
+      }
+      return false;
+    };
+    const encode = (pairs) => {
+      const sp = new URLSearchParams();
+      for (const [k, v] of pairs) if (!shouldStrip(k)) sp.append(k, v);
+      return sp.toString();
+    };
+
+    parsed.search = encode(queryPairs);
+    if (hasFragQuery) {
+      const cleanedFrag = encode(fragPairs);
+      parsed.hash = cleanedFrag ? `${fragPath}?${cleanedFrag}` : fragPath;
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
 }
 
 export function buildStudyStoragePath(info = {}) {

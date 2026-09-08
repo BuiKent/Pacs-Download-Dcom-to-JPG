@@ -77,10 +77,12 @@ if (storagePath !== expectedPath) {
   throw new Error(`Failed storage path: got ${storagePath}, expected ${expectedPath}`);
 }
 
-// 6. Test with fallback sentinels when info is missing
+// 6. Test with fallback sentinels when info is missing.
+// An unknown modality reads 'UNKNOWN', matching the app's `study_folder_base_name`;
+// both tools must spell the folder identically or one patient gets two archives.
 const fallbackPath = buildStudyStoragePath({});
 const expectedFallback = 'KHONG_RO_ID - KHONG_RO_TEN - KHONG_RO_TUOI - ';
-if (!fallbackPath.startsWith(expectedFallback) || !fallbackPath.includes('/KHONG_RO_NGAY - DICOM - KHONG_RO_MO_TA/DICOM')) {
+if (!fallbackPath.startsWith(expectedFallback) || !fallbackPath.includes('/KHONG_RO_NGAY - UNKNOWN - KHONG_RO_MO_TA/DICOM')) {
   throw new Error(`Failed fallback path: got ${fallbackPath}`);
 }
 

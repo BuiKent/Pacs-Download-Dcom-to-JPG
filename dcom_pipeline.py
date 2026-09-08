@@ -5090,8 +5090,13 @@ class ConvertStats:
 
 
 def _safe_name(text) -> str:
+    """Windows-safe path segment. Mirrored by `sanitizeSegment` in the extension.
+
+    Control characters are illegal in Windows filenames just like `<>:"/\\|?*`,
+    and a DICOM tag can carry them, so they collapse into the same underscore.
+    """
     text = str(text) if text is not None else "Unknown"
-    text = re.sub(r'[\\/:*?"<>|]+', "_", text)
+    text = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:80] if text else "Unknown"
 
@@ -5255,15 +5260,37 @@ def _age_from_dates(birth_date: str, study_date: str) -> tuple[str, Optional[int
     return f"{(study - birth).days} ngày", 0
 
 
+def _expand_year_only_date(value: Any) -> Any:
+    """A bare `1999` means that year. RIS pages often carry only a birth year.
+
+    Anchored to 1 January so the year difference comes out the way a Vietnamese
+    reader counts it, and so the app and the extension agree.
+    """
+    text = str(value or "").strip()
+    if re.fullmatch(r"\d{4}", text) and 1900 <= int(text) <= 2100:
+        return f"{text}0101"
+    return value
+
+
 def _normalise_patient_age(
     raw_age: Any,
     birth_date: str,
     study_date: str,
 ) -> tuple[str, Optional[int], str]:
     raw = str(raw_age or "").strip().upper()
-    derived, derived_years = _age_from_dates(birth_date, study_date)
+    derived, derived_years = _age_from_dates(_expand_year_only_date(birth_date), study_date)
     if derived:
         return derived, derived_years, "DICOM.PatientBirthDate+StudyDate"
+    # An age this app (or the extension) already formatted, fed back in. Without
+    # this a second pass would downgrade a known age to "KHONG_RO_TUOI".
+    already = re.fullmatch(r"(\d+)\s*T", raw)
+    if already:
+        years = int(already.group(1))
+        return f"{years}T", years, "DICOM.PatientAge"
+    already = re.fullmatch(r"(\d+)\s*(THÁNG|TUẦN|NGÀY)", raw)
+    if already:
+        unit = {"THÁNG": "tháng", "TUẦN": "tuần", "NGÀY": "ngày"}[already.group(2)]
+        return f"{int(already.group(1))} {unit}", 0, "DICOM.PatientAge"
     match = re.fullmatch(r"(\d{3})([DWMY])", raw)
     if match:
         value = int(match.group(1))
@@ -5292,10 +5319,24 @@ def _study_date_token(value: Any) -> str:
     return _safe_name(value or "KHONG_RO_NGAY")
 
 
+# Field widths shared with the browser extension. Both tools build the same
+# `<id> - <name> - <age> - <ngày tải>/<ngày chụp> - <modality> - <mô tả>` pair,
+# and a folder name that differs by one character files the same patient twice.
+# The extension mirrors these in `lib/pacs.js`; `tests/test_folder_name_parity.py`
+# fails if the two drift apart.
+PATIENT_FOLDER_NAME_MAX = 40
+STUDY_FOLDER_MODALITY_MAX = 12
+STUDY_FOLDER_DESC_MAX = 40
+
+
 def study_folder_base_name(study: dict) -> str:
     """Readable study folder name, without the UID collision token."""
-    modality = _safe_name(study.get("modality") or "UNKNOWN")[:12].strip(". ")
-    description = _safe_name(study.get("desc") or "KHONG_RO_MO_TA")[:40].strip(". ")
+    modality = _safe_name(
+        study.get("modality") or "UNKNOWN"
+    )[:STUDY_FOLDER_MODALITY_MAX].strip(". ")
+    description = _safe_name(
+        study.get("desc") or "KHONG_RO_MO_TA"
+    )[:STUDY_FOLDER_DESC_MAX].strip(". ")
     return f"{_study_date_token(study.get('date'))} - {modality} - {description}".strip(". ")
 
 
@@ -6224,6 +6265,29 @@ def local_import_identity(groups: list[LocalStudyGroup]) -> Optional[dict]:
     }
 
 
+EXTENSION_SIDECAR_NAME = "dcom-source.json"
+EXTENSION_SIDECAR_FORMAT = "dcom-extension-source-v1"
+
+
+def read_extension_sidecar(study_folder: Path) -> dict:
+    """The `dcom-source.json` the browser extension leaves beside a study.
+
+    It carries only what the DICOM tags cannot: the viewer link the study came
+    from, so "Tải tiếp" works on a study the extension downloaded. Patient
+    identity is deliberately NOT taken from here — the tags remain the source
+    of truth — so a stale or hand-edited sidecar can never rename a patient.
+    """
+    folder = Path(study_folder)
+    for candidate in (folder / EXTENSION_SIDECAR_NAME, folder / "DICOM" / EXTENSION_SIDECAR_NAME):
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if isinstance(data, dict) and data.get("format") == EXTENSION_SIDECAR_FORMAT:
+            return data
+    return {}
+
+
 def write_local_import_manifest(
     patient_folder: Path,
     identity: dict,
@@ -7048,18 +7112,29 @@ def extract_patient_metadata(
 
 
 def patient_download_folder_name(metadata: dict, download_date: str = "") -> str:
-    """Build `<patient id> - <name> - <age> - <download date>` safely."""
-    name = _safe_name(_patient_display_name(metadata.get("PatientName")) or "KHONG_RO_TEN")[:40]
+    """Build `<patient id> - <name> - <age> - <download date>` safely.
+
+    The extension writes the same four fields, so both tools must agree
+    character for character or one patient ends up with two archives. See
+    `PATIENT_FOLDER_NAME_MAX` for the shared field widths.
+    """
+    name = _safe_name(
+        _patient_display_name(metadata.get("PatientName")) or "KHONG_RO_TEN"
+    )[:PATIENT_FOLDER_NAME_MAX].strip(". ") or "KHONG_RO_TEN"
     raw_id = metadata.get("PatientID")
     patient_id = _safe_name(
         "KHONG_RO_ID" if _is_redacted_patient_value(raw_id) else raw_id
-    )
+    ).strip(". ") or "KHONG_RO_ID"
     date = _format_dmy_date(download_date) or datetime.now().strftime("%d-%m-%Y")
-    current_age, _current_age_years = _age_from_dates(
+    # A DICOM `PatientAge` of "045Y" must read as "45T", never as the raw tag:
+    # the folder name is what the reader matches against the patient in front
+    # of them.
+    current_age, _current_age_years, _source = _normalise_patient_age(
+        metadata.get("PatientAge"),
         metadata.get("PatientBirthDate"),
         date,
     )
-    age = _safe_name(current_age or metadata.get("PatientAge") or "KHONG_RO_TUOI")
+    age = _safe_name(current_age or "KHONG_RO_TUOI").strip(". ") or "KHONG_RO_TUOI"
     return f"{patient_id} - {name} - {age} - {date}"
 
 

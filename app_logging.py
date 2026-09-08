@@ -34,7 +34,7 @@ def get_app_root() -> Path:
     return Path(__file__).resolve().parent
 
 
-def _running_under_test() -> bool:
+def running_under_test() -> bool:
     """True only when an automated test runner drives the process.
 
     Detection must key on the runner itself, never on the text of the command
@@ -57,7 +57,7 @@ def get_logs_dir() -> Path:
         candidate.mkdir(parents=True, exist_ok=True)
         return candidate
     # If running automated tests, isolate logs in a temp folder to avoid polluting project logs/
-    if _running_under_test():
+    if running_under_test():
         test_dir = Path(tempfile.gettempdir()) / "dcom_test_logs"
         test_dir.mkdir(parents=True, exist_ok=True)
         return test_dir

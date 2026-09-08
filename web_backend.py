@@ -256,7 +256,28 @@ def _token_matches(supplied: str, expected: str) -> bool:
 
 # The classic Tk app writes the same file. Sharing it means a user who switches
 # between the two UIs keeps one download history instead of two partial ones.
-HISTORY_FILE = Path.home() / ".dcom_downloader_history.json"
+def _resolve_history_file() -> Path:
+    """Where the "Gần đây" list lives.
+
+    A test run must never write into the reader's real history. Test fixtures
+    build patient folders under the OS temp directory and delete them on the way
+    out, but the history entry survives — so the app would list ca chụp that
+    point at folders which no longer exist. `DCOM_HISTORY_FILE` also lets a
+    packaged build put the list somewhere else.
+    """
+    override = os.environ.get("DCOM_HISTORY_FILE")
+    if override:
+        return Path(override)
+    try:
+        import app_logging
+        if app_logging.running_under_test():
+            return Path(tempfile.gettempdir()) / "dcom_test_history.json"
+    except Exception:
+        pass
+    return Path.home() / ".dcom_downloader_history.json"
+
+
+HISTORY_FILE = _resolve_history_file()
 HISTORY_MAX = 30
 SUPPORTED_LANGUAGES = ("vi", "en")
 DIRECT_DOWNLOAD_META_NAME = ".direct-download.json"
@@ -1364,6 +1385,45 @@ def _deserialize_series_record(item: dict, root: Optional[Path] = None) -> Serie
 
 
 
+# Bump whenever `_serialize_series_record` gains or renames a field. The cache
+# was previously validated by file fingerprint alone, so adding `study_uid`
+# left every existing archive loading records with an empty UID: series that
+# still had an MPR manifest kept the real study UID while their siblings fell
+# back to the folder name, and one visit split into two rows in "Lịch sử khám".
+DICOM_CACHE_SCHEMA = 2
+
+
+def _share_study_uid_within_group(records: dict[str, SeriesRecord]) -> None:
+    """Give every series of one visit the same StudyInstanceUID.
+
+    Some scanners leave the tag off their localizer, KEY IMAGE, or processed
+    series. `timeline_key` keys off the UID when it has one and off the folder
+    name otherwise, so a single visit would split into two rows in "Lịch sử
+    khám" — the same date and description listed twice.
+
+    Only a group that agrees on exactly one UID is filled in. Two real UIDs
+    under one heading are two real studies, and must stay apart.
+    """
+    groups: dict[tuple[str, str], list[SeriesRecord]] = {}
+    for record in records.values():
+        key = (str(record.study_date or ""), str(record.study_group or ""))
+        if not key[1]:
+            continue
+        groups.setdefault(key, []).append(record)
+    for members in groups.values():
+        found = {
+            str(getattr(member, "study_uid", "") or "").strip()
+            for member in members
+        }
+        found.discard("")
+        if len(found) != 1:
+            continue
+        shared = found.pop()
+        for member in members:
+            if not str(getattr(member, "study_uid", "") or "").strip():
+                member.study_uid = shared
+
+
 def _get_dicom_cache_path(root: Path) -> Path:
     return root / ".dicom_cache.json"
 
@@ -1744,7 +1804,11 @@ class ArchiveCatalog:
         if cache_path.is_file():
             try:
                 data = json.loads(cache_path.read_text(encoding="utf-8"))
-                if data.get("fingerprint") == fp and "records" in data:
+                if (
+                    data.get("fingerprint") == fp
+                    and int(data.get("schema") or 0) == DICOM_CACHE_SCHEMA
+                    and "records" in data
+                ):
                     records = {
                         uid: _deserialize_series_record(item, root)
                         for uid, item in data["records"].items()
@@ -1771,6 +1835,7 @@ class ArchiveCatalog:
                             sample_raw = next(iter(data["records"].values()))["images"][0]
                             if Path(sample_raw).is_absolute():
                                 cache_payload = {
+                                    "schema": DICOM_CACHE_SCHEMA,
                                     "fingerprint": fp,
                                     "unsupported": unsupported,
                                     "total": total,
@@ -1910,6 +1975,7 @@ class ArchiveCatalog:
         _DICOM_MEM_CACHE[root_key] = (fp, records, unsupported, len(paths))
         try:
             cache_payload = {
+                "schema": DICOM_CACHE_SCHEMA,
                 "fingerprint": fp,
                 "unsupported": unsupported,
                 "total": len(paths),
@@ -1919,6 +1985,7 @@ class ArchiveCatalog:
         except OSError:
             pass
 
+        _share_study_uid_within_group(records)
         return _detached_records(records), unsupported, len(paths)
 
     @staticmethod
@@ -2960,6 +3027,21 @@ def _redirect_plan(
         for source, _ in pairs
     ]
     return redirected, base
+
+
+def _merge_archives(
+    archives: list[tuple[Path, list[tuple[Path, Any]]]],
+) -> list[tuple[Path, list[tuple[Path, Any]]]]:
+    """Collapse per-study entries that share one patient folder.
+
+    A patient folder holding several studies is planned one study at a time, so
+    without this each study would rewrite the same `patient-index.json` from
+    scratch and the reader would see the same person repeated once per exam.
+    """
+    merged: dict[Path, list[tuple[Path, Any]]] = {}
+    for patient_folder, study_dirs in archives:
+        merged.setdefault(patient_folder, []).extend(study_dirs)
+    return list(merged.items())
 
 
 def _local_import_plan(source: Path) -> tuple[list[tuple[Path, Path]], Path]:
@@ -4067,15 +4149,18 @@ class WebController:
             self.job.log(f"Đang quét folder DICOM local và chuyển sang JPG chất lượng {quality}…")
 
             pairs, open_path = _local_import_plan(source)
+            # The folder every study folder sits directly under. A tree shaped
+            # `<bệnh nhân>/<ca chụp>/DICOM` — what the extension writes — makes
+            # this the patient folder, so all its studies share one index.
+            plan_root = source
             if not _is_writable_dir(source):
                 self.job.log(
                     "Folder nguồn chỉ đọc nên không ghi JPG cạnh DICOM được; "
                     f"chuyển sang thư mục lưu: {output_root}."
                 )
                 stamp = time.strftime("%Y%m%d_%H%M%S")
-                pairs, open_path = _redirect_plan(
-                    pairs, output_root / f"LOCAL_DICOM_{stamp}_{source.name}"
-                )
+                plan_root = output_root / f"LOCAL_DICOM_{stamp}_{source.name}"
+                pairs, open_path = _redirect_plan(pairs, plan_root)
 
             total_stats = dcom_pipeline.ConvertStats()
             # (patient folder, [(study folder, study group)]) for every pair that
@@ -4151,6 +4236,17 @@ class WebController:
                                 patient_folder = current
                                 break
                             current = current.parent
+                        if (
+                            patient_folder == study_dir
+                            and study_dir != plan_root
+                            and study_dir.parent == plan_root
+                        ):
+                            # No index anywhere above, and the study sits one
+                            # level under the folder the reader picked: that
+                            # folder is the patient, so every study it holds
+                            # lands in one `patient-index.json` instead of each
+                            # study becoming a patient of its own.
+                            patient_folder = plan_root
                         archives.append((patient_folder, [(study_dir, groups[0])]))
 
 
@@ -4160,7 +4256,7 @@ class WebController:
                     "(.dcm, .dicom, .ima hoặc file DICOM không đuôi)."
                 )
 
-            indexed_studies = self._index_local_import(archives)
+            indexed_studies = self._index_local_import(_merge_archives(archives))
 
             archive = self.catalog.open(
                 open_path,
@@ -4220,9 +4316,18 @@ class WebController:
                     image_count = sum(
                         1 for _ in study_dir.rglob("*.jpg")
                     )
+                    study = group.as_study()
+                    # The extension records the viewer link it downloaded from.
+                    # Carrying it over is what lets "Tải tiếp" fill a study the
+                    # extension started; identity still comes from the tags.
+                    sidecar_url = str(
+                        dcom_pipeline.read_extension_sidecar(study_dir).get("sourceUrl") or ""
+                    ).strip()
+                    if sidecar_url:
+                        study["viewer_url"] = sidecar_url
                     dcom_pipeline.record_patient_study(
                         patient_folder,
-                        group.as_study(),
+                        study,
                         study_dir,
                         complete=True,
                         image_count=image_count,

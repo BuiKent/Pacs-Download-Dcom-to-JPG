@@ -182,6 +182,36 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                 if not is_studio:
                     print("   Warning: Studio element not immediately found, checking app-shell...")
 
+                # 3a. The Series control has to sit inside the title bar. Stacking
+                # its caption above the select made the block 47px tall inside a
+                # 40px bar, so "Series" was clipped against the top of the window
+                # and the select overlapped the bottom rule.
+                series_box = page.evaluate(
+                    """() => {
+                      const header = document.querySelector('.app-header');
+                      const label = document.querySelector('.series-selects label');
+                      if (!header || !label) return null;
+                      const h = header.getBoundingClientRect();
+                      const l = label.getBoundingClientRect();
+                      return {
+                        headerHeight: h.height,
+                        labelHeight: l.height,
+                        overflowTop: h.top - l.top,
+                        overflowBottom: l.bottom - h.bottom,
+                      };
+                    }"""
+                )
+                if series_box is not None:
+                    if (
+                        series_box["labelHeight"] > series_box["headerHeight"]
+                        or series_box["overflowTop"] > 0.5
+                        or series_box["overflowBottom"] > 0.5
+                    ):
+                        raise AssertionError(
+                            f"Gate 3: Series control overflows the title bar: {series_box}"
+                        )
+                    print("   Series dropdown sits inside the title bar.")
+
                 # 3. Test Worklist Tab Navigation & Column Resizers
                 worklist_tab = require(
                     page, ".winbar-tab[data-tab-id='worklist'], .winbar-tab:has-text('Worklist')",
@@ -191,6 +221,7 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                 worklist_tab.click()
                 page.wait_for_selector(".worklist-view, .worklist-tree", timeout=5000)
                 print("   Switched to Worklist (view mounted).")
+
 
                 # 3b. Verify Column Resizers in real browser DOM
                 page.wait_for_selector(".plist-header", timeout=10000)

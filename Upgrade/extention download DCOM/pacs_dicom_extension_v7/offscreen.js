@@ -1,6 +1,6 @@
 'use strict';
 import { buildPart10FromFrames, isPart10, parseMultipart, numberOfFrames, validatePart10, parseDicomMeta } from './lib/dicom.js';
-import { zfpMetaToDicomJson, buildStudyStoragePath } from './lib/pacs.js';
+import { zfpMetaToDicomJson, buildStudyStoragePath, sanitizeViewerUrl } from './lib/pacs.js';
 import { AsyncSemaphore, sleepAbortable, fetchStreamWithTimeout } from './lib/semaphore.js';
 import { dicomTaskIdentityError, orderRoutes } from './lib/orchestrator.js';
 
@@ -214,6 +214,38 @@ async function runZfpJob(job,tasks){
 function safeSegment(text,fallback){const s=String(text||'').normalize('NFKC').replace(/[<>:"/\\|?*\x00-\x1F]/g,'_').replace(/\s+/g,' ').trim().replace(/[. ]+$/g,'');return(s||fallback).slice(0,120);}
 function studyFolderFromInfo(info={}){return buildStudyStoragePath({patientName:info.patientName,patientId:info.patientId,birthDate:info.birthDate,age:info.age,studyDate:info.studyDate,modality:info.modality,description:info.description});}
 
+/**
+ * Leave `dcom-source.json` beside the study so the app can offer "Tải tiếp" on
+ * a study this extension downloaded. It records ONLY what the DICOM tags cannot
+ * carry — the viewer link, with its credentials stripped. Patient identity stays
+ * with the tags, which remain the single source of truth.
+ */
+async function writeStudySidecar(job, info, spec, result) {
+  const sourceUrl = sanitizeViewerUrl(String(spec?.sourceUrl || ''));
+  if (!sourceUrl) return;
+  // `studyFolder` ends in `/DICOM`; the sidecar belongs to the study above it.
+  const studyPath = String(job.studyFolder || '').replace(/\/+DICOM\/*$/i, '');
+  const payload = {
+    format: 'dcom-extension-source-v1',
+    sourceUrl,
+    studyInstanceUid: String(spec?.studyUid || ''),
+    patientId: String(info?.patientId || ''),
+    studyDate: String(info?.studyDate || ''),
+    modality: String(info?.modality || ''),
+    imageCount: Number(result?.completed) || 0,
+    downloadedAt: new Date().toISOString(),
+  };
+  const bytes = new TextEncoder().encode(JSON.stringify(payload, null, 2));
+  try {
+    if (job.saveMode === 'filesystem') {
+      const studyDir = await getPathRoot(job.fsRoot, studyPath, job.subfolder);
+      await writeFile(studyDir, 'dcom-source.json', bytes);
+    } else {
+      await writeViaDownloads(job.subfolder, studyPath, 'dcom-source.json', bytes, job);
+    }
+  } catch { /* the images matter; a missing sidecar only costs "Tải tiếp". */ }
+}
+
 async function runJob(spec){
   const saveMode=spec.saveMode==='downloads'?'downloads':'filesystem',root=saveMode==='filesystem'?await ensureWritableRoot():null;const controller=new AbortController();const prefetched=new Map();const info={...(spec.folderInfo||{})};let resolvedMeta={};
   const isZfp=spec.tasks.some(t=>t.strategy==='zfp-image');
@@ -244,6 +276,7 @@ async function runJob(spec){
     subfolder,
     studyFolder,
     studyRoot,
+    fsRoot:root,
     prefetched,
     lastEmit:0,
     completedSopUids:new Set(spec.alreadyCompletedSopUids||[])
@@ -258,6 +291,7 @@ async function runJob(spec){
   job.currentFile='';
   emit(job,true);
   jobs.delete(job.tabId);
+  if(job.completed>0)await writeStudySidecar(job,info,spec,job);
   return{
     status:job.status,
     total:job.total,

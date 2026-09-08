@@ -210,7 +210,7 @@ async function stopTracking(tabId){const s=await getTabState(tabId);s.tracking='
 
 async function rememberBeforeNavigate(tabId,raw){if(tabId<0)return;const u=cleanUrl(raw);if(!u)return;const s=await getTabState(tabId);pushUnique(s.pendingNavUrls,u);s.currentUrl=u;await saveTabState(tabId,s);markCandidate(tabId,u).catch(()=>{});}
 async function invalidate(tabId,reason){invMemory.delete(tabId);await chrome.storage.session.remove(invKey(tabId)).catch(()=>{});chrome.runtime.sendMessage({type:'TAB_CONTEXT_CHANGED',tabId,reason}).catch(()=>{});}
-async function rememberCommitted(d){if(d.tabId<0)return;const u=cleanUrl(d.url);if(!u)return;if(d.frameId!==0){const s=await getTabState(d.tabId);pushUnique(s.frameUrls,u);await saveTabState(d.tabId,s);markCandidate(d.tabId,u).catch(()=>{});if(await hasOrigin(u))setTimeout(()=>{injectContent(d.tabId);getTabState(d.tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(d.tabId);});},100);return;}const s=await getTabState(d.tabId);const changed=Boolean(s.mainDocumentId&&d.documentId&&s.mainDocumentId!==d.documentId);if(changed){const oldStudy=s.studyHint||'';const nextStudy=viewerStudyHint(u)||'';const transitionType=d.transitionType||'';const preserveContext=shouldPreserveTerminalContext(s.tracking,{oldStudy,nextStudy,transitionType});const nextTracking=trackingAfterDocumentChange(s.tracking,{oldStudy,nextStudy,transitionType});if(!preserveContext){s.navUrls=[...(s.pendingNavUrls||[])];s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.pageHintScore=0;s.pageHintReasons=[];s.confidence=0;await invalidate(d.tabId,'document');}s.studyHint=nextStudy;s.vietmyRecaptureDone=false;s.tracking=nextTracking;}pushUnique(s.navUrls,u);s.pendingNavUrls=[];s.currentUrl=u;s.mainDocumentId=d.documentId||s.mainDocumentId||'';if(!s.studyHint)s.studyHint=viewerStudyHint(u)||'';await saveTabState(d.tabId,s);await markCandidate(d.tabId,u);if(await hasOrigin(u))setTimeout(()=>{injectContent(d.tabId);getTabState(d.tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(d.tabId);});},100);}
+async function rememberCommitted(d){if(d.tabId<0)return;const u=cleanUrl(d.url);if(!u)return;if(d.frameId!==0){const s=await getTabState(d.tabId);pushUnique(s.frameUrls,u);await saveTabState(d.tabId,s);markCandidate(d.tabId,u).catch(()=>{});if(await hasOrigin(u))setTimeout(()=>{injectContent(d.tabId);getTabState(d.tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(d.tabId);});},100);return;}const s=await getTabState(d.tabId);const oldStudy=s.studyHint||'';const nextStudy=viewerStudyHint(u)||'';const docChanged=Boolean(s.mainDocumentId&&d.documentId&&s.mainDocumentId!==d.documentId);const studyChanged=Boolean(oldStudy&&nextStudy&&oldStudy!==nextStudy);const changed=Boolean(docChanged||studyChanged||(s.currentUrl&&s.currentUrl!==u));if(changed){const transitionType=d.transitionType||'';const preserveContext=shouldPreserveTerminalContext(s.tracking,{oldStudy,nextStudy,transitionType});const nextTracking=trackingAfterDocumentChange(s.tracking,{oldStudy,nextStudy,transitionType});if(!preserveContext){s.navUrls=[...(s.pendingNavUrls||[])];s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.pageHintScore=0;s.pageHintReasons=[];s.confidence=0;await invalidate(d.tabId,'document');}s.studyHint=nextStudy;s.vietmyRecaptureDone=false;s.tracking=nextTracking;}pushUnique(s.navUrls,u);s.pendingNavUrls=[];s.currentUrl=u;s.mainDocumentId=d.documentId||s.mainDocumentId||'';if(!s.studyHint)s.studyHint=viewerStudyHint(u)||'';await saveTabState(d.tabId,s);await markCandidate(d.tabId,u);if(await hasOrigin(u))setTimeout(()=>{injectContent(d.tabId);getTabState(d.tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(d.tabId);});},100);}
 async function rememberSameDocument(tabId,raw){if(tabId<0)return;const u=cleanUrl(raw);if(!u)return;const s=await getTabState(tabId);const old=s.studyHint||'',next=viewerStudyHint(u)||'';if(old&&next&&old!==next){s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.studyHint=next;s.tracking=trackingAfterSameDocumentStudyChange(s.tracking);await invalidate(tabId,'study');}else if(!old&&next)s.studyHint=next;pushUnique(s.navUrls,u);s.currentUrl=u;await saveTabState(tabId,s);await markCandidate(tabId,u);}
 chrome.webNavigation.onBeforeNavigate.addListener(d=>{if(d.frameId===0)rememberBeforeNavigate(d.tabId,d.url).catch(()=>{});});
 chrome.webNavigation.onCommitted.addListener(d=>rememberCommitted(d).catch(()=>{}));
@@ -494,7 +494,9 @@ async function startJob(tabId,selected,options={}){
     frameConcurrency:options.frameConcurrency||6,
     alreadyCompletedSopUids:prevCompletedSopUids,
     baselineCompleted,
-    logicalTotal:tasks.length
+    logicalTotal:tasks.length,
+    sourceUrl:inv.summary?.currentUrl||inv.context?.url||'',
+    studyUid:inv.studyUid||''
   };
   job.saveMode=spec.saveMode;
   if(spec.saveMode==='downloads')await setDownloadUi(false);
@@ -671,7 +673,9 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
                 frameConcurrency:old.options?.frameConcurrency||6,
                 alreadyCompletedSopUids:completedSopList,
                 baselineCompleted:completedSopList.length,
-                logicalTotal:old.logicalTotal
+                logicalTotal:old.logicalTotal,
+                sourceUrl:inv.summary?.currentUrl||inv.context?.url||'',
+                studyUid:inv.studyUid||''
               };
               const nextResp=await chrome.runtime.sendMessage({target:'offscreen',type:'START_ENGINE',spec}).catch(()=>null);
               if(nextResp?.ok)return;
