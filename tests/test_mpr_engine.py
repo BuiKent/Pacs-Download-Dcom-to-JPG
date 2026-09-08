@@ -351,10 +351,12 @@ class MprPackageTests(unittest.TestCase):
                 [0.0, 5.0, 10.0, 15.0],
                 [item["distance"] for item in manifest["ordered_slices"]],
             )
-            self.assertEqual(
-                ["IM_0001.jpg", "IM_0002.jpg", "IM_0003.jpg", "IM_0004.jpg"],
-                [item["file"] for item in manifest["ordered_slices"]],
-            )
+            files = [item["file"] for item in manifest["ordered_slices"]]
+            self.assertEqual(4, len(files))
+            self.assertEqual(4, len(set(files)))
+            for i, fname in enumerate(files, 1):
+                self.assertRegex(fname, rf"^IM_{i:05d}_[0-9a-f]{{8}}\.jpg$")
+                self.assertTrue((folder / fname).is_file())
 
             catalog = ArchiveCatalog()
             public = catalog.open(jpg)["series"][0]
