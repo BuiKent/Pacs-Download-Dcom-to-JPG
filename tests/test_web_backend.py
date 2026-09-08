@@ -3604,6 +3604,99 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
             self.assertEqual(patients["P2"]["folderCreatedAt"], "15/08/2026")
             self.assertEqual(patients["P2"]["folderCreatedAtSort"], "20260815000000")
 
+    def test_discovery_session_cache_operations(self):
+        """Test putting, getting, and evicting cached discovery captures."""
+        url = "https://pacs.example.com/viewer?StudyInstanceUIDs=1.2.3.4"
+        cap = dcom_pipeline.ViewerCapture(strategy_fingerprint="test-fp")
+        dcom_pipeline._put_cached_discovery(url, cap, "DICOMweb")
+
+        retrieved = dcom_pipeline._get_cached_discovery(url)
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved.strategy_fingerprint, "test-fp")
+
+        dcom_pipeline._evict_cached_discovery(url)
+        self.assertIsNone(dcom_pipeline._get_cached_discovery(url))
+
+    def test_discovery_session_cache_isolated_by_fragment_study_identity(self):
+        """Viewer fragments may contain the only study identity and must not collide."""
+        first_url = "https://pacs.example.com/#/viewer?StudyInstanceUIDs=1.2.3"
+        second_url = "https://pacs.example.com/#/viewer?StudyInstanceUIDs=9.8.7"
+        first_cap = dcom_pipeline.ViewerCapture(strategy_fingerprint="first-study")
+        second_cap = dcom_pipeline.ViewerCapture(strategy_fingerprint="second-study")
+
+        self.assertNotEqual(
+            dcom_pipeline._canonical_discovery_key(first_url),
+            dcom_pipeline._canonical_discovery_key(second_url),
+        )
+        dcom_pipeline._put_cached_discovery(first_url, first_cap, "DICOMweb")
+        dcom_pipeline._put_cached_discovery(second_url, second_cap, "DICOMweb")
+
+        self.assertEqual(
+            dcom_pipeline._get_cached_discovery(first_url).strategy_fingerprint,
+            "first-study",
+        )
+        self.assertEqual(
+            dcom_pipeline._get_cached_discovery(second_url).strategy_fingerprint,
+            "second-study",
+        )
+        dcom_pipeline._evict_cached_discovery(first_url)
+        dcom_pipeline._evict_cached_discovery(second_url)
+
+    def test_download_all_reuses_cached_discovery(self):
+        """Test download_all bypasses Playwright when cached HTTP adapter is ready."""
+        url = "https://pacs.example.com/viewer?studyUID=1.2.840.1"
+        cap = dcom_pipeline.ViewerCapture(
+            strategy_fingerprint="fp-test",
+            qido_series="https://pacs.example.com/dicom-web/studies/1.2.840.1/series",
+            qido_series_body=b'[{"0020000E":{"Value":["1.2.3"]}}]',
+        )
+        dcom_pipeline._put_cached_discovery(url, cap, "DICOMweb")
+
+        called = []
+        def mock_download(c, save_body, stats, log, stop, selected_series):
+            called.append(c)
+            stats.dicom = 5
+            stats.expected = 5
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dicom_dir = Path(tmp) / "DICOM"
+            dicom_dir.mkdir()
+            adapter = dcom_pipeline.DicomWebAdapter()
+            with mock.patch.object(adapter, "download", side_effect=mock_download):
+                with mock.patch("dcom_pipeline.PACS_ADAPTERS", [adapter]):
+                    stats = dcom_pipeline.download_all(url, dicom_dir, log=lambda _: None)
+                    self.assertEqual(len(called), 1)
+                    self.assertEqual(stats.dicom, 5)
+
+    def test_download_all_falls_back_when_cached_download_is_partial(self):
+        """One cached image is not success when the adapter declared five expected images."""
+        url = "https://pacs.example.com/viewer?studyUID=1.2.840.partial"
+        cap = dcom_pipeline.ViewerCapture(
+            strategy_fingerprint="fp-partial",
+            qido_series="https://pacs.example.com/dicom-web/studies/1.2.840.partial/series",
+            qido_series_body=b'[{"0020000E":{"Value":["1.2.3"]}}]',
+        )
+        dcom_pipeline._put_cached_discovery(url, cap, "DICOMweb")
+
+        def partial_download(c, save_body, stats, log, stop, selected_series):
+            stats.dicom = 1
+            stats.expected = 5
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dicom_dir = Path(tmp) / "DICOM"
+            dicom_dir.mkdir()
+            adapter = dcom_pipeline.DicomWebAdapter()
+            with mock.patch.object(adapter, "download", side_effect=partial_download):
+                with mock.patch("dcom_pipeline.PACS_ADAPTERS", [adapter]):
+                    with mock.patch(
+                        "playwright.sync_api.sync_playwright",
+                        side_effect=RuntimeError("browser fallback reached"),
+                    ):
+                        with self.assertRaisesRegex(RuntimeError, "browser fallback reached"):
+                            dcom_pipeline.download_all(url, dicom_dir, log=lambda _: None)
+
+        self.assertIsNone(dcom_pipeline._get_cached_discovery(url))
+
 
 if __name__ == "__main__":
     unittest.main()

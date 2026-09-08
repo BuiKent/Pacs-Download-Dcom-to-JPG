@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import app_logging
@@ -151,10 +152,13 @@ class SessionLoggingTests(unittest.TestCase):
                 self.assertIn("currentLogFile", info)
                 self.assertTrue(Path(info["currentLogFile"]).exists())
 
-                # reveal_logs_folder returns valid folder path
-                reveal_res = controller.reveal_logs_folder()
-                self.assertTrue(reveal_res["revealed"])
-                self.assertEqual(Path(reveal_res["folder"]).resolve(), Path(tmp_dir).resolve())
+                # reveal_logs_folder returns valid folder path without launching Windows Explorer
+                with mock.patch("web_backend.os.startfile", create=True) as startfile:
+                    reveal_res = controller.reveal_logs_folder()
+                    self.assertTrue(reveal_res["revealed"])
+                    self.assertEqual(Path(reveal_res["folder"]).resolve(), Path(tmp_dir).resolve())
+                    if sys.platform.startswith("win"):
+                        startfile.assert_called_once()
             finally:
                 logger.close()
 

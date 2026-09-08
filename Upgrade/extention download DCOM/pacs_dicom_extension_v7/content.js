@@ -1,7 +1,10 @@
 (()=>{
+  const existingController=globalThis.__PACS_DICOM_V7_CONTROLLER__;
+  if(existingController?.start){existingController.start();return;}
   if(globalThis.__PACS_DICOM_V7_CLEANUP__){try{globalThis.__PACS_DICOM_V7_CLEANUP__();}catch(_){}}
-  let timer=null,last='',intervalId=null,observer=null;
+  let timer=null,last='',intervalId=null,observer=null,stopped=false;
   const cleanup=()=>{
+    stopped=true;
     if(timer)clearTimeout(timer);
     if(intervalId)clearInterval(intervalId);
     if(observer)try{observer.disconnect();}catch(_){}
@@ -188,7 +191,7 @@
     return{score:Math.min(100,Math.max(0,score)),reasons:[...new Set(reasons)].slice(0,8),iframeUrls:[...new Set(iframeUrls)].slice(0,60),url,title,readyState:document.readyState,zfpViewer,domPatient,domSeries};
   }
   function report(){
-    if(!chrome.runtime?.id){cleanup();return;}
+    if(stopped||!chrome.runtime?.id){cleanup();return;}
     try{
       const h=scorePage(),sig=`${h.score}|${h.reasons.join(',')}|${h.iframeUrls.join('|')}|${h.url}|${JSON.stringify(h.domPatient||{})}|${JSON.stringify(h.domSeries||[])}`;
       if(sig===last)return;
@@ -200,6 +203,7 @@
   // --- Bridge generic MAIN-world JSON observer --------------------------------
   // Only forward small JSON payloads; binary DICOM/pixel data never passes through postMessage.
   window.addEventListener('message',ev=>{
+    if(stopped)return;
     if(!chrome.runtime?.id){cleanup();return;}
     if(ev.source!==window)return;const m=ev.data;
     if(!m||m.__pacsGeneric!=='json'||!m.row)return;
@@ -244,6 +248,16 @@
 
   const ZFP_KINDS={ZFP_INFO:'info',ZFP_TAKE:'take',ZFP_STATS:'stats'};
   chrome.runtime.onMessage.addListener((m,_s,sendResponse)=>{
+    if(m?.type==='CLEANUP_TRACKING'){
+      cleanup();
+      sendResponse({ok:true});
+      return true;
+    }
+    if(m?.type==='RESTART_TRACKING'){
+      start();
+      sendResponse({ok:true});
+      return true;
+    }
     if(m?.type==='SCAN_PAGE_QR'){
       scanPageForQr().then(results=>sendResponse({ok:true,results})).catch(e=>sendResponse({ok:false,error:String(e?.message||e)}));
       return true;
@@ -256,9 +270,9 @@
     zfpAsk(kind,m.args,m.timeoutMs).then(sendResponse);
     return true;
   });
-  function schedule(){clearTimeout(timer);timer=setTimeout(report,300);}
-  const start=()=>{try{observer=new MutationObserver(schedule);observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['src','href','class']});}catch{}schedule();};
+  function schedule(){if(stopped)return;clearTimeout(timer);timer=setTimeout(report,300);}
+  const start=()=>{stopped=false;try{if(observer)observer.disconnect();observer=new MutationObserver(schedule);observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['src','href','class']});}catch{}schedule();if(intervalId)clearInterval(intervalId);intervalId=setInterval(report,5000);};
+  globalThis.__PACS_DICOM_V7_CONTROLLER__={start,cleanup};
   if(document.documentElement)start();else document.addEventListener('DOMContentLoaded',start,{once:true});
   window.addEventListener('load',schedule,{once:true});window.addEventListener('hashchange',schedule,true);window.addEventListener('popstate',schedule,true);
-  intervalId=setInterval(report,5000);
 })();

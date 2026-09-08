@@ -484,7 +484,9 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                 print("7. Verifying a timeline marker seeks the clip...")
                 page.wait_for_selector(".video-marker-pin", timeout=5000)
                 page.evaluate("() => { document.querySelector('#surgery-video-player').currentTime = 0; }")
-                require(page, ".video-marker-pin", "mốc trên timeline").click()
+                page.wait_for_selector(".video-marker-pin", timeout=5000)
+                require(page, ".video-marker-pin", "mốc trên timeline")
+                page.click(".video-marker-pin")
                 page.wait_for_function(
                     "() => (document.querySelector('#surgery-video-player')?.currentTime || 0) > 0",
                     timeout=5000,

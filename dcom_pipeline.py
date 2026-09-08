@@ -3610,6 +3610,45 @@ def download_all(
     def _have_manifest() -> bool:
         return _ready_adapter(cap) is not None
 
+    # Tối ưu hóa: Thử tải trực tiếp bằng session cached từ bước "Quét series"
+    cached_cap = _get_cached_discovery(url)
+    if cached_cap is not None and not (should_stop and should_stop()):
+        cached_ready = _ready_adapters(cached_cap, url=url)
+        http_direct = [a for a in cached_ready if a.name.lower() in ("dicomweb", "vrpacs", "vradviewer", "vietmy")]
+        if http_direct:
+            cached_cap.budget = budget
+            cached_cap.existing_sop_uids = seen_sop_uids
+            cached_cap.socket_tracker = tracker
+            cached_adapter = http_direct[0]
+            log(f"⚡ Tái sử dụng thông tin phiên quét series ({cached_adapter.name}) — bỏ qua mở trình duyệt.")
+            t0 = time.monotonic()
+            try:
+                cached_adapter.download(cached_cap, save_body, stats, log, stop, selected_series)
+                latency_ms = (time.monotonic() - t0) * 1000.0
+                if stats.is_complete():
+                    log(f"✓ Tải thành công {stats.total()} ảnh bằng phiên quét cached ({latency_ms:.0f}ms).")
+                    _evict_cached_discovery(url)
+                    if download_attachments_flag and cached_cap.discovered_attachments:
+                        doc_dir = (dicom_dir.parent if output_resolved else Path(dicom_dir).parent) / "DOCUMENTS"
+                        download_attachments(
+                            cached_cap.discovered_attachments, doc_dir, log,
+                            captured=cached_cap, tracker=tracker, should_stop=should_stop,
+                        )
+                    log(f"Tải xong. Tổng ảnh: {stats.total()} "
+                        f"(DICOM {stats.dicom}, JPG {stats.jpg}, PNG {stats.png}, trùng bỏ {stats.duplicates}).")
+                    fidelity = stats.fidelity_report()
+                    if fidelity:
+                        log(f"  Nguồn gốc ảnh: {fidelity}.")
+                    return stats
+                log(
+                    f"  Phiên quét cached mới lấy được {stats.dicom}/{stats.expected or '?'} ảnh DICOM "
+                    "→ tự động mở trình duyệt để tải phần còn thiếu."
+                )
+                _evict_cached_discovery(url)
+            except Exception as exc:
+                _evict_cached_discovery(url)
+                log(f"  Tải nhanh bằng cache gặp trục trặc ({exc}) → tự động mở trình duyệt để thử lại.")
+
     used_manifest = False
     with sync_playwright() as p:
         browser = _launch_chromium(p, headless, log)
@@ -3888,6 +3927,69 @@ def _collect_dom_attachments(page, cap: ViewerCapture) -> None:
             continue
 
 
+@dataclass
+class _DiscoverySessionEntry:
+    cap: ViewerCapture
+    timestamp: float = field(default_factory=time.monotonic)
+    adapter_name: str = ""
+
+
+_DISCOVERY_CACHE: dict[str, _DiscoverySessionEntry] = {}
+_DISCOVERY_CACHE_LOCK = threading.Lock()
+_DISCOVERY_CACHE_TTL_S = 300.0  # 5 minutes
+
+
+def _canonical_discovery_key(url: str) -> str:
+    if not url:
+        return ""
+    try:
+        p = urlparse(url)
+        canonical = urlunparse((
+            p.scheme.lower(),
+            p.netloc.lower(),
+            p.path.rstrip("/"),
+            p.params,
+            p.query,
+            p.fragment,
+        ))
+    except Exception:
+        canonical = str(url).strip()
+    # Viewer URLs routinely contain bearer/session tokens and patient/study identity.
+    # Keep them out of process diagnostics while still isolating the full URL, including
+    # fragments used by SPA viewers as their only study identifier.
+    return hashlib.sha256(canonical.encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
+def _get_cached_discovery(url: str) -> Optional[ViewerCapture]:
+    key = _canonical_discovery_key(url)
+    with _DISCOVERY_CACHE_LOCK:
+        now = time.monotonic()
+        entry = _DISCOVERY_CACHE.get(key)
+        if entry:
+            if now - entry.timestamp <= _DISCOVERY_CACHE_TTL_S:
+                # Download adapters attach per-run budgets, trackers and de-duplication
+                # state. Do not mutate the reusable discovery snapshot itself.
+                return copy.copy(entry.cap)
+            _DISCOVERY_CACHE.pop(key, None)
+    return None
+
+
+def _put_cached_discovery(url: str, cap: ViewerCapture, adapter_name: str = "") -> None:
+    key = _canonical_discovery_key(url)
+    with _DISCOVERY_CACHE_LOCK:
+        now = time.monotonic()
+        expired = [k for k, e in _DISCOVERY_CACHE.items() if now - e.timestamp > _DISCOVERY_CACHE_TTL_S]
+        for k in expired:
+            _DISCOVERY_CACHE.pop(k, None)
+        _DISCOVERY_CACHE[key] = _DiscoverySessionEntry(cap=cap, timestamp=now, adapter_name=adapter_name)
+
+
+def _evict_cached_discovery(url: str) -> None:
+    key = _canonical_discovery_key(url)
+    with _DISCOVERY_CACHE_LOCK:
+        _DISCOVERY_CACHE.pop(key, None)
+
+
 def discover_viewer_series(
     url: str,
     log: LogFn = _default_log,
@@ -4006,6 +4108,17 @@ def discover_viewer_series(
                 }, "viewer", index))
 
         _collect_dom_attachments(page, cap)
+        try:
+            from urllib.parse import urlparse as _up
+            pu = _up(page.url)
+            cap.host = f"{pu.scheme}://{pu.netloc}"
+            cap.cookies = context.cookies()
+        except Exception:
+            pass
+
+        ready_ad = _ready_adapter(cap, url=url)
+        if ready_ad is not None:
+            _put_cached_discovery(url, cap, adapter_name=ready_ad.name)
 
         browser.close()
         if not choices:
