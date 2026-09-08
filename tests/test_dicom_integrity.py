@@ -1,4 +1,5 @@
 import io
+import re
 import struct
 import tempfile
 import unittest
@@ -497,6 +498,78 @@ class ContinuityAndParityIntegrityTests(unittest.TestCase):
             # Filenames must be distinct
             self.assertNotEqual(names[0], names[1])
 
+    def test_convert_all_prunes_legacy_jpg_and_restores_parity(self):
+        import mpr_engine
+        import web_backend
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            study_dir = tmp / "Study_Legacy"
+            dcm_dir = study_dir / "DICOM"
+            jpg_dir = study_dir / "JPG"
+            dcm_dir.mkdir(parents=True, exist_ok=True)
+            jpg_dir.mkdir(parents=True, exist_ok=True)
+
+            for idx in range(1, 5):
+                p = dcm_dir / f"slice_{idx}.dcm"
+                sop_uid = f"1.2.840.10008.5.1.{idx}"
+                file_meta = FileMetaDataset()
+                file_meta.MediaStorageSOPClassUID = MRImageStorage
+                file_meta.MediaStorageSOPInstanceUID = sop_uid
+                file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+                ds = FileDataset(str(p), {}, file_meta=file_meta, preamble=b"\0" * 128)
+                ds.SOPClassUID = MRImageStorage
+                ds.SOPInstanceUID = sop_uid
+                ds.StudyInstanceUID = "1.2.840.1000"
+                ds.SeriesInstanceUID = "1.2.840.2000"
+                ds.SeriesNumber = 1
+                ds.SeriesDescription = "Sagittal T1"
+                ds.InstanceNumber = idx
+                ds.Modality = "MR"
+                ds.PhotometricInterpretation = "MONOCHROME2"
+                ds.Rows = 16
+                ds.Columns = 16
+                ds.BitsAllocated = 16
+                ds.BitsStored = 16
+                ds.HighBit = 15
+                ds.PixelRepresentation = 0
+                ds.SamplesPerPixel = 1
+                ds.PixelData = b"\x10\x20" * (16 * 16)
+                ds.save_as(str(p))
+
+            # Simulate existing legacy JPG folder from previous app version
+            namer = mpr_engine.SeriesFolderNamer(jpg_dir)
+            series_dir = jpg_dir / namer.name_for(1, "Sagittal T1", "1.2.840.2000")
+            series_dir.mkdir(parents=True, exist_ok=True)
+            for idx in range(1, 5):
+                (series_dir / f"IM_{idx:04d}.jpg").write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00")
+
+            is_par_before, rep_before = dcom_pipeline.verify_study_dicom_jpg_parity(study_dir)
+            self.assertTrue(is_par_before)
+
+            # Re-convert / "Tải tiếp"
+            stats = dcom_pipeline.convert_all(dcm_dir, jpg_dir)
+            self.assertEqual(stats.converted, 4)
+
+            # Legacy IM_0001.jpg .. IM_0004.jpg must be pruned: exactly 4 JPGs remain
+            saved_jpgs = list(jpg_dir.rglob("*.jpg"))
+            self.assertEqual(len(saved_jpgs), 4)
+            for f in saved_jpgs:
+                self.assertFalse(bool(re.match(r"^IM_\d{4}\.jpg$", f.name)))
+                self.assertTrue(bool(re.match(r"^IM_\d{5}_[0-9a-f]{8}\.jpg$", f.name)))
+
+            is_par, rep = dcom_pipeline.verify_study_dicom_jpg_parity(study_dir)
+            self.assertTrue(is_par)
+            self.assertEqual(rep["dicom_count"], 4)
+            self.assertEqual(rep["jpg_count"], 4)
+            self.assertEqual(rep["extra_jpg"], 0)
+
+            # ArchiveCatalog sees exactly 4 slices
+            cat = web_backend.ArchiveCatalog()
+            manifest = mpr_engine.read_manifest(series_dir)
+            images = cat._image_files(series_dir, manifest)
+            self.assertEqual(len(images), 4)
+
+
     def test_record_patient_study_destickifies_on_incomplete_run(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = Path(tmp_dir)
@@ -561,6 +634,30 @@ class ContinuityAndParityIntegrityTests(unittest.TestCase):
         self.assertNotIn("sig=", clean_url)
         self.assertNotIn("password=", clean_url)
         self.assertNotIn("session=", clean_url)
+
+    def test_sanitize_viewer_url_handles_fragments_and_share_tokens(self):
+        # 1. Fragment with sensitive token (e.g. OHIF hash routing)
+        ohif_url = "https://pacs.vn/#/viewer?StudyInstanceUIDs=1.2.840.1&token=SECRET123"
+        cleaned_ohif = dcom_pipeline.sanitize_viewer_url(ohif_url)
+        self.assertEqual(cleaned_ohif, "https://pacs.vn/#/viewer?StudyInstanceUIDs=1.2.840.1")
+        self.assertNotIn("SECRET123", cleaned_ohif)
+
+        # 2. Share link where token is the sole identifier - must preserve token for resume/Tải tiếp
+        share_url = "https://pacs.vn/share?token=ONLY_IDENTIFIER"
+        cleaned_share = dcom_pipeline.sanitize_viewer_url(share_url)
+        self.assertEqual(cleaned_share, "https://pacs.vn/share?token=ONLY_IDENTIFIER")
+
+        # 3. Share link with token and explicit password - password stripped, token kept
+        share_pw_url = "https://pacs.vn/share?token=ONLY_IDENTIFIER&password=supersecret"
+        cleaned_share_pw = dcom_pipeline.sanitize_viewer_url(share_pw_url)
+        self.assertEqual(cleaned_share_pw, "https://pacs.vn/share?token=ONLY_IDENTIFIER")
+        self.assertNotIn("supersecret", cleaned_share_pw)
+
+        # 4. Hash-based share link where token is the sole identifier
+        frag_share = "https://pacs.vn/#/share?token=ONLY_ID"
+        cleaned_frag_share = dcom_pipeline.sanitize_viewer_url(frag_share)
+        self.assertEqual(cleaned_frag_share, "https://pacs.vn/#/share?token=ONLY_ID")
+
 
     def test_concurrent_patient_manifest_writes(self):
         import concurrent.futures

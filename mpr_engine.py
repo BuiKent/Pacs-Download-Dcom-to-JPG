@@ -118,6 +118,17 @@ class SeriesFolderNamer:
         self._by_uid: dict[str, str] = {}
         self._claimed: set[str] = set()
 
+    def _is_colliding_with_other_series(self, folder_name: str, series_uid: str) -> bool:
+        folder = self.root / folder_name
+        if not folder.is_dir():
+            return False
+        manifest = read_manifest(folder)
+        if manifest:
+            existing_uid = str(manifest.get("series_instance_uid") or "").strip()
+            if existing_uid and existing_uid != str(series_uid or "").strip():
+                return True
+        return False
+
     def name_for(
         self,
         series_number,
@@ -136,7 +147,7 @@ class SeriesFolderNamer:
         else:
             chosen = plain
             counter = 2
-            while chosen.casefold() in self._claimed or (self.root / chosen).is_dir():
+            while chosen.casefold() in self._claimed or self._is_colliding_with_other_series(chosen, series_uid):
                 chosen = f"{plain} ({counter})"
                 counter += 1
         self._by_uid[uid_text] = chosen
@@ -777,6 +788,17 @@ def convert_mpr_candidate(
         encoding="utf-8",
     )
     temp_path.replace(manifest_path)
+    valid_mpr_files = {item["file"] for item in ordered_files}
+    try:
+        for child in series_folder.iterdir():
+            if child.is_file() and (
+                child.suffix.casefold() in {".jpg", ".jpeg", ".part"}
+                or child.name.endswith(".part")
+            ):
+                if child.name not in valid_mpr_files:
+                    child.unlink(missing_ok=True)
+    except OSError:
+        pass
     log(f"MPR-JPG hoàn tất: {written} lát — {manifest_path}")
     return written, manifest_path
 

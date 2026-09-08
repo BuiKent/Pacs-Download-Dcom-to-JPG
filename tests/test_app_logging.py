@@ -124,6 +124,20 @@ class SessionLoggingTests(unittest.TestCase):
                 time.sleep(0.05)
                 content = logger.log_file.read_text(encoding="utf-8")
                 self.assertIn("Message from job state logger", content)
+                self.assertEqual(content.count("Message from job state logger"), 1)
+            finally:
+                logger.close()
+
+    def test_default_log_no_duplicate_under_stdio_tee(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            logger = app_logging.init_app_logging(tee_stdio=True, logs_dir=tmp_dir)
+            try:
+                unique_msg = f"Pipeline message unique verification {time.time_ns()}"
+                dcom_pipeline._default_log(unique_msg)
+                time.sleep(0.05)
+                content = logger.log_file.read_text(encoding="utf-8")
+                self.assertIn(unique_msg, content)
+                self.assertEqual(content.count(unique_msg), 1)
             finally:
                 logger.close()
 

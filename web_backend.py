@@ -1384,13 +1384,18 @@ class ArchiveCatalog:
             files = mpr_engine.manifest_image_files(folder, manifest)
             if files:
                 return files
-        return sorted(
-            (
-                path for path in folder.iterdir()
-                if path.is_file() and path.suffix.casefold() in IMG_EXTENSIONS
-            ),
-            key=lambda path: _natural_key(path.name),
-        )
+        all_images = [
+            path for path in folder.iterdir()
+            if path.is_file() and path.suffix.casefold() in IMG_EXTENSIONS
+        ]
+        has_modern = any(re.match(r"^IM_\d{5}_[0-9a-f]{8}", p.name, re.IGNORECASE) for p in all_images)
+        if has_modern:
+            all_images = [
+                p for p in all_images
+                if not re.match(r"^IM_\d{4}\.(?:jpg|jpeg)$", p.name, re.IGNORECASE)
+            ]
+        return sorted(all_images, key=lambda path: _natural_key(path.name))
+
 
     def _media_records(
         self,
@@ -1581,34 +1586,43 @@ class ArchiveCatalog:
             sop_token = hashlib.sha1(sop_uid.encode("utf-8")).hexdigest()[:8] if sop_uid else ""
 
             image = None
-            # Match strategy 1: legacy IM_0007.jpg
-            base_legacy = (
-                f"IM_{int(instance):04d}"
-                if instance.isdigit()
-                else f"IM_{dcom_pipeline._safe_name(instance)}"
-            )
-            key_legacy = f"{base_legacy}.jpg".casefold()
-            if key_legacy in available and key_legacy not in used:
-                image = available[key_legacy]
-                used.add(key_legacy)
+            # Match strategy 1: modern collision-safe IM_00007_soptoken.jpg
+            if instance.isdigit() and sop_token:
+                key_sop = f"im_{int(instance):05d}_{sop_token}.jpg".casefold()
+                if key_sop in available and key_sop not in used:
+                    image = available[key_sop]
+                    used.add(key_sop)
 
-            # Match strategy 2: modern IM_00007_soptoken.jpg
-            if image is None and instance.isdigit():
-                if sop_token:
-                    key_sop = f"im_{int(instance):05d}_{sop_token}.jpg".casefold()
-                    if key_sop in available and key_sop not in used:
-                        image = available[key_sop]
-                        used.add(key_sop)
-
-            # Match strategy 3: prefix matching by instance number
+            # Match strategy 2: prefix matching by 5-digit instance number
             if image is None and instance.isdigit():
                 pref5 = f"im_{int(instance):05d}_"
-                pref4 = f"im_{int(instance):04d}_"
                 for cand_key, cand_path in available.items():
-                    if cand_key not in used and (cand_key.startswith(pref5) or cand_key.startswith(pref4)):
+                    if cand_key not in used and cand_key.startswith(pref5):
                         image = cand_path
                         used.add(cand_key)
                         break
+
+            # Match strategy 3: legacy IM_0007.jpg
+            if image is None:
+                base_legacy = (
+                    f"IM_{int(instance):04d}"
+                    if instance.isdigit()
+                    else f"IM_{dcom_pipeline._safe_name(instance)}"
+                )
+                key_legacy = f"{base_legacy}.jpg".casefold()
+                if key_legacy in available and key_legacy not in used:
+                    image = available[key_legacy]
+                    used.add(key_legacy)
+
+            # Match strategy 4: prefix matching by 4-digit instance number
+            if image is None and instance.isdigit():
+                pref4 = f"im_{int(instance):04d}_"
+                for cand_key, cand_path in available.items():
+                    if cand_key not in used and cand_key.startswith(pref4):
+                        image = cand_path
+                        used.add(cand_key)
+                        break
+
 
             if image is None:
                 return None
@@ -2487,18 +2501,30 @@ class JobState:
         with self.lock:
             self.logs.append(text)
             self.message = text
+        session_log = None
         try:
             import app_logging
-            app_logging.get_logger().job_event(self.kind or "JOB", text)
+            logger = app_logging.get_logger()
+            logger.job_event(self.kind or "JOB", text)
+            session_log = getattr(logger, "log_file", None)
         except Exception:
             pass
+        # If self.log_file_path points to a custom file distinct from session_log, write to it.
+        # If it points to session_log itself, skip duplicate manual writing.
         if self.log_file_path:
-            try:
-                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                with open(self.log_file_path, "a", encoding="utf-8") as f:
-                    f.write(f"[{now_str}] {text}\n")
-            except Exception:
-                pass
+            is_same_file = False
+            if session_log:
+                try:
+                    is_same_file = (self.log_file_path.resolve() == session_log.resolve())
+                except Exception:
+                    pass
+            if not is_same_file:
+                try:
+                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    with open(self.log_file_path, "a", encoding="utf-8") as f:
+                        f.write(f"[{now_str}] {text}\n")
+                except Exception:
+                    pass
 
     def start(self, kind: str, target: Callable[[], Any]) -> None:
         with self.lock:
@@ -2513,19 +2539,29 @@ class JobState:
             self.started_at = time.time()
             self.finished_at = 0
 
+        session_log = None
         try:
             import app_logging
-            app_logging.get_logger().info(f"Bắt đầu tác vụ {kind}", source="JOB")
+            logger = app_logging.get_logger()
+            logger.info(f"Bắt đầu tác vụ {kind}", source="JOB")
+            session_log = getattr(logger, "log_file", None)
         except Exception:
             pass
 
         if self.log_file_path:
-            try:
-                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                with open(self.log_file_path, "a", encoding="utf-8") as f:
-                    f.write(f"\n==================== [ {now_str} ] START JOB: {kind} ====================\n")
-            except Exception:
-                pass
+            is_same_file = False
+            if session_log:
+                try:
+                    is_same_file = (self.log_file_path.resolve() == session_log.resolve())
+                except Exception:
+                    pass
+            if not is_same_file:
+                try:
+                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    with open(self.log_file_path, "a", encoding="utf-8") as f:
+                        f.write(f"\n==================== [ {now_str} ] START JOB: {kind} ====================\n")
+                except Exception:
+                    pass
 
         def run() -> None:
             try:

@@ -59,14 +59,27 @@ LogFn = Callable[[str], None]
 
 def _default_log(msg: str) -> None:
     try:
-        print(msg, flush=True)
-    except Exception:
-        pass
-    try:
         import app_logging
-        app_logging.get_logger().info(msg, source="PIPELINE")
+        logger = app_logging.get_logger()
+        orig_stdout = getattr(sys.stdout, "original_stream", None)
+        if orig_stdout is not None:
+            try:
+                orig_stdout.write(f"{msg}\n")
+                orig_stdout.flush()
+            except Exception:
+                pass
+        else:
+            try:
+                print(msg, flush=True)
+            except Exception:
+                pass
+        logger.info(msg, source="PIPELINE")
     except Exception:
-        pass
+        try:
+            print(msg, flush=True)
+        except Exception:
+            pass
+
 
 
 # DICOM objects that carry NO pixels: structured reports (a CT "Dose SR", say),
@@ -1841,9 +1854,12 @@ def verify_study_dicom_jpg_parity(study_dir: Path | str) -> tuple[bool, dict[str
     jpg_files = []
     if jpg_dir.is_dir():
         for root, _, files in os.walk(jpg_dir):
-            for f in files:
-                if Path(f).suffix.lower() in {".jpg", ".jpeg"}:
-                    jpg_files.append(Path(root) / f)
+            folder_jpgs = [f for f in files if Path(f).suffix.lower() in {".jpg", ".jpeg"}]
+            has_modern = any(re.match(r"^IM_\d{5}_[0-9a-f]{8}", f, re.IGNORECASE) for f in folder_jpgs)
+            for f in folder_jpgs:
+                if has_modern and re.match(r"^IM_\d{4}\.(?:jpg|jpeg)$", f, re.IGNORECASE):
+                    continue
+                jpg_files.append(Path(root) / f)
 
     import pydicom
     image_dicoms = []
@@ -5309,7 +5325,18 @@ def _manifest_file_lock(folder: Path, timeout: float = 10.0):
                     lock_file.unlink(missing_ok=True)
             except Exception:
                 pass
+            # Back off between attempts: without this the retry loop busy-spins
+            # at 100% CPU for the whole timeout while hammering the filesystem.
             time.sleep(0.05)
+    if not acquired:
+        try:
+            import app_logging
+            app_logging.get_logger().warning(
+                f"_manifest_file_lock: Hết thời gian chờ {timeout}s tại {folder}, tiếp tục mà không giữ khoá.",
+                source="PIPELINE",
+            )
+        except Exception:
+            pass
     try:
         yield
     finally:
@@ -5325,6 +5352,13 @@ def _manifest_file_lock(folder: Path, timeout: float = 10.0):
                 pass
 
 
+_STUDY_LOCATOR_QUERY_KEYS = frozenset({
+    "studyinstanceuids", "studyinstanceuid", "study_uid", "studyuid", "study", "studyid", "siuid",
+    "accessionnumber", "accession", "accession_no", "acc",
+    "patientid", "patient_id", "pid",
+    "seriesinstanceuids", "seriesinstanceuid", "seriesuid", "series", "seriesid",
+})
+
 SENSITIVE_URL_PARAMS = frozenset({
     "token", "access_token", "auth", "signature", "sig",
     "key", "apikey", "api_key", "secret", "password", "pass", "pwd",
@@ -5332,30 +5366,65 @@ SENSITIVE_URL_PARAMS = frozenset({
     "x-amz-signature", "x-amz-security-token", "x-amz-credential", "x-amz-date",
 })
 
+ALWAYS_SENSITIVE_PARAMS = frozenset({
+    "password", "pass", "pwd", "secret", "bearer",
+    "x-amz-signature", "x-amz-security-token", "x-amz-credential", "x-amz-date",
+})
+
 
 def sanitize_viewer_url(url: str) -> str:
-    """Strip sensitive credentials and tokens from URLs before storing on disk."""
+    """Strip sensitive credentials and tokens from URLs before storing on disk.
+
+    Handles both standard query strings (?k=v) and hash-router fragment queries (/#/viewer?k=v).
+    Preserves share tokens when token is the sole identifier for the study, so 'Tải tiếp'
+    remains functional.
+    """
     if not url:
         return ""
     try:
         parsed = urlparse(url)
-        if not parsed.query:
+        has_query = bool(parsed.query)
+        has_frag_query = bool(parsed.fragment and "?" in parsed.fragment)
+        if not has_query and not has_frag_query:
             return url
-        pairs = parse_qsl(parsed.query, keep_blank_values=True)
-        cleaned = []
-        for k, v in pairs:
-            kn = k.strip().lower()
-            if kn in SENSITIVE_URL_PARAMS or any(s in kn for s in ("token", "signature", "secret", "password")):
-                continue
-            cleaned.append((k, v))
-        new_query = urlencode(cleaned)
+
+        query_pairs = parse_qsl(parsed.query, keep_blank_values=True) if has_query else []
+        if has_frag_query:
+            frag_path, raw_frag_query = parsed.fragment.split("?", 1)
+            frag_pairs = parse_qsl(raw_frag_query, keep_blank_values=True)
+        else:
+            frag_path = parsed.fragment
+            frag_pairs = []
+
+        all_keys = {k.strip().lower() for k, _ in (query_pairs + frag_pairs)}
+        has_study_locator = bool(all_keys.intersection(_STUDY_LOCATOR_QUERY_KEYS))
+
+        def _should_strip(param_key: str) -> bool:
+            kn = param_key.strip().lower()
+            if kn in ALWAYS_SENSITIVE_PARAMS or any(s in kn for s in ("signature", "secret", "password")):
+                return True
+            if has_study_locator:
+                if kn in SENSITIVE_URL_PARAMS or "token" in kn or "session" in kn:
+                    return True
+            return False
+
+        cleaned_query = [(k, v) for k, v in query_pairs if not _should_strip(k)]
+        new_query = urlencode(cleaned_query)
+
+        if has_frag_query:
+            cleaned_frag = [(k, v) for k, v in frag_pairs if not _should_strip(k)]
+            new_frag_query = urlencode(cleaned_frag)
+            new_fragment = f"{frag_path}?{new_frag_query}" if new_frag_query else frag_path
+        else:
+            new_fragment = frag_path
+
         return urlunparse((
             parsed.scheme,
             parsed.netloc,
             parsed.path,
             parsed.params,
             new_query,
-            parsed.fragment,
+            new_fragment,
         ))
     except Exception:
         return url
@@ -6638,6 +6707,23 @@ def convert_all(
             encoding="utf-8",
         )
         temporary.replace(manifest_path)
+
+        # Prune legacy or obsolete JPG/PNG/.part files from this series folder
+        # to ensure strict 1-to-1 parity between DICOM slices and JPG files
+        series_folder = manifest_path.parent
+        valid_files = set(outputs)
+        if save_png:
+            valid_files.update(Path(f).with_suffix(".png").name for f in outputs)
+        try:
+            for child in series_folder.iterdir():
+                if child.is_file() and (
+                    child.suffix.casefold() in {".jpg", ".jpeg", ".png", ".part"}
+                    or child.name.endswith(".part")
+                ):
+                    if child.name not in valid_files:
+                        child.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     log(f"Chuyển đổi xong: {stats.converted} ảnh JPG"
         f"{' (+PNG)' if save_png else ''}, bỏ qua {stats.skipped}, lỗi {stats.failed}.")

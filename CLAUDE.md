@@ -97,7 +97,7 @@ vẽ lại component đã có, hay thay cấu trúc dữ liệu đang dùng là 
 phạm vi được giao.
 
 Riêng `patient-index.json`: `studies` là **dict khoá theo studyUid**, tên khoá
-**camelCase**, `status` nhận `complete` / `selected` / `incomplete`. Chỉ được
+**camelCase**, `status` nhận `complete` / `selected` / `incomplete` / `partial`. Chỉ được
 THÊM khoá mới, không đổi cấu trúc, không bump `PATIENT_MANIFEST_FORMAT`.
 
 ## 5. Hai theme, chọn theo tab đang mở

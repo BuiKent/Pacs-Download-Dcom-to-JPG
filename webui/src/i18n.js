@@ -28,6 +28,7 @@ const EN = {
   "Quét lại thư mục hiện tại": "Rescan the current folder",
   "Chuyển sang tiếng Anh": "Switch to Vietnamese",
   "Mở thư mục nhật ký (log) phiên làm việc": "Open session log folder",
+  "Mở thư mục nhật ký": "Open log folder",
   "Nhật ký phiên làm việc (Logs)": "Session Activity Logs",
   "Mở thư mục Log": "Open Logs Folder",
   "Mở thư mục Log trong Explorer": "Open Logs folder in Explorer",

@@ -24,6 +24,7 @@ describe("language selection", () => {
     expect(t("Tải ca theo mã bệnh nhân")).toBe("Download by patient ID");
     expect(t("Đã thêm thư mục nguồn thành công.")).toBe("Source folder added successfully.");
     expect(t("Lỗi:")).toBe("Error:");
+    expect(t("Mở thư mục nhật ký")).toBe("Open log folder");
   });
 
   it("falls back to the Vietnamese text when a string is not translated", () => {

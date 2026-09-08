@@ -14,11 +14,13 @@ Features:
 
 from __future__ import annotations
 
+import atexit
 import datetime
 import io
 import os
 import platform
 import sys
+import tempfile
 import threading
 import traceback
 from pathlib import Path
@@ -32,8 +34,33 @@ def get_app_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _running_under_test() -> bool:
+    """True only when an automated test runner drives the process.
+
+    Detection must key on the runner itself, never on the text of the command
+    line: an archive path the doctor passes in (``--archive D:/Anh/Latest/...``)
+    contains "test" as a substring and would otherwise divert the real session
+    log into the temp folder, where "Mở thư mục Log" would no longer find it.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    # `python -m unittest` / `python -m pytest` both leave their runner module
+    # loaded; a normal app launch imports neither.
+    return "pytest" in sys.modules or "unittest" in sys.modules
+
+
 def get_logs_dir() -> Path:
     """Return the logs directory, falling back to LOCALAPPDATA if app root is read-only."""
+    env_dir = os.environ.get("DCOM_LOGS_DIR")
+    if env_dir:
+        candidate = Path(env_dir).resolve()
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
+    # If running automated tests, isolate logs in a temp folder to avoid polluting project logs/
+    if _running_under_test():
+        test_dir = Path(tempfile.gettempdir()) / "dcom_test_logs"
+        test_dir.mkdir(parents=True, exist_ok=True)
+        return test_dir
     candidate = get_app_root() / "logs"
     try:
         candidate.mkdir(parents=True, exist_ok=True)
@@ -276,6 +303,12 @@ class SessionLogger:
                 except Exception:
                     pass
 
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
 
 def get_logger() -> SessionLogger:
     """Convenience accessor for the application session logger."""
@@ -297,3 +330,7 @@ def init_app_logging(
     if tee_stdio:
         logger.install_stdio_tee()
     return logger
+
+
+atexit.register(lambda: SessionLogger._instance.close() if SessionLogger._instance else None)
+
