@@ -1931,12 +1931,38 @@ function buildMediaTimeline(seriesList, timelineLabels = {}) {
       // says nothing and repeats across folders, so those rows take the
       // folder's own name instead.
       const suffix = dateKey ? dateLabel : (examName || dateLabel);
+
+      const isDicom = group.series.some((item) => (
+        item.sourceType === "dicom" || String(item.sourceFormat || "").toUpperCase() === "DICOM"
+      ));
+      let sourceFormat = "DICOM";
+      if (isDicom) {
+        sourceFormat = "DICOM";
+      } else if (first.sourceFormat) {
+        sourceFormat = String(first.sourceFormat).toUpperCase();
+      } else if (first.sourceType === "image" || group.kind === "photo") {
+        sourceFormat = "JPG";
+      } else if (group.kind === "video") {
+        sourceFormat = "MP4";
+      } else if (group.kind === "pdf") {
+        sourceFormat = "PDF";
+      } else if (group.kind === "doc" || group.kind === "text") {
+        sourceFormat = "TXT";
+      } else if (group.kind === "dicom") {
+        sourceFormat = "DICOM";
+      }
+      const sourceTitle = sourceFormat === "DICOM"
+        ? t("Dữ liệu gốc DICOM (Ưu tiên dựng từ DICOM)")
+        : (sourceFormat === "JPG" ? t("Dữ liệu ảnh chuyển đổi JPG") : sourceFormat);
       return {
         ...group,
         dateKey,
         dateLabel,
         badge,
         examName,
+        sourceFormat,
+        sourceFormatClass: sourceFormat.toLowerCase(),
+        sourceTitle,
         defaultTitle: `${badge} - ${suffix}`,
         primaryId: primary?.id || "",
         memberIds: group.series.map((item) => item.id),
@@ -2113,6 +2139,7 @@ function renderPatientRail() {
                     <div class="tl-card-header">
                       <span class="tl-badge-pill">${escapeHtml(row.badge)}</span>
                       <span class="tl-date-text">${escapeHtml(row.dateLabel)}</span>
+                      <span class="tl-source-pill ${escapeHtml(row.sourceFormatClass)}" title="${escapeHtml(row.sourceTitle)}">${escapeHtml(row.sourceFormat)}</span>
                     </div>
                     <div class="tl-card-body">
                       <span class="nm">${escapeHtml(row.title !== row.defaultTitle ? row.title : (row.examName || row.title))}</span>

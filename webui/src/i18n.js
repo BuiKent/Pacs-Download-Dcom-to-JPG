@@ -142,6 +142,8 @@ const EN = {
   "Lưu tên": "Save name",
   "Bỏ thay đổi tên": "Cancel name change",
   "Đã lưu tên hiển thị trên timeline.": "Timeline display name saved.",
+  "Dữ liệu gốc DICOM (Ưu tiên dựng từ DICOM)": "Original DICOM data (prioritized for reconstruction)",
+  "Dữ liệu ảnh chuyển đổi JPG": "Converted JPG image data",
   "Hoàn tác bước chỉnh sửa": "Undo the last edit",
   "Làm lại bước vừa hoàn tác": "Redo the edit just undone",
   "Đã hoàn tác đến bước {}/{}.": "Undid to edit {} of {}.",

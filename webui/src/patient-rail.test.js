@@ -64,6 +64,10 @@ describe("Viewer tab: patient rail", () => {
       "Văn bản - Tường trình phẫu thuật",
     ]);
     expect(timeline[0].series).toHaveLength(2);
+    expect(timeline[0].sourceFormat).toBe("DICOM");
+    expect(timeline[1].sourceFormat).toBe("JPG");
+    expect(timeline[2].sourceFormat).toBe("MP4");
+    expect(timeline[3].sourceFormat).toBe("TXT");
   });
 
   it("names the exam only when two of one kind share a day", () => {
@@ -115,6 +119,8 @@ describe("Viewer tab: patient rail", () => {
     expect(html).toContain('class="tl-item photo"');
     expect(html).toContain('class="tl-item video"');
     expect(html).toContain('class="tl-item text"');
+    expect(html).toContain('class="tl-source-pill dicom"');
+    expect(html).toContain('class="tl-source-pill jpg"');
   });
 
   it("keeps technical sequences out of the exam history", () => {

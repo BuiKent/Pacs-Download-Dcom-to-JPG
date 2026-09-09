@@ -1178,6 +1178,28 @@ class SeriesRecord:
                 return kind
         return "photo"
 
+    def source_format(self) -> str:
+        """The primary file format this series is built from: DICOM, JPG, PNG, MP4, PDF, etc."""
+        if self.source_type == "dicom":
+            return "DICOM"
+        if self.images:
+            suffix = Path(self.images[0]).suffix.casefold()
+            if suffix in {".jpg", ".jpeg"}:
+                return "JPG"
+            if suffix == ".png":
+                return "PNG"
+            if suffix == ".webp":
+                return "WEBP"
+            if suffix in VIDEO_EXTENSIONS:
+                return suffix.lstrip(".").upper()
+            if suffix in PDF_EXTENSIONS:
+                return "PDF"
+            if suffix in TEXT_EXTENSIONS:
+                return "TXT"
+        if self.source_type == "image":
+            return "JPG"
+        return self.source_type.upper()
+
     def public_dict(self) -> dict:
         m = self.manifest or {}
         data = {
@@ -1190,6 +1212,7 @@ class SeriesRecord:
             "description": m.get("series_description", self.name),
             "modality": self.modality,
             "sourceType": self.source_type,
+            "sourceFormat": self.source_format(),
             # The frontend routes on this. It is computed from the files on
             # disk, never from the wording of a description.
             "mediaType": self.resolved_media_type(),

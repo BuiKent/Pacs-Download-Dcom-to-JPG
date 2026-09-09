@@ -156,6 +156,33 @@ class JpgStudyGroupingTests(unittest.TestCase):
         )
         self.assertEqual(rec1.timeline_key(), rec2.timeline_key())
 
+    def test_source_format_detection(self):
+        rec_dcm = web_backend.SeriesRecord(
+            series_id="d1",
+            name="MR DICOM",
+            folder=Path("/archive/study/s1"),
+            images=[Path("/archive/study/s1/image.dcm")],
+            manifest=None,
+            mpr_ready=False,
+            mpr_reason="",
+            source_type="dicom",
+        )
+        self.assertEqual(rec_dcm.source_format(), "DICOM")
+        self.assertEqual(rec_dcm.public_dict()["sourceFormat"], "DICOM")
+
+        rec_jpg = web_backend.SeriesRecord(
+            series_id="j1",
+            name="MR JPG",
+            folder=Path("/archive/study/s2"),
+            images=[Path("/archive/study/s2/IM_0001.jpg")],
+            manifest=None,
+            mpr_ready=False,
+            mpr_reason="",
+            source_type="image",
+        )
+        self.assertEqual(rec_jpg.source_format(), "JPG")
+        self.assertEqual(rec_jpg.public_dict()["sourceFormat"], "JPG")
+
 
 if __name__ == "__main__":
     unittest.main()
