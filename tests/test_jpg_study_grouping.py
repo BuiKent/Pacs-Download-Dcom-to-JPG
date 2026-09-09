@@ -183,6 +183,78 @@ class JpgStudyGroupingTests(unittest.TestCase):
         self.assertEqual(rec_jpg.source_format(), "JPG")
         self.assertEqual(rec_jpg.public_dict()["sourceFormat"], "JPG")
 
+    def test_parse_study_folder_clvt(self):
+        date, mod, desc = web_backend._parse_study_folder_name("2026-06-16 - CLVT - trước mổ")
+        self.assertEqual(date, "2026-06-16")
+        self.assertEqual(mod, "CT")
+        self.assertEqual(desc, "trước mổ")
+
+    def test_modality_clvt_detection(self):
+        root = Path("/archive/patient")
+        folder = root / "2026-06-16 - CLVT - trước mổ" / "Series_10001_Dose Info"
+        mod = web_backend.ArchiveCatalog._modality(folder, root, None)
+        self.assertEqual(mod, "CT")
+
+    def test_harmonize_study_folder_records(self):
+        sf = Path("/archive/2026-06-16 - CLVT - trước mổ")
+        r_scout = web_backend.SeriesRecord(
+            series_id="scout",
+            name="Series_1_SCOUT",
+            folder=sf / "Series_1_SCOUT",
+            images=[sf / "Series_1_SCOUT" / "scout.jpg"],
+            manifest=None,
+            mpr_ready=False,
+            mpr_reason="",
+            modality="CT",
+            study_folder=sf,
+        )
+        r_plain = web_backend.SeriesRecord(
+            series_id="plain",
+            name="Series_2_PLAIN",
+            folder=sf / "Series_2_PLAIN",
+            images=[sf / "Series_2_PLAIN" / f"{i}.jpg" for i in range(100)],
+            manifest={"study_instance_uid": "uid.12345", "modality": "CT"},
+            mpr_ready=True,
+            mpr_reason="",
+            modality="CT",
+            study_folder=sf,
+        )
+        r_dose = web_backend.SeriesRecord(
+            series_id="dose",
+            name="Series_10001_Dose Info",
+            folder=sf / "Series_10001_Dose Info",
+            images=[sf / "Series_10001_Dose Info" / "dose.jpg"],
+            manifest=None,
+            mpr_ready=False,
+            mpr_reason="",
+            modality="UNKNOWN",
+            study_folder=sf,
+        )
+
+        records = {"scout": r_scout, "plain": r_plain, "dose": r_dose}
+        web_backend.ArchiveCatalog._harmonize_study_folder_records(records, Path("/archive"))
+
+        self.assertEqual(r_dose.modality, "CT")
+        self.assertEqual(r_scout.study_uid, "uid.12345")
+        self.assertEqual(r_dose.study_uid, "uid.12345")
+        self.assertEqual(r_scout.study_group, r_plain.study_group)
+        self.assertEqual(r_dose.study_group, r_plain.study_group)
+        self.assertEqual(r_scout.timeline_key(), r_plain.timeline_key())
+        self.assertEqual(r_dose.timeline_key(), r_plain.timeline_key())
+
+    def test_extract_folder_date_embedded(self):
+        self.assertEqual(web_backend._extract_folder_date("01_Truoc_mo_1_18-05-2026"), "2026-05-18")
+        self.assertEqual(web_backend._extract_folder_date("02_Truoc_mo_2_26-05-2026"), "2026-05-26")
+        self.assertEqual(web_backend._extract_folder_date("03_Sau_mo_05-06-2026"), "2026-06-05")
+        self.assertEqual(web_backend._extract_folder_date("06.07.2026-trước mổ"), "2026-07-06")
+
+    def test_parse_study_folder_name_with_embedded_date(self):
+        d, mod, desc = web_backend._parse_study_folder_name("01_Truoc_mo_1_18-05-2026")
+        self.assertEqual(d, "2026-05-18")
+        self.assertEqual(mod, "")
+        self.assertEqual(desc, "01_Truoc_mo_1")
+
 
 if __name__ == "__main__":
     unittest.main()
+

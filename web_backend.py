@@ -8,6 +8,7 @@ from the browser.
 
 from __future__ import annotations
 
+from collections import Counter
 import datetime
 import copy
 import hashlib
@@ -58,9 +59,14 @@ MRI_SEQUENCE_TOKENS = {
     "FSPGR", "PROPELLER", "SWI", "CORT2", "DIFFUSION", "PERFUSION", "TOF",
     "MRA", "MRV", "SPECTRO", "DTI", "FIESTA", "CISS", "SPACE", "VIBE",
     "HASTE", "BLADE", "EPIDWI", "T1WI", "T2WI", "GRE", "MPRAGE", "SE",
+    "PROBE", "TIRM", "LAVA", "CHT",
 }
 CT_TOKENS = {
     "CT", "CTA", "CTV", "HU", "BONE", "LUNG", "MEDIASTINUM", "ANGIO", "SCOUT",
+    "CLVT", "XUONG",
+}
+GENERIC_CONTAINER_FOLDERS = {
+    "MRI", "MR", "CT", "CLVT", "PHIM", "FILM", "ANH", "IMAGE", "IMAGES", "DATA", "HOSO",
 }
 TEXT_EXTENSIONS = {".txt", ".json"}
 # Scanned paperwork arrives as PDF. The worklist has always counted these, but
@@ -1627,15 +1633,15 @@ class ArchiveCatalog:
     @staticmethod
     def _modality(folder: Path, root: Path, manifest: Optional[dict]) -> str:
         declared = str((manifest or {}).get("modality") or "").strip().upper()
-        if declared in {"CT", "MR", "MRI"}:
-            return "MR" if declared == "MRI" else declared
+        if declared in {"CT", "MR", "MRI", "CLVT", "CHT"}:
+            return "CT" if declared in {"CT", "CLVT"} else "MR"
         if str((manifest or {}).get("series_type") or "").upper().startswith("T1_"):
             return "MR"
         text = f"{root.name} {folder.relative_to(root)}"
         tokens = {token for token in re.split(r"[^A-Z0-9]+", text.upper()) if token}
-        if "CT" in tokens or "CTA" in tokens or "CTV" in tokens:
+        if "CT" in tokens or "CTA" in tokens or "CTV" in tokens or "CLVT" in tokens or "XUONG" in tokens:
             return "CT"
-        if tokens.intersection({"MR", "MRI"}):
+        if tokens.intersection({"MR", "MRI", "CHT"}):
             return "MR"
         if tokens.intersection(MRI_SEQUENCE_TOKENS):
             return "MR"
@@ -1819,6 +1825,97 @@ class ArchiveCatalog:
                 "crosslink dùng tọa độ bệnh nhân thật."
             )
         return restored
+
+    @classmethod
+    def _harmonize_study_folder_records(
+        cls,
+        records: dict[str, SeriesRecord],
+        root: Path,
+    ) -> None:
+        """Harmonize modality, studyGroup, studyDate, and studyUID across companion series.
+
+        In a converted JPG archive or patient folder with multiple series per exam,
+        all series under a study folder (e.g. `2026-06-16 - CLVT - trước mổ` or
+        `2026-07-28 - sau mổ 1 tháng`) belong to the same clinical examination.
+        Diagnostic series (like FLAIR, BRAVO, PLAIN CT) carry recognized modalities
+        and StudyInstanceUIDs, while companion series (Scout, Localizer, Key Images,
+        Dose Info, Subtractions, processed maps) often lack manifest JSONs or sequence
+        keywords and end up as UNKNOWN modality or missing study_uid.
+        """
+        by_study_folder: dict[Path, list[SeriesRecord]] = {}
+        for r in records.values():
+            sf = r.study_folder or r.folder.parent
+            if sf:
+                by_study_folder.setdefault(sf, []).append(r)
+
+        for sf, group in by_study_folder.items():
+            if is_document_folder(sf):
+                continue
+            diag_mods = []
+            for r in group:
+                if r.source_type in {"video", "text", "doc"} or is_document_folder(r.folder):
+                    continue
+                if r.modality in DIAGNOSTIC_MODALITIES:
+                    diag_mods.append(r.modality)
+                else:
+                    toks = {t for t in re.split(r"[^A-Z0-9]+", r.name.upper()) if t}
+                    if toks.intersection(CT_TOKENS):
+                        diag_mods.append("CT")
+                    elif toks.intersection(MRI_SEQUENCE_TOKENS):
+                        diag_mods.append("MR")
+
+            sf_date, sf_mod, sf_desc = _parse_study_folder_name(sf.name)
+            if not diag_mods and sf_mod in DIAGNOSTIC_MODALITIES:
+                diag_mods = [sf_mod]
+            if not diag_mods:
+                sf_tokens = {t for t in re.split(r"[^A-Z0-9]+", sf.name.upper()) if t}
+                if sf_tokens.intersection(CT_TOKENS):
+                    diag_mods = ["CT"]
+                elif sf_tokens.intersection(MRI_SEQUENCE_TOKENS):
+                    diag_mods = ["MR"]
+
+            dominant_mod = Counter(diag_mods).most_common(1)[0][0] if diag_mods else ""
+
+            uids = [
+                getattr(r, "study_uid", "")
+                or (r.manifest or {}).get("study_instance_uid")
+                or (r.manifest or {}).get("studyInstanceUID")
+                or (r.manifest or {}).get("study_uid")
+                or ""
+                for r in group
+                if r.source_type not in {"video", "text", "doc"} and not is_document_folder(r.folder)
+            ]
+            valid_uids = [u for u in uids if u]
+            dominant_uid = Counter(valid_uids).most_common(1)[0][0] if valid_uids else ""
+
+            dates = [
+                r.study_date
+                for r in group
+                if r.study_date and r.source_type not in {"video", "text", "doc"} and not is_document_folder(r.folder)
+            ]
+            dominant_date = dates[0] if dates else sf_date
+            dominant_desc = sf_desc or _study_from_folder_path(sf, root=root)[2]
+
+            for r in group:
+                if r.source_type in {"video", "text", "doc"} or is_document_folder(r.folder):
+                    continue
+                if dominant_mod and r.modality not in DIAGNOSTIC_MODALITIES:
+                    r.modality = dominant_mod
+                    if isinstance(r.manifest, dict):
+                        r.manifest["modality"] = dominant_mod
+                if dominant_uid and not getattr(r, "study_uid", ""):
+                    r.study_uid = dominant_uid
+                    if isinstance(r.manifest, dict):
+                        r.manifest.setdefault("study_instance_uid", dominant_uid)
+                effective_mod = r.modality if r.modality in DIAGNOSTIC_MODALITIES else dominant_mod
+                if effective_mod:
+                    d = r.study_date or dominant_date
+                    desc = dominant_desc or r.study_label()
+                    r.study_group = _study_group_label(d, effective_mod, desc)
+                    if d:
+                        r.study_date = d
+                        if isinstance(r.manifest, dict):
+                            r.manifest.setdefault("study_date", d)
 
     @staticmethod
     def _dicom_records(
@@ -2323,10 +2420,17 @@ class ArchiveCatalog:
                 if rel_parts:
                     if rel_parts[0].upper() in {"DICOM", "RAW_JPG", "JPG", "DCOM", "DCM"}:
                         study_folder = root
-                    elif len(rel_parts) >= 2:
-                        study_folder = root / rel_parts[0]
                     else:
-                        study_folder = folder
+                        start_idx = 0
+                        while (
+                            start_idx < len(rel_parts) - 1
+                            and rel_parts[start_idx].upper() in GENERIC_CONTAINER_FOLDERS
+                        ):
+                            start_idx += 1
+                        if len(rel_parts) - start_idx >= 2:
+                            study_folder = root / Path(*rel_parts[:start_idx + 1])
+                        else:
+                            study_folder = folder
             except ValueError:
                 study_folder = folder.parent
 
@@ -2381,6 +2485,7 @@ class ArchiveCatalog:
                 log=log,
                 should_stop=should_stop,
             )
+            self._harmonize_study_folder_records(records, root)
             _enrich_manifest_records(records)
             if log:
                 log(f"Đã quét {scanned} thư mục, tìm thấy {len(records)} series ảnh.")
@@ -2850,6 +2955,8 @@ _LEADING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|\d{8})")
 # carry. `_is_real_date` rejects the reading where the parts are the other way
 # round, so an unambiguous American-style name still fails rather than lying.
 _LEADING_DMY_RE = re.compile(r"^(\d{1,2})[.\-_](\d{1,2})[.\-_](\d{4})")
+_DATE_ANYWHERE_DMY_RE = re.compile(r"(?:^|[^0-9])(\d{1,2}[.\-_]\d{1,2}[.\-_]\d{4})(?:[^0-9]|$)")
+_DATE_ANYWHERE_YMD_RE = re.compile(r"(?:^|[^0-9])(\d{4}[.\-_]\d{1,2}[.\-_]\d{1,2})(?:[^0-9]|$)")
 
 
 def _leading_folder_date(name: str) -> str:
@@ -2866,29 +2973,79 @@ def _leading_folder_date(name: str) -> str:
     return ""
 
 
+def _extract_folder_date(name: str) -> str:
+    """Recover YYYY-MM-DD from anywhere in a study folder name, checking leading first."""
+    lead = _leading_folder_date(name)
+    if lead:
+        return lead
+    m = _DATE_ANYWHERE_DMY_RE.search(name)
+    if m:
+        parts = re.split(r"[.\-_]", m.group(1))
+        if len(parts) == 3:
+            day, month, year = parts
+            stamp = f"{year}{int(month):02d}{int(day):02d}"
+            if _is_real_date(stamp):
+                return f"{year}-{int(month):02d}-{int(day):02d}"
+    m2 = _DATE_ANYWHERE_YMD_RE.search(name)
+    if m2:
+        parts = re.split(r"[.\-_]", m2.group(1))
+        if len(parts) == 3:
+            year, month, day = parts
+            stamp = f"{year}{int(month):02d}{int(day):02d}"
+            if _is_real_date(stamp):
+                return f"{year}-{int(month):02d}-{int(day):02d}"
+    return ""
+
+
 def _parse_study_folder_name(name: str) -> tuple[str, str, str]:
     """Recover (date, modality, description) from a study folder name."""
     m = _STUDY_FOLDER_RE.match(name)
     if m:
-        return _leading_folder_date(m.group(1)) or m.group(1), m.group(2).strip().upper(), m.group(3).strip()
+        raw_mod = m.group(2).strip().upper()
+        if raw_mod in {"CLVT", "CT"}:
+            mod = "CT"
+        elif raw_mod in {"MRI", "CHT", "MR"}:
+            mod = "MR"
+        else:
+            mod = raw_mod
+        return _extract_folder_date(m.group(1)) or m.group(1), mod, m.group(3).strip()
     m2 = _STUDY_FOLDER_2PART_RE.match(name)
     if m2:
-        d = _leading_folder_date(m2.group(1)) or m2.group(1)
+        d = _extract_folder_date(m2.group(1)) or m2.group(1)
         rem = m2.group(2).strip()
         tokens = [t.strip() for t in re.split(r"\s+-\s+|\s+·\s+", rem) if t.strip()]
-        if tokens and tokens[0].upper() in {"CT", "MR", "MRI"}:
-            mod = "MR" if tokens[0].upper() == "MRI" else tokens[0].upper()
+        if tokens and tokens[0].upper() in {"CT", "MR", "MRI", "CLVT", "CHT"}:
+            raw_mod = tokens[0].upper()
+            mod = "CT" if raw_mod in {"CT", "CLVT"} else "MR"
             desc = " - ".join(tokens[1:]).strip()
         else:
             mod = ""
             desc = rem
         return d, mod, desc
-    date = _leading_folder_date(name)
+    date = _extract_folder_date(name)
     if date:
-        return date, "", ""
+        tokens = [t.strip() for t in re.split(r"[\s\-_·]+", name) if t.strip()]
+        mod = ""
+        for t in tokens:
+            tu = t.upper()
+            if tu in {"CT", "CLVT"}:
+                mod = "CT"
+                break
+            elif tu in {"MR", "MRI", "CHT"}:
+                mod = "MR"
+                break
+        m_dmy = _DATE_ANYWHERE_DMY_RE.search(name)
+        m_ymd = _DATE_ANYWHERE_YMD_RE.search(name)
+        raw_date_str = m_dmy.group(1) if m_dmy else (m_ymd.group(1) if m_ymd else "")
+        if raw_date_str:
+            clean_desc = re.sub(r"[\s\-_]*" + re.escape(raw_date_str) + r"[\s\-_]*", "", name).strip(" -_·")
+        else:
+            clean_desc = name.strip()
+        return date, mod, clean_desc or name.strip()
     tokens = [t.strip() for t in re.split(r"\s+-\s+|\s+·\s+", name) if t.strip()]
-    if tokens and tokens[0].upper() in {"CT", "MR", "MRI"}:
-        mod = "MR" if tokens[0].upper() == "MRI" else tokens[0].upper()
+    if tokens and tokens[0].upper() in {"CT", "MR", "MRI", "CLVT", "CHT"}:
+        raw_mod = tokens[0].upper()
+        mod = "CT" if raw_mod in {"CT", "CLVT"} else "MR"
         desc = " - ".join(tokens[1:]).strip()
         return "", mod, desc
     return "", "", name.strip()

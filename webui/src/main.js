@@ -1884,13 +1884,28 @@ const MEDIA_KIND_LABELS = {
  * series selector and filmstrip. A series whose date was never recorded lands
  * at the end rather than being stamped with today.
  */
+function isValidTimelineDateKey(key) {
+  if (!key || typeof key !== "string" || key.length !== 8) return false;
+  const y = parseInt(key.slice(0, 4), 10);
+  const m = parseInt(key.slice(4, 6), 10);
+  const d = parseInt(key.slice(6, 8), 10);
+  if (isNaN(y) || isNaN(m) || isNaN(d)) return false;
+  if (y < 1900 || y > 2099) return false;
+  if (m < 1 || m > 12) return false;
+  if (d < 1 || d > 31) return false;
+  return true;
+}
+
 function buildMediaTimeline(seriesList, timelineLabels = {}) {
   const days = new Map();
   for (const item of seriesList || []) {
     let rawDate = item.studyDate || "";
     if (!rawDate && item.studyGroup) rawDate = item.studyGroup.split(" - ")[0];
     const digits = String(rawDate).replace(/\D/g, "");
-    const key = digits.length >= 8 ? digits.slice(0, 8) : "";
+    let key = digits.length >= 8 ? digits.slice(0, 8) : "";
+    if (key && !isValidTimelineDateKey(key)) {
+      key = "";
+    }
     if (!days.has(key)) days.set(key, new Map());
     const kind = getSeriesMediaType(item);
     const legacyIdentity = item.studyGroup || item.studyDescription
@@ -7861,6 +7876,7 @@ export {
   renderTextViewer,
   renderWorkspacePane,
   renderPatientRail,
+  isValidTimelineDateKey,
   buildMediaTimeline,
   downloadPanelVisible,
   loadTextContent,

@@ -5,6 +5,7 @@ import { setLanguage } from "./i18n.js";
 import {
   state,
   renderPatientRail,
+  isValidTimelineDateKey,
   buildMediaTimeline,
   downloadPanelVisible,
   bindTextViewerButtons,
@@ -82,6 +83,22 @@ describe("Viewer tab: patient rail", () => {
       "US - 17/08/2026 · Tuyến giáp",
       "DX - 17/08/2026",
     ]);
+  });
+
+  it("rejects non-date numeric identifiers such as patient IDs from becoming dates", () => {
+    expect(isValidTimelineDateKey("24100283")).toBe(false); // day 83 is impossible
+    expect(isValidTimelineDateKey("20260817")).toBe(true);
+    const rows = buildMediaTimeline([
+      {
+        id: "pdf-1",
+        studyDate: "",
+        studyGroup: "2410028324-PHAM BINH NGUYEN-15T-U sao bào vàng, tái phát",
+        mediaType: "pdf",
+        description: "Bệnh án PDF",
+      },
+    ]);
+    expect(rows[0].dateKey).toBe("");
+    expect(rows[0].title).toBe("Bệnh án PDF - Bệnh án PDF");
   });
 
   it("shows the identity the manifest recorded", () => {
