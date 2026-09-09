@@ -53,6 +53,15 @@ BROWSER_PLAYABLE_VIDEO = {".mp4", ".webm", ".m4v", ".mov"}
 # Modalities whose slices belong on the reading canvas no matter what file
 # format they arrived in. A converted JPG of an MR slice is still an MR slice.
 DIAGNOSTIC_MODALITIES = {"CT", "MR", "MRI", "CR", "DX", "XA", "US", "PT", "NM", "MG"}
+MRI_SEQUENCE_TOKENS = {
+    "MR", "MRI", "T1", "T2", "FLAIR", "BRAVO", "DWI", "SWAN", "ADC", "FSE",
+    "FSPGR", "PROPELLER", "SWI", "CORT2", "DIFFUSION", "PERFUSION", "TOF",
+    "MRA", "MRV", "SPECTRO", "DTI", "FIESTA", "CISS", "SPACE", "VIBE",
+    "HASTE", "BLADE", "EPIDWI", "T1WI", "T2WI", "GRE", "MPRAGE", "SE",
+}
+CT_TOKENS = {
+    "CT", "CTA", "CTV", "HU", "BONE", "LUNG", "MEDIASTINUM", "ANGIO", "SCOUT",
+}
 TEXT_EXTENSIONS = {".txt", ".json"}
 # Scanned paperwork arrives as PDF. The worklist has always counted these, but
 # nothing could open one, so they were tallied and then unreachable.
@@ -1125,6 +1134,7 @@ class SeriesRecord:
     # slice is expensive and the strip re-requests it on every re-render.
     thumbnail_bytes: Optional[bytes] = None
     study_uid: str = ""
+    study_folder: Optional[Path] = None
 
     def files_playable(self) -> list[bool]:
         """Per file, whether the browser can decode it.
@@ -1157,6 +1167,8 @@ class SeriesRecord:
         if self.modality in DIAGNOSTIC_MODALITIES:
             return "dicom"
         if (self.manifest or {}).get("series_type"):
+            return "dicom"
+        if len(self.images) >= 8 and not is_document_folder(self.folder):
             return "dicom"
         for image in self.images:
             kind = media_type_for_file(image)
@@ -1270,6 +1282,8 @@ class SeriesRecord:
                 cleaned_group = group.replace(" - OT - ", " - MR - ")
             if cleaned_group and cleaned_group != "Không rõ ca chụp":
                 identity = f"group:{date}|{cleaned_group}"
+            elif self.study_folder:
+                identity = f"study_folder:{str(self.study_folder).casefold()}"
             elif self.folder:
                 identity = f"folder:{str(self.folder).casefold()}"
             else:
@@ -1596,10 +1610,14 @@ class ArchiveCatalog:
             return "MR"
         text = f"{root.name} {folder.relative_to(root)}"
         tokens = {token for token in re.split(r"[^A-Z0-9]+", text.upper()) if token}
-        if "CT" in tokens:
+        if "CT" in tokens or "CTA" in tokens or "CTV" in tokens:
             return "CT"
         if tokens.intersection({"MR", "MRI"}):
             return "MR"
+        if tokens.intersection(MRI_SEQUENCE_TOKENS):
+            return "MR"
+        if tokens.intersection(CT_TOKENS):
+            return "CT"
         return "UNKNOWN"
 
     @staticmethod
@@ -2275,25 +2293,42 @@ class ArchiveCatalog:
             ready, reason = validate_mpr_manifest(folder, manifest)
             relative_name = str(folder.relative_to(root)) if folder != root else folder.name
 
+            # Determine enclosing study folder
+            study_folder = None
+            try:
+                rel_parts = folder.relative_to(root).parts
+                if rel_parts:
+                    if rel_parts[0].upper() in {"DICOM", "RAW_JPG", "JPG", "DCOM", "DCM"}:
+                        study_folder = root
+                    elif len(rel_parts) >= 2:
+                        study_folder = root / rel_parts[0]
+                    else:
+                        study_folder = folder
+            except ValueError:
+                study_folder = folder.parent
+
             modality = self._modality(folder, root, manifest)
             # Converted JPGs sit in a `JPG` folder beside the `DICOM` one they
             # came from, so both read the study off the same enclosing folder
             # and end up in one group instead of two headers for one study.
-            study_date, folder_modality, study_desc = _study_from_folder_path(folder)
+            study_date, folder_modality, study_desc = _study_from_folder_path(
+                study_folder or folder, root=root
+            )
             manifest_date = str((manifest or {}).get("study_date") or "").strip()
             study_date = study_date or manifest_date
             study_group = ""
+            effective_modality = modality if modality in {"CT", "MR"} else folder_modality
             if study_date or study_desc:
                 study_group = _study_group_label(
                     study_date,
-                    modality if modality in {"CT", "MR"} else folder_modality,
+                    effective_modality,
                     study_desc,
                 )
             elif " - " in folder.name:
                 parts = folder.name.rsplit(" - ", 1)
                 study_group = parts[0] if re.fullmatch(r"[a-f0-9]+", parts[1]) else folder.name
             else:
-                study_group = folder.name
+                study_group = (study_folder.name if study_folder else folder.name)
             if not study_group:
                 study_group = "Không rõ ca chụp"
 
@@ -2309,6 +2344,7 @@ class ArchiveCatalog:
                 acquisition=(manifest or {}).get("acquisition") or {},
                 study_group=study_group,
                 study_date=study_date,
+                study_folder=study_folder,
             )
             # The pictures are listed; the operative video or the typed report
             # filed in the same folder still has to be.
@@ -2390,12 +2426,7 @@ class ArchiveCatalog:
             "hospitalKey": str(manifest.get("hospitalKey") or "").strip(),
             "phone": str(manifest.get("phone") or manifest.get("phoneNumber") or "").strip(),
             "address": str(manifest.get("address") or "").strip(),
-            # Not a DICOM tag and not in the manifest schema: a local archive
-            # has no RIS to read a clinical diagnosis from. Present so the UI
-            # has one place to read it once a source exists.
             "diagnosis": str(manifest.get("diagnosis") or "").strip(),
-            # User-authored display names for study-level timeline rows. These
-            # never overwrite DICOM StudyDescription or a source manifest.
             "timelineLabels": timeline_labels,
         }
 
@@ -2787,6 +2818,7 @@ class HistoryStore:
 
 
 _STUDY_FOLDER_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4})\s*-\s*([^-]+?)\s*-\s*(.+)$")
+_STUDY_FOLDER_2PART_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|\d{1,2}[.\-_]\d{1,2}[.\-_]\d{4})\s*[-_·]\s*(.+)$")
 _LEADING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}|\d{8})")
 # `19.05.2026-trước mổ, DTI` — how a clinician names a folder by hand. Only the
 # DICOM spellings were recognised, so every hand-named study folder came into
@@ -2809,6 +2841,89 @@ def _leading_folder_date(name: str) -> str:
         if _is_real_date(stamp):
             return f"{year}-{int(month):02d}-{int(day):02d}"
     return ""
+
+
+def _parse_study_folder_name(name: str) -> tuple[str, str, str]:
+    """Recover (date, modality, description) from a study folder name."""
+    m = _STUDY_FOLDER_RE.match(name)
+    if m:
+        return _leading_folder_date(m.group(1)) or m.group(1), m.group(2).strip().upper(), m.group(3).strip()
+    m2 = _STUDY_FOLDER_2PART_RE.match(name)
+    if m2:
+        d = _leading_folder_date(m2.group(1)) or m2.group(1)
+        rem = m2.group(2).strip()
+        tokens = [t.strip() for t in re.split(r"\s+-\s+|\s+·\s+", rem) if t.strip()]
+        if tokens and tokens[0].upper() in {"CT", "MR", "MRI"}:
+            mod = "MR" if tokens[0].upper() == "MRI" else tokens[0].upper()
+            desc = " - ".join(tokens[1:]).strip()
+        else:
+            mod = ""
+            desc = rem
+        return d, mod, desc
+    date = _leading_folder_date(name)
+    if date:
+        return date, "", ""
+    tokens = [t.strip() for t in re.split(r"\s+-\s+|\s+·\s+", name) if t.strip()]
+    if tokens and tokens[0].upper() in {"CT", "MR", "MRI"}:
+        mod = "MR" if tokens[0].upper() == "MRI" else tokens[0].upper()
+        desc = " - ".join(tokens[1:]).strip()
+        return "", mod, desc
+    return "", "", name.strip()
+
+
+def _parse_patient_folder_name(name: str) -> dict:
+    """Extract patient demographics from folder names like:
+    2604047445-PHAM THI THOM^40T
+    2401005051-Đào Trường Giang-30T-U não...
+    2211034230-TRẦN THỊ THƠM-34t-Cavernoma...
+    2607053993 - PHAN THI YEN LY - 27T - 2026-09-06
+    """
+    name = str(name or "").strip()
+    if not name:
+        return {}
+    today = datetime.date.today()
+    name_clean = name.replace("\\", "/").rstrip("/").split("/")[-1]
+    name_clean = _UNKNOWN_FOLDER_FIELD_RE.sub("", name_clean)
+
+    # 1. Format: <ID>-<NAME>^<AGE>[T/t/Y/y]
+    m1 = re.match(
+        r"^([A-Za-z0-9._-]*\d[A-Za-z0-9._-]*)\s*[-_]\s*([^^]+?)\^(\d{1,3})\s*[TtYy]?$",
+        name_clean,
+    )
+    if m1:
+        pid, pname, age_str = m1.groups()
+        age = int(age_str)
+        return {
+            "patientId": pid.strip(),
+            "patientName": pname.strip().replace("^", " "),
+            "age": str(age),
+            "birthYear": str(today.year - age),
+        }
+
+    # 2. Format separated by ' - ' or '-' or '_' or ' · '
+    norm = re.sub(r"\s*[-_·]\s*", " - ", name_clean)
+    chunks = [c.strip() for c in norm.split(" - ") if c.strip()]
+    if len(chunks) >= 2:
+        pid = chunks[0] if re.search(r"\d", chunks[0]) else ""
+        pname = chunks[1] if pid else chunks[0]
+        age = ""
+        byear = ""
+        diag = ""
+        for c in chunks[2:]:
+            m_age = re.match(r"^(\d{1,3})\s*[TtYy]?$", c)
+            if m_age and not age:
+                age = m_age.group(1)
+                byear = str(today.year - int(age))
+            elif not re.match(r"^\d{4}-\d{2}-\d{2}$", c) and not diag:
+                diag = c
+        res = {"patientId": pid, "patientName": pname.replace("^", " ")}
+        if age:
+            res["age"] = age
+            res["birthYear"] = byear
+        if diag:
+            res["diagnosis"] = diag
+        return res
+    return {}
 
 # A patient code as the pipeline writes it into a folder name: one word, and at
 # least one digit in it. The digit is what tells a code apart from a one-word
@@ -2921,23 +3036,30 @@ def _extract_folder_created_date(patient_dir: Path, manifest_data: Optional[dict
     return "", ""
 
 
-def _study_from_folder_path(start: Path) -> tuple[str, str, str]:
+def _study_from_folder_path(start: Path, root: Optional[Path] = None) -> tuple[str, str, str]:
     """Recover (date, modality, description) from an enclosing study folder.
 
-    A study is stored as `<date> - <modality> - <description>`, and its DICOM
-    and converted JPG halves sit side by side inside it. Reading the study off
-    the path is what lets both halves land in the same group: the JPG copies
-    carry no StudyDate header of their own, and the archive root for them is
-    the `JPG` folder itself, so the walk deliberately continues past it.
+    A study is stored as `<date> - <modality> - <description>`, or
+    `<date>-<description>`, or `<description>`, and its DICOM and converted JPG
+    halves sit inside it. Reading the study off the path is what lets both
+    halves land in the same group.
     """
     date = ""
     folder = start
     while folder != folder.parent:
-        match = _STUDY_FOLDER_RE.match(folder.name)
-        if match:
-            return match.group(1), match.group(2).strip().upper(), match.group(3).strip()
-        if not date:
-            date = _leading_folder_date(folder.name)
+        if root and folder == root:
+            d, mod, desc = _parse_study_folder_name(folder.name)
+            if d:
+                return d, mod, desc
+            break
+        if folder.name.upper() in {"DICOM", "RAW_JPG", "JPG", "DCOM", "DCM"}:
+            folder = folder.parent
+            continue
+        d, mod, desc = _parse_study_folder_name(folder.name)
+        if d and (mod or desc):
+            return d, mod, desc
+        if not date and d:
+            date = d
         folder = folder.parent
     return date, "", ""
 
