@@ -2310,17 +2310,43 @@ async function currentWorklistRevision() {
  */
 let worklistWatch = null;
 let worklistRevisionCheckInFlight = false;
+let lastSilentScanAt = 0;
+
+/**
+ * The least time between two background scans of the whole archive.
+ *
+ * A download moves the revision token with every slice it writes, so without a
+ * floor the twenty-second watch started a full walk on every tick — tens of
+ * seconds of disk on a real archive, repeated continuously, against the same
+ * disk the download is using. Ninety seconds keeps the list current enough to
+ * be useful without turning the watch into the load it was meant to avoid.
+ */
+const WORKLIST_MIN_SCAN_GAP_MS = 90000;
+
+/** True while this app is itself downloading into the archive. */
+function worklistScanWouldFightADownload() {
+  return String(state.job?.status || "") === "running";
+}
+
 function startWorklistWatch(intervalMs = 20000) {
   if (worklistWatch) window.clearInterval(worklistWatch);
   worklistWatch = window.setInterval(async () => {
     if (worklistScanInFlight || worklistRevisionCheckInFlight || document.hidden) return;
+    // The reader is watching the job panel, and `pollJob` refreshes the list
+    // the moment the job ends. Walking the archive now only slows the download.
+    if (worklistScanWouldFightADownload()) return;
     worklistRevisionCheckInFlight = true;
     try {
       const revision = await currentWorklistRevision();
       if (!revision || revision === state.worklistRevision) return;
+      // The token is left untouched when the floor blocks a scan, so the same
+      // disk change is still pending and the next tick will pick it up.
+      if (Date.now() - lastSilentScanAt < WORKLIST_MIN_SCAN_GAP_MS) return;
       // The scan response commits its own pre-scan revision. A failed scan
-      // leaves the old token intact so the same disk change is retried.
-      await refreshWorklist({ silent: true });
+      // leaves the old token intact so the same disk change is retried — and
+      // is not charged against the floor, having done none of the work the
+      // floor exists to ration.
+      if (await refreshWorklist({ silent: true })) lastSilentScanAt = Date.now();
     } finally {
       worklistRevisionCheckInFlight = false;
     }
@@ -8012,6 +8038,8 @@ export {
   renderWorklistSummaryInner,
   refreshWorklist,
   refreshStudyListPanel,
+  worklistScanWouldFightADownload,
+  WORKLIST_MIN_SCAN_GAP_MS,
   worklistSyncLabel,
   startWorklistWatch,
   studyHeadingLine,

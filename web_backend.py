@@ -3880,7 +3880,7 @@ class WorklistScanner:
                     if (
                         ext in {".dcm", ".ima", ".dicom"}
                         or in_dicom_tree and ext not in _NON_DICOM_EXTENSIONS
-                    ) and looks_like_dicom_file(fp):
+                    ) and looks_like_dicom_file(fp, sz):
                         dicom_count += 1
                     elif ext in {".mp4", ".avi", ".mkv", ".mov", ".webm"}:
                         video_count += 1

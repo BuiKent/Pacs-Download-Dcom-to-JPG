@@ -84,7 +84,12 @@ def _is_dicom_dataset(path: Path) -> bool:
         return False
 
 
-def looks_like_dicom_file(path: Path) -> bool:
+# 128-byte preamble + the four-byte `DICM` magic. Nothing shorter can be a
+# Part-10 file, so a size below this is a "no" that costs no disk read.
+DICOM_MIN_PART10_BYTES = 132
+
+
+def looks_like_dicom_file(path: Path, size: Optional[int] = None) -> bool:
     """Whether `path` is a DICOM image, for counting rather than reading.
 
     The worklist needs this to report how many slices a study holds, and it used
@@ -100,6 +105,15 @@ def looks_like_dicom_file(path: Path) -> bool:
     """
     path = Path(path)
     if path.name.upper() == DICOMDIR_NAME:
+        return False
+    # Callers that already stat the file — the worklist totals every study's
+    # size — pass the length so a truncated or empty file is rejected without a
+    # second trip to disk.
+    try:
+        length = path.stat().st_size if size is None else int(size)
+    except (OSError, TypeError, ValueError):
+        return False
+    if length < DICOM_MIN_PART10_BYTES:
         return False
     try:
         with path.open("rb") as handle:
