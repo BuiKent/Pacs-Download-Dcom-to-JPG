@@ -1,3 +1,9 @@
+# 7.0.3
+
+- Bulk DICOM downloads now require a writable folder even when an older profile still stores the legacy `downloads` preference.
+- Removed the unsafe reset-to-Downloads path that could trigger one Chrome Save As prompt per image.
+- The side panel now states clearly when a save folder must be selected.
+
 # 7.0.0
 
 - Upgraded directly from 6.2 → 6.3.x codebase; preserved `pacs6_*` storage keys to maintain history, recipes, and user preferences.
@@ -24,4 +30,3 @@
 - Adapter outcome learning, route preferences, and fallback across matching StudyUIDs.
 - Request replay Content-Type fixes, VietMy ASMX manifest, VRPACS synthetic share requests.
 - File System Access engine, DICOM validation, per-tab state/jobs, optional host permissions, history/status UI.
-

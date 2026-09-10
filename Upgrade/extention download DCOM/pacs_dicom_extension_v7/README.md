@@ -102,16 +102,11 @@ fetch
  → File System Access createWritable()
 ```
 
-Downloads API fallback:
-
-```text
-fetch
- → validate DICOM
- → Blob
- → chrome.downloads
-```
-
-`chrome.downloads` **never directly fetches PACS URLs**.
+Bulk DICOM downloads require a writable folder selected in the side panel. If
+the folder is missing or Chrome no longer grants write access, the extension
+stops before queuing files and asks for the folder again. It does not fall back
+to one Chrome Download per image, which can otherwise open repeated Save As
+prompts when that browser option is enabled.
 
 ## Installation
 
@@ -187,4 +182,3 @@ V7 references architectural patterns from:
 - dicomweb-proxy: https://github.com/knopkem/dicomweb-proxy
 
 See `DESIGN_V7.md` for architectural details.
-

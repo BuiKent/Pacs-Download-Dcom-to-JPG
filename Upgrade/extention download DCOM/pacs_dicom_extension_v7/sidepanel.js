@@ -1,11 +1,11 @@
 'use strict';
 import { decodeQrFromBlob, decodeQrFromDataUrl, parseQrResult, isLikelyPacsViewerUrl } from './lib/qr_decoder.js';
+import { resolveBulkDicomSaveMode } from './lib/save_policy.js';
 const $=id=>document.getElementById(id),show=(id,on)=>$(id).classList.toggle('hidden',!on);const TERMINAL=new Set(['done','partial','done_with_errors','error','cancelled']);
 let tabId=null,summary=null,state=null,inventory=null,job=null,history=[],revealDownloaded=false,refreshTimer=null,activeTabUrl='',isStartingDownload=false,currentQrUrl='';
 function setTopLoader(on){const e=$('topLoader');if(e)e.classList.toggle('active',Boolean(on));}
 const FS_DB='pacs_dicom_fs_v1',FS_STORE='handles',FS_KEY='download-root',SAVE_MODE_KEY='pacs6_save_mode',FOLDER_NAME_KEY='pacs6_folder_name',SUBFOLDER_KEY='pacs6_subfolder_name',DEFAULT_SUBFOLDER='DCom to JPG';
 
-async function getSubfolderName(){try{const st=await chrome.storage.local.get(SUBFOLDER_KEY);return String(st[SUBFOLDER_KEY]||'').trim()||DEFAULT_SUBFOLDER;}catch{return DEFAULT_SUBFOLDER;}}
 async function send(type,payload={}){const r=await chrome.runtime.sendMessage({type,...payload});if(!r?.ok)throw new Error(r?.error||'Extension error');return r;}
 function toast(text,bad=false){const e=$('toast');e.textContent=text;e.classList.toggle('error',bad);e.classList.remove('hidden');setTimeout(()=>e.classList.add('hidden'),2600);}
 function fmtName(x){return String(x||'').replace(/\^+/g,' ').replace(/\s+/g,' ').trim();}
@@ -17,29 +17,29 @@ function patternFor(url){try{const u=new URL(url);return`${u.protocol}//${u.host
 function openFsDb(){return new Promise((resolve,reject)=>{const r=indexedDB.open(FS_DB,1);r.onupgradeneeded=()=>{if(!r.result.objectStoreNames.contains(FS_STORE))r.result.createObjectStore(FS_STORE);};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
 async function fsGet(){const db=await openFsDb();try{return await new Promise((resolve,reject)=>{const tx=db.transaction(FS_STORE,'readonly'),r=tx.objectStore(FS_STORE).get(FS_KEY);r.onsuccess=()=>resolve(r.result||null);r.onerror=()=>reject(r.error);});}finally{db.close();}}
 async function fsSet(h){const db=await openFsDb();try{await new Promise((resolve,reject)=>{const tx=db.transaction(FS_STORE,'readwrite');tx.objectStore(FS_STORE).put(h,FS_KEY);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});}finally{db.close();}}
+async function fsDelete(){const db=await openFsDb();try{await new Promise((resolve,reject)=>{const tx=db.transaction(FS_STORE,'readwrite');tx.objectStore(FS_STORE).delete(FS_KEY);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});}finally{db.close();}}
 async function ensureFolder(interactive=false){let h=await fsGet();if(!h&&interactive){try{h=await window.showDirectoryPicker({id:'pacs-dicom',startIn:'downloads',mode:'readwrite'});if(h){await fsSet(h);await chrome.storage.local.set({[SAVE_MODE_KEY]:'filesystem',[FOLDER_NAME_KEY]:h.name||'Selected Folder'});}}catch(e){if(e?.name!=='AbortError')console.warn(e);return null;}}if(!h)return null;let p='prompt';try{p=typeof h.queryPermission==='function'?await h.queryPermission({mode:'readwrite'}):'granted';if(p!=='granted'&&interactive&&typeof h.requestPermission==='function'){p=await h.requestPermission({mode:'readwrite'});}}catch{}if(interactive&&p!=='granted')return null;return h;}
 // Accurately show where files will be saved without dropping persisted handle.
 async function renderFolder(){
   try{
-    const st=await chrome.storage.local.get([SAVE_MODE_KEY,FOLDER_NAME_KEY,SUBFOLDER_KEY]);
-    const pref=st[SAVE_MODE_KEY]||'';
+    const st=await chrome.storage.local.get([FOLDER_NAME_KEY,SUBFOLDER_KEY]);
     const savedName=st[FOLDER_NAME_KEY]||'';
     const sub=String(st[SUBFOLDER_KEY]||'').trim()||DEFAULT_SUBFOLDER;
     if($('subfolderInput')&&document.activeElement!==$('subfolderInput'))$('subfolderInput').value=sub;
     const h=await fsGet();
-    const useFs=Boolean(pref==='filesystem'&&(h||savedName));
+    const useFs=Boolean(h);
     const displayName=h?.name||savedName||'Custom Folder';
     if(useFs){
       $('folderText').textContent=`📁 ${displayName} / ${sub}`;
       $('folderText').title=`${displayName} / ${sub}`;
       show('folderResetBtn',true);
     }else{
-      $('folderText').textContent=`Downloads / ${sub} (default)`;
-      $('folderText').title=`Downloads / ${sub}`;
+      $('folderText').textContent='Choose a writable folder before downloading';
+      $('folderText').title='Bulk DICOM download requires a writable folder';
       show('folderResetBtn',false);
     }
   }catch{
-    $('folderText').textContent=`Downloads / ${DEFAULT_SUBFOLDER} (default)`;
+    $('folderText').textContent='Choose a writable folder before downloading';
     show('folderResetBtn',false);
   }
 }
@@ -239,7 +239,8 @@ async function bindActive(){const urlTab=new URLSearchParams(location.search).ge
 function scheduleRefresh(ms=180){clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>refresh().catch(()=>{}),ms);}
 
 /**
- * Download handler directly initiates downloading without unexpected file picker modals.
+ * Bulk downloads write through a granted directory handle. The picker is shown
+ * once when no handle exists; cancelling it stops before any files are queued.
  */
 async function startDownload(){
   if(isStartingDownload)return;
@@ -257,31 +258,22 @@ async function startDownload(){
   $('jobNote').textContent='Preparing and reconnecting to PACS...';
   try{
     const st=await chrome.storage.local.get([SAVE_MODE_KEY,SUBFOLDER_KEY]);
-    const pref=st[SAVE_MODE_KEY]||'';
+    const requestedMode=st[SAVE_MODE_KEY]||'';
     const subfolder=String(st[SUBFOLDER_KEY]||'').trim()||DEFAULT_SUBFOLDER;
-    let saveMode='downloads';
-
-    // Always prefer direct File System mode to eliminate Save As popup flood.
-    if(pref!=='downloads'){
-      const h=await ensureFolder(true).catch(()=>null);
-      if(h){
-        saveMode='filesystem';
-      }else{
-        // Hard guard: Never silently fallback to 'downloads' when folder permission is missing,
-        // which triggers hundreds of browser Save As popups.
-        setTopLoader(false);
-        isStartingDownload=false;
-        show('jobNote',true);
-        $('jobNote').textContent='Cần chọn thư mục lưu (hoặc cấp quyền ghi) để tải ngầm toàn bộ ảnh DICOM.';
-        toast('Chưa cấp quyền thư mục. Đã dừng để tránh hiện hàng loạt popup lưu file.',true);
-        updateSelected();
-        return;
-      }
-    }else{
-      saveMode='downloads';
+    const h=await ensureFolder(true).catch(()=>null);
+    if(!h){
+      setTopLoader(false);
+      isStartingDownload=false;
+      show('jobNote',true);
+      $('jobNote').textContent='Cần chọn thư mục lưu (hoặc cấp quyền ghi) để tải ngầm toàn bộ ảnh DICOM.';
+      toast('Chưa cấp quyền thư mục. Đã dừng để tránh hiện hàng loạt popup lưu file.',true);
+      updateSelected();
+      return;
     }
+    const saveMode=resolveBulkDicomSaveMode(Boolean(h),requestedMode);
+    await chrome.storage.local.set({[SAVE_MODE_KEY]:saveMode,[FOLDER_NAME_KEY]:h.name||'Selected Folder'});
     await renderFolder();
-    const r=await send('START_DOWNLOAD',{tabId,selectedSeries:selectedIds(),options:{concurrency:saveMode==='downloads'?3:6,frameConcurrency:6,saveMode,subfolder}});
+    const r=await send('START_DOWNLOAD',{tabId,selectedSeries:selectedIds(),options:{concurrency:6,frameConcurrency:6,saveMode,subfolder}});
     job=r.job;renderJob();
   }catch(e){
     toast(e.message||String(e),true);
@@ -316,7 +308,7 @@ window.addEventListener('paste',handleClipboardPaste);
 $('grantBtn').addEventListener('click',async()=>{if($('grantBtn').disabled)return;$('grantBtn').disabled=true;try{await grantAccess();}catch(e){toast(e.message||String(e),true);}finally{$('grantBtn').disabled=false;}});
 $('folderBtn').addEventListener('click',async()=>{try{const h=await window.showDirectoryPicker({id:'pacs-dicom',startIn:'downloads',mode:'readwrite'});if(h){await fsSet(h);await chrome.storage.local.set({[SAVE_MODE_KEY]:'filesystem',[FOLDER_NAME_KEY]:h.name||'Selected Folder'});await renderFolder();toast(`Saved folder: ${h.name}`);}}catch(e){if(e?.name!=='AbortError')toast(e.message||String(e),true);}});
 $('copyLinkBtn').addEventListener('click',async()=>{const t=$('viewerUrl').textContent||'';if(!t||t==='—')return;try{await navigator.clipboard.writeText(t);toast('Viewer link copied to clipboard.');}catch(e){toast('Copy failed; select URL to copy manually.',true);}});
-$('folderResetBtn').addEventListener('click',async()=>{try{await chrome.storage.local.set({[SAVE_MODE_KEY]:'downloads'});await renderFolder();const sub=await getSubfolderName();toast(`Reset to Downloads / ${sub}`);}catch(e){toast(e.message||String(e),true);}});
+$('folderResetBtn').addEventListener('click',async()=>{try{await fsDelete();await chrome.storage.local.remove([SAVE_MODE_KEY,FOLDER_NAME_KEY]);await renderFolder();toast('Saved folder cleared. Choose a folder before downloading.');}catch(e){toast(e.message||String(e),true);}});
 if($('subfolderInput')){$('subfolderInput').addEventListener('input',async(e)=>{const val=String(e.target.value||'').trim()||DEFAULT_SUBFOLDER;await chrome.storage.local.set({[SUBFOLDER_KEY]:val});await renderFolder();});$('subfolderInput').addEventListener('change',async(e)=>{const val=String(e.target.value||'').trim()||DEFAULT_SUBFOLDER;await chrome.storage.local.set({[SUBFOLDER_KEY]:val});await renderFolder();toast(`Subfolder: ${val}`);});}
 $('trackBtn').addEventListener('click',async()=>{if($('trackBtn').disabled)return;$('trackBtn').disabled=true;const old=$('trackBtn').textContent;$('trackBtn').innerHTML='<span class="spinner dark"></span> Processing...';setTopLoader(true);try{if(state?.tracking==='watching')await send('STOP_TRACKING',{tabId});else{if((summary?.missingOrigins||[]).length)await grantAccess();await send('START_TRACKING',{tabId});}await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('trackBtn').disabled=false;$('trackBtn').textContent=old;setTopLoader(false);}});
 $('scanBtn').addEventListener('click',async()=>{if($('scanBtn').disabled)return;$('scanBtn').disabled=true;const old=$('scanBtn').textContent;$('scanBtn').innerHTML='<span class="spinner dark"></span> Scanning...';setTopLoader(true);try{await send('ANALYZE_TAB',{tabId});await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('scanBtn').disabled=false;$('scanBtn').textContent=old;setTopLoader(false);}});

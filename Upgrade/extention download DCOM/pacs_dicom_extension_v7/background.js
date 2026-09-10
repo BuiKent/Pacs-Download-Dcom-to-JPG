@@ -4,6 +4,7 @@ import {matchingAdapters,adapterById} from './lib/adapters/registry.js';
 import {compatibleAdapterIds,mapSeriesSelection,tasksBelongToStudy,cumulativeAttemptCounters,inventoryIsCovered,dedupeTasksBySop} from './lib/orchestrator.js';
 import {extractManifestCandidates,candidateProbePlan,recordsForSuccessfulShapes,manifestRecipeFromDiscovery,studyProfileFromProbeDetails,looksLikeDicomJson,urlShape} from './lib/generic_discovery.js';
 import {isTerminalTracking,shouldPreserveTerminalContext,trackingAfterDocumentChange,trackingAfterSameDocumentStudyChange} from './lib/tracking_state.js';
+import {resolveBulkDicomSaveMode} from './lib/save_policy.js';
 
 const TAB_PREFIX='pacs6_tab_',INV_PREFIX='pacs6_inv_',JOB_PREFIX='pacs6_job_',HISTORY_KEY='pacs6_history',RECIPES_KEY='pacs6_site_recipes';
 const MAX_HISTORY=100,MAX_NAV=60,MAX_REQUESTS=500,AUTO_SCORE=50,AUTO_ARM_SCORE=70;
@@ -489,7 +490,7 @@ async function startJob(tabId,selected,options={}){
     studyFolder:safeFolderName(inv),
     subfolder:options.subfolder||'DCom to JPG',
     folderInfo:{patientName:inv.patient?.name||'',patientId:inv.patient?.id||'',studyDate:inv.patient?.studyDate||'',birthDate:inv.patient?.birthDate||'',age:inv.patient?.age||'',modality:inv.modality||inv.series?.[0]?.modality||inv.patient?.modality||'',description:inv.patient?.description||''},
-    saveMode:options.saveMode==='downloads'?'downloads':'filesystem',
+    saveMode:resolveBulkDicomSaveMode(true,options.saveMode),
     concurrency:options.concurrency||6,
     frameConcurrency:options.frameConcurrency||6,
     alreadyCompletedSopUids:prevCompletedSopUids,

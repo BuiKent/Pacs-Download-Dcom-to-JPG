@@ -28,8 +28,12 @@ assert 'writeViaDownloads' in off and 'new Blob' in off
 assert "if(!String(url||'').startsWith('blob:'))" in bg
 assert 'RecipeStoreV2' in bg and 'manifestRecipes' in bg
 assert 'zfp-hook.js' in bg and (root/'zfp-hook.js').exists()
-ui=(root/'sidepanel.html').read_text(encoding='utf-8')+(root/'sidepanel.js').read_text(encoding='utf-8')
+side=(root/'sidepanel.js').read_text(encoding='utf-8')
+ui=(root/'sidepanel.html').read_text(encoding='utf-8')+side
 assert "startIn:'downloads'" in ui and "id:'pacs-dicom'" in ui
+assert "resolveBulkDicomSaveMode(Boolean(h),requestedMode)" in side
+assert "saveMode:resolveBulkDicomSaveMode(true,options.saveMode)" in bg
+assert "[SAVE_MODE_KEY]:'downloads'" not in side, 'side panel must never restore the unsafe bulk Downloads mode'
 
 # ---------------------------------------------------------------------------
 # Architecture invariants maintained from v6.2.
@@ -107,4 +111,3 @@ assert 'FRAME_TS_BY_MEDIA_TYPE' in dicom_lib
 assert "if(!sourceTs)throw new Error" in dicom_lib
 
 print('Static architecture checks OK')
-
