@@ -2003,7 +2003,13 @@ class ArchiveCatalog:
         if len(paths) > 16:
             import concurrent.futures
             max_workers = min(8, max(2, os.cpu_count() or 4))
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+            # Parsing headers for a whole study pins every core it is given.
+            # These threads yield to the reader's own window, which shares this
+            # process; see `dcom_pipeline.set_background_thread_priority`.
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_workers,
+                initializer=dcom_pipeline.set_background_thread_priority,
+            )
             header_stream = executor.map(_read_dicom_header, paths)
         else:
             header_stream = (_read_dicom_header(path) for path in paths)
@@ -3770,30 +3776,16 @@ class WorklistScanner:
                 clean_study_name = clean_study_name.lstrip("- ").strip()
             study_name = clean_study_name or study_dir.name
 
-        study_mtime = 0.0
-        try:
-            study_mtime = study_dir.stat().st_mtime
-        except OSError:
-            pass
-
-        cached_studies = getattr(self, "_study_scan_cache", None)
-        if cached_studies is None:
-            self._study_scan_cache = {}
-            cached_studies = self._study_scan_cache
-
-        cache_key = (
-            folder_str.casefold(),
-            study_mtime,
-            record.get("status"),
-            record.get("readAt"),
-            record.get("description"),
-            record.get("date"),
-            record.get("modality"),
-            record.get("viewerUrl"),
-        )
-        if cache_key in cached_studies:
-            return dict(cached_studies[cache_key])
-
+        # No cache here, deliberately. A study folder's own mtime looks like the
+        # obvious key and is the wrong one: on Windows a directory's mtime
+        # tracks its immediate children only, and slices arrive at
+        # `<study>/DICOM/`, one level down. A study that just gained 500 images
+        # would keep serving the old count, and the count is what the reader
+        # checks to see whether the study came down complete.
+        # A correct key is the newest mtime anywhere in the subtree, which costs
+        # the same walk it would be saving. If this scan ever needs to get
+        # cheaper, the place to do it is the walk below — os.scandir carries the
+        # size in the dirent on Windows, so `stat()` per file is avoidable.
         dicom_count = 0
         photo_count = 0
         video_count = 0
@@ -3896,7 +3888,7 @@ class WorklistScanner:
             status = "busy"
             status_label = "Đang tải"
 
-        res = {
+        return {
             "id": hashlib.sha256(folder_str.encode("utf-8")).hexdigest()[:16],
             "studyDate": study_date,
             "studyDateSort": self._sortable_study_date(study_date),
@@ -3927,8 +3919,6 @@ class WorklistScanner:
             "readAt": str(record.get("readAt") or ""),
             "isRead": bool(str(record.get("readAt") or "").strip()),
         }
-        cached_studies[cache_key] = res
-        return res
 
     # Folders that belong to a patient's own material rather than being another
     # patient. Kept in one place so discovery and the study scan agree.

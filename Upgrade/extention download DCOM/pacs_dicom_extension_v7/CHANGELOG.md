@@ -1,3 +1,32 @@
+# 7.1.2
+
+Follow-up to the 7.1.1 performance pass: the four risks that review left open.
+
+- Tracked-tab set survives a service worker restart. MV3 tears the worker down
+  after ~30s idle and revives it with the set empty, so the webRequest gate
+  dropped generic-discovery traffic on a tab that was still being tracked —
+  silently, with no sign on screen. The ids are now mirrored into session
+  storage under their own small key, and the gate fails OPEN until they are
+  read back. A decision made while that read is in flight — the reader
+  pressing "Stop tracking" as the worker wakes — wins over the value
+  storage returns. Covered by `tests/test_tracked_tabs.mjs`.
+- A session-storage write that does not fit now sheds discovered URLs down a
+  cap ladder and, failing that, keeps a minimal state carrying the tab's
+  identity and tracking flag. It used to delete the key on any error, turning
+  "this tab is slightly over quota" into "this tab is not tracked any more".
+  Covered by `tests/test_tab_state_store.mjs`.
+- Removed the study scan cache keyed on the study folder's `mtime`. A folder's
+  mtime tracks its immediate children, and slices land in `<study>/DICOM/`, so
+  a study that just gained 500 images would keep serving the old count. It was
+  harmless only because `get_worklist` builds a fresh scanner per call.
+  Covered by `tests/test_worklist_dicom_counting.py`.
+- CPU yielding is now per-thread, not per-process. Lowering the whole process
+  demoted the reader's own window, which shares it, and was never restored.
+  Jobs run on their own short-lived thread, so the calling thread is the right
+  scope and needs no restore. The previous process-level call also never took
+  effect: ctypes truncated the pseudo-handle, `SetPriorityClass` returned 0 and
+  the failure was swallowed. Covered by `tests/test_background_priority.py`.
+
 # 7.1.1
 
 - Clinical safety fix (Zero slice loss): `pruneStateForStorage` now preserves all 6,000 direct DICOM URLs and up to 500 manifest entries. Fixed `key.startsWith(TAB_PREFIX)` session storage prefix bug that previously bypassed in-memory session caching.

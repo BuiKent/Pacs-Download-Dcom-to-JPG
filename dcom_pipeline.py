@@ -57,18 +57,44 @@ from dicom_io import discover_dicom_files
 LogFn = Callable[[str], None]
 
 
-def set_background_process_priority() -> None:
-    """Hạ ưu tiên tiến trình CPU xuống BELOW_NORMAL_PRIORITY_CLASS trên Windows.
+# THREAD_PRIORITY_BELOW_NORMAL. Windows scores threads relative to their
+# process, so this yields to the rest of the app without yielding to every
+# other program on the machine.
+_THREAD_PRIORITY_BELOW_NORMAL = -1
 
-    Giúp việc convert và tải hàng nghìn lát cắt không làm đứng hình hay giật lag hệ thống.
+
+def set_background_thread_priority() -> None:
+    """Yield CPU on the CALLING thread while a long conversion runs.
+
+    Converting thousands of slices saturates a core and makes the machine feel
+    stuck. Lowering the whole PROCESS fixes that for other programs and breaks
+    it for this one: the reader's own window shares the process, so the UI they
+    are clicking gets demoted along with the work.
+
+    Every job runs on its own short-lived thread (`JobState.start`), so scoping
+    the change to the calling thread hits exactly the work and nothing else,
+    and needs no restore — the thread ends with the job.
+
+    A no-op off Windows, where the app does not ship.
     """
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            # 0x00004000 = BELOW_NORMAL_PRIORITY_CLASS
-            ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x00004000)
-        except Exception:
-            pass
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        # Without these, ctypes types the pseudo-handle as a 32-bit int and
+        # truncates it on 64-bit Windows: the call then returns failure and the
+        # priority never changes, silently. `tests/test_background_priority.py`
+        # asserts the priority actually moved, not just that nothing raised.
+        kernel32.GetCurrentThread.restype = ctypes.c_void_p
+        kernel32.SetThreadPriority.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        kernel32.SetThreadPriority.restype = ctypes.c_int
+        kernel32.SetThreadPriority(
+            kernel32.GetCurrentThread(), _THREAD_PRIORITY_BELOW_NORMAL,
+        )
+    except Exception:
+        pass
 
 
 def _default_log(msg: str) -> None:
@@ -4213,7 +4239,7 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
                 break
 
         # Explicit pool management to avoid blocking shutdown on cancellation.
-        ex = ThreadPoolExecutor(max_workers=6)
+        ex = ThreadPoolExecutor(max_workers=6, initializer=set_background_thread_priority)
         aborted = False
         try:
             future_to_task = {ex.submit(attempt, task): task for task in pending}
@@ -7505,7 +7531,7 @@ def run_pipeline(
     download_attachments_flag: bool = True,
     attachments: Optional[list[dict]] = None,
 ):
-    set_background_process_priority()
+    set_background_thread_priority()
     out_base = Path(out_base)
     dicom_dir = out_base / "DICOM"
     jpg_dir = out_base / "JPG"

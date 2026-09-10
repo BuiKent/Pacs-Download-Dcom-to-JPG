@@ -89,5 +89,58 @@ class DicomSliceCountingTests(unittest.TestCase):
         self.assertEqual(scanned["mediaCounts"]["photo"], 5)
 
 
+class SliceCountFreshnessTests(unittest.TestCase):
+    """A study that just gained slices must report them on the next scan.
+
+    A cache keyed on the study folder's own `mtime` looks right and is not: on
+    Windows a directory's mtime tracks its immediate children, and slices land
+    in `<study>/DICOM/`, one level below. The download that fills a study in the
+    background would leave the worklist showing the count from before it ran.
+    """
+
+    def test_slices_added_under_dicom_are_seen_by_the_next_scan(self):
+        with TemporaryDirectory() as tmp:
+            study = Path(tmp) / "01-09-2026 - CT - CT Bung"
+            dicom = study / "DICOM"
+            dicom.mkdir(parents=True)
+            for index in range(3):
+                (dicom / f"IM{index:05d}.dcm").write_bytes(b"\x00" * 300)
+
+            before_mtime = study.stat().st_mtime
+            first = _scan(study)
+            self.assertEqual(first["sliceCount"], 3)
+
+            # What a background download does: writes into the DICOM subfolder
+            # without touching the study folder itself.
+            for index in range(3, 9):
+                (dicom / f"IM{index:05d}.dcm").write_bytes(b"\x00" * 300)
+
+            # The premise of the bug, asserted so this test keeps its meaning
+            # even if the filesystem's behaviour ever changes.
+            self.assertEqual(
+                study.stat().st_mtime,
+                before_mtime,
+                "writing into a subfolder must not change the study folder mtime; "
+                "if it does, this test no longer guards anything",
+            )
+
+            self.assertEqual(_scan(study)["sliceCount"], 9)
+
+    def test_a_reused_scanner_also_reports_the_new_count(self):
+        # The worklist builds a fresh scanner per call today, which hid the
+        # stale-cache bug. Reusing one must not bring it back.
+        with TemporaryDirectory() as tmp:
+            study = Path(tmp) / "01-09-2026 - MR - MRI Nao"
+            dicom = study / "DICOM"
+            dicom.mkdir(parents=True)
+            (dicom / "IM00000.dcm").write_bytes(b"\x00" * 300)
+
+            scanner = web_backend.WorklistScanner(_StubController())
+            self.assertEqual(scanner._scan_study(study, {}, None)["sliceCount"], 1)
+
+            (dicom / "IM00001.dcm").write_bytes(b"\x00" * 300)
+            self.assertEqual(scanner._scan_study(study, {}, None)["sliceCount"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

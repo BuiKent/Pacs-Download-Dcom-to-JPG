@@ -6,11 +6,41 @@ import {extractManifestCandidates,candidateProbePlan,recordsForSuccessfulShapes,
 import {isTerminalTracking,shouldPreserveTerminalContext,trackingAfterDocumentChange,trackingAfterSameDocumentStudyChange} from './lib/tracking_state.js';
 import {resolveBulkDicomSaveMode} from './lib/save_policy.js';
 import {appendLog,getLogsFromStorage,clearAllLogs} from './lib/logger.js';
+import {TRACKED_TABS_KEY,stateIsTracked,shouldInspectRequest,serializeTrackedTabs,deserializeTrackedTabs,mergeRestoredTabs} from './lib/tracked_tabs.js';
+import {persistTabState} from './lib/tab_state_store.js';
 
 const TAB_PREFIX='pacs6_tab_',INV_PREFIX='pacs6_inv_',JOB_PREFIX='pacs6_job_',HISTORY_KEY='pacs6_history',RECIPES_KEY='pacs6_site_recipes';
 const MAX_HISTORY=100,MAX_NAV=60,MAX_REQUESTS=500,AUTO_SCORE=50,AUTO_ARM_SCORE=70;
 const analyzeTimers=new Map(),contextTimers=new Map(),probeTimers=new Map(),learnTimers=new Map(),jobMemory=new Map(),jobFlushTimers=new Map();
 const trackedTabIds=new Set(),badgeCache=new Map(),activeAnalysis=new Map();
+// MV3 recycles this worker constantly, so the tracked-tab set is mirrored into
+// session storage under its own small key. Mirroring the ids alone keeps the
+// revival cheap: reading the full tab states back would pull thousands of
+// discovered URLs through storage on every wake-up.
+let trackedTabsRestored=false,trackedTabsSaveTimer=null;
+// Tabs this worker has already ruled on. Storage is read back asynchronously,
+// so a decision made in the meantime must win over the value it reads.
+const trackedTabsDecided=new Set();
+function persistTrackedTabs(){
+  if(trackedTabsSaveTimer)return;
+  trackedTabsSaveTimer=setTimeout(()=>{
+    trackedTabsSaveTimer=null;
+    chrome.storage.session.set({[TRACKED_TABS_KEY]:serializeTrackedTabs(trackedTabIds)}).catch(()=>{});
+  },300);
+}
+function markTracked(tabId,on){
+  const had=trackedTabIds.has(tabId);
+  trackedTabsDecided.add(tabId);
+  if(on)trackedTabIds.add(tabId);else trackedTabIds.delete(tabId);
+  if(trackedTabIds.has(tabId)!==had)persistTrackedTabs();
+}
+const trackedTabsReady=(async()=>{
+  try{
+    const o=await chrome.storage.session.get(TRACKED_TABS_KEY);
+    mergeRestoredTabs(trackedTabIds,deserializeTrackedTabs(o[TRACKED_TABS_KEY]),trackedTabsDecided);
+  }catch{}
+  trackedTabsRestored=true;
+})();
 let learnedRecipes={};
 const tabKey=id=>`${TAB_PREFIX}${id}`,invKey=id=>`${INV_PREFIX}${id}`,jobKey=id=>`${JOB_PREFIX}${id}`;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -124,25 +154,6 @@ function candidateDisplay(raw){try{const u=new URL(raw),keys=[...u.searchParams.
 const tabMemory=new Map();
 const invMemory=new Map();
 
-function pruneStateForStorage(s){
-  if(!s||typeof s!=='object')return s;
-  return{
-    ...s,
-    _directUrlSet:undefined,
-    pacsRequests:(s.pacsRequests||[]).slice(-50).map(r=>({
-      type:r.type,url:r.url,method:r.method,requestId:r.requestId,score:r.score,contentType:r.contentType,time:r.time,_id:r._id,
-      requestBody:r.requestBody?.kind==='form'?r.requestBody:null
-    })),
-    learnCandidates:(s.learnCandidates||[]).slice(-20).map(r=>({
-      url:r.url,display:r.display,method:r.method,requestId:r.requestId,type:r.type,contentType:r.contentType,status:r.status,contentLength:r.contentLength,time:r.time
-    })),
-    binaryCandidates:(s.binaryCandidates||[]).slice(-20),
-    genericDirectUrls:(s.genericDirectUrls||[]).slice(-6000),
-    genericEntries:(s.genericEntries||[]).slice(-500).map(e=>({
-      url:e.url,method:e.method,contentType:e.contentType,shape:e.shape,source:e.source,declared:e.declared,meta:e.meta,requestKey:e.requestKey
-    }))
-  };
-}
 
 async function getSession(key,fallback=null){
   if(key.startsWith(TAB_PREFIX)){const tabId=Number(key.slice(TAB_PREFIX.length));if(tabMemory.has(tabId))return tabMemory.get(tabId);}
@@ -153,15 +164,14 @@ const tabSaveTimers=new Map();
 async function setSession(key,value){
   if(key.startsWith(TAB_PREFIX)){
     const tabId=Number(key.slice(TAB_PREFIX.length));tabMemory.set(tabId,value);
-    if(value&&(['watching','candidate'].includes(value.tracking)||value.learning?.active)){
-      trackedTabIds.add(tabId);
-    }else if(value&&value.tracking==='stopped'){
-      trackedTabIds.delete(tabId);
-    }
+    if(value)markTracked(tabId,stateIsTracked(value));
     if(!tabSaveTimers.has(tabId)){
       tabSaveTimers.set(tabId,setTimeout(async()=>{
         tabSaveTimers.delete(tabId);
-        try{const current=tabMemory.get(tabId)||value;const pruned=pruneStateForStorage(current);await chrome.storage.session.set({[key]:pruned});}catch{try{await chrome.storage.session.remove(key);}catch{}}
+        // Never delete on failure: a tab whose state is a little too big for the
+        // quota must lose discovered URLs, not its identity and tracking flag.
+        const current=tabMemory.get(tabId)||value;
+        await persistTabState(payload=>chrome.storage.session.set(payload),key,current);
       },300));
     }
     return;
@@ -243,8 +253,8 @@ async function markCandidate(tabId,url){
   }
 }
 async function maybeRecaptureVietmy(tabId){try{const s=await getTabState(tabId);if(s.tracking!=='watching'||s.vietmyRecaptureDone)return;const shell=classifyViewerShell(s.currentUrl||'');if(shell?.type!=='SHARE_STUDY')return;const summary=await scanTab(tabId),seen=summary.requests.some(x=>x.type==='VIETMY_MANIFEST'),captured=(s.pacsRequests||[]).some(x=>x.type==='VIETMY_MANIFEST');if(seen&&!captured){s.vietmyRecaptureDone=true;await saveTabState(tabId,s);await chrome.tabs.reload(tabId);}}catch{}}
-async function startTracking(tabId,manual=false){trackedTabIds.add(tabId);const s=await getTabState(tabId);s.tracking='watching';if(manual)s.manual=true;await saveTabState(tabId,s);await injectContent(tabId);await injectGenericHook(tabId);s.genericHookActive=true;await saveTabState(tabId,s);await setBadge(tabId);chrome.tabs.sendMessage(tabId,{type:'RESTART_TRACKING'}).catch(()=>{});scheduleAnalyze(tabId,250);if(manual)setTimeout(()=>maybeRecaptureVietmy(tabId),450);appendLog({level:'info',category:'pacs',message:`Bắt đầu theo dõi tab ${tabId} (${manual?'thủ công':'tự động'})`}).catch(()=>{});return s;}
-async function stopTracking(tabId){trackedTabIds.delete(tabId);const s=await getTabState(tabId);s.tracking='stopped';await saveTabState(tabId,s);await setBadge(tabId);chrome.tabs.sendMessage(tabId,{type:'CLEANUP_TRACKING'}).catch(()=>{});appendLog({level:'info',category:'pacs',message:`Dừng theo dõi tab ${tabId}`}).catch(()=>{});return s;}
+async function startTracking(tabId,manual=false){markTracked(tabId,true);const s=await getTabState(tabId);s.tracking='watching';if(manual)s.manual=true;await saveTabState(tabId,s);await injectContent(tabId);await injectGenericHook(tabId);s.genericHookActive=true;await saveTabState(tabId,s);await setBadge(tabId);chrome.tabs.sendMessage(tabId,{type:'RESTART_TRACKING'}).catch(()=>{});scheduleAnalyze(tabId,250);if(manual)setTimeout(()=>maybeRecaptureVietmy(tabId),450);appendLog({level:'info',category:'pacs',message:`Bắt đầu theo dõi tab ${tabId} (${manual?'thủ công':'tự động'})`}).catch(()=>{});return s;}
+async function stopTracking(tabId){markTracked(tabId,false);const s=await getTabState(tabId);s.tracking='stopped';await saveTabState(tabId,s);await setBadge(tabId);chrome.tabs.sendMessage(tabId,{type:'CLEANUP_TRACKING'}).catch(()=>{});appendLog({level:'info',category:'pacs',message:`Dừng theo dõi tab ${tabId}`}).catch(()=>{});return s;}
 
 async function rememberBeforeNavigate(tabId,raw){if(tabId<0)return;const u=cleanUrl(raw);if(!u)return;const s=await getTabState(tabId);pushUnique(s.pendingNavUrls,u);s.currentUrl=u;await saveTabState(tabId,s);markCandidate(tabId,u).catch(()=>{});}
 async function invalidate(tabId,reason){perfScanCache.delete(tabId);invMemory.delete(tabId);await chrome.storage.session.remove(invKey(tabId)).catch(()=>{});chrome.runtime.sendMessage({type:'TAB_CONTEXT_CHANGED',tabId,reason}).catch(()=>{});}
@@ -362,7 +372,7 @@ async function rememberDicomResponse(tabId,url,contentType,status,method='GET',c
 chrome.webRequest.onBeforeRequest.addListener(d=>{
   if(d.tabId<0)return;
   const hit=classifyPacsUrl(d.url),learnedManifest=isLearnedManifestUrl(d.url);
-  if(!hit&&!learnedManifest&&!trackedTabIds.has(d.tabId))return;
+  if(!shouldInspectRequest({restored:trackedTabsRestored,tracked:trackedTabIds,tabId:d.tabId,recognised:Boolean(hit)||learnedManifest}))return;
   getTabState(d.tabId).then(s=>{
     if(s.learning?.active)rememberLearningRequest(d.tabId,d,s).catch(()=>{});
     if(s.tracking==='stopped')return;
@@ -374,12 +384,12 @@ chrome.webRequest.onBeforeRequest.addListener(d=>{
 },{urls:['<all_urls>']},['requestBody']);
 chrome.webRequest.onBeforeSendHeaders.addListener(d=>{
   if(d.tabId<0)return;
-  if(!trackedTabIds.has(d.tabId)&&!classifyPacsUrl(d.url)&&!isLearnedUrl(d.url))return;
+  if(!shouldInspectRequest({restored:trackedTabsRestored,tracked:trackedTabIds,tabId:d.tabId,recognised:Boolean(classifyPacsUrl(d.url))||isLearnedUrl(d.url)}))return;
   rememberHeaders(d.tabId,d.url,d.requestHeaders,d.requestId).catch(()=>{});
 },{urls:['<all_urls>']},['requestHeaders']);
 chrome.webRequest.onHeadersReceived.addListener(d=>{
   if(d.tabId<0)return;
-  if(!trackedTabIds.has(d.tabId)&&!classifyPacsUrl(d.url)&&!isLearnedUrl(d.url))return;
+  if(!shouldInspectRequest({restored:trackedTabsRestored,tracked:trackedTabIds,tabId:d.tabId,recognised:Boolean(classifyPacsUrl(d.url))||isLearnedUrl(d.url)}))return;
   let ct='',len=0;
   for(const h of(d.responseHeaders||[])){
     const n=String(h.name).toLowerCase();
@@ -849,6 +859,6 @@ chrome.action.onClicked.addListener(async tab=>{
 chrome.tabs.onCreated.addListener(tab=>{if(tab.id&&tab.url&&/^https?:/i.test(tab.url))ensurePanel(tab.id).catch(()=>{});});
 chrome.tabs.onActivated.addListener(activeInfo=>{const tabId=activeInfo.tabId;if(!tabId)return;(async()=>{const tab=await chrome.tabs.get(tabId).catch(()=>null);if(!tab?.url||!/^https?:/i.test(tab.url))return;await ensurePanel(tabId);const clean=cleanUrl(tab.url),score=urlConfidence(clean),shell=classifyViewerShell(clean);if(score>=AUTO_ARM_SCORE||Boolean(shell)){const s=await getTabState(tabId);if(!['watching','stopped','completed'].includes(s.tracking))await startTracking(tabId,false);}})().catch(()=>{});});
 chrome.tabs.onUpdated.addListener((tabId,change,tab)=>{if(!change.url&&!change.status&&!change.title)return;const u=change.url||tab?.url||'';if(!u||!/^https?:/i.test(u))return;ensurePanel(tabId).catch(()=>{});if(change.url)markCandidate(tabId,u).catch(()=>{});if(change.status==='complete')hasOrigin(u).then(ok=>{if(ok)setTimeout(()=>{injectContent(tabId);getTabState(tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(tabId);});},150);}).catch(()=>{});});
-chrome.tabs.onRemoved.addListener(tabId=>{(async()=>{const j=jobMemory.get(tabId)||await getSession(jobKey(tabId));if(j&&['preparing','downloading','cancelling'].includes(j.status)){chrome.storage.session.remove(tabKey(tabId)).catch(()=>{});return;}jobMemory.delete(tabId);tabMemory.delete(tabId);invMemory.delete(tabId);perfScanCache.delete(tabId);trackedTabIds.delete(tabId);badgeCache.delete(tabId);activeAnalysis.delete(tabId);chrome.storage.session.remove([tabKey(tabId),invKey(tabId),jobKey(tabId)]).catch(()=>{});})().catch(()=>{});});
-async function boot(){await setDownloadUi(true);await loadRecipes();await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});await chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true}).catch(()=>{});appendLog({level:'info',category:'system',message:'PACS DICOM Extension v7.1.1 khởi động hoàn tất.'}).catch(()=>{});const tabs=await chrome.tabs.query({});await Promise.allSettled(tabs.map(async tab=>{if(!tab?.id||!tab?.url||!/^https?:/i.test(tab.url))return;await ensurePanel(tab.id);await markCandidate(tab.id,tab.url);if(await hasOrigin(tab.url))await injectContent(tab.id);}));}
+chrome.tabs.onRemoved.addListener(tabId=>{(async()=>{const j=jobMemory.get(tabId)||await getSession(jobKey(tabId));if(j&&['preparing','downloading','cancelling'].includes(j.status)){chrome.storage.session.remove(tabKey(tabId)).catch(()=>{});return;}jobMemory.delete(tabId);tabMemory.delete(tabId);invMemory.delete(tabId);perfScanCache.delete(tabId);markTracked(tabId,false);badgeCache.delete(tabId);activeAnalysis.delete(tabId);chrome.storage.session.remove([tabKey(tabId),invKey(tabId),jobKey(tabId)]).catch(()=>{});})().catch(()=>{});});
+async function boot(){await trackedTabsReady;await setDownloadUi(true);await loadRecipes();await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});await chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true}).catch(()=>{});appendLog({level:'info',category:'system',message:'PACS DICOM Extension v7.1.1 khởi động hoàn tất.'}).catch(()=>{});const tabs=await chrome.tabs.query({});await Promise.allSettled(tabs.map(async tab=>{if(!tab?.id||!tab?.url||!/^https?:/i.test(tab.url))return;await ensurePanel(tab.id);await markCandidate(tab.id,tab.url);if(await hasOrigin(tab.url))await injectContent(tab.id);}));}
 chrome.runtime.onInstalled.addListener(details=>{boot().catch(()=>{});if(details?.reason==='install')chrome.tabs.create({url:chrome.runtime.getURL('onboarding.html')}).catch(()=>{});});chrome.runtime.onStartup.addListener(()=>boot().catch(()=>{}));chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true}).catch(()=>{});
