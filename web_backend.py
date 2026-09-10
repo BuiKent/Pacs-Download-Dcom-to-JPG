@@ -3946,6 +3946,18 @@ class WorklistScanner:
         if job_snap.get("status") == "running" and str(study_dir).casefold() in str(job_snap.get("message", "")).casefold():
             status = "busy"
             status_label = "Đang tải"
+        else:
+            # The browser extension can be filling this folder right now, and
+            # this app cannot see its process — only the claim it leaves in the
+            # folder they share. Saying "Thiếu 40/120 ảnh" about a study that is
+            # still arriving reads as a failure and invites a second download
+            # over the top of the first.
+            lock = dcom_pipeline.read_study_lock(study_dir)
+            if lock:
+                status = "busy"
+                status_label = (
+                    "Extension đang tải" if lock.get("owner") == "extension" else "Đang tải"
+                )
 
         return {
             "id": hashlib.sha256(folder_str.encode("utf-8")).hexdigest()[:16],
@@ -4254,6 +4266,10 @@ class WebController:
         app_data = Path(os.environ.get("LOCALAPPDATA") or Path.home())
         self.annotation_root = app_data / "DCom JPG PACS" / "viewer-annotations"
         self.settings_path = app_data / "DCom JPG PACS" / "settings.json"
+        # The last completed worklist scan, so opening the app shows the study
+        # list the reader saw when they closed it instead of an empty tree with
+        # a progress line. The scan that refreshes it runs in the background.
+        self.worklist_cache_path = app_data / "DCom JPG PACS" / "worklist-cache.json"
         self.history = HistoryStore()
         settings = self._read_settings()
         self.language = settings.get("language", "en")
@@ -4446,6 +4462,7 @@ class WebController:
             # The clone holds the same records, so its snapshot is the one
             # already built above; serialising all of them twice is the exact
             # cost the comment at the top of this method exists to avoid.
+        cached_worklist = self._read_worklist_cache()
         return {
             "version": APP_VERSION,
             "archive": archive,
@@ -4455,10 +4472,22 @@ class WebController:
             "sourceFolders": self.get_source_folders(),
             "language": self.language,
             "history": self.history_snapshot(),
-            # Disk scanning can walk thousands of image files. The shell paints
-            # first and /api/worklist performs the scan asynchronously, with an
-            # explicit loading/error state in the UI.
-            "worklist": {"patients": [], "deferred": True},
+            # Disk scanning walks thousands of image files, so it never blocks
+            # the shell. What the reader saw last time is handed over straight
+            # away and the fresh scan swaps in behind it, unannounced: an empty
+            # tree with a progress line makes the app feel unusable for as long
+            # as the archive takes to walk, which on a full one is seconds.
+            # `patients` and `scannedAt` are always present, empty or not: a key
+            # that appears only when a cache happens to exist makes every
+            # consumer guard for its absence, and the first one that forgets
+            # reads a missing list as an error rather than an empty archive.
+            "worklist": {
+                "deferred": True,
+                "stale": True,
+                "patients": cached_worklist.get("patients", []),
+                "scannedAt": cached_worklist.get("scannedAt", ""),
+            },
+            "worklistRevision": self.worklist_revision(),
             "lastDirectUrl": self.history.url_for(archive.get("root", "")),
             "hospitals": [
                 {
@@ -4470,10 +4499,96 @@ class WebController:
             ],
         }
 
+    def worklist_revision(self) -> str:
+        """A token that changes when a study may have appeared or gone.
+
+        Deliberately shallow: the source roots and the patient folders directly
+        inside them. Filing a new study creates a directory inside its patient
+        folder, which is exactly what moves that folder's mtime, so this catches
+        the arrival without the full walk `get_worklist` does. It is meant to be
+        cheap enough to poll — a few hundred `stat` calls against the tens of
+        thousands the real scan performs.
+        """
+        parts: list[str] = []
+        for root in sorted(self.get_all_source_roots(), key=lambda p: str(p).casefold()):
+            try:
+                parts.append(f"{root}|{root.stat().st_mtime_ns}")
+            except OSError:
+                # A root that is not mounted right now still has to produce a
+                # stable token, or every poll would look like a change.
+                parts.append(f"{root}|missing")
+                continue
+            try:
+                children = sorted(
+                    (child for child in os.scandir(root) if child.is_dir()),
+                    key=lambda entry: entry.name.casefold(),
+                )
+            except OSError:
+                continue
+            for child in children:
+                try:
+                    # `os.stat(path)`, never `child.stat()`. On Windows a
+                    # DirEntry carries the mtime cached in the PARENT's listing,
+                    # and that copy is not refreshed when the child's own
+                    # contents change — so filing a new study inside a patient
+                    # folder left the token identical and the worklist never
+                    # noticed. Measured; `tests/test_worklist_revision.py` pins it.
+                    parts.append(f"{child.name}|{os.stat(child.path).st_mtime_ns}")
+                except OSError:
+                    parts.append(f"{child.name}|gone")
+        return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
+
+    def _worklist_cache_key(self) -> list[str]:
+        """The folders a cached scan describes.
+
+        A cache written for one archive says nothing about another, and showing
+        the previous archive's patients under a newly opened folder would put
+        the wrong records in front of the reader.
+        """
+        return sorted(str(root).casefold() for root in self.get_all_source_roots())
+
+    def _read_worklist_cache(self) -> dict:
+        """The last completed scan, or an empty result.
+
+        Never raises: a cache that cannot be read is simply a cache miss, and
+        the background scan is about to replace it either way.
+        """
+        try:
+            data = json.loads(self.worklist_cache_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        if data.get("roots") != self._worklist_cache_key():
+            return {}
+        patients = data.get("patients")
+        if not isinstance(patients, list):
+            return {}
+        return {"patients": patients, "scannedAt": str(data.get("scannedAt") or "")}
+
+    def _write_worklist_cache(self, patients: list[dict]) -> None:
+        payload = {
+            "roots": self._worklist_cache_key(),
+            "scannedAt": dcom_pipeline._now_local(),
+            "patients": patients,
+        }
+        try:
+            self.worklist_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            # Written beside the target and moved into place, so a crash mid
+            # write leaves the previous cache readable rather than a half file.
+            temp = self.worklist_cache_path.with_suffix(".json.tmp")
+            temp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            os.replace(temp, self.worklist_cache_path)
+        except (OSError, ValueError, TypeError):
+            # A cache that cannot be written costs a slower next start, nothing
+            # more. It must never take the scan down with it.
+            pass
+
     def get_worklist(self) -> dict:
         scanner = WorklistScanner(self)
         patients = scanner.scan()
-        return {"patients": patients}
+        self._write_worklist_cache(patients)
+        return {"patients": patients, "scannedAt": dcom_pipeline._now_local()}
 
     def _reveal_roots(self) -> list[Path]:
         """Folders the UI is allowed to hand to the shell."""
@@ -6168,6 +6283,11 @@ class LocalApiServer:
                     return {"history": owner.controller.history_snapshot()}
                 if path == "/api/worklist":
                     return owner.controller.get_worklist()
+                if path == "/api/worklist/revision":
+                    # Polled by the shell so a study filed by the extension, or
+                    # by a download that just finished, appears on its own. It
+                    # stats the patient folders only, never their contents.
+                    return {"revision": owner.controller.worklist_revision()}
                 if path == "/api/source-folders":
                     return {"sourceFolders": owner.controller.get_source_folders()}
                 if path == "/api/sessions":

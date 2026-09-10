@@ -244,6 +244,11 @@ const state = {
   worklistPatients: [],
   worklistLoaded: false,
   worklistLoading: false,
+  // A cached list is shown at once and refreshed behind the reader's back.
+  // `worklistScannedAt` is when the rows on screen were actually read off
+  // disk, so the status line can say so instead of claiming they are live.
+  worklistScannedAt: "",
+  worklistRevision: "",
   worklistError: "",
   // Unsaved administrative fields belong to the tab they were typed in.
   // Keeping the draft separately prevents a tab switch from rebuilding the
@@ -2231,23 +2236,82 @@ function getEffectiveWorklistPatients() {
  * Kept separate from `refreshHistory` because the scan walks every study
  * folder: it runs when something on disk may have changed, not on every poll.
  */
-async function refreshWorklist({ repaint = true } = {}) {
-  if (state.worklistLoading) return;
-  state.worklistLoading = true;
+let worklistScanInFlight = false;
+async function refreshWorklist({ repaint = true, silent = false } = {}) {
+  if (worklistScanInFlight) return;
+  worklistScanInFlight = true;
+  // A silent scan leaves the loading state alone: the rows already on screen
+  // stay readable and the "Quét lại" button stays live, so the reader can keep
+  // working while the disk is walked. Only an explicit rescan says anything.
+  if (!silent) state.worklistLoading = true;
   state.worklistError = "";
-  if (repaint) refreshStudyListPanel();
+  if (repaint && !silent) refreshStudyListPanel();
   try {
     const result = await api("/api/worklist");
     state.worklistPatients = Array.isArray(result?.patients) ? result.patients : [];
+    state.worklistScannedAt = String(result?.scannedAt || "");
     state.worklistLoaded = true;
+    state.worklistRevision = await currentWorklistRevision();
   } catch (error) {
     // A failed scan leaves the previous list in place; blanking the tree the
     // doctor is reading would be worse than showing a slightly stale one.
     state.worklistError = humanError(error);
   } finally {
     state.worklistLoading = false;
+    worklistScanInFlight = false;
   }
   if (repaint) refreshStudyListPanel();
+}
+
+/**
+ * What the sync line says about the rows currently on screen.
+ *
+ * With a cached list the honest answer is when it was read, not "đã cập nhật":
+ * the reader uses this line to decide whether a study they just downloaded
+ * should already be here, and a stale list claiming to be current sends them
+ * looking for a bug that is not there.
+ */
+function worklistSyncLabel() {
+  if (state.worklistLoading) return t("Đang tải danh sách bệnh nhân…");
+  if (state.worklistError) return t("Không đồng bộ được danh sách");
+  const stamp = clockLabel(state.worklistScannedAt);
+  return stamp ? tf("Danh sách lúc {}", stamp) : t("Danh sách đã cập nhật");
+}
+
+/** `HH:MM` from an ISO timestamp, or "" when it cannot be read. */
+function clockLabel(value) {
+  const parsed = new Date(String(value || ""));
+  if (Number.isNaN(parsed.getTime())) return "";
+  return `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}`;
+}
+
+/** The backend's cheap token for "a study may have appeared or gone". */
+async function currentWorklistRevision() {
+  try {
+    return String((await api("/api/worklist/revision"))?.revision || "");
+  } catch {
+    return state.worklistRevision;
+  }
+}
+
+/**
+ * Notice studies filed while the app was open.
+ *
+ * A download the extension finished, or one this app just finished, should show
+ * up without the reader being told to press anything. The token this polls
+ * stats the patient folders only, so it stays cheap enough to ask for on a
+ * timer; the full scan runs only when the token actually moved.
+ */
+let worklistWatch = null;
+function startWorklistWatch(intervalMs = 20000) {
+  if (worklistWatch) window.clearInterval(worklistWatch);
+  worklistWatch = window.setInterval(async () => {
+    if (worklistScanInFlight || document.hidden) return;
+    const revision = await currentWorklistRevision();
+    if (!revision || revision === state.worklistRevision) return;
+    state.worklistRevision = revision;
+    await refreshWorklist({ silent: true });
+  }, intervalMs);
 }
 
 /** Repaint the Study List tree, its summary strip and the tab count in place. */
@@ -2274,11 +2338,7 @@ function refreshStudyListPanel() {
 
   const syncState = root.querySelector(".worklist-sync-state");
   if (syncState) {
-    syncState.textContent = state.worklistLoading
-      ? t("Đang tải danh sách bệnh nhân…")
-      : state.worklistError
-        ? t("Không đồng bộ được danh sách")
-        : t("Danh sách đã cập nhật");
+    syncState.textContent = worklistSyncLabel();
     syncState.classList.toggle("error", Boolean(state.worklistError));
   }
   const refreshButton = root.querySelector("[data-action='refresh-worklist']");
@@ -3283,13 +3343,7 @@ function renderStudyListPanel() {
   return `
     <div class="worklist-filter-bar filters">
       <input type="search" data-field="worklist-search" placeholder="${escapeHtml(t("Tìm theo tên hoặc mã bệnh nhân, đợt khám…"))}" value="${escapeHtml(state.worklistSearch || "")}">
-      <span class="worklist-sync-state${state.worklistError ? " error" : ""}" role="status">${escapeHtml(
-    state.worklistLoading
-      ? t("Đang tải danh sách bệnh nhân…")
-      : state.worklistError
-        ? t("Không đồng bộ được danh sách")
-        : t("Danh sách đã cập nhật"),
-  )}</span>
+      <span class="worklist-sync-state${state.worklistError ? " error" : ""}" role="status">${escapeHtml(worklistSyncLabel())}</span>
       <button class="soft-button" data-action="refresh-worklist" ${state.worklistLoading ? "disabled" : ""}>${escapeHtml(t("Quét lại"))}</button>
     </div>
 
@@ -7692,6 +7746,10 @@ async function pollJob() {
       setApiSession(sessionId);
       applyArchive(archive, sessionId, folder);
       refreshHistory();
+      // The study that just landed belongs on the list without being asked
+      // for. Silent, because the reader is already looking at the record it
+      // opened, not at the Worklist.
+      refreshWorklist({ silent: true });
       return;
     }
   }
@@ -7822,7 +7880,12 @@ async function boot() {
   state.worklistPatients = Array.isArray(bootstrapWorklist.patients)
     ? bootstrapWorklist.patients
     : [];
-  state.worklistLoaded = !bootstrapWorklist.deferred;
+  // Cached rows count as loaded: they are what the reader saw last time, and
+  // showing "Đang tải danh sách bệnh nhân…" over them would hide a usable list
+  // behind a progress line for as long as the archive takes to walk.
+  state.worklistLoaded = !bootstrapWorklist.deferred || state.worklistPatients.length > 0;
+  state.worklistScannedAt = String(bootstrapWorklist.scannedAt || "");
+  state.worklistRevision = String(state.bootstrap.worklistRevision || "");
   state.worklistLoading = false;
   state.worklistError = "";
   state.lastDirectUrl = state.bootstrap.lastDirectUrl || "";
@@ -7888,9 +7951,12 @@ async function boot() {
   state.status = t("Sẵn sàng. Nhấn ⌨ trên thanh công cụ để xem phím tắt.");
   render();
   autoPasteFromClipboard();
-  // The scan walks every study folder, so it is not awaited: the Worklist shows
-  // its loading state and swaps to real rows only when the disk scan lands.
-  refreshWorklist();
+  // The scan walks every study folder, so it is not awaited. When the cache
+  // already put rows on screen it also runs silently: the reader is reading a
+  // list, and having it blank itself out to announce a refresh is worse than a
+  // few seconds of slightly stale rows.
+  refreshWorklist({ silent: state.worklistPatients.length > 0 });
+  startWorklistWatch();
   await renderViewer();
 }
 
@@ -7923,6 +7989,8 @@ export {
   renderWorklistTreeInner,
   renderWorklistSummaryInner,
   refreshWorklist,
+  worklistSyncLabel,
+  startWorklistWatch,
   studyHeadingLine,
   studyCountLine,
   patientIdentityLine,

@@ -1,6 +1,6 @@
 'use strict';
 import { buildPart10FromFrames, isPart10, parseMultipart, numberOfFrames, validatePart10, parseDicomMeta } from './lib/dicom.js';
-import { zfpMetaToDicomJson, buildStudyStoragePath, buildStudySidecar, sidecarStudyPath } from './lib/pacs.js';
+import { zfpMetaToDicomJson, buildStudyStoragePath, buildStudySidecar, sidecarStudyPath, buildStudyLock, STUDY_LOCK_NAME, STUDY_LOCK_RENEW_MS } from './lib/pacs.js';
 import { AsyncSemaphore, sleepAbortable, fetchStreamWithTimeout } from './lib/semaphore.js';
 import { dicomTaskIdentityError, orderRoutes } from './lib/orchestrator.js';
 
@@ -113,7 +113,7 @@ async function writeViaDownloads(subfolder,studyFolder,relativePath,bytes,job){
   }finally{URL.revokeObjectURL(url);}
 }
 
-function emit(job,force=false){const now=Date.now();if(!force&&now-(job.lastEmit||0)<120)return;job.lastEmit=now;chrome.runtime.sendMessage({type:'ENGINE_PROGRESS',tabId:job.tabId,jobId:job.id,attemptId:job.attemptId||'',status:job.status,total:job.total,completed:job.completed,failed:job.failed,skipped:job.skipped,original:job.original||0,reconstructed:job.reconstructed||0,bytesWritten:job.bytesWritten,currentFile:job.currentFile||'',errors:job.errors.slice(-30),updatedAt:now}).catch(()=>{});}
+function emit(job,force=false){const now=Date.now();if(!force&&now-(job.lastEmit||0)<120)return;job.lastEmit=now;renewStudyLock(job);chrome.runtime.sendMessage({type:'ENGINE_PROGRESS',tabId:job.tabId,jobId:job.id,attemptId:job.attemptId||'',status:job.status,total:job.total,completed:job.completed,failed:job.failed,skipped:job.skipped,original:job.original||0,reconstructed:job.reconstructed||0,bytesWritten:job.bytesWritten,currentFile:job.currentFile||'',errors:job.errors.slice(-30),updatedAt:now}).catch(()=>{});}
 
 async function commit(job,task,got){
   const identityError=dicomTaskIdentityError(task,got.meta);if(identityError)throw new Error(identityError);
@@ -126,6 +126,7 @@ async function commit(job,task,got){
   if(sopUid&&job.completedSopUids)job.completedSopUids.add(sopUid);
   if(!job.sidecarStarted){
     job.sidecarStarted=true;
+    writeStudyLock(job,`Đang tải ${job.total} ảnh`).catch(()=>{});
     // Fire and forget: the images are the job, and the reader should not wait
     // on a bookkeeping file.
     writeStudySidecar(job,job.folderInfo||{},job.spec||{},job,'downloading').catch(()=>{});
@@ -249,6 +250,43 @@ async function writeStudySidecar(job, info, spec, result, status = 'complete') {
   } catch { /* the images matter; a missing sidecar only costs "Tải tiếp". */ }
 }
 
+/**
+ * Hold the study folder while this job fills it, so the app does not read a
+ * study still arriving as one that failed halfway.
+ *
+ * Renewed as the job runs and removed when it ends. Nothing here is awaited by
+ * the download itself: coordination must never slow the images down, and a
+ * claim that cannot be written costs coordination, not pixels.
+ */
+async function writeStudyLock(job, label) {
+  const payload = buildStudyLock({label});
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  const studyPath = sidecarStudyPath(job.studyFolder);
+  try {
+    if (job.saveMode === 'filesystem') {
+      const dir = await getPathRoot(job.fsRoot, studyPath, job.subfolder);
+      await writeFile(dir, STUDY_LOCK_NAME, bytes);
+    }
+    // The Downloads save mode cannot overwrite a file in place without a second
+    // Save As prompt per renewal, so the claim is filesystem-mode only.
+    job.lockRenewedAt = Date.now();
+  } catch { /* coordination only */ }
+}
+
+async function clearStudyLock(job) {
+  if (job.saveMode !== 'filesystem' || !job.lockRenewedAt) return;
+  try {
+    const dir = await getPathRoot(job.fsRoot, sidecarStudyPath(job.studyFolder), job.subfolder);
+    await dir.removeEntry(STUDY_LOCK_NAME);
+  } catch { /* already gone, or never written */ }
+}
+
+function renewStudyLock(job) {
+  if (job.saveMode !== 'filesystem' || !job.lockRenewedAt) return;
+  if (Date.now() - job.lockRenewedAt < STUDY_LOCK_RENEW_MS) return;
+  writeStudyLock(job, `Đang tải ${job.completed}/${job.total} ảnh`).catch(() => {});
+}
+
 async function runJob(spec){
   const saveMode=spec.saveMode==='downloads'?'downloads':'filesystem',root=saveMode==='filesystem'?await ensureWritableRoot():null;const controller=new AbortController();const prefetched=new Map();const info={...(spec.folderInfo||{})};let resolvedMeta={};
   const isZfp=spec.tasks.some(t=>t.strategy==='zfp-image');
@@ -284,6 +322,7 @@ async function runJob(spec){
     lastEmit:0,
     completedSopUids:new Set(spec.alreadyCompletedSopUids||[]),
     sidecarStarted:false,
+    lockRenewedAt:0,
     spec,
     folderInfo:info
   };
@@ -300,6 +339,7 @@ async function runJob(spec){
   chrome.runtime.sendMessage({type:'LOG_EVENT',entry:{level:job.status==='done'?'INFO':(job.completed>0?'WARN':'ERROR'),category:'ENGINE',message:`Offscreen hoàn tất [${job.status}]: đã ghi ${job.completed}/${job.total} ảnh (lỗi: ${job.failed}, bỏ qua: ${job.skipped})`,details:{status:job.status,completed:job.completed,total:job.total,failed:job.failed,errors:job.errors?.slice(0,5)}}}).catch(()=>{});
   jobs.delete(job.tabId);
   if(job.completed>0)await writeStudySidecar(job,info,spec,job,'complete');
+  await clearStudyLock(job);
   return{
     status:job.status,
     total:job.total,

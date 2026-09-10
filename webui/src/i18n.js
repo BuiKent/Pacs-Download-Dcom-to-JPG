@@ -245,6 +245,7 @@ const EN = {
   "Dò danh sách series": "Discover series list",
   "Đang tải danh sách bệnh nhân…": "Loading patient list…",
   "Danh sách đã cập nhật": "Patient list is up to date",
+  "Danh sách lúc {}": "Patient list as of {}",
   "Không đồng bộ được danh sách": "Patient list could not be synced",
   "Không tải được danh sách bệnh nhân": "Could not load the patient list",
   "Đang hiển thị dữ liệu lần quét trước.": "Showing data from the previous scan.",

@@ -518,6 +518,32 @@ export function sanitizeViewerUrl(url) {
   }
 }
 
+export const STUDY_LOCK_NAME = '.dcom-busy.json';
+export const STUDY_LOCK_FORMAT = 'dcom-study-lock-v1';
+/** Renew well inside the app's 300s expiry so a live download never lapses. */
+export const STUDY_LOCK_RENEW_MS = 60000;
+
+/**
+ * The claim this extension leaves in a study folder while it fills it.
+ *
+ * The desktop app can be pointed at the same study and cannot see this
+ * process — the folder is all they share. Without the claim the app reads a
+ * study still arriving as one that failed halfway, and offers to download it
+ * again over the top.
+ *
+ * `renewedAt` is seconds, matching `dcom_pipeline.read_study_lock`, and is
+ * rewritten as the job runs so a long study does not lapse. A browser killed
+ * mid download simply stops renewing, and the claim expires on its own.
+ */
+export function buildStudyLock({owner = 'extension', label = '', now = Date.now()} = {}) {
+  return {
+    format: STUDY_LOCK_FORMAT,
+    owner: String(owner || 'extension'),
+    label: String(label || ''),
+    renewedAt: Math.floor(Number(now) / 1000),
+  };
+}
+
 export const SIDECAR_FORMAT = 'dcom-extension-source-v1';
 
 /**

@@ -6315,6 +6315,75 @@ EXTENSION_SIDECAR_FORMAT = "dcom-extension-source-v1"
 EXTENSION_DEFAULT_SUBFOLDER = "DCom to JPG"
 
 
+STUDY_LOCK_NAME = ".dcom-busy.json"
+STUDY_LOCK_FORMAT = "dcom-study-lock-v1"
+# How long a claim stands without being renewed. Long enough that a slow study
+# holds its lock across a stall, short enough that a tool killed mid download
+# stops blocking the other one within a coffee break.
+STUDY_LOCK_TTL_SECONDS = 300
+
+
+def study_lock_path(study_folder: Path) -> Path:
+    return Path(study_folder) / STUDY_LOCK_NAME
+
+
+def read_study_lock(study_folder: Path, now: Optional[float] = None) -> dict:
+    """Who is downloading into `study_folder` right now, if anyone.
+
+    The app and the extension can both be pointed at the same study, and neither
+    can see the other's process. What they share is the folder, so the claim
+    lives there. An expired claim reads as no claim: a browser killed mid
+    download must not lock a study out of the app forever.
+    """
+    now = time.time() if now is None else now
+    try:
+        data = json.loads(study_lock_path(study_folder).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict) or data.get("format") != STUDY_LOCK_FORMAT:
+        return {}
+    try:
+        renewed = float(data.get("renewedAt") or 0)
+    except (TypeError, ValueError):
+        return {}
+    if renewed <= 0 or now - renewed > STUDY_LOCK_TTL_SECONDS:
+        return {}
+    return data
+
+
+def write_study_lock(study_folder: Path, owner: str, label: str = "") -> dict:
+    """Claim `study_folder`, or renew a claim already held.
+
+    Renewing is the same call: a long download keeps writing it so the claim
+    does not expire under a study that is still arriving.
+    """
+    payload = {
+        "format": STUDY_LOCK_FORMAT,
+        "owner": str(owner or "app"),
+        "label": str(label or ""),
+        "renewedAt": time.time(),
+        "renewedAtLocal": _now_local(),
+    }
+    try:
+        folder = Path(study_folder)
+        folder.mkdir(parents=True, exist_ok=True)
+        study_lock_path(folder).write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+        )
+    except (OSError, ValueError, TypeError):
+        # A claim that cannot be written costs coordination, never the images.
+        return {}
+    return payload
+
+
+def clear_study_lock(study_folder: Path) -> None:
+    """Release the claim. Safe to call when there is none."""
+    try:
+        study_lock_path(study_folder).unlink()
+    except OSError:
+        pass
+
+
 def read_extension_sidecar(study_folder: Path) -> dict:
     """The `dcom-source.json` the browser extension leaves beside a study.
 

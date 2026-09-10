@@ -1,3 +1,22 @@
+# 7.2.0
+
+- The extension now claims a study folder while it fills it, as
+  `.dcom-busy.json`. The desktop app can be pointed at the same study and
+  cannot see this process, so without the claim it read a study still arriving
+  as one that had failed halfway — "Thiếu 40/120 ảnh" — which reads as a
+  failure and invites a second download over the top of the first. The app
+  shows "Extension đang tải" instead and leaves it alone.
+- The claim carries `renewedAt` in unix SECONDS to match
+  `dcom_pipeline.read_study_lock`, is renewed as the job runs so a long study
+  does not lapse, and is removed when the job ends. A browser killed mid
+  download simply stops renewing and the claim expires on its own after five
+  minutes, so a study is never locked out of the app for good.
+- Filesystem save mode only: the Downloads mode cannot overwrite a file in
+  place without a Save As prompt per renewal.
+- Covered by `tests/test_study_lock.mjs` on this side and
+  `tests/test_study_lock.py` on the app's, including that both agree the
+  timestamp is seconds.
+
 # 7.1.3
 
 - `dcom-source.json` is written from the first image saved, marked
