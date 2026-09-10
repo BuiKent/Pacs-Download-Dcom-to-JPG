@@ -127,3 +127,34 @@ describe("controls the browser paints for us", () => {
     expect(body).toContain("background: var(--panel-bg)");
   });
 });
+
+describe("Worklist grey and white inversion", () => {
+  function ruleBody(selector, from = 0) {
+    const start = cssSource.indexOf(selector, from);
+    expect(start, `${selector} is declared`).toBeGreaterThanOrEqual(0);
+    const rule = cssSource.slice(start);
+    return rule.slice(0, rule.indexOf("}"));
+  }
+
+  const worklistRulesStart = cssSource.indexOf("/* ================= Multi-level Study List tree");
+
+  it("uses a neutral grey canvas without changing the black job log", () => {
+    expect(TOKENS["--shell-bg"]).toBe("#f1f1ef");
+    expect(TOKENS["--chrome-border"]).toBe("#d8d8d5");
+    expect(TOKENS["--log-bg"]).toBe("#101820");
+  });
+
+  it("puts patient rows on grey and study rows on white", () => {
+    expect(ruleBody(".prow {", worklistRulesStart)).toContain("background: var(--shell-bg, #f1f1ef)");
+    expect(ruleBody(".studies {", worklistRulesStart)).toContain("background: #ffffff");
+    expect(ruleBody("\n.srow {", worklistRulesStart)).toContain("background: #ffffff");
+  });
+
+  it("keeps row hover feedback neutral instead of tinting the table blue", () => {
+    const patientHover = ruleBody(".prow:hover {", worklistRulesStart);
+    const studyHover = ruleBody(".srow:hover {", worklistRulesStart);
+    expect(patientHover).toContain("background: #e9e9e7");
+    expect(studyHover).toContain("background: #f7f7f5");
+    expect(`${patientHover}\n${studyHover}`).not.toMatch(/#f0f7ff|#e2e8f0/i);
+  });
+});
