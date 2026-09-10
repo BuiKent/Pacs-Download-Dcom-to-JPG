@@ -152,3 +152,33 @@ export function groupGenericEntries(entries){
   }
   return [...groups.values()];
 }
+
+/**
+ * Every discovered image, from both lists at once.
+ *
+ * `genericEntries` carries the method and body an endpoint needs; the flat
+ * `genericDirectUrls` carries nothing but the address. Preferring entries and
+ * IGNORING the urls — which is what both adapters did — means any url without a
+ * matching entry is silently dropped from the download. That is not
+ * hypothetical: session storage trims, and a trim that reached the entries
+ * before the urls turned a 6000 image study into a 500 image one with nothing
+ * on screen to say so.
+ *
+ * Entries win where they overlap, because they know how to fetch. Urls with no
+ * entry come back as plain GETs, which is what they were before discovery
+ * enriched them.
+ */
+export function mergeDiscoveredEntries(state, source = 'generic') {
+  const entries = (Array.isArray(state?.genericEntries) ? state.genericEntries : [])
+    .filter(x => x?.url);
+  const known = new Set(entries.map(x => x.url));
+  const extras = [];
+  for (const url of new Set(state?.genericDirectUrls || [])) {
+    if (!url || known.has(url)) continue;
+    extras.push({
+      url, method: 'GET', requestBody: null, contentType: '',
+      declared: {}, meta: null, source: `${source}:url-only`,
+    });
+  }
+  return entries.concat(extras);
+}

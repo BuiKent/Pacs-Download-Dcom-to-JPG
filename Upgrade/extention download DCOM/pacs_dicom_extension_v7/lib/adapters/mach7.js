@@ -1,6 +1,6 @@
 'use strict';
 import { normalizeSeries, seriesFolderName, sanitizeSegment, bestDetectedRequest } from '../pacs.js';
-import { groupGenericEntries } from '../generic_discovery.js';
+import { groupGenericEntries, mergeDiscoveredEntries } from '../generic_discovery.js';
 
 const uid = v => { const s = String(v || '').trim(); return /^\d+(?:\.\d+)+$/.test(s) ? s : ''; };
 const DECLARED_ALIAS = { patientBirthDate: 'birthDate', accessionNumber: 'accession' };
@@ -9,11 +9,7 @@ const metaField = (entry, name) => String(
 ).trim();
 
 function entriesFromState(state) {
-  const entries = Array.isArray(state?.genericEntries) ? state.genericEntries.filter(x => x?.url) : [];
-  if (entries.length) return entries;
-  return [...new Set(state?.genericDirectUrls || [])].map(url => ({
-    url, method: 'GET', requestBody: null, contentType: '', declared: {}, meta: null, source: 'mach7'
-  }));
+  return mergeDiscoveredEntries(state, 'mach7');
 }
 
 export const Mach7Adapter = {

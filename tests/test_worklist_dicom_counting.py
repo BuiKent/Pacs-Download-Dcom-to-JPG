@@ -40,6 +40,33 @@ def _scan(study_dir: Path) -> dict:
     return web_backend.WorklistScanner(_StubController())._scan_study(study_dir, {}, None)
 
 
+def _write_dicom(path: Path) -> None:
+    """A real, minimal DICOM image — header and all.
+
+    The worklist confirms a slice by reading its header, so a fixture of null
+    bytes proves nothing about a folder of real images.
+    """
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian, generate_uid
+
+    dataset = Dataset()
+    dataset.SOPClassUID = CTImageStorage
+    dataset.SOPInstanceUID = generate_uid()
+    dataset.StudyInstanceUID = generate_uid()
+    dataset.SeriesInstanceUID = generate_uid()
+    dataset.Rows = 8
+    dataset.Columns = 8
+    file_meta = FileMetaDataset()
+    file_meta.MediaStorageSOPClassUID = CTImageStorage
+    file_meta.MediaStorageSOPInstanceUID = dataset.SOPInstanceUID
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    dataset.file_meta = file_meta
+    dataset.is_little_endian = True
+    dataset.is_implicit_VR = False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    dataset.save_as(str(path), enforce_file_format=True)
+
+
 class DicomSliceCountingTests(unittest.TestCase):
     def test_counts_extensionless_slices_nested_under_series_folders(self):
         # What a PACS disc export actually writes. Matching only the file's
@@ -49,7 +76,7 @@ class DicomSliceCountingTests(unittest.TestCase):
             series = study / "DICOM" / "1.2.840.113619.2.55.3.604688.9"
             series.mkdir(parents=True)
             for index in range(5):
-                (series / f"IM{index:05d}").write_bytes(b"\x00" * 300)
+                _write_dicom(series / f"IM{index:05d}")
 
             scanned = _scan(study)
 
@@ -66,7 +93,7 @@ class DicomSliceCountingTests(unittest.TestCase):
             dicom = study / "DICOM"
             dicom.mkdir(parents=True)
             for index in range(5):
-                (dicom / f"IM{index:05d}.dcm").write_bytes(b"\x00" * 300)
+                _write_dicom(dicom / f"IM{index:05d}.dcm")
             (dicom / "dcom-source.json").write_text("{}", encoding="utf-8")
 
             scanned = _scan(study)
@@ -104,7 +131,7 @@ class SliceCountFreshnessTests(unittest.TestCase):
             dicom = study / "DICOM"
             dicom.mkdir(parents=True)
             for index in range(3):
-                (dicom / f"IM{index:05d}.dcm").write_bytes(b"\x00" * 300)
+                _write_dicom(dicom / f"IM{index:05d}.dcm")
 
             before_mtime = study.stat().st_mtime
             first = _scan(study)
@@ -113,7 +140,7 @@ class SliceCountFreshnessTests(unittest.TestCase):
             # What a background download does: writes into the DICOM subfolder
             # without touching the study folder itself.
             for index in range(3, 9):
-                (dicom / f"IM{index:05d}.dcm").write_bytes(b"\x00" * 300)
+                _write_dicom(dicom / f"IM{index:05d}.dcm")
 
             # The premise of the bug, asserted so this test keeps its meaning
             # even if the filesystem's behaviour ever changes.

@@ -246,6 +246,7 @@ const EN = {
   "Đang tải danh sách bệnh nhân…": "Loading patient list…",
   "Danh sách đã cập nhật": "Patient list is up to date",
   "Danh sách lúc {}": "Patient list as of {}",
+  "Ca chụp đang được tải, mở lúc này sẽ thiếu lát cắt": "This study is still downloading; opening it now would show missing slices",
   "Không đồng bộ được danh sách": "Patient list could not be synced",
   "Không tải được danh sách bệnh nhân": "Could not load the patient list",
   "Đang hiển thị dữ liệu lần quét trước.": "Showing data from the previous scan.",

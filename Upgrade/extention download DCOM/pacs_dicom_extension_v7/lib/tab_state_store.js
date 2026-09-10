@@ -15,15 +15,41 @@
  * ladder below gives back the least valuable data first and keeps the rest.
  */
 
-/** Progressively smaller caps for `genericDirectUrls`, largest first. */
+/** Progressively smaller caps for the discovery lists, largest first. */
 export const URL_CAP_LADDER = [6000, 3000, 1000, 300];
 
-/** Entries carry parsed DICOM metadata, so they cost far more per row. */
-const ENTRY_CAP_RATIO = 12;
+/**
+ * Shrink an entry to what enumeration actually needs.
+ *
+ * `meta` is parsed DICOM headers and by far the largest field, but it only
+ * feeds the patient banner — the first entry carrying one is enough. Dropping
+ * it from the rest buys room to keep EVERY entry, which is what matters:
+ * `entriesFromState` in the adapters ignores `genericDirectUrls` entirely once
+ * a single entry exists, so an entry list trimmed shorter than the url list
+ * silently shrinks the download instead of the state.
+ *
+ * `requestBody` stays. A PACS that serves DICOM over POST cannot be replayed
+ * without it, and dropping it turned those studies into a list of urls that
+ * fetch nothing.
+ */
+function slimEntry(entry, keepMeta) {
+  return {
+    url: entry.url, method: entry.method, contentType: entry.contentType,
+    shape: entry.shape, source: entry.source, declared: entry.declared,
+    requestKey: entry.requestKey, requestBody: entry.requestBody || null,
+    meta: keepMeta ? entry.meta : null,
+  };
+}
 
 export function pruneStateForStorage(state, urlCap = URL_CAP_LADDER[0]) {
   if (!state || typeof state !== 'object') return state;
-  const entryCap = Math.max(20, Math.round(urlCap / ENTRY_CAP_RATIO));
+  // Entries are capped WITH the urls, never below them: the two lists describe
+  // the same images and the adapters read whichever is longer as the truth.
+  const entryCap = urlCap;
+  // Enough parsed headers to fill the patient banner, without carrying one per
+  // image. They are identical across a study in every field the banner uses.
+  const metaBudget = 24;
+  let metaKept = 0;
   return {
     ...state,
     // Rebuilt from `genericDirectUrls` on the far side; a Set does not survive
@@ -41,10 +67,11 @@ export function pruneStateForStorage(state, urlCap = URL_CAP_LADDER[0]) {
     })),
     binaryCandidates: (state.binaryCandidates || []).slice(-20),
     genericDirectUrls: (state.genericDirectUrls || []).slice(-urlCap),
-    genericEntries: (state.genericEntries || []).slice(-entryCap).map(e => ({
-      url: e.url, method: e.method, contentType: e.contentType, shape: e.shape,
-      source: e.source, declared: e.declared, meta: e.meta, requestKey: e.requestKey,
-    })),
+    genericEntries: (state.genericEntries || []).slice(-entryCap).map(e => {
+      const keepMeta = Boolean(e.meta) && metaKept < metaBudget;
+      if (keepMeta) metaKept += 1;
+      return slimEntry(e, keepMeta);
+    }),
   };
 }
 

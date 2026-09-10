@@ -535,13 +535,26 @@ export const STUDY_LOCK_RENEW_MS = 60000;
  * rewritten as the job runs so a long study does not lapse. A browser killed
  * mid download simply stops renewing, and the claim expires on its own.
  */
-export function buildStudyLock({owner = 'extension', label = '', now = Date.now()} = {}) {
+export function buildStudyLock({owner = 'extension', label = '', claimId = '', now = Date.now()} = {}) {
   return {
     format: STUDY_LOCK_FORMAT,
     owner: String(owner || 'extension'),
     label: String(label || ''),
+    // Whoever took the claim. Only they may renew or release it: without this a
+    // second job clears the first one's claim on its way past, and the
+    // exclusion it exists to provide quietly stops applying.
+    claimId: String(claimId || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`),
     renewedAt: Math.floor(Number(now) / 1000),
   };
+}
+
+/** True when a claim read off disk is live and belongs to someone else. */
+export function claimBlocksUs(claim, ourClaimId, ttlSeconds = 300, now = Date.now()) {
+  if (!claim || claim.format !== STUDY_LOCK_FORMAT) return false;
+  const renewed = Number(claim.renewedAt) || 0;
+  if (renewed <= 0) return false;
+  if (Math.floor(now / 1000) - renewed > ttlSeconds) return false;
+  return String(claim.claimId || '') !== String(ourClaimId || '');
 }
 
 export const SIDECAR_FORMAT = 'dcom-extension-source-v1';
@@ -558,17 +571,35 @@ export const SIDECAR_FORMAT = 'dcom-extension-source-v1';
  * only at the end: a browser closed mid-download used to leave images with no
  * link beside them, and "Tải tiếp" needs the link precisely then.
  */
-export function buildStudySidecar({sourceUrl, studyUid, info = {}, imageCount = 0, status = 'complete', now = new Date()} = {}) {
+/**
+ * Job outcomes the app must not read as a finished study.
+ *
+ * Anything other than a clean `done` leaves images missing, so the sidecar has
+ * to carry the outcome rather than the fact that SOME images arrived.
+ */
+const INCOMPLETE_JOB_STATUS = new Set(['downloading', 'partial', 'cancelled', 'error', 'done_with_errors']);
+
+export function sidecarStatusFor(jobStatus) {
+  const value = String(jobStatus || '').trim();
+  if (!value) return 'complete';
+  return INCOMPLETE_JOB_STATUS.has(value) ? (value === 'done_with_errors' ? 'partial' : value) : 'complete';
+}
+
+export function buildStudySidecar({
+  sourceUrl, studyUid, info = {}, imageCount = 0, plannedTotal = 0,
+  failedCount = 0, status = 'complete', now = new Date(),
+} = {}) {
   const clean = sanitizeViewerUrl(String(sourceUrl || ''));
-  // `sanitizeViewerUrl` hands back whatever it was given when it cannot parse
-  // it. A sidecar carrying something that is not a link is worse than no
-  // sidecar: the app would offer "Tải tiếp" on a study it cannot reopen.
+  // `sanitizeViewerUrl` hands back whatever it cannot parse. A sidecar carrying
+  // something that is not a link is worse than no sidecar: the app would offer
+  // "Tải tiếp" on a study it cannot reopen.
   let usable = false;
   try {
     usable = /^https?:$/.test(new URL(clean).protocol);
   } catch { usable = false; }
   if (!usable) return null;
   const stamp = (now instanceof Date ? now : new Date()).toISOString();
+  const saved = Math.max(0, Number(imageCount) || 0);
   return {
     format: SIDECAR_FORMAT,
     sourceUrl: clean,
@@ -576,10 +607,17 @@ export function buildStudySidecar({sourceUrl, studyUid, info = {}, imageCount = 
     patientId: String(info.patientId || ''),
     studyDate: String(info.studyDate || ''),
     modality: String(info.modality || ''),
-    imageCount: Math.max(0, Number(imageCount) || 0),
-    // 'downloading' until the job ends. The app reads a study still marked
-    // that way as unfinished and offers to resume it.
-    status: status === 'downloading' ? 'downloading' : 'complete',
+    // How many images actually reached the disk.
+    imageCount: saved,
+    // How many the job set out to fetch. The app compares the files it finds
+    // against THIS, never against `imageCount`: comparing what was saved to
+    // what was saved is a tautology that reported every failed download as
+    // complete.
+    plannedTotal: Math.max(saved, Number(plannedTotal) || 0),
+    failedCount: Math.max(0, Number(failedCount) || 0),
+    // 'complete' only for a job that finished cleanly. Everything else names
+    // what went wrong so the app can offer to finish it.
+    status: sidecarStatusFor(status),
     downloadedAt: stamp,
   };
 }

@@ -84,6 +84,34 @@ def _is_extensionless_dicom(path: Path) -> bool:
         return False
 
 
+def looks_like_dicom_file(path: Path) -> bool:
+    """Whether `path` is a DICOM image, for counting rather than reading.
+
+    The worklist needs this to report how many slices a study holds, and it used
+    to answer by folder name alone: anything inside a `DICOM` tree whose
+    extension was not on a short blocklist counted. A `README` and a `.DS_Store`
+    beside forty slices reported forty-two, and that count is what tells the
+    reader whether a study came down complete.
+
+    Shared with the pipeline so the two never disagree about what a slice is.
+    The `DICM` magic answers most files without parsing; the rest fall back to
+    the same header read `discover_dicom_files` uses, which also accepts the
+    older files written with no preamble.
+    """
+    path = Path(path)
+    if path.name.upper() == DICOMDIR_NAME:
+        return False
+    if path.suffix.lower() in KNOWN_DICOM_SUFFIXES:
+        return True
+    try:
+        with path.open("rb") as handle:
+            if handle.read(132)[128:132] == b"DICM":
+                return True
+    except OSError:
+        return False
+    return _is_extensionless_dicom(path)
+
+
 def discover_dicom_files(base: Path) -> list[Path]:
     """Find ordinary, IMA and extensionless DICOM images below ``base``."""
     root = Path(base)

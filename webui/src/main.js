@@ -2251,7 +2251,10 @@ async function refreshWorklist({ repaint = true, silent = false } = {}) {
     state.worklistPatients = Array.isArray(result?.patients) ? result.patients : [];
     state.worklistScannedAt = String(result?.scannedAt || "");
     state.worklistLoaded = true;
-    state.worklistRevision = await currentWorklistRevision();
+    // The scan reports the token it started from, so a study filed while the
+    // disk was being walked still looks new on the next poll. Asking for the
+    // token in a second request would mark those changes as already seen.
+    state.worklistRevision = String(result?.revision || state.worklistRevision || "");
   } catch (error) {
     // A failed scan leaves the previous list in place; blanking the tree the
     // doctor is reading would be worse than showing a slightly stale one.
@@ -2320,9 +2323,18 @@ function refreshStudyListPanel() {
   const root = getDomRoot();
   const tree = root?.querySelector(".worklist-tree");
   if (!tree) return;
+  // `.worklist-tree` is the scrolling element, so replacing its contents resets
+  // scrollTop to 0. That was tolerable while this only ran on an explicit
+  // "Quét lại"; now that a background scan repaints every 20 seconds and after
+  // every download, a reader partway down a long list would be thrown back to
+  // the top mid-sentence.
+  const previousTop = tree.scrollTop;
+  const previousLeft = tree.scrollLeft;
   tree.innerHTML = renderWorklistTreeInner();
   applyWorklistColumnWidths(tree);
   bindWorklistOpenButtons(tree);
+  tree.scrollTop = previousTop;
+  tree.scrollLeft = previousLeft;
 
   const filters = root.querySelector(".worklist-filter-bar.secondary");
   if (filters) {
@@ -3001,7 +3013,7 @@ function renderWorklistTreeInner() {
                         ${escapeHtml(t("Tải tiếp"))}
                       </button>
                     ` : ""}
-                    <button class="soft-button primary" type="button" data-action="open-study-viewer" data-folder="${escapeHtml(s.folder || "")}" ${s.status === "miss" ? "disabled" : ""}>
+                    <button class="soft-button primary" type="button" data-action="open-study-viewer" data-folder="${escapeHtml(s.folder || "")}" ${["miss", "busy"].includes(s.status) ? "disabled" : ""} title="${escapeHtml(s.status === "busy" ? t("Ca chụp đang được tải, mở lúc này sẽ thiếu lát cắt") : "")}">
                       ${escapeHtml(t("Mở viewer"))}
                     </button>
                     <button class="soft-button" type="button" data-action="reveal-study-folder" data-folder="${escapeHtml(s.folder || "")}" ${s.status === "miss" ? "disabled" : ""}>
@@ -7989,6 +8001,7 @@ export {
   renderWorklistTreeInner,
   renderWorklistSummaryInner,
   refreshWorklist,
+  refreshStudyListPanel,
   worklistSyncLabel,
   startWorklistWatch,
   studyHeadingLine,

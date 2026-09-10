@@ -1,6 +1,6 @@
 'use strict';
 import { normalizeSeries, seriesFolderName, sanitizeSegment } from '../pacs.js';
-import { groupGenericEntries } from '../generic_discovery.js';
+import { groupGenericEntries, mergeDiscoveredEntries } from '../generic_discovery.js';
 
 const uid=v=>{const s=String(v||'').trim();return /^\d+(?:\.\d+)+$/.test(s)?s:'';};
 // `meta` is from actual DICOM headers (lib/dicom.js), `declared` is from manifest discovery (lib/generic_discovery.js).
@@ -9,10 +9,8 @@ const DECLARED_ALIAS={patientBirthDate:'birthDate',accessionNumber:'accession'};
 const metaField=(entry,name)=>String(
   entry?.meta?.[name]||entry?.declared?.[name]||entry?.declared?.[DECLARED_ALIAS[name]||name]||''
 ).trim();
-function entriesFromState(state){
-  const entries=Array.isArray(state?.genericEntries)?state.genericEntries.filter(x=>x?.url):[];
-  if(entries.length)return entries;
-  return [...new Set(state?.genericDirectUrls||[])].map(url=>({url,method:'GET',requestBody:null,contentType:'',declared:{},meta:null,source:'legacy-generic'}));
+function entriesFromState(state) {
+  return mergeDiscoveredEntries(state, 'generic');
 }
 
 export const GenericAdapter={

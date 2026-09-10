@@ -152,7 +152,15 @@ def _collect_dicom_files(study_folder: Path) -> list[Path]:
     if dicom_dir.is_dir():
         files = [
             path for path in dicom_dir.rglob("*")
-            if path.is_file() and not path.name.startswith(".")
+            if path.is_file()
+            and not path.name.startswith(".")
+            # The extension's sidecar holds the viewer link it downloaded from,
+            # and where that link's token is the only thing identifying the
+            # study the token is kept — deliberately, or "Tải tiếp" would have
+            # nothing to reopen. That is a bearer credential, and an exported
+            # record goes home on a USB stick or into a shared folder. It stays
+            # in the archive; it does not travel.
+            and path.name != dcom_pipeline.EXTENSION_SIDECAR_NAME
         ]
     else:
         # Without a DICOM/ folder the whole study is searched, so the working

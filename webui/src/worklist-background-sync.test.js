@@ -34,7 +34,8 @@ function mockBackend({ patients = [], scannedAt = "", revision = "rev-1" } = {})
   const fetchMock = vi.fn(async (url) => {
     seenLoadingStates.push({ url, loading: state.worklistLoading });
     if (String(url).includes("/revision")) return jsonResponse({ revision });
-    return jsonResponse({ patients, scannedAt });
+    // The scan reports the token it started from, alongside the rows.
+    return jsonResponse({ patients, scannedAt, revision });
   });
   global.fetch = fetchMock;
   return { fetchMock, seenLoadingStates };
@@ -186,6 +187,8 @@ describe("a scan records what it read and when", () => {
     await refreshWorklist({ repaint: false, silent: true });
 
     expect(state.worklistScannedAt).toBe("2026-09-10T09:00:00+07:00");
+    // Taken from the scan's own response, not a follow-up request: a change
+    // made while the disk was being walked must still look new next time.
     expect(state.worklistRevision).toBe("rev-9");
   });
 

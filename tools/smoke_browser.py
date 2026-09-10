@@ -27,6 +27,7 @@ import json
 import shutil
 import subprocess
 import sys
+import os
 import tempfile
 from pathlib import Path
 
@@ -133,6 +134,14 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         archive_root = Path(tmp)
         create_synthetic_smoke_archive(archive_root)
+
+        # This drives a real server, so `running_under_test()` — which keys on
+        # the test runner being loaded — does not see it. Without the override
+        # the synthetic archive's temp path was written into the reader's real
+        # worklist cache, and because a cache is only used when its roots match
+        # the archive being opened, their next real start silently missed and
+        # walked the whole disk again.
+        os.environ["DCOM_WORKLIST_CACHE_FILE"] = str(archive_root / "smoke-worklist-cache.json")
 
         controller = WebController()
         controller.output_root = archive_root

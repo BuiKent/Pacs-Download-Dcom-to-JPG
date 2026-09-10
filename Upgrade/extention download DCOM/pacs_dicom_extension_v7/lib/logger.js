@@ -6,6 +6,39 @@ export const MAX_LOG_ENTRIES = 1500;
 let logBuffer = null;
 let flushTimer = null;
 
+/**
+ * Strip patient identity out of a log line.
+ *
+ * The activity log is exported to a file and read on screen, and it lives in
+ * `chrome.storage.local` for 1500 entries. Folder names carry
+ * `<mã BN> - <họ tên> - <tuổi> - <ngày>` and viewer urls carry share tokens, so
+ * a log written verbatim is a second copy of the record with none of its
+ * protections. What is useful for diagnosis — counts, status, timings — has no
+ * identity in it.
+ */
+const PATIENT_FOLDER_IN_TEXT = new RegExp(
+  [
+    '[A-Za-z0-9._-]*\\d[A-Za-z0-9._-]*',   // mã bệnh nhân, luôn có chữ số
+    '\\s*-\\s*[^\\n-]{2,60}?',              // họ tên
+    '\\s*-\\s*\\d{1,3}\\s*[A-Za-zÀ-ỹ]{0,6}',  // tuổi
+    '\\s*-\\s*\\d{2}-\\d{2}-\\d{4}',        // ngày tải
+  ].join(''),
+  'g',
+);
+
+const CREDENTIAL_IN_URL =
+  /([?&#](?:token|stoken|access_token|session|sessionid|auth|sig|signature|key|password|pwd|secret|bearer)=)[^&#\s]*/gi;
+
+export function redactIdentifiers(text) {
+  return String(text == null ? '' : text)
+    // A patient folder name: `2606033997 - NGUYEN VAN A - 52T - 10-09-2026`.
+    // Anchored on the trailing date so an ordinary hyphenated sentence is not
+    // mistaken for one.
+    .replace(PATIENT_FOLDER_IN_TEXT, '<hồ sơ đã ẩn>')
+    // Any credential carried in a url that reaches the log.
+    .replace(CREDENTIAL_IN_URL, '$1<đã ẩn>');
+}
+
 function sanitizeDetails(details) {
   if (details == null) return '';
   if (typeof details === 'string') return details.slice(0, 600);
@@ -33,8 +66,8 @@ export function createLogEntry(levelOrObj, category, message, details = null) {
     timeFormatted: now.toLocaleString('vi-VN', { hour12: false }),
     level: String(level || 'INFO').toUpperCase(),
     category: String(cat || 'SYSTEM').toUpperCase(),
-    message: String(msg || ''),
-    details: sanitizeDetails(det)
+    message: redactIdentifiers(msg),
+    details: redactIdentifiers(sanitizeDetails(det))
   };
 }
 

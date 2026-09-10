@@ -1,273 +1,665 @@
 """What the app makes of a folder the browser extension filled.
 
+
+
 The two tools only meet on disk. The extension writes the images and leaves
+
 `dcom-source.json` beside them, carrying the one thing the DICOM tags cannot:
+
 the viewer link the study came from, and how many images the download believed
+
 it had written.
 
+
+
 Until now that file was read on exactly one path — "Nhập từ thư mục/đĩa". A
+
 reader who instead points the archive straight at the extension's folder got a
+
 study with no link behind "Tải tiếp" and no sign that the download had stopped
+
 short, both failing silently.
+
 """
 
+
+
 import json
+
 import sys
+
 import unittest
+
 from pathlib import Path
+
 from tempfile import TemporaryDirectory
+
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+
+
 import dcom_pipeline
+
 import web_backend
 
 
+
+
+
 class _StubJob:
+
     @staticmethod
+
     def snapshot() -> dict:
+
         return {}
 
 
+
+
+
 class _StubController:
+
     job = _StubJob()
 
 
+
+
+
 def _scan(study_dir: Path, record=None) -> dict:
+
     return web_backend.WorklistScanner(_StubController())._scan_study(
+
         study_dir, {}, record,
+
     )
 
 
+
+
+
 def _build_study(root: Path, slices: int, sidecar: dict | None) -> Path:
+
     study = root / "01-09-2026 - CT - CT Bung"
+
     dicom = study / "DICOM"
+
     dicom.mkdir(parents=True)
+
     for index in range(slices):
+
         (dicom / f"IM{index:05d}.dcm").write_bytes(b"\x00" * 300)
+
     if sidecar is not None:
+
         (study / dcom_pipeline.EXTENSION_SIDECAR_NAME).write_text(
+
             json.dumps(sidecar), encoding="utf-8",
+
         )
+
     return study
 
 
+
+
+
 def _sidecar(image_count: int, url: str = "https://pacs.example/viewer?studyUID=1.2.3") -> dict:
+
     return {
+
         "format": dcom_pipeline.EXTENSION_SIDECAR_FORMAT,
+
         "sourceUrl": url,
+
         "studyInstanceUid": "1.2.3",
+
         "patientId": "BN001",
+
         "studyDate": "20260901",
+
         "modality": "CT",
+
         "imageCount": image_count,
+
         "downloadedAt": "2026-09-01T10:00:00.000Z",
+
     }
 
 
+
+
+
 class ViewerLinkHandoffTests(unittest.TestCase):
+
     def test_the_link_is_read_from_the_sidecar_when_there_is_no_manifest(self):
+
         # The whole point: "Tải tiếp" needs a link, and this folder has one.
+
         with TemporaryDirectory() as tmp:
+
             study = _build_study(Path(tmp), slices=5, sidecar=_sidecar(5))
+
             self.assertEqual(
+
                 _scan(study)["viewerUrl"],
+
                 "https://pacs.example/viewer?studyUID=1.2.3",
+
             )
 
+
+
     def test_the_manifest_link_wins_over_the_sidecar(self):
+
         # `patient-index.json` is written by the pipeline from the tags and the
+
         # run that produced them; the sidecar is the fallback, not the override.
+
         with TemporaryDirectory() as tmp:
+
             study = _build_study(Path(tmp), slices=5, sidecar=_sidecar(5))
+
             scanned = _scan(study, {"viewerUrl": "https://manifest.example/viewer"})
+
             self.assertEqual(scanned["viewerUrl"], "https://manifest.example/viewer")
 
+
+
     def test_a_study_with_no_sidecar_still_scans(self):
+
         with TemporaryDirectory() as tmp:
+
             study = _build_study(Path(tmp), slices=5, sidecar=None)
+
             self.assertEqual(_scan(study)["viewerUrl"], "")
+
             self.assertEqual(_scan(study)["status"], "done")
 
+
+
     def test_a_foreign_json_beside_the_study_is_ignored(self):
+
         # `read_extension_sidecar` checks the format marker; anything else on
+
         # disk with that name must not be believed.
+
         with TemporaryDirectory() as tmp:
+
             study = _build_study(Path(tmp), slices=5, sidecar={"sourceUrl": "https://evil.example"})
+
             self.assertEqual(_scan(study)["viewerUrl"], "")
+
+
+
 
 
 class ShortDownloadTests(unittest.TestCase):
+
     def test_a_download_that_stopped_short_reads_as_incomplete(self):
+
         # The extension recorded 120 images; 90 are on disk. Reporting "Đã tải"
+
         # would tell the reader a study is complete when 30 slices are missing.
+
         with TemporaryDirectory() as tmp:
+
             study = _build_study(Path(tmp), slices=90, sidecar=_sidecar(120))
+
             scanned = _scan(study)
 
+
+
         self.assertEqual(scanned["status"], "part")
+
         self.assertEqual(scanned["statusLabel"], "Thiếu 30/120 ảnh")
+
         # "part" plus a link is what puts the "Tải tiếp" button on screen.
+
         self.assertTrue(scanned["viewerUrl"])
 
+
+
     def test_a_complete_download_reads_as_complete(self):
+
         with TemporaryDirectory() as tmp:
+
             study = _build_study(Path(tmp), slices=120, sidecar=_sidecar(120))
+
             self.assertEqual(_scan(study)["status"], "done")
+
+
 
     def test_more_images_than_recorded_is_not_a_shortfall(self):
+
         # A resumed download can leave more on disk than any single run wrote.
+
         with TemporaryDirectory() as tmp:
+
             study = _build_study(Path(tmp), slices=130, sidecar=_sidecar(120))
+
             self.assertEqual(_scan(study)["status"], "done")
 
+
+
     def test_the_manifest_verdict_is_not_overridden(self):
+
         # A doctor who deliberately picked some series is not looking at a
+
         # failure, and the label must keep saying so.
+
         with TemporaryDirectory() as tmp:
+
             study = _build_study(Path(tmp), slices=90, sidecar=_sidecar(120))
+
             scanned = _scan(study, {"status": "selected"})
+
+
 
         self.assertEqual(scanned["statusLabel"], "Đã tải series đã chọn")
 
+
+
     def test_a_study_converted_to_jpg_is_not_called_short(self):
+
         # Once the DICOM files are gone there is nothing to compare, and a
+
         # shortfall computed from zero would condemn every converted study.
+
         with TemporaryDirectory() as tmp:
+
             study = Path(tmp) / "01-09-2026 - CT - CT Bung"
+
             jpg = study / "JPG"
+
             jpg.mkdir(parents=True)
+
             for index in range(90):
+
                 (jpg / f"slice_{index}.jpg").write_bytes(b"\x00" * 300)
+
             (study / dcom_pipeline.EXTENSION_SIDECAR_NAME).write_text(
+
                 json.dumps(_sidecar(120)), encoding="utf-8",
+
             )
 
+
+
             self.assertEqual(_scan(study)["status"], "done")
 
+
+
     def test_a_corrupt_image_count_is_ignored(self):
+
         with TemporaryDirectory() as tmp:
+
             broken = _sidecar(120)
+
             broken["imageCount"] = "một trăm hai mươi"
+
             study = _build_study(Path(tmp), slices=90, sidecar=broken)
+
             self.assertEqual(_scan(study)["status"], "done")
+
+
+
 
 
 class UnfinishedDownloadTests(unittest.TestCase):
+
     """A download the browser never finished must not look finished.
 
+
+
     The extension writes the sidecar from the first image it saves, marked
+
     `downloading`, and clears the mark when the job ends. A folder still
+
     carrying it is one where Chrome was closed, or the tab went away, mid
+
     download — the case where resuming matters most and where the images on
+
     disk otherwise look like a complete study.
+
     """
 
+
+
     def test_a_study_still_marked_downloading_reads_as_unfinished(self):
+
         with TemporaryDirectory() as tmp:
+
             in_progress = _sidecar(0)
+
             in_progress["status"] = "downloading"
+
             study = _build_study(Path(tmp), slices=40, sidecar=in_progress)
+
             scanned = _scan(study)
 
+
+
         self.assertEqual(scanned["status"], "part")
-        self.assertEqual(scanned["statusLabel"], "Tải chưa xong")
+
+        # The count comes with it: "chưa xong" alone leaves the reader
+        # guessing whether anything arrived at all.
+        self.assertIn("Tải chưa xong", scanned["statusLabel"])
+        self.assertIn("40", scanned["statusLabel"])
+
         # The link is what makes the verdict actionable rather than just bad news.
+
         self.assertTrue(scanned["viewerUrl"])
 
+
+
     def test_a_finished_download_clears_the_mark(self):
+
         with TemporaryDirectory() as tmp:
+
             finished = _sidecar(40)
+
             finished["status"] = "complete"
+
             study = _build_study(Path(tmp), slices=40, sidecar=finished)
+
             self.assertEqual(_scan(study)["status"], "done")
+
+
 
     def test_an_older_sidecar_without_a_status_still_reads_as_complete(self):
+
         # Sidecars written before the mark existed carry no `status`, and a
+
         # study of theirs is finished as far as anyone can tell.
+
         with TemporaryDirectory() as tmp:
+
             legacy = _sidecar(40)
+
             legacy.pop("status", None)
+
             study = _build_study(Path(tmp), slices=40, sidecar=legacy)
+
             self.assertEqual(_scan(study)["status"], "done")
 
+
+
     def test_an_empty_folder_is_still_reported_empty(self):
+
         # "Tải chưa xong" on a folder with nothing in it would be misleading:
+
         # there is nothing to resume into and nothing to read.
+
         with TemporaryDirectory() as tmp:
+
             in_progress = _sidecar(0)
+
             in_progress["status"] = "downloading"
+
             study = _build_study(Path(tmp), slices=0, sidecar=in_progress)
+
             self.assertEqual(_scan(study)["status"], "miss")
 
 
-class ExtensionOutputDiscoveryTests(unittest.TestCase):
-    """Two patients in the extension's save folder must stay two patients.
 
-    The extension writes images, never `patient-index.json`, so the manifest
-    test that identifies a patient folder finds nothing anywhere beneath its
-    save folder. The scan then filed that whole folder as a single patient, and
-    every patient inside it collapsed into one worklist row — under the name
-    "DCom to JPG". Merging two people into one record is the failure the
-    worklist exists to prevent.
+
+
+class PlannedVersusSavedTests(unittest.TestCase):
+
+    """A download that stopped short must not read as one that finished.
+
+
+
+    The sidecar used to record only how many images it managed to save, and the
+
+    app compared the files on disk against that — three saved, three found,
+
+    "Đã tải". Comparing what was saved to what was saved cannot fail, so every
+
+    failed download looked complete. `plannedTotal` is what the job set out to
+
+    fetch, and that is what the count is checked against.
+
     """
 
+
+
+    def _study(self, root, saved, planned, status):
+
+        sidecar = _sidecar(saved)
+
+        sidecar["plannedTotal"] = planned
+
+        sidecar["failedCount"] = max(0, planned - saved)
+
+        sidecar["status"] = status
+
+        return _build_study(root, slices=saved, sidecar=sidecar)
+
+
+
+    def test_a_job_that_errored_partway_reads_as_short(self):
+
+        with TemporaryDirectory() as tmp:
+
+            scanned = _scan(self._study(Path(tmp), saved=3, planned=5, status="partial"))
+
+        self.assertEqual(scanned["status"], "part")
+
+        self.assertIn("thiếu 2/5", scanned["statusLabel"])
+
+
+
+    def test_a_cancelled_job_says_it_was_cancelled(self):
+
+        with TemporaryDirectory() as tmp:
+
+            scanned = _scan(self._study(Path(tmp), saved=3, planned=5, status="cancelled"))
+
+        self.assertEqual(scanned["status"], "part")
+
+        self.assertIn("dừng", scanned["statusLabel"].lower())
+
+
+
+    def test_a_clean_job_reads_as_complete(self):
+
+        with TemporaryDirectory() as tmp:
+
+            scanned = _scan(self._study(Path(tmp), saved=5, planned=5, status="complete"))
+
+        self.assertEqual(scanned["status"], "done")
+
+
+
+    def test_a_sidecar_written_before_plannedtotal_still_works(self):
+
+        # Older sidecars carry only `imageCount`; they must not be read as a
+
+        # shortfall of zero, nor as a failure.
+
+        with TemporaryDirectory() as tmp:
+
+            sidecar = _sidecar(5)
+
+            sidecar["status"] = "complete"
+
+            study = _build_study(Path(tmp), slices=5, sidecar=sidecar)
+
+            self.assertEqual(_scan(study)["status"], "done")
+
+
+
+
+
+class SliceCountIgnoresNonImagesTests(unittest.TestCase):
+
+    """The count is what tells the reader a study is complete."""
+
+
+
+    def test_paperwork_beside_the_slices_is_not_counted(self):
+
+        with TemporaryDirectory() as tmp:
+
+            study = _build_study(Path(tmp), slices=4, sidecar=_sidecar(4))
+
+            dicom = study / "DICOM"
+
+            (dicom / "README").write_text("ghi chú của bệnh viện", encoding="utf-8")
+
+            (dicom / ".DS_Store").write_bytes(b"\x00" * 400)
+
+            (dicom / "notes.txt").write_text("x", encoding="utf-8")
+
+
+
+            self.assertEqual(_scan(study)["mediaCounts"]["dicom"], 4)
+
+
+
+
+
+class ExtensionOutputDiscoveryTests(unittest.TestCase):
+
+    """Two patients in the extension's save folder must stay two patients.
+
+
+
+    The extension writes images, never `patient-index.json`, so the manifest
+
+    test that identifies a patient folder finds nothing anywhere beneath its
+
+    save folder. The scan then filed that whole folder as a single patient, and
+
+    every patient inside it collapsed into one worklist row — under the name
+
+    "DCom to JPG". Merging two people into one record is the failure the
+
+    worklist exists to prevent.
+
+    """
+
+
+
     @staticmethod
+
     def _extension_output(root: Path) -> Path:
+
         save_folder = root / dcom_pipeline.EXTENSION_DEFAULT_SUBFOLDER
+
         for patient_id, name in (("BN001", "NGUYEN VAN AN"), ("BN002", "TRAN THI BINH")):
+
             dicom = (
+
                 save_folder
+
                 / f"{patient_id} - {name} - 45T - 10-09-2026"
+
                 / "01-09-2026 - CT - CT Bung"
+
                 / "DICOM"
+
             )
+
             dicom.mkdir(parents=True)
+
             for index in range(3):
+
                 (dicom / f"IM{index:05d}.dcm").write_bytes(b"\x00" * 300)
+
         return save_folder
 
+
+
     def _discover(self, root: Path):
+
         scanner = web_backend.WorklistScanner(_StubController())
+
         return scanner._discover_patient_archives(root)
 
+
+
     def test_pointing_at_the_parent_folder_finds_each_patient(self):
+
         # The reader picks the folder they gave the extension, or the one above
+
         # it. Neither should decide whether two patients stay separate.
+
         with TemporaryDirectory() as tmp:
+
             root = Path(tmp)
+
             self._extension_output(root)
+
             found = self._discover(root)
 
+
+
         names = sorted(path.name for path, _category in found)
+
         self.assertEqual(len(found), 2, f"expected two patients, got {names}")
+
         self.assertTrue(names[0].startswith("BN001"))
+
         self.assertTrue(names[1].startswith("BN002"))
+
         self.assertTrue(
+
             all(category == dcom_pipeline.EXTENSION_DEFAULT_SUBFOLDER
+
                 for _path, category in found),
+
             "the save folder groups the patients, so it is their category",
+
         )
 
+
+
     def test_pointing_at_the_save_folder_finds_each_patient(self):
+
         with TemporaryDirectory() as tmp:
+
             save_folder = self._extension_output(Path(tmp))
+
             found = self._discover(save_folder)
 
+
+
         names = sorted(path.name for path, _category in found)
+
         self.assertEqual(len(found), 2, f"expected two patients, got {names}")
 
+
+
     def test_a_patient_folder_itself_is_still_one_patient(self):
+
         # The guard on the fix: a folder whose NAME is a patient folder must not
+
         # be split open just because its studies sit below it.
+
         with TemporaryDirectory() as tmp:
+
             save_folder = self._extension_output(Path(tmp))
+
             patient = next(p for p in save_folder.iterdir() if p.is_dir())
+
             found = self._discover(patient)
 
+
+
         self.assertEqual(len(found), 1)
+
         self.assertEqual(found[0][0].name, patient.name)
 
 
+
+
+
 if __name__ == "__main__":
+
     unittest.main()
+

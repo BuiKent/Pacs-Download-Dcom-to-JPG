@@ -1,3 +1,39 @@
+# 7.2.1
+
+Fixes found reviewing 7.2.0, in what it stores and what it promises.
+
+- Restoring a tab after a service worker restart no longer shrinks the study.
+  `genericEntries` was capped twelve times lower than `genericDirectUrls` and
+  the adapters read entries alone, so a 6000 image study came back as 500 with
+  nothing on screen to say so. Entries are now capped with the urls, parsed
+  headers are thinned instead of whole records, `requestBody` survives (a PACS
+  serving DICOM over POST cannot be replayed without it), and enumeration reads
+  both lists so neither can silently shrink the download again.
+- A download that failed, or that the reader cancelled, no longer records
+  itself as complete. The sidecar carries `plannedTotal` beside `imageCount`
+  and the job's real outcome; the app compared files on disk against how many
+  had been saved, which cannot fail and reported every failed download as a
+  finished study.
+- The study claim is enforced rather than displayed. It carries a `claimId` so
+  one job cannot release another's, is acquired before writing, and never
+  creates the folder it claims — a direct download starts against a `LINK_*`
+  placeholder and the real destination is decided from the first DICOM's tags,
+  so writing the claim up front left an empty folder in the archive for the
+  worklist to list as an empty study.
+- Metadata writes are queued. The opening "downloading" write could land after
+  the closing one and leave a finished study marked unfinished for good.
+- The engine refuses a folder the desktop app is writing, as the app already
+  refuses one this extension holds.
+- Series detection reads the whole document again. Capping it at 100k
+  characters lost series further down a long viewer page; the bounded lazy
+  quantifier is what makes scanning it all safe.
+- Activity logs are redacted. Patient folder names and share tokens were
+  written verbatim and kept for 1500 entries, which is the record again with
+  none of its protections. Study UIDs stay — they identify the scan, not the
+  person.
+- The boot log reads its version from the manifest, and `static_checks.py` now
+  fails on a hard-coded version in any script rather than one file.
+
 # 7.2.0
 
 - The extension now claims a study folder while it fills it, as

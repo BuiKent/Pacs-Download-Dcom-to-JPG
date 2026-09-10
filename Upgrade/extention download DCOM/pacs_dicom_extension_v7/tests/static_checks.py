@@ -16,8 +16,18 @@ assert 'matchingAdapters' in bg and 'adapterById' in bg
 assert 'processGenericManifestPayload' in bg and 'extractManifestCandidates' in bg
 assert 'GENERIC_JSON_CAPTURE' in bg and 'generic-hook.js' in bg
 assert 'INSPECT_DICOM_URLS' in bg and 'INSPECT_DICOM_URLS' in off
-assert 'genericEntries' in bg and 'genericEntries' in generic
-assert 'requestBody' in generic and "method:String(e.method||'GET')" in generic
+discovery = (root / 'lib/generic_discovery.js').read_text(encoding='utf-8')
+assert 'genericEntries' in bg and 'genericEntries' in discovery
+# Enumeration must read BOTH discovery lists. Preferring `genericEntries` and
+# ignoring `genericDirectUrls` meant any url without a matching entry was
+# dropped from the download — and session storage trims the two lists
+# independently, so a 6000 image study enumerated as 500.
+assert 'mergeDiscoveredEntries' in discovery
+assert 'genericDirectUrls' in discovery
+for adapter_name in ('lib/adapters/generic.js', 'lib/adapters/mach7.js'):
+    adapter_src = (root / adapter_name).read_text(encoding='utf-8')
+    assert 'mergeDiscoveredEntries' in adapter_src, adapter_name
+assert 'requestBody' in discovery
 assert 'storedBodySignature' in bg and 'requestId' in bg and 'genericEntryKey' in bg
 assert 'requestMetaForObserved' in bg and 'GENERIC_JSON_CAPTURE' in bg
 assert "body: ['GET','HEAD'].includes(method) ? undefined : task?.body" in sem
@@ -128,8 +138,19 @@ assert not unwired, f'side panel buttons with no handler in sidepanel.js: {unwir
 assert (root / 'log_viewer.html').exists() and (root / 'lib/logger.js').exists()
 assert 'log_viewer.html' in side, 'side panel must open the activity log viewer'
 log_viewer = (root / 'log_viewer.js').read_text(encoding='utf-8')
-assert "'7." not in log_viewer, 'log viewer must read the version from the manifest, not hard-code it'
 assert 'getManifest().version' in log_viewer and 'getManifest().version' in side
+
+# No script may spell the version out. The first pass of this guard checked
+# log_viewer.js alone, and the identical bug sat in background.js one directory
+# up, announcing v7.1.1 from a 7.2.0 build. A guard narrower than the mistake it
+# guards against is how the same bug ships twice.
+VERSION_LITERAL = re.compile(r"""['"`]v?7\.\d+\.\d+['"`]""")
+for js_path in sorted(root.glob('*.js')) + sorted((root / 'lib').rglob('*.js')):
+    spelled = VERSION_LITERAL.findall(js_path.read_text(encoding='utf-8'))
+    assert not spelled, (
+        f'{js_path.name} hard-codes the extension version {spelled}; '
+        'read chrome.runtime.getManifest().version instead'
+    )
 
 # Bulk DICOM never reveals Chrome's default downloads folder: since 7.0.3 the
 # images deliberately do not go there, so pointing the reader at it is a lie.

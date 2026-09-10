@@ -35,6 +35,7 @@ import math
 import os
 import re
 import urllib.request
+import uuid
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 import socket
 import sys
@@ -61,6 +62,38 @@ LogFn = Callable[[str], None]
 # process, so this yields to the rest of the app without yielding to every
 # other program on the machine.
 _THREAD_PRIORITY_BELOW_NORMAL = -1
+_THREAD_PRIORITY_NORMAL = 0
+
+
+def _set_thread_priority(value: int) -> bool:
+    """Set the calling thread's Windows priority. False when it did not take."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        # Without these, ctypes types the pseudo-handle as a 32-bit int and
+        # truncates it on 64-bit Windows: the call then returns failure and the
+        # priority never changes, silently. `tests/test_background_priority.py`
+        # asserts the priority actually moved, not just that nothing raised.
+        kernel32.GetCurrentThread.restype = ctypes.c_void_p
+        kernel32.SetThreadPriority.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        kernel32.SetThreadPriority.restype = ctypes.c_int
+        return bool(kernel32.SetThreadPriority(kernel32.GetCurrentThread(), value))
+    except Exception:
+        return False
+
+
+def restore_thread_priority() -> None:
+    """Put the calling thread back to normal scheduling.
+
+    A job thread ends with the job and needs no restore, but `run_pipeline` is
+    also called straight from the CLI and from the Tk app, where the caller is
+    the process's own long-lived thread. Lowering that and never raising it
+    again left the tool sluggish for the rest of the session, one download in.
+    """
+    _set_thread_priority(_THREAD_PRIORITY_NORMAL)
 
 
 def set_background_thread_priority() -> None:
@@ -77,24 +110,7 @@ def set_background_thread_priority() -> None:
 
     A no-op off Windows, where the app does not ship.
     """
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32
-        # Without these, ctypes types the pseudo-handle as a 32-bit int and
-        # truncates it on 64-bit Windows: the call then returns failure and the
-        # priority never changes, silently. `tests/test_background_priority.py`
-        # asserts the priority actually moved, not just that nothing raised.
-        kernel32.GetCurrentThread.restype = ctypes.c_void_p
-        kernel32.SetThreadPriority.argtypes = [ctypes.c_void_p, ctypes.c_int]
-        kernel32.SetThreadPriority.restype = ctypes.c_int
-        kernel32.SetThreadPriority(
-            kernel32.GetCurrentThread(), _THREAD_PRIORITY_BELOW_NORMAL,
-        )
-    except Exception:
-        pass
+    _set_thread_priority(_THREAD_PRIORITY_BELOW_NORMAL)
 
 
 def _default_log(msg: str) -> None:
@@ -6330,7 +6346,7 @@ def study_lock_path(study_folder: Path) -> Path:
 def read_study_lock(study_folder: Path, now: Optional[float] = None) -> dict:
     """Who is downloading into `study_folder` right now, if anyone.
 
-    The app and the extension can both be pointed at the same study, and neither
+    The app and the extension can both be pointed at the same study and neither
     can see the other's process. What they share is the folder, so the claim
     lives there. An expired claim reads as no claim: a browser killed mid
     download must not lock a study out of the app forever.
@@ -6351,22 +6367,34 @@ def read_study_lock(study_folder: Path, now: Optional[float] = None) -> dict:
     return data
 
 
-def write_study_lock(study_folder: Path, owner: str, label: str = "") -> dict:
-    """Claim `study_folder`, or renew a claim already held.
+def write_study_lock(
+    study_folder: Path,
+    owner: str,
+    label: str = "",
+    claim_id: str = "",
+) -> dict:
+    """Write the claim unconditionally. Prefer `acquire_study_lock`.
 
-    Renewing is the same call: a long download keeps writing it so the claim
-    does not expire under a study that is still arriving.
+    Kept for renewals, where the caller already knows it holds the claim.
     """
     payload = {
         "format": STUDY_LOCK_FORMAT,
         "owner": str(owner or "app"),
         "label": str(label or ""),
+        # Whoever wrote the claim. Only they may renew or release it: without
+        # this a second job releases the first one's claim on its way past, and
+        # the exclusion it was there to provide quietly stops applying.
+        "claimId": str(claim_id or uuid.uuid4().hex),
         "renewedAt": time.time(),
         "renewedAtLocal": _now_local(),
     }
+    folder = Path(study_folder)
+    # Never `mkdir` here. A claim is a note left in a folder that exists; making
+    # one to hold the note leaves an empty study behind whenever the download
+    # ends up somewhere else, and the worklist lists that as "Folder trống".
+    if not folder.is_dir():
+        return payload
     try:
-        folder = Path(study_folder)
-        folder.mkdir(parents=True, exist_ok=True)
         study_lock_path(folder).write_text(
             json.dumps(payload, ensure_ascii=False), encoding="utf-8",
         )
@@ -6376,8 +6404,48 @@ def write_study_lock(study_folder: Path, owner: str, label: str = "") -> dict:
     return payload
 
 
-def clear_study_lock(study_folder: Path) -> None:
-    """Release the claim. Safe to call when there is none."""
+def acquire_study_lock(study_folder: Path, owner: str, label: str = "") -> Optional[dict]:
+    """Claim `study_folder`, or report who already holds it.
+
+    Returns the claim on success and `None` when someone else is live in that
+    folder. Two downloads writing the same study at once is not a tidiness
+    problem: they interleave partial files, and the loser's images overwrite
+    the winner's while both report success.
+    """
+    held = read_study_lock(study_folder)
+    if held and str(held.get("owner") or "") != str(owner or "app"):
+        return None
+    # Our own stale claim, or a fresh folder: take it with a new id so a
+    # previous run of ours cannot release what this one is holding.
+    return write_study_lock(study_folder, owner, label) or None
+
+
+def renew_study_lock(study_folder: Path, claim: dict, label: str = "") -> bool:
+    """Extend a claim this caller holds. False when it has been taken over."""
+    if not isinstance(claim, dict) or not claim.get("claimId"):
+        return False
+    held = read_study_lock(study_folder)
+    if held and held.get("claimId") != claim.get("claimId"):
+        return False
+    return bool(write_study_lock(
+        study_folder,
+        str(claim.get("owner") or "app"),
+        label or str(claim.get("label") or ""),
+        str(claim.get("claimId")),
+    ))
+
+
+def clear_study_lock(study_folder: Path, claim: Optional[dict] = None) -> None:
+    """Release the claim.
+
+    With a `claim`, releases only if it is still the one on disk — a job must
+    never clear a claim another job has since taken. With none, releases
+    whatever is there, which is what a deliberate "unlock" does.
+    """
+    if claim is not None:
+        held = read_study_lock(study_folder)
+        if held and held.get("claimId") != claim.get("claimId"):
+            return
     try:
         study_lock_path(study_folder).unlink()
     except OSError:
@@ -7606,7 +7674,52 @@ def _jpg_folder_name(dicom_dir: Path) -> str:
     return name or "JPG"
 
 
-def run_pipeline(
+class StudyBusyError(RuntimeError):
+    """Another download is live in this study folder."""
+
+
+def run_pipeline(url: str, out_base: Path, log: LogFn = _default_log, **kwargs):
+    """Download a study, holding the folder against the browser extension.
+
+    Two downloads writing one study at once is not untidiness: they interleave
+    partial files, and each overwrites the other's images while both report
+    success. The extension leaves its claim in the folder, and this refuses
+    rather than writing over a download that is still arriving.
+
+    The claim is released whatever happens — including the rename that moves a
+    `LINK_*` folder onto the patient's real name mid run, which carries the
+    claim file with it.
+    """
+    out_base = Path(out_base)
+    claim = acquire_study_lock(out_base, "app", "Đang tải từ app")
+    if claim is None:
+        held = read_study_lock(out_base)
+        owner = "Extension" if held.get("owner") == "extension" else "Một tiến trình khác"
+        raise StudyBusyError(
+            "{} đang tải vào thư mục này. Hãy đợi nó xong rồi thử lại.".format(owner)
+        )
+    result = None
+    try:
+        result = _run_pipeline_unlocked(
+            url, out_base, log=log, study_claim=claim, **kwargs
+        )
+        return result
+    finally:
+        # The CLI and the Tk app call this on a thread that outlives the job.
+        restore_thread_priority()
+        # The folder may have been renamed under us; release both names so the
+        # claim never outlives the job that took it.
+        released = {out_base}
+        try:
+            if result and result[2]:
+                released.add(Path(result[2]).parent)
+        except (IndexError, TypeError, OSError):
+            pass
+        for folder in released:
+            clear_study_lock(folder, claim)
+
+
+def _run_pipeline_unlocked(
     url: str,
     out_base: Path,
     log: LogFn = _default_log,
@@ -7624,6 +7737,7 @@ def run_pipeline(
     manual_info: Optional[dict] = None,
     download_attachments_flag: bool = True,
     attachments: Optional[list[dict]] = None,
+    study_claim: Optional[dict] = None,
 ):
     set_background_thread_priority()
     out_base = Path(out_base)
@@ -7653,6 +7767,12 @@ def run_pipeline(
             if out_base != original_out_base:
                 log(f"Đã xác định tên hồ sơ từ DICOM đầu tiên: {out_base.name}")
         dicom_dir = out_base / "DICOM"
+        # The images are about to land here rather than in `out_base` as it was
+        # when the job started, so the claim follows them. `download_all`
+        # creates the directory straight after this returns; writing the claim
+        # is deferred to the first renewal rather than creating it early.
+        if study_claim:
+            renew_study_lock(out_base, study_claim, "Đang tải từ app")
         return dicom_dir
 
     first_dicom_resolver = (

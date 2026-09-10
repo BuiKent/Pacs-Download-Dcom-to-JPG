@@ -33,7 +33,7 @@ from urllib.parse import unquote, urlparse
 
 import dcom_pipeline
 import dicom_io
-from dicom_io import discover_dicom_files
+from dicom_io import discover_dicom_files, looks_like_dicom_file
 import mpr_engine
 
 
@@ -291,6 +291,33 @@ def _resolve_history_file() -> Path:
         pass
     return Path.home() / ".dcom_downloader_history.json"
 
+
+def _resolve_worklist_cache_file() -> Path:
+    """Where the cached study list lives.
+
+    Same rule as `_resolve_history_file`, for the same reason and one more. A
+    test run builds patient folders under the OS temp directory, so a cache
+    written from one records temp paths in its `roots` — and because the cache
+    is only used when its roots match the archive being opened, the reader's
+    next real start silently misses and walks the whole disk again. The feature
+    would appear to do nothing, with nothing to say why.
+    """
+    override = os.environ.get("DCOM_WORKLIST_CACHE_FILE")
+    if override:
+        return Path(override)
+    try:
+        import app_logging
+        if app_logging.running_under_test():
+            return Path(tempfile.gettempdir()) / "dcom_test_worklist_cache.json"
+    except Exception:
+        pass
+    app_data = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+    return app_data / "DCom JPG PACS" / "worklist-cache.json"
+
+
+# Two weeks. Long enough to cover a holiday, short enough that patient names
+# do not accumulate in LocalAppData for a machine's whole life.
+WORKLIST_CACHE_MAX_AGE_SECONDS = 14 * 24 * 3600
 
 HISTORY_FILE = _resolve_history_file()
 HISTORY_MAX = 30
@@ -3844,8 +3871,16 @@ class WorklistScanner:
                     except OSError:
                         pass
                     ext = fp.suffix.lower()
+                    # A DICOM tree holds more than slices — the extension's
+                    # sidecar and busy claim live there, and disc exports arrive
+                    # with READMEs and .DS_Store beside the images. Counting by
+                    # folder alone inflated the number the reader checks for
+                    # completeness, so anything without a DICOM extension is
+                    # confirmed by its header.
                     if ext in {".dcm", ".ima", ".dicom"} or (
-                        in_dicom_tree and ext not in _NON_DICOM_EXTENSIONS
+                        in_dicom_tree
+                        and ext not in _NON_DICOM_EXTENSIONS
+                        and looks_like_dicom_file(fp)
                     ):
                         dicom_count += 1
                     elif ext in {".mp4", ".avi", ".mkv", ".mov", ".webm"}:
@@ -3902,8 +3937,15 @@ class WorklistScanner:
         # makes a folder the extension filled behave the same whether the reader
         # imported it or simply pointed the archive at it.
         sidecar = dcom_pipeline.read_extension_sidecar(study_dir)
+        # What the download SET OUT to fetch. Comparing the files on disk against
+        # `imageCount` — how many it managed to save — is a tautology: a job that
+        # saved three of five wrote three, found three, and reported "Đã tải".
+        # `plannedTotal` is absent from sidecars written before this, and those
+        # fall back to `imageCount` rather than claiming a shortfall of zero.
         try:
-            expected_images = int(sidecar.get("imageCount") or 0)
+            expected_images = int(
+                sidecar.get("plannedTotal") or sidecar.get("imageCount") or 0
+            )
         except (TypeError, ValueError):
             expected_images = 0
         # The extension marks the sidecar "downloading" from the first image it
@@ -3911,9 +3953,17 @@ class WorklistScanner:
         # mark is one whose download never finished — the browser was closed, or
         # the tab went away — and calling it "Đã tải" would hide missing slices
         # behind a study that looks whole.
-        sidecar_unfinished = (
-            str(sidecar.get("status") or "").strip().lower() == "downloading"
-        )
+        # Any outcome other than a clean finish. The extension records what
+        # actually happened — cancelled, partial, error — and a study left in any
+        # of those states is missing images the reader can still go and fetch.
+        sidecar_state = str(sidecar.get("status") or "").strip().lower()
+        sidecar_unfinished = bool(sidecar_state) and sidecar_state != "complete"
+        SIDECAR_STATE_LABELS = {
+            "downloading": "Tải chưa xong",
+            "cancelled": "Đã dừng giữa chừng",
+            "error": "Tải lỗi",
+            "partial": "Tải thiếu",
+        }
 
         # `patient-index.json` records how far the download actually got:
         # "complete" everything, "selected" only the series the doctor picked,
@@ -3927,7 +3977,14 @@ class WorklistScanner:
         elif slice_count == 0:
             status, status_label = "miss", "Folder trống"
         elif sidecar_unfinished and dicom_count:
-            status, status_label = "part", "Tải chưa xong"
+            status = "part"
+            label = SIDECAR_STATE_LABELS.get(sidecar_state, "Tải chưa xong")
+            missing = expected_images - dicom_count
+            status_label = (
+                "{} ({} ảnh)".format(label, dicom_count)
+                if missing <= 0
+                else "{} — thiếu {}/{} ảnh".format(label, missing, expected_images)
+            )
         elif expected_images and dicom_count and dicom_count < expected_images:
             # The extension saved fewer images than it set out to, or images
             # have gone missing since. Either way the reader is looking at an
@@ -4269,7 +4326,7 @@ class WebController:
         # The last completed worklist scan, so opening the app shows the study
         # list the reader saw when they closed it instead of an empty tree with
         # a progress line. The scan that refreshes it runs in the background.
-        self.worklist_cache_path = app_data / "DCom JPG PACS" / "worklist-cache.json"
+        self.worklist_cache_path = _resolve_worklist_cache_file()
         self.history = HistoryStore()
         settings = self._read_settings()
         self.language = settings.get("language", "en")
@@ -4500,43 +4557,63 @@ class WebController:
         }
 
     def worklist_revision(self) -> str:
-        """A token that changes when a study may have appeared or gone.
+        """A token that changes when anything the worklist reports may have.
 
-        Deliberately shallow: the source roots and the patient folders directly
-        inside them. Filing a new study creates a directory inside its patient
-        folder, which is exactly what moves that folder's mtime, so this catches
-        the arrival without the full walk `get_worklist` does. It is meant to be
-        cheap enough to poll — a few hundred `stat` calls against the tens of
-        thousands the real scan performs.
+        Walks the same patient folders `_discover_patient_archives` finds, so a
+        patient filed under a category — `U não/<bệnh nhân>` — counts as much as
+        one sitting at the top. Hashing only the roots' direct children missed
+        those entirely: a category folder's mtime does not move when a study
+        lands two levels below it.
+
+        Then one level inside each patient (their studies) and one inside each
+        study (`DICOM`, `JPG`), because that is where slices, the sidecar and
+        the busy claim land — and a study whose slice count or download state
+        changed is exactly what the reader is waiting to see.
+
+        Always `os.stat(path)`, never `DirEntry.stat()`: on Windows the DirEntry
+        carries the mtime cached in the parent's listing and that copy is not
+        refreshed when the child's contents change.
         """
         parts: list[str] = []
+
+        def stamp(label: str, path: Path) -> None:
+            try:
+                parts.append(f"{label}|{os.stat(path).st_mtime_ns}")
+            except OSError:
+                parts.append(f"{label}|gone")
+
+        def child_dirs(path: Path) -> list[Path]:
+            try:
+                with os.scandir(path) as entries:
+                    return sorted(
+                        (Path(e.path) for e in entries if e.is_dir()),
+                        key=lambda p: p.name.casefold(),
+                    )
+            except OSError:
+                return []
+
         for root in sorted(self.get_all_source_roots(), key=lambda p: str(p).casefold()):
+            stamp(str(root), root)
             try:
-                parts.append(f"{root}|{root.stat().st_mtime_ns}")
-            except OSError:
-                # A root that is not mounted right now still has to produce a
-                # stable token, or every poll would look like a change.
-                parts.append(f"{root}|missing")
-                continue
-            try:
-                children = sorted(
-                    (child for child in os.scandir(root) if child.is_dir()),
-                    key=lambda entry: entry.name.casefold(),
-                )
+                patients = [folder for folder, _category in self._discovered_patient_dirs(root)]
             except OSError:
                 continue
-            for child in children:
-                try:
-                    # `os.stat(path)`, never `child.stat()`. On Windows a
-                    # DirEntry carries the mtime cached in the PARENT's listing,
-                    # and that copy is not refreshed when the child's own
-                    # contents change — so filing a new study inside a patient
-                    # folder left the token identical and the worklist never
-                    # noticed. Measured; `tests/test_worklist_revision.py` pins it.
-                    parts.append(f"{child.name}|{os.stat(child.path).st_mtime_ns}")
-                except OSError:
-                    parts.append(f"{child.name}|gone")
+            for patient in sorted(patients, key=lambda p: str(p).casefold()):
+                stamp(str(patient), patient)
+                for study in child_dirs(patient):
+                    stamp(str(study), study)
+                    for inner in child_dirs(study):
+                        stamp(str(inner), inner)
         return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
+
+    def _discovered_patient_dirs(self, root: Path) -> list[tuple[Path, str]]:
+        """Patient folders under `root`, using the scanner's own discovery.
+
+        Shared so the token and the scan can never disagree about what a patient
+        folder is: two independent tree walks drifting apart is what let studies
+        inside category folders go unnoticed.
+        """
+        return WorklistScanner(self)._discover_patient_archives(root)
 
     def _worklist_cache_key(self) -> list[str]:
         """The folders a cached scan describes.
@@ -4560,6 +4637,20 @@ class WebController:
         if not isinstance(data, dict):
             return {}
         if data.get("roots") != self._worklist_cache_key():
+            return {}
+        # The cache holds patient names and full paths, so it does not sit in
+        # LocalAppData indefinitely. Past this it is also poor evidence: an
+        # archive left alone for a fortnight has usually moved or been tidied,
+        # and rows describing folders that are gone are worse than a short wait.
+        try:
+            age = time.time() - self.worklist_cache_path.stat().st_mtime
+        except OSError:
+            age = 0
+        if age > WORKLIST_CACHE_MAX_AGE_SECONDS:
+            try:
+                self.worklist_cache_path.unlink()
+            except OSError:
+                pass
             return {}
         patients = data.get("patients")
         if not isinstance(patients, list):
@@ -4585,10 +4676,20 @@ class WebController:
             pass
 
     def get_worklist(self) -> dict:
+        # Sampled BEFORE the walk, deliberately. Handing back a token read after
+        # a scan that took several seconds would mark every change made during
+        # those seconds as already seen, and the study filed in the middle of a
+        # scan would never appear until something else moved. Reading it first
+        # means such a change simply shows up on the next poll.
+        revision = self.worklist_revision()
         scanner = WorklistScanner(self)
         patients = scanner.scan()
         self._write_worklist_cache(patients)
-        return {"patients": patients, "scannedAt": dcom_pipeline._now_local()}
+        return {
+            "patients": patients,
+            "scannedAt": dcom_pipeline._now_local(),
+            "revision": revision,
+        }
 
     def _reveal_roots(self) -> list[Path]:
         """Folders the UI is allowed to hand to the shell."""
