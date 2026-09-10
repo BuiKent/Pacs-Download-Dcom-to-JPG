@@ -26,6 +26,9 @@ SKIPPED_FOLDERS = {"RAW_JPG", "CACHE", "THUMB", "THUMBNAILS", "__MACOSX", "THUMB
 # with real documents, but a patient must never receive them as one.
 INTERNAL_SIDECAR_NAMES = {
     dcom_pipeline.PATIENT_MANIFEST_NAME.casefold(),
+    dcom_pipeline.EXTENSION_SIDECAR_NAME.casefold(),
+    ".direct-download.json",
+    dcom_pipeline.STUDY_LOCK_NAME.casefold(),
     "mpr-volume.json",
 }
 UNKNOWN = "—"
@@ -135,12 +138,21 @@ def _is_in_skipped_folder(path: Path, study_folder: Path) -> bool:
     )
 
 
+def _is_internal_sidecar(path: Path) -> bool:
+    """Keep credentials and app coordination metadata inside the archive."""
+    name = path.name.casefold()
+    return (
+        name in INTERNAL_SIDECAR_NAMES
+        or name.startswith(".dcom-busy.") and name.endswith(".json")
+    )
+
+
 def _collect_documents(study_folder: Path) -> list[Path]:
     return sorted(
         (path for path in study_folder.rglob("*")
          if path.is_file()
          and path.suffix.casefold() in DOCUMENT_SUFFIXES
-         and path.name.casefold() not in INTERNAL_SIDECAR_NAMES
+         and not _is_internal_sidecar(path)
          and not _is_in_skipped_folder(path, study_folder)),
         key=lambda path: _natural_key(path.name),
     )
@@ -160,7 +172,7 @@ def _collect_dicom_files(study_folder: Path) -> list[Path]:
             # nothing to reopen. That is a bearer credential, and an exported
             # record goes home on a USB stick or into a shared folder. It stays
             # in the archive; it does not travel.
-            and path.name != dcom_pipeline.EXTENSION_SIDECAR_NAME
+            and not _is_internal_sidecar(path)
         ]
     else:
         # Without a DICOM/ folder the whole study is searched, so the working
@@ -169,6 +181,7 @@ def _collect_dicom_files(study_folder: Path) -> list[Path]:
             path for path in study_folder.rglob("*")
             if path.is_file()
             and path.suffix.casefold() in DICOM_SUFFIXES
+            and not _is_internal_sidecar(path)
             and not _is_in_skipped_folder(path, study_folder)
         ]
     return sorted(files, key=lambda path: _natural_key(path.name))

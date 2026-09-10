@@ -50,28 +50,49 @@ export function pruneStateForStorage(state, urlCap = URL_CAP_LADDER[0]) {
   // image. They are identical across a study in every field the banner uses.
   const metaBudget = 24;
   let metaKept = 0;
+  const pacsRequests = (state.pacsRequests || []).slice(-50);
+  const learnCandidates = (state.learnCandidates || []).slice(-20);
+  const binaryCandidates = (state.binaryCandidates || []).slice(-20);
+  const genericDirectUrls = (state.genericDirectUrls || []).slice(-urlCap);
+  const genericEntries = (state.genericEntries || []).slice(-entryCap);
+  const retainedUrls = new Set(genericDirectUrls);
+  const genericDirectMeta = Object.fromEntries(
+    Object.entries(state.genericDirectMeta || {}).filter(([url]) => retainedUrls.has(url)),
+  );
+  const truncated = Boolean(
+    state.truncated
+    || (state.pacsRequests || []).length > pacsRequests.length
+    || (state.learnCandidates || []).length > learnCandidates.length
+    || (state.binaryCandidates || []).length > binaryCandidates.length
+    || (state.genericDirectUrls || []).length > genericDirectUrls.length
+    || (state.genericEntries || []).length > genericEntries.length
+    || Object.keys(state.genericDirectMeta || {}).length > Object.keys(genericDirectMeta).length
+  );
   return {
     ...state,
     // Rebuilt from `genericDirectUrls` on the far side; a Set does not survive
     // the trip anyway.
     _directUrlSet: undefined,
-    pacsRequests: (state.pacsRequests || []).slice(-50).map(r => ({
+    pacsRequests: pacsRequests.map(r => ({
       type: r.type, url: r.url, method: r.method, requestId: r.requestId,
       score: r.score, contentType: r.contentType, time: r.time, _id: r._id,
-      requestBody: r.requestBody?.kind === 'form' ? r.requestBody : null,
+      requestBody: r.requestBody || null,
     })),
-    learnCandidates: (state.learnCandidates || []).slice(-20).map(r => ({
+    learnCandidates: learnCandidates.map(r => ({
       url: r.url, display: r.display, method: r.method, requestId: r.requestId,
+      requestKey: r.requestKey, requestBody: r.requestBody || null,
       type: r.type, contentType: r.contentType, status: r.status,
       contentLength: r.contentLength, time: r.time,
     })),
-    binaryCandidates: (state.binaryCandidates || []).slice(-20),
-    genericDirectUrls: (state.genericDirectUrls || []).slice(-urlCap),
-    genericEntries: (state.genericEntries || []).slice(-entryCap).map(e => {
+    binaryCandidates,
+    genericDirectUrls,
+    genericDirectMeta,
+    genericEntries: genericEntries.map(e => {
       const keepMeta = Boolean(e.meta) && metaKept < metaBudget;
       if (keepMeta) metaKept += 1;
       return slimEntry(e, keepMeta);
     }),
+    truncated: truncated || undefined,
   };
 }
 

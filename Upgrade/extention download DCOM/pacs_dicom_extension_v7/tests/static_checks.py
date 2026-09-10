@@ -74,6 +74,12 @@ assert 'parallelOrdered' in off
 assert "from './lib/orchestrator.js'" in bg and "from './lib/semaphore.js'" in off
 assert 'previousDownload:row' in bg, 'finalizeJob must assign result to inventory for immediate panel status change'
 
+# Cross-app mutual exclusion must be established before any worker can commit
+# an image. Writing the lock from the first commit is already one file too late.
+assert 'await acquireStudyLock(job)' in off
+assert off.index('await acquireStudyLock(job)') < off.index('jobs.set(job.tabId,job)')
+assert 'studyLockFilename(job.claimId)' in off, 'each job needs its own contender file'
+
 # Stopped tracking must strictly halt request logging.
 assert "s.tracking!=='watching'" in bg
 assert bg.count("s.tracking==='stopped')return")>=2, 'webRequest must respect stopped tracking state'

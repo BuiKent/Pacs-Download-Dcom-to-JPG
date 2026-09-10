@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import dcom_pipeline
 
 import web_backend
+from tests.dicom_test_utils import write_test_dicom
 
 
 
@@ -90,7 +91,7 @@ def _build_study(root: Path, slices: int, sidecar: dict | None) -> Path:
 
     for index in range(slices):
 
-        (dicom / f"IM{index:05d}.dcm").write_bytes(b"\x00" * 300)
+        write_test_dicom(dicom / f"IM{index:05d}.dcm")
 
     if sidecar is not None:
 

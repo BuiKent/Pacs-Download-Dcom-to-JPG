@@ -16,15 +16,18 @@ the app forever, so a claim nobody renews stops counting.
 import contextlib
 import json
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import dcom_pipeline
 import web_backend
+from tests.dicom_test_utils import write_test_dicom
 
 
 class _StubJob:
@@ -46,7 +49,7 @@ def _study_with_slices(root: Path, slices: int = 40) -> Path:
     dicom = study / "DICOM"
     dicom.mkdir(parents=True)
     for index in range(slices):
-        (dicom / f"IM{index:05d}.dcm").write_bytes(b"\x00" * 300)
+        write_test_dicom(dicom / f"IM{index:05d}.dcm")
     return study
 
 
@@ -167,12 +170,52 @@ class MutualExclusionTests(unittest.TestCase):
                 "two writers in one study interleave partial files",
             )
 
-    def test_the_same_owner_may_retake_its_own_folder(self):
-        # A resumed download is the same tool coming back, not a second writer.
+    def test_the_same_owner_cannot_retake_a_live_folder(self):
+        # Owner labels name the tool, not the individual job. Two app jobs are
+        # still two writers and must not both enter the same study.
         with TemporaryDirectory() as tmp:
             folder = Path(tmp)
             dcom_pipeline.acquire_study_lock(folder, "app")
-            self.assertTrue(dcom_pipeline.acquire_study_lock(folder, "app"))
+            self.assertIsNone(dcom_pipeline.acquire_study_lock(folder, "app"))
+
+    def test_simultaneous_claims_have_exactly_one_winner(self):
+        with TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            barrier = threading.Barrier(2)
+            original_read = dcom_pipeline.read_study_lock
+            first_reads = {"count": 0}
+            guard = threading.Lock()
+
+            def synchronized_read(*args, **kwargs):
+                result = original_read(*args, **kwargs)
+                with guard:
+                    first_reads["count"] += 1
+                    first = first_reads["count"] <= 2
+                if first:
+                    barrier.wait(timeout=2)
+                return result
+
+            results = []
+
+            def claim(owner: str) -> None:
+                results.append(dcom_pipeline.acquire_study_lock(folder, owner))
+
+            with patch("dcom_pipeline.read_study_lock", side_effect=synchronized_read):
+                threads = [
+                    threading.Thread(target=claim, args=("app",)),
+                    threading.Thread(target=claim, args=("extension",)),
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=3)
+
+            self.assertEqual(sum(result is not None for result in results), 1)
+            winner = dcom_pipeline.read_study_lock(folder)
+            self.assertEqual(
+                winner.get("claimId"),
+                next(result["claimId"] for result in results if result is not None),
+            )
 
     def test_an_expired_claim_can_be_taken_over(self):
         with TemporaryDirectory() as tmp:
@@ -205,7 +248,8 @@ class MutualExclusionTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             folder = Path(tmp)
             ours = dcom_pipeline.acquire_study_lock(folder, "app")
-            dcom_pipeline.write_study_lock(folder, "extension", claim_id="theirs")
+            dcom_pipeline.clear_study_lock(folder, ours)
+            dcom_pipeline.acquire_study_lock(folder, "extension")
 
             self.assertFalse(dcom_pipeline.renew_study_lock(folder, ours))
 
@@ -245,6 +289,55 @@ class PipelineHonoursTheClaimTests(unittest.TestCase):
                 )
 
             self.assertEqual(dcom_pipeline.read_study_lock(folder), {})
+
+    def test_direct_download_claims_the_final_folder_before_the_first_write(self):
+        with TemporaryDirectory() as tmp:
+            placeholder = Path(tmp) / "LINK_case"
+            observed = {}
+
+            def fake_download(_url, _dicom_dir, **kwargs):
+                resolved = Path(kwargs["dicom_output_resolver"](b"valid-first-dicom"))
+                observed["folder"] = resolved.parent
+                observed["claim"] = dcom_pipeline.read_study_lock(resolved.parent)
+                return dcom_pipeline.DownloadStats()
+
+            metadata = {
+                "patient_id": "BN001",
+                "patient_name": "NGUYEN VAN A",
+            }
+            with patch("dcom_pipeline.extract_patient_metadata_bytes", return_value=metadata), patch(
+                "dcom_pipeline.download_all", side_effect=fake_download,
+            ):
+                dcom_pipeline.run_pipeline(
+                    "https://viewer.test/direct", placeholder, log=lambda _m: None,
+                )
+
+            self.assertEqual(observed["claim"].get("owner"), "app")
+            self.assertFalse(dcom_pipeline.read_study_lock(observed["folder"]))
+
+    def test_a_long_download_renews_its_claim_without_waiting_for_progress(self):
+        with TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "01-09-2026 - CT - CT Bung"
+            folder.mkdir()
+            renewed = threading.Event()
+            original_renew = dcom_pipeline.renew_study_lock
+
+            def track_renew(*args, **kwargs):
+                result = original_renew(*args, **kwargs)
+                if threading.current_thread().name == "dcom-study-lock":
+                    renewed.set()
+                return result
+
+            def slow_download(*_args, **_kwargs):
+                self.assertTrue(renewed.wait(0.5), "heartbeat did not renew the live claim")
+                return dcom_pipeline.DownloadStats()
+
+            with patch.object(dcom_pipeline, "STUDY_LOCK_HEARTBEAT_SECONDS", 0.01), patch(
+                "dcom_pipeline.renew_study_lock", side_effect=track_renew,
+            ), patch("dcom_pipeline.download_all", side_effect=slow_download):
+                dcom_pipeline.run_pipeline(
+                    "https://viewer.test/study", folder, log=lambda _m: None,
+                )
 
 
 class AClaimNeverCreatesAStudyTests(unittest.TestCase):

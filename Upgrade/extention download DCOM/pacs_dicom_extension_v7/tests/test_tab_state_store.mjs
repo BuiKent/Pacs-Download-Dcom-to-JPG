@@ -10,7 +10,7 @@ import {
 } from '../lib/tab_state_store.js';
 
 function stateWith(urlCount, entryCount) {
-  return {
+  const state = {
     tabId: 7,
     tracking: 'watching',
     currentUrl: 'https://pacs.example/viewer?study=1.2.3',
@@ -23,6 +23,22 @@ function stateWith(urlCount, entryCount) {
     })),
     _directUrlSet: new Set(['https://pacs.example/i/0']),
   };
+  state.pacsRequests = [{
+    type: 'PACS_GENERIC_API',
+    url: 'https://pacs.example/api/query',
+    method: 'POST',
+    requestId: 'raw-request',
+    requestBody: {kind: 'raw', chunks: ['eyJzdHVkeSI6IjEuMi4zIn0=']},
+  }];
+  state.learnCandidates = [{
+    url: 'https://pacs.example/api/manifest',
+    display: 'api/manifest',
+    method: 'POST',
+    requestId: 'learn-request',
+    requestKey: 'POST|manifest|body-signature',
+    requestBody: {kind: 'form', data: {study: ['1.2.3']}},
+  }];
+  return state;
 }
 
 // --- The cap actually caps, and the Set never reaches storage --------------
@@ -39,6 +55,11 @@ const small = pruneStateForStorage(stateWith(9000, 900), 300);
 assert.equal(small.genericDirectUrls.length, 300);
 assert.ok(small.genericEntries.length < pruned.genericEntries.length,
   'entries carry parsed metadata, so they shrink with the url cap');
+assert.equal(pruned.pacsRequests[0].requestBody.kind, 'raw',
+  'a raw POST body must survive a service-worker restart');
+assert.equal(pruned.learnCandidates[0].requestBody.kind, 'form',
+  'manual learning must retain the body needed to replay a POST manifest');
+assert.equal(pruned.learnCandidates[0].requestKey, 'POST|manifest|body-signature');
 
 // --- The minimal fallback keeps what makes the tab a tracked tab ----------
 const minimal = minimalTabState(stateWith(9000, 900));
@@ -75,6 +96,13 @@ assert.equal(capUsed, 1000, 'it steps down the ladder until the payload fits');
 assert.equal(tight.written.length, 1, 'only the write that succeeded lands');
 assert.equal(tight.written[0].tracking, 'watching');
 assert.equal(tight.written[0].genericDirectUrls.length, 1000);
+assert.equal(tight.written[0].truncated, true,
+  'a smaller quota cap must not masquerade as a complete discovery result');
+
+const complete = quotaLimitedWriter(10000);
+await persistTabState(complete.write, 'pacs6_tab_7', stateWith(100, 100));
+assert.notEqual(complete.written[0].truncated, true,
+  'a state that fits without shedding data remains complete');
 
 // The regression this file exists for: the old code called
 // `storage.session.remove(key)` on any failure, so a tab a little over quota

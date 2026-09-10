@@ -21,6 +21,7 @@ from PIL import Image
 
 import dcom_pipeline
 
+from tests.dicom_test_utils import write_test_dicom
 from web_backend import (
     ArchiveCatalog,
     SeriesRecord,
@@ -1872,13 +1873,13 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         s1 = p_dir / "2026-08-06 - MR - SO NAO CO TIEM"
         s1.mkdir(parents=True, exist_ok=True)
         # Add 3 dummy dicom files and 1 jpg
-        (s1 / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
-        (s1 / "slice2.dcm").write_bytes(b"DICM" + b"\0" * 100)
+        write_test_dicom(s1 / "slice1.dcm")
+        write_test_dicom(s1 / "slice2.dcm")
         (s1 / "photo.jpg").write_bytes(b"\xFF\xD8\xFF\xE0" + b"\0" * 50)
         
         s2 = p_dir / "2026-07-02 - MR - COT SONG"
         s2.mkdir(parents=True, exist_ok=True)
-        (s2 / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+        write_test_dicom(s2 / "slice1.dcm")
         
         self.controller.output_root = self.temp_dir
         scanner = WorklistScanner(self.controller)
@@ -1907,7 +1908,7 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         p_dir = self.temp_dir / "TEST-0002_TRAN THI B - Nữ - 1980 - BV C"
         study = p_dir / "2026-08-06 - MR - SO NAO"
         study.mkdir(parents=True, exist_ok=True)
-        (study / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+        write_test_dicom(study / "slice1.dcm")
 
         self.controller.output_root = self.temp_dir
         self.controller.history.add(p_dir)
@@ -1927,7 +1928,7 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
 
         flat = self.temp_dir / "TEST-0003_LE VAN C - Nam - 1990 - BV D"
         (flat / "DICOM").mkdir(parents=True, exist_ok=True)
-        (flat / "DICOM" / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+        write_test_dicom(flat / "DICOM" / "slice1.dcm")
 
         self.controller.output_root = self.temp_dir
         self.controller.history.add(flat)
@@ -1946,7 +1947,7 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         jpg = study / "JPG"
         dcom.mkdir(parents=True, exist_ok=True)
         jpg.mkdir(parents=True, exist_ok=True)
-        (dcom / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+        write_test_dicom(dcom / "slice1.dcm")
         (jpg / "IM_0001.jpg").write_bytes(b"\xFF\xD8\xFF\xE0" + b"\0" * 100)
 
         self.controller.output_root = self.temp_dir
@@ -2334,7 +2335,7 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         })
         for name in ("CU", "MOI"):
             (patient / name).mkdir(parents=True, exist_ok=True)
-            (patient / name / "s.dcm").write_bytes(b"DICM" + b"\0" * 100)
+            write_test_dicom(patient / name / "s.dcm")
 
         studies = next(
             p for p in WorklistScanner(self.controller).scan() if p["patientId"] == "TEST-7777"
@@ -2955,7 +2956,7 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         })
         study_dir = patient_dir / "2026-07-02 - MR - COT SONG"
         study_dir.mkdir(parents=True, exist_ok=True)
-        (study_dir / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+        write_test_dicom(study_dir / "slice1.dcm")
 
         patients = WorklistScanner(self.controller).scan()
         patient = next(p for p in patients if p["patientId"] == "TEST-7777")
@@ -2983,7 +2984,7 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         })
         study_dir = patient_dir / "CT-NGUC"
         study_dir.mkdir(parents=True, exist_ok=True)
-        (study_dir / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+        write_test_dicom(study_dir / "slice1.dcm")
 
         patients = WorklistScanner(self.controller).scan()
         study = next(p for p in patients if p["patientId"] == "TEST-7777")["studies"][0]
@@ -3004,7 +3005,7 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         patient_dir.mkdir(parents=True, exist_ok=True)
         study_dir = patient_dir / "phim cu khong ro ngay"
         study_dir.mkdir(parents=True, exist_ok=True)
-        (study_dir / "slice1.dcm").write_bytes(b"DICM" + b"\0" * 100)
+        write_test_dicom(study_dir / "slice1.dcm")
         self.controller.output_root = self.temp_dir
 
         patients = WorklistScanner(self.controller).scan()

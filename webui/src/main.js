@@ -2238,8 +2238,9 @@ function getEffectiveWorklistPatients() {
  */
 let worklistScanInFlight = false;
 async function refreshWorklist({ repaint = true, silent = false } = {}) {
-  if (worklistScanInFlight) return;
+  if (worklistScanInFlight) return false;
   worklistScanInFlight = true;
+  let succeeded = false;
   // A silent scan leaves the loading state alone: the rows already on screen
   // stay readable and the "Quét lại" button stays live, so the reader can keep
   // working while the disk is walked. Only an explicit rescan says anything.
@@ -2255,6 +2256,7 @@ async function refreshWorklist({ repaint = true, silent = false } = {}) {
     // disk was being walked still looks new on the next poll. Asking for the
     // token in a second request would mark those changes as already seen.
     state.worklistRevision = String(result?.revision || state.worklistRevision || "");
+    succeeded = true;
   } catch (error) {
     // A failed scan leaves the previous list in place; blanking the tree the
     // doctor is reading would be worse than showing a slightly stale one.
@@ -2264,6 +2266,7 @@ async function refreshWorklist({ repaint = true, silent = false } = {}) {
     worklistScanInFlight = false;
   }
   if (repaint) refreshStudyListPanel();
+  return succeeded;
 }
 
 /**
@@ -2306,14 +2309,21 @@ async function currentWorklistRevision() {
  * timer; the full scan runs only when the token actually moved.
  */
 let worklistWatch = null;
+let worklistRevisionCheckInFlight = false;
 function startWorklistWatch(intervalMs = 20000) {
   if (worklistWatch) window.clearInterval(worklistWatch);
   worklistWatch = window.setInterval(async () => {
-    if (worklistScanInFlight || document.hidden) return;
-    const revision = await currentWorklistRevision();
-    if (!revision || revision === state.worklistRevision) return;
-    state.worklistRevision = revision;
-    await refreshWorklist({ silent: true });
+    if (worklistScanInFlight || worklistRevisionCheckInFlight || document.hidden) return;
+    worklistRevisionCheckInFlight = true;
+    try {
+      const revision = await currentWorklistRevision();
+      if (!revision || revision === state.worklistRevision) return;
+      // The scan response commits its own pre-scan revision. A failed scan
+      // leaves the old token intact so the same disk change is retried.
+      await refreshWorklist({ silent: true });
+    } finally {
+      worklistRevisionCheckInFlight = false;
+    }
   }, intervalMs);
 }
 

@@ -204,6 +204,17 @@ class ControllerSettingsTests(unittest.TestCase):
         self.assertEqual("en", payload["language"])
         self.assertEqual(str(self.root), payload["history"][0]["folder"])
 
+    def test_bootstrap_uses_cached_revision_without_walking_the_archive(self):
+        cached = {"patients": [], "scannedAt": "2026-09-10T09:00:00+07:00", "revision": "cached-rev"}
+        with patch.object(self.controller, "_read_worklist_cache", return_value=cached), patch.object(
+            self.controller,
+            "worklist_revision",
+            side_effect=AssertionError("bootstrap must remain disk-free"),
+        ):
+            payload = self.controller.bootstrap()
+
+        self.assertEqual(payload["worklistRevision"], "cached-rev")
+
     def test_changing_the_output_root_is_remembered(self):
         target = self.root / "kho"
         self.controller.set_output_root(str(target))

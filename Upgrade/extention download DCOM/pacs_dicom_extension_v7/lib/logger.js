@@ -4,6 +4,8 @@ export const LOG_STORAGE_KEY = 'pacs6_activity_logs';
 export const MAX_LOG_ENTRIES = 1500;
 
 let logBuffer = null;
+let loadPromise = null;
+let logGeneration = 0;
 let flushTimer = null;
 
 /**
@@ -71,19 +73,37 @@ export function createLogEntry(levelOrObj, category, message, details = null) {
   };
 }
 
+function sanitizeStoredEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  return {
+    ...entry,
+    message: redactIdentifiers(entry.message),
+    details: redactIdentifiers(sanitizeDetails(entry.details)),
+  };
+}
+
 export async function getLogsFromStorage() {
   if (Array.isArray(logBuffer)) return logBuffer;
+  if (loadPromise) return loadPromise;
+  const generation = logGeneration;
+  loadPromise = (async () => {
+    let loaded = [];
+    try {
+      if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
+        const res = await chrome.storage.local.get(LOG_STORAGE_KEY);
+        loaded = Array.isArray(res[LOG_STORAGE_KEY])
+          ? res[LOG_STORAGE_KEY].map(sanitizeStoredEntry).filter(Boolean)
+          : [];
+      }
+    } catch { /* an unavailable log store is an empty log */ }
+    if (generation === logGeneration && !Array.isArray(logBuffer)) logBuffer = loaded;
+    return Array.isArray(logBuffer) ? logBuffer : loaded;
+  })();
   try {
-    if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
-      const res = await chrome.storage.local.get(LOG_STORAGE_KEY);
-      logBuffer = Array.isArray(res[LOG_STORAGE_KEY]) ? res[LOG_STORAGE_KEY] : [];
-    } else {
-      logBuffer = [];
-    }
-  } catch {
-    logBuffer = [];
+    return await loadPromise;
+  } finally {
+    loadPromise = null;
   }
-  return logBuffer;
 }
 
 export function scheduleLogFlush() {
@@ -110,6 +130,7 @@ export async function appendLog(levelOrObj, category, message, details = null) {
 }
 
 export async function clearAllLogs() {
+  logGeneration += 1;
   logBuffer = [];
   try {
     if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
@@ -135,11 +156,12 @@ export function formatLogsAsText(logs = [], extensionVersion = '') {
   ];
 
   for (const log of logs) {
-    const ts = log.timestamp || log.timeFormatted || '';
-    const lvl = `[${log.level || 'INFO'}]`.padEnd(9, ' ');
-    const cat = `[${log.category || 'SYSTEM'}]`.padEnd(14, ' ');
-    const det = log.details ? ` | Chi tiết: ${log.details}` : '';
-    lines.push(`${ts} ${lvl} ${cat} ${log.message}${det}`);
+    const safe = sanitizeStoredEntry(log) || {};
+    const ts = safe.timestamp || safe.timeFormatted || '';
+    const lvl = `[${safe.level || 'INFO'}]`.padEnd(9, ' ');
+    const cat = `[${safe.category || 'SYSTEM'}]`.padEnd(14, ' ');
+    const det = safe.details ? ` | Chi tiết: ${safe.details}` : '';
+    lines.push(`${ts} ${lvl} ${cat} ${safe.message || ''}${det}`);
   }
 
   return lines.join('\r\n');

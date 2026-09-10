@@ -22,6 +22,7 @@ from tempfile import TemporaryDirectory
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import web_backend
+import dicom_io
 
 
 class _StubJob:
@@ -61,13 +62,24 @@ def _write_dicom(path: Path) -> None:
     file_meta.MediaStorageSOPInstanceUID = dataset.SOPInstanceUID
     file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
     dataset.file_meta = file_meta
-    dataset.is_little_endian = True
-    dataset.is_implicit_VR = False
     path.parent.mkdir(parents=True, exist_ok=True)
     dataset.save_as(str(path), enforce_file_format=True)
 
 
 class DicomSliceCountingTests(unittest.TestCase):
+    def test_a_corrupt_file_with_dcm_suffix_is_not_a_slice(self):
+        with TemporaryDirectory() as tmp:
+            study = Path(tmp) / "01-09-2026 - CT - CT Bung"
+            dicom = study / "DICOM"
+            _write_dicom(dicom / "valid.dcm")
+            (dicom / "corrupt.dcm").write_bytes(b"not a dicom dataset")
+
+            scanned = _scan(study)
+            discovered = dicom_io.discover_dicom_files(dicom)
+
+        self.assertEqual(scanned["mediaCounts"]["dicom"], 1)
+        self.assertEqual([path.name for path in discovered], ["valid.dcm"])
+
     def test_counts_extensionless_slices_nested_under_series_folders(self):
         # What a PACS disc export actually writes. Matching only the file's
         # immediate parent reported this study as "Folder trống".
@@ -160,12 +172,12 @@ class SliceCountFreshnessTests(unittest.TestCase):
             study = Path(tmp) / "01-09-2026 - MR - MRI Nao"
             dicom = study / "DICOM"
             dicom.mkdir(parents=True)
-            (dicom / "IM00000.dcm").write_bytes(b"\x00" * 300)
+            _write_dicom(dicom / "IM00000.dcm")
 
             scanner = web_backend.WorklistScanner(_StubController())
             self.assertEqual(scanner._scan_study(study, {}, None)["sliceCount"], 1)
 
-            (dicom / "IM00001.dcm").write_bytes(b"\x00" * 300)
+            _write_dicom(dicom / "IM00001.dcm")
             self.assertEqual(scanner._scan_study(study, {}, None)["sliceCount"], 2)
 
 

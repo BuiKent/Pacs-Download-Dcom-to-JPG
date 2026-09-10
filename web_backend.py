@@ -3877,11 +3877,10 @@ class WorklistScanner:
                     # folder alone inflated the number the reader checks for
                     # completeness, so anything without a DICOM extension is
                     # confirmed by its header.
-                    if ext in {".dcm", ".ima", ".dicom"} or (
-                        in_dicom_tree
-                        and ext not in _NON_DICOM_EXTENSIONS
-                        and looks_like_dicom_file(fp)
-                    ):
+                    if (
+                        ext in {".dcm", ".ima", ".dicom"}
+                        or in_dicom_tree and ext not in _NON_DICOM_EXTENSIONS
+                    ) and looks_like_dicom_file(fp):
                         dicom_count += 1
                     elif ext in {".mp4", ".avi", ".mkv", ".mov", ".webm"}:
                         video_count += 1
@@ -4544,7 +4543,10 @@ class WebController:
                 "patients": cached_worklist.get("patients", []),
                 "scannedAt": cached_worklist.get("scannedAt", ""),
             },
-            "worklistRevision": self.worklist_revision(),
+            # The fresh scan starts immediately after boot and will replace
+            # this. Re-walking the entire archive synchronously here defeats
+            # the cached instant-start path this payload is designed for.
+            "worklistRevision": str(cached_worklist.get("revision") or ""),
             "lastDirectUrl": self.history.url_for(archive.get("root", "")),
             "hospitals": [
                 {
@@ -4604,6 +4606,11 @@ class WebController:
                     stamp(str(study), study)
                     for inner in child_dirs(study):
                         stamp(str(inner), inner)
+                        # The extension stores DICOM as
+                        # DICOM/<SeriesInstanceUID>/image.dcm. Adding a slice
+                        # moves the series directory, not its DICOM parent.
+                        for series in child_dirs(inner):
+                            stamp(str(series), series)
         return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
 
     def _discovered_patient_dirs(self, root: Path) -> list[tuple[Path, str]]:
@@ -4655,12 +4662,22 @@ class WebController:
         patients = data.get("patients")
         if not isinstance(patients, list):
             return {}
-        return {"patients": patients, "scannedAt": str(data.get("scannedAt") or "")}
+        return {
+            "patients": patients,
+            "scannedAt": str(data.get("scannedAt") or ""),
+            "revision": str(data.get("revision") or ""),
+        }
 
-    def _write_worklist_cache(self, patients: list[dict]) -> None:
+    def _write_worklist_cache(
+        self,
+        patients: list[dict],
+        revision: str = "",
+        scanned_at: str = "",
+    ) -> None:
         payload = {
             "roots": self._worklist_cache_key(),
-            "scannedAt": dcom_pipeline._now_local(),
+            "scannedAt": scanned_at or dcom_pipeline._now_local(),
+            "revision": str(revision or ""),
             "patients": patients,
         }
         try:
@@ -4684,10 +4701,11 @@ class WebController:
         revision = self.worklist_revision()
         scanner = WorklistScanner(self)
         patients = scanner.scan()
-        self._write_worklist_cache(patients)
+        scanned_at = dcom_pipeline._now_local()
+        self._write_worklist_cache(patients, revision=revision, scanned_at=scanned_at)
         return {
             "patients": patients,
-            "scannedAt": dcom_pipeline._now_local(),
+            "scannedAt": scanned_at,
             "revision": revision,
         }
 

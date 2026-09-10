@@ -15,6 +15,8 @@ import sys
 import threading
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -22,6 +24,7 @@ import dcom_pipeline
 
 IS_WINDOWS = sys.platform == "win32"
 THREAD_PRIORITY_NORMAL = 0
+THREAD_PRIORITY_ABOVE_NORMAL = 1
 
 
 THREAD_PRIORITY_ERROR_RETURN = 0x7FFFFFFF
@@ -42,7 +45,36 @@ class BackgroundThreadPriorityTests(unittest.TestCase):
     def test_it_is_a_no_op_that_never_raises(self):
         # Called at the top of `run_pipeline`, before anything is downloaded.
         # Raising here would take the whole job down with it.
-        dcom_pipeline.set_background_thread_priority()
+        try:
+            dcom_pipeline.set_background_thread_priority()
+        finally:
+            dcom_pipeline.restore_thread_priority(THREAD_PRIORITY_NORMAL)
+
+    @unittest.skipUnless(IS_WINDOWS, "thread priorities are a Windows API")
+    def test_pipeline_restores_the_callers_exact_previous_priority(self):
+        observed = {}
+
+        def worker() -> None:
+            dcom_pipeline._set_thread_priority(THREAD_PRIORITY_ABOVE_NORMAL)
+            try:
+                with TemporaryDirectory() as tmp, patch(
+                    "dcom_pipeline._run_pipeline_unlocked",
+                    side_effect=lambda *_args, **_kwargs: (
+                        dcom_pipeline.set_background_thread_priority(), None, Path(tmp) / "JPG"
+                    ),
+                ):
+                    dcom_pipeline.run_pipeline(
+                        "https://viewer.test/study", Path(tmp), log=lambda _m: None,
+                    )
+                observed["after"] = _current_thread_priority()
+            finally:
+                dcom_pipeline._set_thread_priority(THREAD_PRIORITY_NORMAL)
+
+        thread = threading.Thread(target=worker, name="dcom-priority-restore")
+        thread.start()
+        thread.join()
+
+        self.assertEqual(observed["after"], THREAD_PRIORITY_ABOVE_NORMAL)
 
     @unittest.skipUnless(IS_WINDOWS, "thread priorities are a Windows API")
     def test_it_lowers_the_calling_thread(self):

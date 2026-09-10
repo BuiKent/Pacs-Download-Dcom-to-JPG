@@ -62,8 +62,8 @@ def dicomdir_referenced_files(dicomdir: Path) -> set[str]:
     return found
 
 
-def _is_extensionless_dicom(path: Path) -> bool:
-    """Accept extensionless DICOM images without treating every file as DICOM."""
+def _is_dicom_dataset(path: Path) -> bool:
+    """Confirm an image dataset that has no trustworthy Part-10 preamble."""
     if path.name.upper() == DICOMDIR_NAME:
         return False
     try:
@@ -101,15 +101,16 @@ def looks_like_dicom_file(path: Path) -> bool:
     path = Path(path)
     if path.name.upper() == DICOMDIR_NAME:
         return False
-    if path.suffix.lower() in KNOWN_DICOM_SUFFIXES:
-        return True
     try:
         with path.open("rb") as handle:
             if handle.read(132)[128:132] == b"DICM":
                 return True
     except OSError:
         return False
-    return _is_extensionless_dicom(path)
+    # A known suffix is a hint, never proof. Interrupted downloads and HTML
+    # error responses are often left behind as `.dcm`; counting them can make
+    # an incomplete study look clinically complete.
+    return _is_dicom_dataset(path)
 
 
 def discover_dicom_files(base: Path) -> list[Path]:
@@ -124,7 +125,8 @@ def discover_dicom_files(base: Path) -> list[Path]:
             continue
         suffix = path.suffix.lower()
         if suffix in KNOWN_DICOM_SUFFIXES:
-            found.append(path)
+            if looks_like_dicom_file(path):
+                found.append(path)
         elif not suffix:
             if indexed is None:
                 dicomdir = find_dicomdir(root)
@@ -133,7 +135,7 @@ def discover_dicom_files(base: Path) -> list[Path]:
                 key = str(path.resolve()).casefold()
             except OSError:
                 key = str(path).casefold()
-            if key in indexed or _is_extensionless_dicom(path):
+            if key in indexed or _is_dicom_dataset(path):
                 found.append(path)
     return sorted(found, key=lambda path: str(path).casefold())
 

@@ -520,8 +520,17 @@ export function sanitizeViewerUrl(url) {
 
 export const STUDY_LOCK_NAME = '.dcom-busy.json';
 export const STUDY_LOCK_FORMAT = 'dcom-study-lock-v1';
+export const STUDY_LOCK_CLAIM_PREFIX = '.dcom-busy.';
+export const STUDY_LOCK_SETTLE_MS = 80;
 /** Renew well inside the app's 300s expiry so a live download never lapses. */
 export const STUDY_LOCK_RENEW_MS = 60000;
+
+export function studyLockFilename(claimId) {
+  const value = String(claimId || '');
+  return /^[A-Za-z0-9_-]{1,128}$/.test(value)
+    ? `${STUDY_LOCK_CLAIM_PREFIX}${value}.json`
+    : '';
+}
 
 /**
  * The claim this extension leaves in a study folder while it fills it.
@@ -535,7 +544,10 @@ export const STUDY_LOCK_RENEW_MS = 60000;
  * rewritten as the job runs so a long study does not lapse. A browser killed
  * mid download simply stops renewing, and the claim expires on its own.
  */
-export function buildStudyLock({owner = 'extension', label = '', claimId = '', now = Date.now()} = {}) {
+export function buildStudyLock({
+  owner = 'extension', label = '', claimId = '', now = Date.now(), createdAt = 0,
+} = {}) {
+  const seconds = Number(now) / 1000;
   return {
     format: STUDY_LOCK_FORMAT,
     owner: String(owner || 'extension'),
@@ -544,17 +556,35 @@ export function buildStudyLock({owner = 'extension', label = '', claimId = '', n
     // second job clears the first one's claim on its way past, and the
     // exclusion it exists to provide quietly stops applying.
     claimId: String(claimId || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`),
-    renewedAt: Math.floor(Number(now) / 1000),
+    createdAt: Number(createdAt) || seconds,
+    renewedAt: seconds,
   };
+}
+
+function isLiveStudyLock(claim, ttlSeconds = 300, now = Date.now()) {
+  if (!claim || claim.format !== STUDY_LOCK_FORMAT) return false;
+  const renewed = Number(claim.renewedAt) || 0;
+  return renewed > 0 && Number(now) / 1000 - renewed <= ttlSeconds;
+}
+
+/** Pick the same winner regardless of filesystem enumeration order. */
+export function studyLockWinner(claims, ttlSeconds = 300, now = Date.now()) {
+  const live = (Array.isArray(claims) ? claims : []).filter(
+    claim => isLiveStudyLock(claim, ttlSeconds, now),
+  );
+  live.sort((left, right) => {
+    const leftCreated = Number(left?.createdAt || left?.renewedAt) || 0;
+    const rightCreated = Number(right?.createdAt || right?.renewedAt) || 0;
+    return leftCreated - rightCreated
+      || String(left?.claimId || '').localeCompare(String(right?.claimId || ''));
+  });
+  return live[0] || null;
 }
 
 /** True when a claim read off disk is live and belongs to someone else. */
 export function claimBlocksUs(claim, ourClaimId, ttlSeconds = 300, now = Date.now()) {
-  if (!claim || claim.format !== STUDY_LOCK_FORMAT) return false;
-  const renewed = Number(claim.renewedAt) || 0;
-  if (renewed <= 0) return false;
-  if (Math.floor(now / 1000) - renewed > ttlSeconds) return false;
-  return String(claim.claimId || '') !== String(ourClaimId || '');
+  return isLiveStudyLock(claim, ttlSeconds, now)
+    && String(claim.claimId || '') !== String(ourClaimId || '');
 }
 
 export const SIDECAR_FORMAT = 'dcom-extension-source-v1';

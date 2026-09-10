@@ -3,7 +3,15 @@
 // The app parses this exact shape in `dcom_pipeline.read_study_lock`, so the
 // two must agree on the field names and on what `renewedAt` counts in.
 import assert from 'node:assert/strict';
-import {buildStudyLock, STUDY_LOCK_NAME, STUDY_LOCK_FORMAT, STUDY_LOCK_RENEW_MS} from '../lib/pacs.js';
+import {
+  buildStudyLock,
+  claimBlocksUs,
+  studyLockFilename,
+  studyLockWinner,
+  STUDY_LOCK_NAME,
+  STUDY_LOCK_FORMAT,
+  STUDY_LOCK_RENEW_MS,
+} from '../lib/pacs.js';
 
 assert.equal(STUDY_LOCK_NAME, '.dcom-busy.json');
 assert.equal(STUDY_LOCK_FORMAT, 'dcom-study-lock-v1');
@@ -22,7 +30,8 @@ assert.ok(
   Math.abs(lock.renewedAt - seconds) <= 2,
   `renewedAt must be unix seconds to match the app, got ${lock.renewedAt}`,
 );
-assert.equal(String(lock.renewedAt).length, 10, 'seconds, not milliseconds');
+assert.ok(lock.renewedAt < 10_000_000_000, 'seconds, not milliseconds');
+assert.equal(lock.createdAt, lock.renewedAt, 'a new contender records when it entered the race');
 
 // Renewing has to stay well inside the app's expiry or a live download lapses
 // and the app starts treating an arriving study as an abandoned one.
@@ -42,5 +51,24 @@ const bare = buildStudyLock();
 assert.equal(bare.owner, 'extension');
 assert.equal(bare.label, '');
 assert.ok(bare.renewedAt > 0);
+
+// Each writer owns a separate file. Two runtimes overwriting one shared JSON
+// file cannot implement compare-and-swap and occasionally both entered.
+assert.match(studyLockFilename(bare.claimId), /^\.dcom-busy\.[A-Za-z0-9_-]+\.json$/);
+assert.equal(studyLockFilename('../escape'), '', 'a claim id must not become a path');
+
+const older = buildStudyLock({owner: 'app', claimId: 'older', now: 1_700_000_000_000});
+const newer = buildStudyLock({claimId: 'newer', now: 1_700_000_001_000});
+assert.equal(
+  studyLockWinner([newer, older], 300, 1_700_000_002_000).claimId,
+  'older',
+  'simultaneous contenders must independently choose the same winner',
+);
+assert.equal(
+  studyLockWinner([older], 300, 1_700_000_301_001),
+  null,
+  'an abandoned contender expires',
+);
+assert.equal(claimBlocksUs(older, 'newer', 300, 1_700_000_002_000), true);
 
 console.log('Study lock tests OK');

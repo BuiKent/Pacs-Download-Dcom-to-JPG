@@ -63,6 +63,7 @@ LogFn = Callable[[str], None]
 # other program on the machine.
 _THREAD_PRIORITY_BELOW_NORMAL = -1
 _THREAD_PRIORITY_NORMAL = 0
+_THREAD_PRIORITY_ERROR_RETURN = 0x7FFFFFFF
 
 
 def _set_thread_priority(value: int) -> bool:
@@ -85,7 +86,24 @@ def _set_thread_priority(value: int) -> bool:
         return False
 
 
-def restore_thread_priority() -> None:
+def _get_thread_priority() -> Optional[int]:
+    """Current Windows thread priority, or None when it cannot be queried."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentThread.restype = ctypes.c_void_p
+        kernel32.GetThreadPriority.argtypes = [ctypes.c_void_p]
+        kernel32.GetThreadPriority.restype = ctypes.c_int
+        value = int(kernel32.GetThreadPriority(kernel32.GetCurrentThread()))
+        return None if value == _THREAD_PRIORITY_ERROR_RETURN else value
+    except Exception:
+        return None
+
+
+def restore_thread_priority(previous: Optional[int] = _THREAD_PRIORITY_NORMAL) -> None:
     """Put the calling thread back to normal scheduling.
 
     A job thread ends with the job and needs no restore, but `run_pipeline` is
@@ -93,7 +111,8 @@ def restore_thread_priority() -> None:
     the process's own long-lived thread. Lowering that and never raising it
     again left the tool sluggish for the rest of the session, one download in.
     """
-    _set_thread_priority(_THREAD_PRIORITY_NORMAL)
+    if previous is not None:
+        _set_thread_priority(previous)
 
 
 def set_background_thread_priority() -> None:
@@ -3583,7 +3602,7 @@ def download_all(
         incoming_sop_uid = str(getattr(parsed_ds, "SOPInstanceUID", "") or "").strip() if parsed_ds is not None else ""
         h = hashlib.sha1(data).hexdigest()
         with save_lock:
-            if ext == "dcm" and not output_resolved and dicom_output_resolver is not None:
+            if not output_resolved and dicom_output_resolver is not None:
                 dicom_dir = Path(dicom_output_resolver(data))
                 raw_jpg_dir = dicom_dir.parent / "RAW_JPG"
                 output_resolved = True
@@ -6337,23 +6356,44 @@ STUDY_LOCK_FORMAT = "dcom-study-lock-v1"
 # holds its lock across a stall, short enough that a tool killed mid download
 # stops blocking the other one within a coffee break.
 STUDY_LOCK_TTL_SECONDS = 300
+# A claimant publishes its own file, then lets every claimant in the same race
+# become visible before choosing one deterministic winner. Unlike a shared
+# read-then-overwrite file, this works across Python and the browser File System
+# Access API, neither of which can perform a cross-runtime compare-and-swap.
+STUDY_LOCK_SETTLE_SECONDS = 0.08
+STUDY_LOCK_HEARTBEAT_SECONDS = 60.0
+STUDY_LOCK_CLAIM_PREFIX = ".dcom-busy."
 
 
 def study_lock_path(study_folder: Path) -> Path:
+    """Legacy single-file claim path, kept for old extension versions."""
     return Path(study_folder) / STUDY_LOCK_NAME
 
 
-def read_study_lock(study_folder: Path, now: Optional[float] = None) -> dict:
-    """Who is downloading into `study_folder` right now, if anyone.
+def study_lock_claim_path(study_folder: Path, claim_id: str) -> Path:
+    """The private contender file for one job's claim."""
+    raw = str(claim_id or "")
+    safe = raw if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", raw) else hashlib.sha256(
+        raw.encode("utf-8", errors="replace")
+    ).hexdigest()
+    return Path(study_folder) / f"{STUDY_LOCK_CLAIM_PREFIX}{safe}.json"
 
-    The app and the extension can both be pointed at the same study and neither
-    can see the other's process. What they share is the folder, so the claim
-    lives there. An expired claim reads as no claim: a browser killed mid
-    download must not lock a study out of the app forever.
-    """
-    now = time.time() if now is None else now
+
+def _study_lock_candidates(study_folder: Path) -> list[Path]:
+    folder = Path(study_folder)
+    if not folder.is_dir():
+        return []
+    candidates = [study_lock_path(folder)]
     try:
-        data = json.loads(study_lock_path(study_folder).read_text(encoding="utf-8"))
+        candidates.extend(folder.glob(f"{STUDY_LOCK_CLAIM_PREFIX}*.json"))
+    except OSError:
+        pass
+    return candidates
+
+
+def _read_study_lock_file(path: Path, now: float) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return {}
     if not isinstance(data, dict) or data.get("format") != STUDY_LOCK_FORMAT:
@@ -6367,6 +6407,32 @@ def read_study_lock(study_folder: Path, now: Optional[float] = None) -> dict:
     return data
 
 
+def read_study_lock(study_folder: Path, now: Optional[float] = None) -> dict:
+    """Who is downloading into `study_folder` right now, if anyone.
+
+    The app and the extension can both be pointed at the same study and neither
+    can see the other's process. What they share is the folder, so the claim
+    lives there. An expired claim reads as no claim: a browser killed mid
+    download must not lock a study out of the app forever.
+    """
+    now = time.time() if now is None else now
+    live = [
+        data for path in _study_lock_candidates(study_folder)
+        if (data := _read_study_lock_file(path, now))
+    ]
+    if not live:
+        return {}
+
+    def order(data: dict) -> tuple[float, str]:
+        try:
+            created = float(data.get("createdAt") or data.get("renewedAt") or 0)
+        except (TypeError, ValueError):
+            created = 0
+        return created, str(data.get("claimId") or "")
+
+    return min(live, key=order)
+
+
 def write_study_lock(
     study_folder: Path,
     owner: str,
@@ -6377,6 +6443,12 @@ def write_study_lock(
 
     Kept for renewals, where the caller already knows it holds the claim.
     """
+    claim_id = str(claim_id or uuid.uuid4().hex)
+    folder = Path(study_folder)
+    existing = _read_study_lock_file(
+        study_lock_claim_path(folder, claim_id), time.time(),
+    )
+    now = time.time()
     payload = {
         "format": STUDY_LOCK_FORMAT,
         "owner": str(owner or "app"),
@@ -6384,27 +6456,33 @@ def write_study_lock(
         # Whoever wrote the claim. Only they may renew or release it: without
         # this a second job releases the first one's claim on its way past, and
         # the exclusion it was there to provide quietly stops applying.
-        "claimId": str(claim_id or uuid.uuid4().hex),
-        "renewedAt": time.time(),
+        "claimId": claim_id,
+        "createdAt": existing.get("createdAt") or now,
+        "renewedAt": now,
         "renewedAtLocal": _now_local(),
     }
-    folder = Path(study_folder)
     # Never `mkdir` here. A claim is a note left in a folder that exists; making
     # one to hold the note leaves an empty study behind whenever the download
     # ends up somewhere else, and the worklist lists that as "Folder trống".
     if not folder.is_dir():
         return payload
     try:
-        study_lock_path(folder).write_text(
-            json.dumps(payload, ensure_ascii=False), encoding="utf-8",
-        )
+        destination = study_lock_claim_path(folder, claim_id)
+        temporary = destination.with_name(f"{destination.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, destination)
     except (OSError, ValueError, TypeError):
         # A claim that cannot be written costs coordination, never the images.
         return {}
     return payload
 
 
-def acquire_study_lock(study_folder: Path, owner: str, label: str = "") -> Optional[dict]:
+def acquire_study_lock(
+    study_folder: Path,
+    owner: str,
+    label: str = "",
+    claim_id: str = "",
+) -> Optional[dict]:
     """Claim `study_folder`, or report who already holds it.
 
     Returns the claim on success and `None` when someone else is live in that
@@ -6413,11 +6491,22 @@ def acquire_study_lock(study_folder: Path, owner: str, label: str = "") -> Optio
     the winner's while both report success.
     """
     held = read_study_lock(study_folder)
-    if held and str(held.get("owner") or "") != str(owner or "app"):
+    if held:
         return None
-    # Our own stale claim, or a fresh folder: take it with a new id so a
-    # previous run of ours cannot release what this one is holding.
-    return write_study_lock(study_folder, owner, label) or None
+    claim = write_study_lock(study_folder, owner, label, claim_id=claim_id)
+    if not claim:
+        return None
+    # A missing direct-download placeholder deliberately returns a pending id;
+    # it is activated only after the first valid DICOM identifies its real
+    # destination folder.
+    if not Path(study_folder).is_dir():
+        return claim
+    time.sleep(STUDY_LOCK_SETTLE_SECONDS)
+    winner = read_study_lock(study_folder)
+    if winner.get("claimId") == claim.get("claimId"):
+        return winner
+    clear_study_lock(study_folder, claim)
+    return None
 
 
 def renew_study_lock(study_folder: Path, claim: dict, label: str = "") -> bool:
@@ -6427,6 +6516,13 @@ def renew_study_lock(study_folder: Path, claim: dict, label: str = "") -> bool:
     held = read_study_lock(study_folder)
     if held and held.get("claimId") != claim.get("claimId"):
         return False
+    if not held:
+        return bool(acquire_study_lock(
+            study_folder,
+            str(claim.get("owner") or "app"),
+            label or str(claim.get("label") or ""),
+            claim_id=str(claim.get("claimId")),
+        ))
     return bool(write_study_lock(
         study_folder,
         str(claim.get("owner") or "app"),
@@ -6442,14 +6538,22 @@ def clear_study_lock(study_folder: Path, claim: Optional[dict] = None) -> None:
     never clear a claim another job has since taken. With none, releases
     whatever is there, which is what a deliberate "unlock" does.
     """
+    folder = Path(study_folder)
     if claim is not None:
-        held = read_study_lock(study_folder)
-        if held and held.get("claimId") != claim.get("claimId"):
+        claim_id = str(claim.get("claimId") or "") if isinstance(claim, dict) else ""
+        if not claim_id:
             return
-    try:
-        study_lock_path(study_folder).unlink()
-    except OSError:
-        pass
+        candidates = [study_lock_claim_path(folder, claim_id)]
+        legacy = _read_study_lock_file(study_lock_path(folder), time.time())
+        if legacy.get("claimId") == claim_id:
+            candidates.append(study_lock_path(folder))
+    else:
+        candidates = _study_lock_candidates(folder)
+    for candidate in candidates:
+        try:
+            candidate.unlink()
+        except OSError:
+            pass
 
 
 def read_extension_sidecar(study_folder: Path) -> dict:
@@ -7690,6 +7794,7 @@ def run_pipeline(url: str, out_base: Path, log: LogFn = _default_log, **kwargs):
     `LINK_*` folder onto the patient's real name mid run, which carries the
     claim file with it.
     """
+    previous_thread_priority = _get_thread_priority()
     out_base = Path(out_base)
     claim = acquire_study_lock(out_base, "app", "Đang tải từ app")
     if claim is None:
@@ -7699,17 +7804,81 @@ def run_pipeline(url: str, out_base: Path, log: LogFn = _default_log, **kwargs):
             "{} đang tải vào thư mục này. Hãy đợi nó xong rồi thử lại.".format(owner)
         )
     result = None
+    state_guard = threading.Lock()
+    active_folder = {
+        "path": out_base
+        if read_study_lock(out_base).get("claimId") == claim.get("claimId")
+        else None
+    }
+    heartbeat_stop = threading.Event()
+    heartbeat_lost = threading.Event()
+
+    def ensure_study_claim(folder: Path) -> None:
+        """Activate or move this job's claim before an image is written."""
+        destination = Path(folder)
+        destination.mkdir(parents=True, exist_ok=True)
+        if not renew_study_lock(destination, claim, "Đang tải từ app"):
+            held = read_study_lock(destination)
+            owner = "Extension" if held.get("owner") == "extension" else "Một tiến trình khác"
+            raise StudyBusyError(
+                f"{owner} đang tải vào thư mục này. Hãy đợi nó xong rồi thử lại."
+            )
+        with state_guard:
+            previous = active_folder["path"]
+            active_folder["path"] = destination
+        if previous is not None and previous != destination:
+            clear_study_lock(previous, claim)
+
+    def heartbeat() -> None:
+        while not heartbeat_stop.wait(STUDY_LOCK_HEARTBEAT_SECONDS):
+            with state_guard:
+                folder = active_folder["path"]
+            if folder is not None and not renew_study_lock(
+                folder, claim, "Đang tải từ app",
+            ):
+                heartbeat_lost.set()
+                return
+
+    # Resume mode has an exact, user-selected destination and `download_all`
+    # creates its output eagerly, so activate a pending claim before entering it.
+    if active_folder["path"] is None and kwargs.get("resume"):
+        ensure_study_claim(out_base)
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat, name="dcom-study-lock", daemon=True,
+    )
+    heartbeat_thread.start()
+    caller_should_stop = kwargs.get("should_stop")
+
+    def coordinated_stop() -> bool:
+        return heartbeat_lost.is_set() or bool(caller_should_stop and caller_should_stop())
+
+    kwargs["should_stop"] = coordinated_stop
     try:
         result = _run_pipeline_unlocked(
-            url, out_base, log=log, study_claim=claim, **kwargs
+            url,
+            out_base,
+            log=log,
+            study_claim=claim,
+            ensure_study_claim=ensure_study_claim,
+            **kwargs,
         )
+        if heartbeat_lost.is_set():
+            raise StudyBusyError(
+                "Khóa an toàn của ca chụp đã bị mất; app đã dừng để tránh ghi đè dữ liệu."
+            )
         return result
     finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1.0)
         # The CLI and the Tk app call this on a thread that outlives the job.
-        restore_thread_priority()
+        restore_thread_priority(previous_thread_priority)
         # The folder may have been renamed under us; release both names so the
         # claim never outlives the job that took it.
         released = {out_base}
+        with state_guard:
+            if active_folder["path"] is not None:
+                released.add(active_folder["path"])
         try:
             if result and result[2]:
                 released.add(Path(result[2]).parent)
@@ -7738,6 +7907,7 @@ def _run_pipeline_unlocked(
     download_attachments_flag: bool = True,
     attachments: Optional[list[dict]] = None,
     study_claim: Optional[dict] = None,
+    ensure_study_claim: Optional[Callable[[Path], None]] = None,
 ):
     set_background_thread_priority()
     out_base = Path(out_base)
@@ -7767,17 +7937,23 @@ def _run_pipeline_unlocked(
             if out_base != original_out_base:
                 log(f"Đã xác định tên hồ sơ từ DICOM đầu tiên: {out_base.name}")
         dicom_dir = out_base / "DICOM"
-        # The images are about to land here rather than in `out_base` as it was
-        # when the job started, so the claim follows them. `download_all`
-        # creates the directory straight after this returns; writing the claim
-        # is deferred to the first renewal rather than creating it early.
-        if study_claim:
-            renew_study_lock(out_base, study_claim, "Đang tải từ app")
+        # Activate the claim immediately before `download_all` writes the first
+        # byte. A direct link's final folder is only knowable from this payload.
+        if ensure_study_claim is not None:
+            ensure_study_claim(out_base)
+        elif study_claim and not renew_study_lock(
+            out_base, study_claim, "Đang tải từ app",
+        ):
+            raise StudyBusyError("Không thể khóa thư mục ca chụp.")
         return dicom_dir
 
     first_dicom_resolver = (
         resolve_first_dicom
-        if not resume and (rename_patient_root or after_first_dicom is not None)
+        if not resume and (
+            rename_patient_root
+            or after_first_dicom is not None
+            or ensure_study_claim is not None
+        )
         else None
     )
 

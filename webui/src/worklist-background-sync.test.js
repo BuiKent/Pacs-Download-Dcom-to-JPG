@@ -17,6 +17,7 @@ import {
   state,
   refreshWorklist,
   renderWorklistTreeInner,
+  startWorklistWatch,
   worklistSyncLabel,
 } from "./main.js";
 
@@ -200,5 +201,55 @@ describe("a scan records what it read and when", () => {
 
     expect(state.worklistPatients).toHaveLength(1);
     expect(state.worklistError).toBeTruthy();
+  });
+});
+
+describe("the background watcher retries safely", () => {
+  it("does not acknowledge a revision until its full scan succeeds", async () => {
+    vi.useFakeTimers();
+    state.worklistRevision = "rev-1";
+    let scans = 0;
+    global.fetch = vi.fn(async (url) => {
+      if (String(url).includes("/revision")) return jsonResponse({revision: "rev-2"});
+      scans += 1;
+      if (scans === 1) throw new Error("network archive temporarily unavailable");
+      return jsonResponse({patients: [CACHED_PATIENT], scannedAt: "2026-09-10T10:00:00+07:00", revision: "rev-2"});
+    });
+
+    try {
+      startWorklistWatch(100);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(state.worklistRevision).toBe("rev-1");
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(scans).toBe(2);
+      expect(state.worklistRevision).toBe("rev-2");
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not overlap slow revision checks", async () => {
+    vi.useFakeTimers();
+    let resolveRevision;
+    global.fetch = vi.fn((url) => {
+      if (String(url).includes("/revision")) {
+        return new Promise(resolve => { resolveRevision = resolve; });
+      }
+      return Promise.resolve(jsonResponse({patients: [], revision: "rev-2"}));
+    });
+
+    try {
+      startWorklistWatch(100);
+      await vi.advanceTimersByTimeAsync(350);
+      const revisionCalls = global.fetch.mock.calls.filter(([url]) => String(url).includes("/revision"));
+      expect(revisionCalls).toHaveLength(1);
+      resolveRevision(jsonResponse({revision: "rev-2"}));
+      await Promise.resolve();
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 });

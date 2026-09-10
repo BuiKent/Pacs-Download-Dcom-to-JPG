@@ -170,6 +170,36 @@ class ExportTests(unittest.TestCase):
             self.assertEqual(list(export_folder.rglob("mpr-volume.json")), [])
             self.assertEqual(list(export_folder.rglob("patient-index.json")), [])
 
+    def test_credentials_and_coordination_sidecars_never_leave_the_archive(self):
+        """Viewer URLs, bearer tokens, and lock files are private bookkeeping."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            patient = build_archive(root, studies=1)
+            study = next(path for path in patient.iterdir() if path.name.startswith("2026"))
+            secret = "BEARER_TOKEN_MUST_NOT_BE_EXPORTED"
+            for relative in (
+                "dcom-source.json",
+                ".direct-download.json",
+                ".dcom-busy.json",
+                "DICOM/dcom-source.json",
+            ):
+                target = study / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps({"token": secret}), encoding="utf-8")
+
+            result = portable_export.export_patient_record(
+                patient, root / "usb", mode="both",
+            )
+            export_folder = Path(result["folder"])
+
+            self.assertEqual(result["documents"], 0)
+            exported_names = {path.name for path in export_folder.rglob("*") if path.is_file()}
+            self.assertNotIn("dcom-source.json", exported_names)
+            self.assertNotIn(".direct-download.json", exported_names)
+            self.assertNotIn(".dcom-busy.json", exported_names)
+            for exported in (path for path in export_folder.rglob("*") if path.is_file()):
+                self.assertNotIn(secret.encode(), exported.read_bytes())
+
     def test_a_record_holding_only_documents_is_still_exported(self):
         """A report with no pictures is the whole record for some patients."""
         with tempfile.TemporaryDirectory() as tmp:

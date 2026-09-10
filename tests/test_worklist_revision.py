@@ -333,6 +333,22 @@ class GroupedArchiveTests(unittest.TestCase):
 
             self.assertNotEqual(controller.worklist_revision(), before)
 
+    def test_slices_arriving_inside_a_series_subfolder_move_the_token(self):
+        """The extension groups DICOM as DICOM/<SeriesUID>/image.dcm."""
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            patient = self._grouped(root)
+            series = patient / "01-09-2026 - CT - CT Bung" / "DICOM" / "1.2.840.1"
+            series.mkdir()
+            (series / "IM00000.dcm").write_bytes(b"first")
+            controller = _controller(root)
+            before = controller.worklist_revision()
+
+            time.sleep(1.1)
+            (series / "IM00001.dcm").write_bytes(b"second")
+
+            self.assertNotEqual(controller.worklist_revision(), before)
+
 
 
     def test_a_busy_claim_appearing_moves_the_token(self):
@@ -588,6 +604,16 @@ class WorklistCacheTests(unittest.TestCase):
         self.assertIn("scannedAt", raw)
 
         self.assertEqual(len(raw["patients"]), 1)
+
+    def test_the_cache_carries_the_revision_sampled_with_its_rows(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            controller = _controller(root)
+            controller._write_worklist_cache([{"id": "p_1"}], revision="rev-cached")
+
+            cached = controller._read_worklist_cache()
+
+        self.assertEqual(cached["revision"], "rev-cached")
 
 
 

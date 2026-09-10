@@ -1,3 +1,43 @@
+# 7.2.2
+
+The study claim becomes a real lock, and the state that survives a worker
+restart carries everything a download needs to resume.
+
+- One shared `.dcom-busy.json` could not implement a claim. Both writers read
+  it empty, both wrote, and both believed they had won — the exclusion existed
+  on paper only. Each job now writes its own contender file,
+  `.dcom-busy.<claimId>.json`, and every reader elects the same winner from all
+  of them: earliest `createdAt`, ties broken by claim id. A contender that
+  loses removes its own file. Measured across repeated simultaneous starts:
+  exactly one winner, one file left behind.
+- The claim is taken before the first worker may write, not after the first
+  image lands — one file too late is still two writers in one folder.
+  `static_checks.py` fails if the acquire moves back below that line.
+- A claim id can no longer become a path: `studyLockFilename('../escape')`
+  returns nothing rather than a filename that escapes the study folder.
+- A claim written by the previous version is still honoured, in both
+  directions, so a reader who has not yet reloaded the extension is not left
+  writing over a study the app is filling.
+- Session storage keeps the request bodies it was dropping. `pacsRequests` kept
+  only `form` bodies and discarded `raw` ones; `learnCandidates` kept none at
+  all. A PACS that serves DICOM over POST could not be replayed after a worker
+  restart, and manual learning of a POST manifest was lost.
+- `genericDirectMeta` is trimmed with the urls it describes instead of growing
+  without bound against the quota the cap ladder exists to respect.
+- A state that shed anything is marked `truncated`, not just the minimal
+  fallback. A discovery result quietly missing five thousand urls used to look
+  complete.
+- A corrupt file with a `.dcm` suffix is no longer counted as a slice; the
+  suffix was trusted without reading the header.
+- Slices arriving in `DICOM/<SeriesUID>/` move the worklist revision token, and
+  bootstrap answers from the cached revision instead of walking the archive.
+- The watcher no longer swallows a revision when a scan fails, and will not
+  stack overlapping checks when one is slow.
+- Thread priority is restored to the caller's exact previous value rather than
+  assumed to have been normal.
+- Export leaves every internal sidecar behind, including the coordination
+  files, wherever in the study they sit.
+
 # 7.2.1
 
 Fixes found reviewing 7.2.0, in what it stores and what it promises.

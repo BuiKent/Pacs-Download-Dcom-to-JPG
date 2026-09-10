@@ -1,6 +1,6 @@
 'use strict';
 import { buildPart10FromFrames, isPart10, parseMultipart, numberOfFrames, validatePart10, parseDicomMeta } from './lib/dicom.js';
-import { zfpMetaToDicomJson, buildStudyStoragePath, buildStudySidecar, sidecarStudyPath, buildStudyLock, claimBlocksUs, STUDY_LOCK_NAME, STUDY_LOCK_RENEW_MS } from './lib/pacs.js';
+import { zfpMetaToDicomJson, buildStudyStoragePath, buildStudySidecar, sidecarStudyPath, buildStudyLock, claimBlocksUs, studyLockFilename, studyLockWinner, STUDY_LOCK_NAME, STUDY_LOCK_CLAIM_PREFIX, STUDY_LOCK_SETTLE_MS, STUDY_LOCK_RENEW_MS } from './lib/pacs.js';
 import { AsyncSemaphore, sleepAbortable, fetchStreamWithTimeout } from './lib/semaphore.js';
 import { dicomTaskIdentityError, orderRoutes } from './lib/orchestrator.js';
 
@@ -128,7 +128,6 @@ async function commit(job,task,got){
     job.sidecarStarted=true;
     // Queued, not fired and forgotten: these must land in the order they were
     // issued, or the closing write can be overtaken by the opening one.
-    queueMetaWrite(job,()=>writeStudyLock(job,`Đang tải ${job.total} ảnh`));
     queueMetaWrite(job,()=>writeStudySidecar(job,job.folderInfo||{},job.spec||{},job,'downloading'));
   }
   return true;
@@ -276,46 +275,105 @@ function queueMetaWrite(job, task) {
   return job.metaQueue;
 }
 
-async function readStudyClaim(job) {
+async function readStudyClaims(job) {
   if (job.saveMode !== 'filesystem') return null;
+  const claims = [];
   try {
     const dir = await getPathRoot(job.fsRoot, sidecarStudyPath(job.studyFolder), job.subfolder);
-    const handle = await dir.getFileHandle(STUDY_LOCK_NAME, {create: false});
-    return JSON.parse(await (await handle.getFile()).text());
-  } catch {
-    return null;
+    const names = new Set([STUDY_LOCK_NAME]);
+    try {
+      for await (const [name, handle] of dir.entries()) {
+        if (handle?.kind === 'file' && name.startsWith(STUDY_LOCK_CLAIM_PREFIX) && name.endsWith('.json')) names.add(name);
+      }
+    } catch { /* legacy mock/implementation: the canonical name is still checked */ }
+    for (const name of names) {
+      try {
+        const handle = await dir.getFileHandle(name, {create: false});
+        claims.push(JSON.parse(await (await handle.getFile()).text()));
+      } catch { /* a missing or partial contender cannot own the folder */ }
+    }
+  } catch { /* unavailable folder */ }
   }
+  return claims;
+}
+
+async function readStudyClaim(job) {
+  return studyLockWinner(await readStudyClaims(job));
 }
 
 async function writeStudyLock(job, label) {
-  if (job.saveMode !== 'filesystem') return;
-  const payload = buildStudyLock({label, claimId: job.claimId});
+  if (job.saveMode !== 'filesystem') return false;
+  const filename = studyLockFilename(job.claimId);
+  if (!filename) return false;
+  const payload = buildStudyLock({
+    label,
+    claimId: job.claimId,
+    createdAt: job.lockCreatedAt,
+  });
   const bytes = new TextEncoder().encode(JSON.stringify(payload));
   try {
     const dir = await getPathRoot(job.fsRoot, sidecarStudyPath(job.studyFolder), job.subfolder);
-    await writeFile(dir, STUDY_LOCK_NAME, bytes);
+    await writeFile(dir, filename, bytes);
+    job.lockCreatedAt = payload.createdAt;
     job.lockRenewedAt = Date.now();
-  } catch { /* coordination only; the images are the job */ }
+    job.lockWritten = true;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function clearStudyLock(job) {
-  if (job.saveMode !== 'filesystem' || !job.lockRenewedAt) return;
-  // Only release what we still hold. Another job may have taken the folder
-  // over after ours lapsed, and clearing its claim would hand the study to a
-  // third writer while two are already in it.
-  const held = await readStudyClaim(job);
-  if (held && String(held.claimId || '') !== String(job.claimId)) return;
+  if (job.saveMode !== 'filesystem' || !job.lockWritten) return;
+  const filename = studyLockFilename(job.claimId);
+  if (!filename) return;
   try {
     const dir = await getPathRoot(job.fsRoot, sidecarStudyPath(job.studyFolder), job.subfolder);
-    await dir.removeEntry(STUDY_LOCK_NAME);
+    // Every job owns a distinct file, so this cannot delete a replacement
+    // claim written between a read and remove.
+    await dir.removeEntry(filename);
   } catch { /* already gone, or never written */ }
+  job.lockWritten = false;
+  job.lockRenewedAt = 0;
+}
+
+async function acquireStudyLock(job) {
+  if (job.saveMode !== 'filesystem') return {ok: true, held: null};
+  const held = await readStudyClaim(job);
+  if (claimBlocksUs(held, job.claimId)) return {ok: false, held};
+  job.lockCreatedAt = Date.now() / 1000;
+  if (!await writeStudyLock(job, `Đang tải ${job.total} ảnh`)) {
+    throw new Error('Không thể tạo khóa an toàn trong thư mục ca chụp. Hãy kiểm tra quyền ghi rồi thử lại.');
+  }
+  await sleep(STUDY_LOCK_SETTLE_MS, job.controller.signal);
+  const winner = await readStudyClaim(job);
+  if (String(winner?.claimId || '') === String(job.claimId)) return {ok: true, held: winner};
+  await clearStudyLock(job);
+  return {ok: false, held: winner};
+}
+
+function markStudyLockLost(job) {
+  if (job.lockLost) return;
+  job.lockLost = true;
+  job.cancelled = true;
+  job.errors.push('Khóa an toàn của ca chụp đã bị mất; extension đã dừng để tránh ghi đè dữ liệu.');
+  job.controller.abort();
 }
 
 function renewStudyLock(job) {
-  if (job.saveMode !== 'filesystem' || !job.lockRenewedAt) return;
+  if (job.saveMode !== 'filesystem' || !job.lockRenewedAt || job.lockRenewalQueued) return;
   if (Date.now() - job.lockRenewedAt < STUDY_LOCK_RENEW_MS) return;
-  job.lockRenewedAt = Date.now();   // claim the slot before the async write
-  queueMetaWrite(job, () => writeStudyLock(job, `Đang tải ${job.completed}/${job.total} ảnh`));
+  job.lockRenewalQueued = true;
+  queueMetaWrite(job, async () => {
+    const held = await readStudyClaim(job);
+    if (String(held?.claimId || '') !== String(job.claimId)) {
+      markStudyLockLost(job);
+      return;
+    }
+    if (!await writeStudyLock(job, `Đang tải ${job.completed}/${job.total} ảnh`)) {
+      markStudyLockLost(job);
+    }
+  }).finally(() => { job.lockRenewalQueued = false; });
 }
 
 async function runJob(spec){
@@ -354,6 +412,11 @@ async function runJob(spec){
     completedSopUids:new Set(spec.alreadyCompletedSopUids||[]),
     sidecarStarted:false,
     lockRenewedAt:0,
+    lockCreatedAt:0,
+    lockWritten:false,
+    lockRenewalQueued:false,
+    lockLost:false,
+    lockHeartbeat:null,
     claimId:`${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`,
     metaQueue:Promise.resolve(),
     spec,
@@ -363,13 +426,18 @@ async function runJob(spec){
   // holds the same claim while its pipeline runs, and two writers in one study
   // interleave partial files while both report success.
   if(saveMode==='filesystem'){
-    const held=await readStudyClaim(job);
-    if(claimBlocksUs(held,job.claimId)){
+    const acquired=await acquireStudyLock(job);
+    if(!acquired.ok){
+      const held=acquired.held||{};
       const who=held.owner==='app'?'Ứng dụng DCom':'Một tiến trình khác';
       throw new Error(`${who} đang tải vào thư mục của ca chụp này. Hãy đợi nó xong rồi thử lại.`);
     }
   }
+  if(saveMode==='filesystem'){
+    job.lockHeartbeat=setInterval(()=>renewStudyLock(job),Math.min(30000,STUDY_LOCK_RENEW_MS));
+  }
   jobs.set(job.tabId,job);
+  try {
   emit(job,true);
   chrome.runtime.sendMessage({type:'LOG_EVENT',entry:{level:'INFO',category:'ENGINE',message:`Offscreen bắt đầu lưu ${spec.tasks.length} file DICOM (${job.saveMode})`,details:{jobId:spec.jobId,tasksCount:spec.tasks.length,saveMode:job.saveMode}}}).catch(()=>{});
   let next=0;
@@ -380,12 +448,10 @@ async function runJob(spec){
   job.currentFile='';
   emit(job,true);
   chrome.runtime.sendMessage({type:'LOG_EVENT',entry:{level:job.status==='done'?'INFO':(job.completed>0?'WARN':'ERROR'),category:'ENGINE',message:`Offscreen hoàn tất [${job.status}]: đã ghi ${job.completed}/${job.total} ảnh (lỗi: ${job.failed}, bỏ qua: ${job.skipped})`,details:{status:job.status,completed:job.completed,total:job.total,failed:job.failed,errors:job.errors?.slice(0,5)}}}).catch(()=>{});
-  jobs.delete(job.tabId);
   // `job.status` here is 'done', 'done_with_errors', 'cancelled' or 'error'.
   // Writing 'complete' whenever a single image landed reported every failed
   // download as a finished study.
   if(job.completed>0)await queueMetaWrite(job,()=>writeStudySidecar(job,info,spec,job,job.status));
-  await queueMetaWrite(job,()=>clearStudyLock(job));
   return{
     status:job.status,
     total:job.total,
@@ -405,6 +471,11 @@ async function runJob(spec){
     preferredRoutes:[...job.routeHits.entries()].sort((a,b)=>b[1]-a[1]).map(([route])=>route),
     completedSopUids:[...job.completedSopUids]
   };
+  } finally {
+    if(job.lockHeartbeat)clearInterval(job.lockHeartbeat);
+    jobs.delete(job.tabId);
+    await queueMetaWrite(job,()=>clearStudyLock(job));
+  }
 }
 
 chrome.runtime.onMessage.addListener((m,_s,sendResponse)=>{
