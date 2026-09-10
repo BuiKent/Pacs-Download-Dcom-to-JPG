@@ -1,6 +1,6 @@
 'use strict';
 import { buildPart10FromFrames, isPart10, parseMultipart, numberOfFrames, validatePart10, parseDicomMeta } from './lib/dicom.js';
-import { zfpMetaToDicomJson, buildStudyStoragePath, sanitizeViewerUrl } from './lib/pacs.js';
+import { zfpMetaToDicomJson, buildStudyStoragePath, buildStudySidecar, sidecarStudyPath } from './lib/pacs.js';
 import { AsyncSemaphore, sleepAbortable, fetchStreamWithTimeout } from './lib/semaphore.js';
 import { dicomTaskIdentityError, orderRoutes } from './lib/orchestrator.js';
 
@@ -124,6 +124,12 @@ async function commit(job,task,got){
   job.completed++;job.bytesWritten+=got.bytes.byteLength;
   if(got.provenance==='reconstructed')job.reconstructed++;else job.original++;
   if(sopUid&&job.completedSopUids)job.completedSopUids.add(sopUid);
+  if(!job.sidecarStarted){
+    job.sidecarStarted=true;
+    // Fire and forget: the images are the job, and the reader should not wait
+    // on a bookkeeping file.
+    writeStudySidecar(job,job.folderInfo||{},job.spec||{},job,'downloading').catch(()=>{});
+  }
   return true;
 }
 function failTask(job,relativePath,message){job.failed++;job.errors.push(`${relativePath}: ${message}`);if(job.errors.length>80)job.errors.splice(0,job.errors.length-80);emit(job,true);}
@@ -215,26 +221,23 @@ function safeSegment(text,fallback){const s=String(text||'').normalize('NFKC').r
 function studyFolderFromInfo(info={}){return buildStudyStoragePath({patientName:info.patientName,patientId:info.patientId,birthDate:info.birthDate,age:info.age,studyDate:info.studyDate,modality:info.modality,description:info.description});}
 
 /**
- * Leave `dcom-source.json` beside the study so the app can offer "Tải tiếp" on
- * a study this extension downloaded. It records ONLY what the DICOM tags cannot
- * carry — the viewer link, with its credentials stripped. Patient identity stays
- * with the tags, which remain the single source of truth.
+ * Leave `dcom-source.json` beside the study so the app can offer "Tải tiếp".
+ *
+ * Written twice: once as soon as the first image lands, marked `downloading`,
+ * and again when the job ends with the final count. The early write is what
+ * survives a browser closed mid-download — the images would otherwise sit there
+ * with no link beside them, and that is exactly when resuming matters.
  */
-async function writeStudySidecar(job, info, spec, result) {
-  const sourceUrl = sanitizeViewerUrl(String(spec?.sourceUrl || ''));
-  if (!sourceUrl) return;
-  // `studyFolder` ends in `/DICOM`; the sidecar belongs to the study above it.
-  const studyPath = String(job.studyFolder || '').replace(/\/+DICOM\/*$/i, '');
-  const payload = {
-    format: 'dcom-extension-source-v1',
-    sourceUrl,
-    studyInstanceUid: String(spec?.studyUid || ''),
-    patientId: String(info?.patientId || ''),
-    studyDate: String(info?.studyDate || ''),
-    modality: String(info?.modality || ''),
-    imageCount: Number(result?.completed) || 0,
-    downloadedAt: new Date().toISOString(),
-  };
+async function writeStudySidecar(job, info, spec, result, status = 'complete') {
+  const payload = buildStudySidecar({
+    sourceUrl: spec?.sourceUrl,
+    studyUid: spec?.studyUid,
+    info,
+    imageCount: result?.completed,
+    status,
+  });
+  if (!payload) return;
+  const studyPath = sidecarStudyPath(job.studyFolder);
   const bytes = new TextEncoder().encode(JSON.stringify(payload, null, 2));
   try {
     if (job.saveMode === 'filesystem') {
@@ -279,7 +282,10 @@ async function runJob(spec){
     fsRoot:root,
     prefetched,
     lastEmit:0,
-    completedSopUids:new Set(spec.alreadyCompletedSopUids||[])
+    completedSopUids:new Set(spec.alreadyCompletedSopUids||[]),
+    sidecarStarted:false,
+    spec,
+    folderInfo:info
   };
   jobs.set(job.tabId,job);
   emit(job,true);
@@ -293,7 +299,7 @@ async function runJob(spec){
   emit(job,true);
   chrome.runtime.sendMessage({type:'LOG_EVENT',entry:{level:job.status==='done'?'INFO':(job.completed>0?'WARN':'ERROR'),category:'ENGINE',message:`Offscreen hoàn tất [${job.status}]: đã ghi ${job.completed}/${job.total} ảnh (lỗi: ${job.failed}, bỏ qua: ${job.skipped})`,details:{status:job.status,completed:job.completed,total:job.total,failed:job.failed,errors:job.errors?.slice(0,5)}}}).catch(()=>{});
   jobs.delete(job.tabId);
-  if(job.completed>0)await writeStudySidecar(job,info,spec,job);
+  if(job.completed>0)await writeStudySidecar(job,info,spec,job,'complete');
   return{
     status:job.status,
     total:job.total,

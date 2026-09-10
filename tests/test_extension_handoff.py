@@ -153,6 +153,54 @@ class ShortDownloadTests(unittest.TestCase):
             self.assertEqual(_scan(study)["status"], "done")
 
 
+class UnfinishedDownloadTests(unittest.TestCase):
+    """A download the browser never finished must not look finished.
+
+    The extension writes the sidecar from the first image it saves, marked
+    `downloading`, and clears the mark when the job ends. A folder still
+    carrying it is one where Chrome was closed, or the tab went away, mid
+    download — the case where resuming matters most and where the images on
+    disk otherwise look like a complete study.
+    """
+
+    def test_a_study_still_marked_downloading_reads_as_unfinished(self):
+        with TemporaryDirectory() as tmp:
+            in_progress = _sidecar(0)
+            in_progress["status"] = "downloading"
+            study = _build_study(Path(tmp), slices=40, sidecar=in_progress)
+            scanned = _scan(study)
+
+        self.assertEqual(scanned["status"], "part")
+        self.assertEqual(scanned["statusLabel"], "Tải chưa xong")
+        # The link is what makes the verdict actionable rather than just bad news.
+        self.assertTrue(scanned["viewerUrl"])
+
+    def test_a_finished_download_clears_the_mark(self):
+        with TemporaryDirectory() as tmp:
+            finished = _sidecar(40)
+            finished["status"] = "complete"
+            study = _build_study(Path(tmp), slices=40, sidecar=finished)
+            self.assertEqual(_scan(study)["status"], "done")
+
+    def test_an_older_sidecar_without_a_status_still_reads_as_complete(self):
+        # Sidecars written before the mark existed carry no `status`, and a
+        # study of theirs is finished as far as anyone can tell.
+        with TemporaryDirectory() as tmp:
+            legacy = _sidecar(40)
+            legacy.pop("status", None)
+            study = _build_study(Path(tmp), slices=40, sidecar=legacy)
+            self.assertEqual(_scan(study)["status"], "done")
+
+    def test_an_empty_folder_is_still_reported_empty(self):
+        # "Tải chưa xong" on a folder with nothing in it would be misleading:
+        # there is nothing to resume into and nothing to read.
+        with TemporaryDirectory() as tmp:
+            in_progress = _sidecar(0)
+            in_progress["status"] = "downloading"
+            study = _build_study(Path(tmp), slices=0, sidecar=in_progress)
+            self.assertEqual(_scan(study)["status"], "miss")
+
+
 class ExtensionOutputDiscoveryTests(unittest.TestCase):
     """Two patients in the extension's save folder must stay two patients.
 

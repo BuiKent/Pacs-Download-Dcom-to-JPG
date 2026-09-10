@@ -518,6 +518,51 @@ export function sanitizeViewerUrl(url) {
   }
 }
 
+export const SIDECAR_FORMAT = 'dcom-extension-source-v1';
+
+/**
+ * The `dcom-source.json` left beside a study this extension downloaded.
+ *
+ * It records ONLY what the DICOM tags cannot carry — the viewer link, with its
+ * credentials stripped. Patient identity stays with the tags, which remain the
+ * single source of truth, so a stale sidecar can never rename a patient.
+ *
+ * `status` is what lets the app tell a finished study from one whose download
+ * stopped part-way. The file is written as soon as the first image lands, not
+ * only at the end: a browser closed mid-download used to leave images with no
+ * link beside them, and "Tải tiếp" needs the link precisely then.
+ */
+export function buildStudySidecar({sourceUrl, studyUid, info = {}, imageCount = 0, status = 'complete', now = new Date()} = {}) {
+  const clean = sanitizeViewerUrl(String(sourceUrl || ''));
+  // `sanitizeViewerUrl` hands back whatever it was given when it cannot parse
+  // it. A sidecar carrying something that is not a link is worse than no
+  // sidecar: the app would offer "Tải tiếp" on a study it cannot reopen.
+  let usable = false;
+  try {
+    usable = /^https?:$/.test(new URL(clean).protocol);
+  } catch { usable = false; }
+  if (!usable) return null;
+  const stamp = (now instanceof Date ? now : new Date()).toISOString();
+  return {
+    format: SIDECAR_FORMAT,
+    sourceUrl: clean,
+    studyInstanceUid: String(studyUid || ''),
+    patientId: String(info.patientId || ''),
+    studyDate: String(info.studyDate || ''),
+    modality: String(info.modality || ''),
+    imageCount: Math.max(0, Number(imageCount) || 0),
+    // 'downloading' until the job ends. The app reads a study still marked
+    // that way as unfinished and offers to resume it.
+    status: status === 'downloading' ? 'downloading' : 'complete',
+    downloadedAt: stamp,
+  };
+}
+
+/** The study folder a sidecar belongs in: `studyFolder` ends in `/DICOM`. */
+export function sidecarStudyPath(studyFolder) {
+  return String(studyFolder || '').replace(/\/+DICOM\/*$/i, '');
+}
+
 export function buildStudyStoragePath(info = {}) {
   const patientFolder = buildPatientFolderName(info);
   const studyFolder = buildStudyFolderName(info);

@@ -3906,6 +3906,14 @@ class WorklistScanner:
             expected_images = int(sidecar.get("imageCount") or 0)
         except (TypeError, ValueError):
             expected_images = 0
+        # The extension marks the sidecar "downloading" from the first image it
+        # saves and clears it when the job ends. A folder still carrying that
+        # mark is one whose download never finished — the browser was closed, or
+        # the tab went away — and calling it "Đã tải" would hide missing slices
+        # behind a study that looks whole.
+        sidecar_unfinished = (
+            str(sidecar.get("status") or "").strip().lower() == "downloading"
+        )
 
         # `patient-index.json` records how far the download actually got:
         # "complete" everything, "selected" only the series the doctor picked,
@@ -3918,6 +3926,8 @@ class WorklistScanner:
             status, status_label = "part", "Chưa hoàn tất"
         elif slice_count == 0:
             status, status_label = "miss", "Folder trống"
+        elif sidecar_unfinished and dicom_count:
+            status, status_label = "part", "Tải chưa xong"
         elif expected_images and dicom_count and dicom_count < expected_images:
             # The extension saved fewer images than it set out to, or images
             # have gone missing since. Either way the reader is looking at an

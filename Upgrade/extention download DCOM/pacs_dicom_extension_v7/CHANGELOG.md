@@ -1,3 +1,18 @@
+# 7.1.3
+
+- `dcom-source.json` is written from the first image saved, marked
+  `"status": "downloading"`, and rewritten with the final count when the job
+  ends. A browser closed mid-download used to leave images with no link beside
+  them, so the app could not offer "Tải tiếp" on exactly the studies that
+  needed it. The app reads a study still carrying the mark as unfinished.
+- The sidecar refuses a `sourceUrl` that is not an http(s) link. `sanitizeViewerUrl`
+  hands back whatever it cannot parse, and a sidecar carrying that would have
+  the app offer to resume a study it cannot reopen.
+- Sidecar construction moved into `lib/pacs.js` (`buildStudySidecar`,
+  `sidecarStudyPath`) so it can be tested without a browser; covered by
+  `tests/test_study_sidecar.mjs`, including that a share token survives when it
+  is the only thing identifying the study and is stripped when it is not.
+
 # 7.1.2
 
 Follow-up to the 7.1.1 performance pass: the four risks that review left open.

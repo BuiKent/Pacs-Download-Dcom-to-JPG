@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DICOM Download & View",
-  "version": "7.1.2",
+  "version": "7.1.3",
   "description": "Generic PACS DICOM downloader: protocol/content discovery, DICOMweb/WADO, direct/manifest DICOM, ZFP WebSocket fallback, per-tab download.",
   "minimum_chrome_version": "125",
   "permissions": [
