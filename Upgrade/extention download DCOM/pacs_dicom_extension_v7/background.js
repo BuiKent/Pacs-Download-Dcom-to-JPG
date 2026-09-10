@@ -146,10 +146,16 @@ async function getSession(key,fallback=null){
   else if(key.startsWith('inv|')){const tabId=Number(key.slice(4));if(invMemory.has(tabId))return invMemory.get(tabId);}
   try{const o=await chrome.storage.session.get(key);return o[key]??fallback;}catch{return fallback;}
 }
+const tabSaveTimers=new Map();
 async function setSession(key,value){
   if(key.startsWith('tab|')){
     const tabId=Number(key.slice(4));tabMemory.set(tabId,value);
-    try{const pruned=pruneStateForStorage(value);await chrome.storage.session.set({[key]:pruned});}catch{try{await chrome.storage.session.remove(key);}catch{}}
+    if(!tabSaveTimers.has(tabId)){
+      tabSaveTimers.set(tabId,setTimeout(async()=>{
+        tabSaveTimers.delete(tabId);
+        try{const current=tabMemory.get(tabId)||value;const pruned=pruneStateForStorage(current);await chrome.storage.session.set({[key]:pruned});}catch{try{await chrome.storage.session.remove(key);}catch{}}
+      },300));
+    }
     return;
   }
   if(key.startsWith('inv|')){
@@ -210,7 +216,7 @@ async function startTracking(tabId,manual=false){const s=await getTabState(tabId
 async function stopTracking(tabId){const s=await getTabState(tabId);s.tracking='stopped';await saveTabState(tabId,s);await setBadge(tabId);chrome.tabs.sendMessage(tabId,{type:'CLEANUP_TRACKING'}).catch(()=>{});return s;}
 
 async function rememberBeforeNavigate(tabId,raw){if(tabId<0)return;const u=cleanUrl(raw);if(!u)return;const s=await getTabState(tabId);pushUnique(s.pendingNavUrls,u);s.currentUrl=u;await saveTabState(tabId,s);markCandidate(tabId,u).catch(()=>{});}
-async function invalidate(tabId,reason){invMemory.delete(tabId);await chrome.storage.session.remove(invKey(tabId)).catch(()=>{});chrome.runtime.sendMessage({type:'TAB_CONTEXT_CHANGED',tabId,reason}).catch(()=>{});}
+async function invalidate(tabId,reason){perfScanCache.delete(tabId);invMemory.delete(tabId);await chrome.storage.session.remove(invKey(tabId)).catch(()=>{});chrome.runtime.sendMessage({type:'TAB_CONTEXT_CHANGED',tabId,reason}).catch(()=>{});}
 async function rememberCommitted(d){if(d.tabId<0)return;const u=cleanUrl(d.url);if(!u)return;if(d.frameId!==0){const s=await getTabState(d.tabId);pushUnique(s.frameUrls,u);await saveTabState(d.tabId,s);markCandidate(d.tabId,u).catch(()=>{});if(await hasOrigin(u))setTimeout(()=>{injectContent(d.tabId);getTabState(d.tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(d.tabId);});},100);return;}const s=await getTabState(d.tabId);const oldStudy=s.studyHint||'';const nextStudy=viewerStudyHint(u)||'';const docChanged=Boolean(s.mainDocumentId&&d.documentId&&s.mainDocumentId!==d.documentId);const studyChanged=Boolean(oldStudy&&nextStudy&&oldStudy!==nextStudy);const changed=Boolean(docChanged||studyChanged||(s.currentUrl&&s.currentUrl!==u));if(changed){const transitionType=d.transitionType||'';const preserveContext=shouldPreserveTerminalContext(s.tracking,{oldStudy,nextStudy,transitionType});const nextTracking=trackingAfterDocumentChange(s.tracking,{oldStudy,nextStudy,transitionType});if(!preserveContext){s.navUrls=[...(s.pendingNavUrls||[])];s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.pageHintScore=0;s.pageHintReasons=[];s.confidence=0;await invalidate(d.tabId,'document');}s.studyHint=nextStudy;s.vietmyRecaptureDone=false;s.tracking=nextTracking;}pushUnique(s.navUrls,u);s.pendingNavUrls=[];s.currentUrl=u;s.mainDocumentId=d.documentId||s.mainDocumentId||'';if(!s.studyHint)s.studyHint=viewerStudyHint(u)||'';await saveTabState(d.tabId,s);await markCandidate(d.tabId,u);if(await hasOrigin(u))setTimeout(()=>{injectContent(d.tabId);getTabState(d.tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(d.tabId);});},100);}
 async function rememberSameDocument(tabId,raw){if(tabId<0)return;const u=cleanUrl(raw);if(!u)return;const s=await getTabState(tabId);const old=s.studyHint||'',next=viewerStudyHint(u)||'';if(old&&next&&old!==next){s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.studyHint=next;s.tracking=trackingAfterSameDocumentStudyChange(s.tracking);await invalidate(tabId,'study');}else if(!old&&next)s.studyHint=next;pushUnique(s.navUrls,u);s.currentUrl=u;await saveTabState(tabId,s);await markCandidate(tabId,u);}
 chrome.webNavigation.onBeforeNavigate.addListener(d=>{if(d.frameId===0)rememberBeforeNavigate(d.tabId,d.url).catch(()=>{});});
@@ -273,7 +279,13 @@ async function handleGenericJsonCapture(tabId,row){
   const r=await processGenericManifestPayload(tabId,row.url,recorded,payload,'main-world');
   if(r?.valid?.length)recordCapabilities(row.url,{mainWorldJson:true}).catch(()=>{});
 }
-async function rememberRequest(tabId,raw,extra={}){if(tabId<0)return;const hit=classifyPacsUrl(raw);const learnedManifest=isLearnedManifestUrl(raw);const s=await getTabState(tabId);if(!hit&&s.tracking!=='watching'&&!learnedManifest)return;const generic=hit||(/\/(?:api|rest|services?)\//i.test(raw)&&/(study|series|instance|image|dicom|exam|patient)/i.test(raw)?{type:'PACS_GENERIC_API',url:cleanUrl(raw),score:35}:null)||(learnedManifest?{type:'LEARNED_MANIFEST',url:cleanUrl(raw),score:72}:null)||(s.tracking==='watching'&&learnCandidateAllowed(raw,extra.resourceType||extra.type)?{type:'PACS_OBSERVED_API',url:cleanUrl(raw),score:12}:null);if(!generic)return;const method=String(extra.method||'GET').toUpperCase(),bodySig=storedBodySignature(extra.requestBody),id=extra.requestId?`${generic.type}|req:${extra.requestId}`:`${generic.type}|${generic.url}|${method}|${bodySig}`;const i=s.pacsRequests.findIndex(x=>x._id===id);if(i>=0)s.pacsRequests.splice(i,1);s.pacsRequests.push({...generic,...extra,_id:id,time:Date.now()});if(s.pacsRequests.length>MAX_REQUESTS)s.pacsRequests.splice(0,s.pacsRequests.length-MAX_REQUESTS);s.confidence=Math.max(Number(s.confidence)||0,Math.min(100,Number(generic.score)||0));if(s.tracking!=='stopped')s.tracking='watching';await saveTabState(tabId,s);await setBadge(tabId);if(Number(generic.score||0)>=80||['PACS_GENERIC_API','DICOM_IMAGE_API'].includes(generic.type))scheduleAnalyze(tabId,450);if(learnedManifest)scheduleLearnedManifest(tabId,generic.url,extra,450);chrome.runtime.sendMessage({type:'PACS_SIGNAL',tabId,signal:generic.type}).catch(()=>{});}
+const signalTimers=new Map();
+function emitPacsSignal(tabId,signal){
+  if(signalTimers.has(tabId))return;
+  signalTimers.set(tabId,setTimeout(()=>signalTimers.delete(tabId),600));
+  chrome.runtime.sendMessage({type:'PACS_SIGNAL',tabId,signal}).catch(()=>{});
+}
+async function rememberRequest(tabId,raw,extra={}){if(tabId<0)return;const hit=classifyPacsUrl(raw);const learnedManifest=isLearnedManifestUrl(raw);const s=await getTabState(tabId);if(!hit&&s.tracking!=='watching'&&!learnedManifest)return;const generic=hit||(/\/(?:api|rest|services?)\//i.test(raw)&&/(study|series|instance|image|dicom|exam|patient)/i.test(raw)?{type:'PACS_GENERIC_API',url:cleanUrl(raw),score:35}:null)||(learnedManifest?{type:'LEARNED_MANIFEST',url:cleanUrl(raw),score:72}:null)||(s.tracking==='watching'&&learnCandidateAllowed(raw,extra.resourceType||extra.type)?{type:'PACS_OBSERVED_API',url:cleanUrl(raw),score:12}:null);if(!generic)return;const method=String(extra.method||'GET').toUpperCase(),bodySig=storedBodySignature(extra.requestBody),id=extra.requestId?`${generic.type}|req:${extra.requestId}`:`${generic.type}|${generic.url}|${method}|${bodySig}`;const i=s.pacsRequests.findIndex(x=>x._id===id);if(i>=0)s.pacsRequests.splice(i,1);s.pacsRequests.push({...generic,...extra,_id:id,time:Date.now()});if(s.pacsRequests.length>MAX_REQUESTS)s.pacsRequests.splice(0,s.pacsRequests.length-MAX_REQUESTS);s.confidence=Math.max(Number(s.confidence)||0,Math.min(100,Number(generic.score)||0));if(s.tracking!=='stopped')s.tracking='watching';await saveTabState(tabId,s);await setBadge(tabId);if(Number(generic.score||0)>=80||['PACS_GENERIC_API','DICOM_IMAGE_API'].includes(generic.type))scheduleAnalyze(tabId,450);if(learnedManifest)scheduleLearnedManifest(tabId,generic.url,extra,450);emitPacsSignal(tabId,generic.type);}
 async function rememberHeaders(tabId,url,rawHeaders,requestId=''){if(/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(url))return;const s=await getTabState(tabId);if(!['watching','candidate'].includes(s.tracking))return;const h={};for(const x of(rawHeaders||[]))if(x.name&&x.value!=null)h[x.name]=x.value;const safe=safeHeaders(h);if(!Object.keys(safe).length)return;let ct='';for(const[k,v]of Object.entries(safe))if(k.toLowerCase()==='content-type'&&v){ct=String(v);break;}
 if(ct){const u=cleanUrl(url);for(const r of(s.pacsRequests||[]))if(((requestId&&String(r.requestId||'')===String(requestId))||(!requestId&&r.url===u))&&!r.contentType)r.contentType=ct;}
 try{const origin=new URL(url).origin;s.headersByOrigin[origin]={...(s.headersByOrigin[origin]||{}),...safe};await saveTabState(tabId,s);}catch{}}
@@ -332,7 +344,34 @@ async function applyPageHints(tabId,hint={}){if(tabId<0)return;const s=await get
 if(hint.zfpViewer&&s.tracking==='watching')maybeReloadForZfp(tabId,s).catch(()=>{});
 if(score>=AUTO_SCORE&&s.tracking==='watching')scheduleAnalyze(tabId,400);}
 
-async function scanPerformance(tabId){const allowed=await hasOrigin((await chrome.tabs.get(tabId)).url||'');if(!allowed)return[];const probe=()=>{const resolve=raw=>{try{return new URL(raw,location.href).href}catch{return''}},dom=new Set(),add=raw=>{const u=resolve(raw);if(/^https?:/i.test(u))dom.add(u)};for(const el of document.querySelectorAll('iframe[src],frame[src],embed[src],object[data],form[action],a[href],script[src],link[href]'))add(el.getAttribute('src')||el.getAttribute('data')||el.getAttribute('action')||el.getAttribute('href')||'');return{href:location.href,title:document.title||'',navigationUrl:performance.getEntriesByType('navigation')[0]?.name||'',resources:performance.getEntriesByType('resource').map(e=>e.name).filter(Boolean).slice(-3000),domUrls:[...dom].slice(-800),readyState:document.readyState,viewerDom:Boolean(document.querySelector('.cornerstone-canvas,[class*="cornerstone" i],[data-cornerstone-enabled],canvas')),vietmyStudyId:(()=>{for(const el of document.querySelectorAll('a[id^="series"]')){const m=String(el.id||'').match(/^series(?:_filter)?_?(\d{3,})/);if(m)return m[1];}return'';})()};};try{return(await chrome.scripting.executeScript({target:{tabId,allFrames:true},func:probe})).map(x=>({frameId:x.frameId,...(x.result||{})}));}catch{return[];}}
+const perfScanCache=new Map();
+async function scanPerformance(tabId){
+  const cached=perfScanCache.get(tabId);
+  if(cached&&(Date.now()-cached.time<2500))return cached.data;
+  const allowed=await hasOrigin((await chrome.tabs.get(tabId)).url||'');
+  if(!allowed)return[];
+  const probe=()=>{
+    const resolve=raw=>{try{return new URL(raw,location.href).href}catch{return''}},dom=new Set(),add=raw=>{const u=resolve(raw);if(/^https?:/i.test(u))dom.add(u)};
+    for(const el of document.querySelectorAll('iframe[src],frame[src],embed[src],object[data],form[action],a[href],script[src],link[href]'))add(el.getAttribute('src')||el.getAttribute('data')||el.getAttribute('action')||el.getAttribute('href')||'');
+    return{
+      href:location.href,
+      title:document.title||'',
+      navigationUrl:performance.getEntriesByType('navigation')[0]?.name||'',
+      resources:performance.getEntriesByType('resource').map(e=>e.name).filter(Boolean).slice(-3000),
+      domUrls:[...dom].slice(-800),
+      readyState:document.readyState,
+      viewerDom:Boolean(document.querySelector('.cornerstone-canvas,[class*="cornerstone" i],[data-cornerstone-enabled],canvas')),
+      vietmyStudyId:(()=>{for(const el of document.querySelectorAll('a[id^="series"]')){const m=String(el.id||'').match(/^series(?:_filter)?_?(\d{3,})/);if(m)return m[1];}return'';})()
+    };
+  };
+  try{
+    const res=(await chrome.scripting.executeScript({target:{tabId,allFrames:true},func:probe})).map(x=>({frameId:x.frameId,...(x.result||{})}));
+    perfScanCache.set(tabId,{time:Date.now(),data:res});
+    return res;
+  }catch{
+    return[];
+  }
+}
 async function scanFrameUrls(tabId){try{return(await chrome.webNavigation.getAllFrames({tabId})).map(f=>({frameId:f.frameId,url:cleanUrl(f.url),documentId:f.documentId||''})).filter(f=>f.url);}catch{return[];}}
 function summarize(state,perfs,frames){const top=perfs.find(x=>x.frameId===0)||perfs[0]||{},nav=[...(state.navUrls||[])],discovered=[];for(const f of frames){pushUnique(nav,f.url);pushUnique(discovered,f.url,300);}for(const p of perfs){for(const u of[p.navigationUrl,p.href]){pushUnique(nav,cleanUrl(u));pushUnique(discovered,cleanUrl(u),300);}for(const u of(p.domUrls||[]))pushUnique(discovered,cleanUrl(u),300);}const map=new Map();for(const r of(state.pacsRequests||[]))map.set(`${r.type}|${r.url}`,r);for(const p of perfs)for(const raw of[...(p.resources||[]),...(p.domUrls||[])]){const h=classifyPacsUrl(raw);if(!h)continue;const key=`${h.type}|${h.url}`;
 if(!map.has(key))map.set(key,{...h,source:`page:${p.frameId}`,time:Date.now()});}const requests=[...map.values()].sort((a,b)=>(b.score||0)-(a.score||0)).slice(0,MAX_REQUESTS),candidates=[...new Set([...nav,...discovered])],ranked=candidates.map(url=>({url,score:viewerUrlScore(url)})).sort((a,b)=>b.score-a.score),currentUrl=cleanUrl(top.href)||state.currentUrl||'',bestViewerUrl=ranked[0]?.url||currentUrl,shell=candidates.map(classifyViewerShell).filter(Boolean).sort((a,b)=>(b.score||0)-(a.score||0))[0]||null;let detector='UNKNOWN';if(requests.some(x=>x.type.startsWith('VIETMY_')))detector='VIETMY';else if(requests.some(x=>x.type.startsWith('MACH7_'))||shell?.type==='MACH7_SHELL'||state?.pageHintReasons?.includes('mach7')||state?.domPatient?.isMach7)detector='MACH7';else if(requests.some(x=>['QIDO_SERIES','QIDO_INSTANCES','DICOM_METADATA','DICOM_INSTANCE','DICOM_FRAME','WADO'].includes(x.type)))detector='DICOMWEB';else if(requests.some(x=>x.type.startsWith('VRPACS_')))detector='VRPACS';else if(requests.some(x=>x.type.startsWith('VRAD_')||x.type==='DICOM_IMAGE_API'))detector='VRAD';else if(requests.some(x=>x.type==='RENDERED_JPEG'))detector='RENDERED_ONLY';else if(shell)detector='VIEWER_SHELL';let confidence=Math.max(Number(state.confidence)||0,Number(shell?.score)||0,...requests.map(r=>Number(r.score)||0),Number(ranked[0]?.score)||0,Number(state.pageHintScore)||0);confidence=Math.max(0,Math.min(100,Math.round(confidence)));return{tabId:state.tabId,title:top.title||'',currentUrl,bestViewerUrl,navUrls:nav,frameUrls:frames.map(f=>f.url),requests,detector,viewerShell:shell?.type||'',origins:[...new Set([...candidates,...requests.map(r=>r.url)].map(originPattern).filter(Boolean))],studyHint:state.studyHint||viewerStudyHint(bestViewerUrl)||'',confidence,tracking:state.tracking||'idle',performanceError:'',vietmyStudyId:perfs.map(p=>p.vietmyStudyId).find(Boolean)||''};}

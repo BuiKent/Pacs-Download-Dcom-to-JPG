@@ -1,3 +1,11 @@
+# 7.0.4
+
+- High-performance DOM text extraction: replaced synchronous layout-thrashing `innerText` with `textContent` across PACS overlays and viewports, eliminating browser freezes during slice scrubbing.
+- Throttled MutationObserver: removed `class` attribute watching on the root document to avoid triggering observer loops on viewer CSS state changes.
+- Performance and resource probing cache: cached `scanPerformance` results per tab (2.5s TTL) to prevent repeated script injections into all frames during rapid network bursts.
+- Storage and IPC debouncing: debounced session storage writes and throttled `PACS_SIGNAL` notifications to alleviate CPU and message bus pressure during rapid DICOM downloads.
+- Sidepanel refresh throttle: increased signal refresh debounce to avoid UI re-render storms while reading or streaming image series.
+
 # 7.0.3
 
 - Bulk DICOM downloads now require a writable folder even when an older profile still stores the legacy `downloads` preference.

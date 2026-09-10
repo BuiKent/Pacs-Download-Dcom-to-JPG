@@ -15,22 +15,22 @@
     const isMach7=/ClinicalStudio/i.test(location.href)||/Diagnostic\s*Studio|MACH7/i.test(document.title)||Boolean(document.querySelector('#patientBanner, #appCrumbBanner, .m7t-app-container, .m7t-drk-body'));
     if(isMach7)p.isMach7=true;
 
-    // Collect text from specific overlay elements as well as full body
+    // Collect text from specific overlay elements as well as full body (use textContent to prevent synchronous layout reflow/lag)
     const overlayEls = document.querySelectorAll(
       '.overlay, .viewport-overlay, [class*="overlay" i], .cornerstone-overlay, [class*="corner" i], .m7t-sub-header, .patient-banner, .patient-info, .patient-header, [id*="patient" i], [id*="viewport" i], [class*="viewport" i], [class*="view-port" i]'
     );
     let overlayText = '';
     for(const el of overlayEls){
-      const t = el.innerText?.trim();
+      const t = (el.textContent || el.innerText)?.trim();
       if(t) overlayText += '\n' + t;
     }
-    const rawText = (overlayText + '\n' + (document.body?.innerText || '')).slice(0, 100000);
+    const rawText = (overlayText + '\n' + (document.body?.textContent || document.body?.innerText || '')).slice(0, 100000);
 
     const nameEl = document.querySelector('#patientBanner .patient-name, #patientBanner .pat-name, .patientName, [id*="patname" i], [class*="patname" i]');
-    if(nameEl?.innerText?.trim()) p.patientName = nameEl.innerText.trim();
+    if((nameEl?.textContent || nameEl?.innerText)?.trim()) p.patientName = (nameEl.textContent || nameEl.innerText).trim();
 
     const idEl = document.querySelector('#patientBanner .patient-id, #patientBanner .pat-id, .patientId, [id*="patid" i], [id*="mrn" i]');
-    if(idEl?.innerText?.trim()) p.patientId = idEl.innerText.trim();
+    if((idEl?.textContent || idEl?.innerText)?.trim()) p.patientId = (idEl.textContent || idEl.innerText).trim();
 
     // 1. Check for standard medical corner overlay pattern:
     // Name
@@ -116,7 +116,7 @@
     const seenNumbers = new Set();
 
     // 1. Search viewports text for Se: X ... Im: Y / Total
-    const fullText = document.body?.innerText || '';
+    const fullText = document.body?.textContent || document.body?.innerText || '';
     const seMatches = [...fullText.matchAll(/Se\s*:\s*(\d+)(?:[^\n]*\n)*?\s*(?:(?:W\/L:[^\n]*\n\s*)?(\d+)\s*\/\s*(\d+))/gi)];
     for(const m of seMatches){
       const seNum = m[1];
@@ -135,7 +135,7 @@
     const thumbEls = document.querySelectorAll('.thumbnail, [class*="thumbnail" i], [class*="series-item" i], [class*="seriesItem" i], [id*="series" i], .m7t-thumbnail');
     if(thumbEls.length > list.length){
       thumbEls.forEach((el, i) => {
-        const text = el.innerText || '';
+        const text = el.textContent || el.innerText || '';
         const numM = text.match(/(?:Se\s*:\s*|Series\s*)(\d+)/i);
         const countM = text.match(/(?:^|\s)(\d+)\s*(?:ảnh|images|ims?|\/)/i);
         const num = numM ? numM[1] : String(i + 1);
@@ -179,7 +179,7 @@
     else if(document.querySelectorAll('canvas').length>=2)add(9,'canvas');
     const iframeUrls=[];for(const f of document.querySelectorAll('iframe[src],frame[src]')){try{const u=new URL(f.getAttribute('src')||'',location.href);if(/^https?:$/.test(u.protocol))iframeUrls.push(u.href);}catch{}}
     if(iframeUrls.length)add(Math.min(18,iframeUrls.length*5),'frames');
-    let text='';try{text=(document.body?.innerText||'').slice(0,18000);}catch{}if(/xem\s*(?:hình|ảnh)|chẩn\s*đoán\s*hình\s*ảnh|diagnostic\s*imaging|view\s*image|pacs|dicom/i.test(text))add(14,'medical-ui');
+    let text='';try{text=(document.body?.textContent||document.body?.innerText||'').slice(0,18000);}catch{}if(/xem\s*(?:hình|ảnh)|chẩn\s*đoán\s*hình\s*ảnh|diagnostic\s*imaging|view\s*image|pacs|dicom/i.test(text))add(14,'medical-ui');
     // Detect GE Centricity Universal Viewer (ZFP)
     const zfpViewer=/\/ZFP(\/|\?|#|$)/i.test(url)||/Universal Viewer|Zero Footprint/i.test(title);
     if(zfpViewer)add(40,'ge-zfp');
@@ -270,8 +270,8 @@
     zfpAsk(kind,m.args,m.timeoutMs).then(sendResponse);
     return true;
   });
-  function schedule(){if(stopped)return;clearTimeout(timer);timer=setTimeout(report,300);}
-  const start=()=>{stopped=false;try{if(observer)observer.disconnect();observer=new MutationObserver(schedule);observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['src','href','class']});}catch{}schedule();if(intervalId)clearInterval(intervalId);intervalId=setInterval(report,5000);};
+  function schedule(){if(stopped)return;clearTimeout(timer);timer=setTimeout(report,800);}
+  const start=()=>{stopped=false;try{if(observer)observer.disconnect();observer=new MutationObserver(schedule);observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['src','href']});}catch{}schedule();if(intervalId)clearInterval(intervalId);intervalId=setInterval(report,10000);};
   globalThis.__PACS_DICOM_V7_CONTROLLER__={start,cleanup};
   if(document.documentElement)start();else document.addEventListener('DOMContentLoaded',start,{once:true});
   window.addEventListener('load',schedule,{once:true});window.addEventListener('hashchange',schedule,true);window.addEventListener('popstate',schedule,true);
