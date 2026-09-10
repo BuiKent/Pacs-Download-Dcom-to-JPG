@@ -6307,6 +6307,12 @@ def local_import_identity(groups: list[LocalStudyGroup]) -> Optional[dict]:
 
 EXTENSION_SIDECAR_NAME = "dcom-source.json"
 EXTENSION_SIDECAR_FORMAT = "dcom-extension-source-v1"
+# The folder the browser extension saves into by default, inside whatever
+# directory the reader granted it. Mirrored from `DEFAULT_SUBFOLDER` in the
+# extension's `sidepanel.js`; `tests/test_folder_name_parity.py` fails if the
+# two drift. The app needs the name to recognise the extension's output as a
+# folder that GROUPS patients rather than one that IS a patient.
+EXTENSION_DEFAULT_SUBFOLDER = "DCom to JPG"
 
 
 def read_extension_sidecar(study_folder: Path) -> dict:
@@ -7470,8 +7476,32 @@ def write_direct_patient_manifest(
     _write_patient_manifest(root, manifest)
 
 
+def _legacy_jpg_folder_name(date: str, modality: str, desc: str) -> str:
+    """The `YYYY-MM-DD - <modality> - <description>` spelling used before the
+    two date orders were unified. Only used to recognise a folder already on
+    disk, never to create one."""
+    parts = []
+    if len(date) == 8 and date.isdigit():
+        parts.append(f"{date[:4]}-{date[4:6]}-{date[6:8]}")
+    elif date:
+        parts.append(_safe_name(date))
+    else:
+        parts.append("KHONG_RO_NGAY")
+    parts.append(_safe_name(modality) if modality else "UNKNOWN")
+    parts.append(_safe_name(desc)[:STUDY_FOLDER_DESC_MAX] if desc else "KHONG_RO_MO_TA")
+    return re.sub(r'[\/:*?"<>|]+', "_", " - ".join(parts).strip()).strip()
+
+
 def _jpg_folder_name(dicom_dir: Path) -> str:
-    """Compute JPG folder name from DICOM header: '<study_date> - <modality> - <study_description>'."""
+    """The JPG folder for a direct download: `<ngày chụp> - <modality> - <mô tả>`.
+
+    The date reads `dd-mm-yyyy`, the same way every other folder either tool
+    writes does. It used to be spelled `yyyy-mm-dd` here alone, so one study
+    downloaded from the Worklist and the same study downloaded from a viewer
+    link landed under two differently named folders. `study_folder_base_name`
+    is now the single place that decides this name, so the two cannot drift
+    again.
+    """
     try:
         import pydicom
     except Exception:
@@ -7489,26 +7519,21 @@ def _jpg_folder_name(dicom_dir: Path) -> str:
         except Exception:
             pass
 
-    parts = []
-    if len(date) == 8 and date.isdigit():
-        parts.append(f"{date[:4]}-{date[4:6]}-{date[6:8]}")
-    elif date:
-        parts.append(_safe_name(date))
-    else:
-        parts.append("KHONG_RO_NGAY")
+    name = study_folder_base_name({"date": date, "modality": modality, "desc": desc})
+    name = re.sub(r'[\/:*?"<>|]+', "_", name).strip()
 
-    if modality:
-        parts.append(_safe_name(modality))
-    else:
-        parts.append("UNKNOWN")
+    # A download started before this was unified already has its images in a
+    # folder under the old spelling. Resuming into a freshly named one beside it
+    # would split a single study's images across two folders, which reads on the
+    # Worklist as two half-empty studies. The folder already on disk wins.
+    legacy = _legacy_jpg_folder_name(date, modality, desc)
+    if legacy and legacy != name:
+        try:
+            if (Path(dicom_dir).parent / legacy).is_dir():
+                return legacy
+        except OSError:
+            pass
 
-    if desc:
-        parts.append(_safe_name(desc)[:40])
-    else:
-        parts.append("KHONG_RO_MO_TA")
-
-    name = " - ".join(parts).strip()
-    name = re.sub(r'[\\/:*?"<>|]+', "_", name).strip()
     return name or "JPG"
 
 

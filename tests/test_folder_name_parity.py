@@ -13,6 +13,7 @@ when it is missing; the pure-Python expectations still run.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import dcom_pipeline
+import web_backend
 
 
 EXTENSION_LIB = (
@@ -161,6 +163,54 @@ class FolderNameParityTests(unittest.TestCase):
         for index, case in enumerate(CASES):
             with self.subTest(case=index, patient=case.get("patientId")):
                 self.assertEqual(app_storage_path(case), extension[index])
+
+
+class SaveFolderParityTests(unittest.TestCase):
+    """The app must know the folder name the extension saves into.
+
+    Both tools name patient and study folders identically, checked above. The
+    folder those pairs live in is the third name they share, and the app needs
+    it for a reason the others do not: a folder the extension filled carries no
+    `patient-index.json`, so without recognising the name the worklist reported
+    the extension's whole output as one patient and merged everyone inside it
+    into a single row.
+    """
+
+    def test_the_app_mirrors_the_extension_default_subfolder(self):
+        side_panel = EXTENSION_LIB.parent.parent / "sidepanel.js"
+        if not side_panel.is_file():
+            self.skipTest(f"Side panel missing at {side_panel}")
+        source = side_panel.read_text(encoding="utf-8")
+        match = re.search(r"DEFAULT_SUBFOLDER\s*=\s*'([^']+)'", source)
+        self.assertIsNotNone(
+            match, "sidepanel.js no longer declares DEFAULT_SUBFOLDER",
+        )
+        self.assertEqual(
+            dcom_pipeline.EXTENSION_DEFAULT_SUBFOLDER,
+            match.group(1),
+            "dcom_pipeline.EXTENSION_DEFAULT_SUBFOLDER has drifted from the extension",
+        )
+
+    def test_a_folder_of_downloads_reads_as_a_group_not_a_patient(self):
+        # Exactly what the extension writes into its save folder.
+        for case in CASES:
+            with self.subTest(patient=case.get("patientId")):
+                patient_folder = app_storage_path(case).split("/")[0]
+                self.assertTrue(
+                    web_backend.looks_like_download_folder_name(patient_folder),
+                    f"{patient_folder!r} must be recognised as a patient folder",
+                )
+
+    def test_a_grouping_folder_is_not_mistaken_for_a_patient(self):
+        for name in (
+            dcom_pipeline.EXTENSION_DEFAULT_SUBFOLDER,
+            "U não",
+            "U tủy/Cavernoma",
+            "Downloads",
+            "DICOM",
+        ):
+            with self.subTest(folder=name):
+                self.assertFalse(web_backend.looks_like_download_folder_name(name))
 
 
 if __name__ == "__main__":

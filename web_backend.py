@@ -3131,6 +3131,29 @@ _UNKNOWN_FOLDER_FIELD = "?UNKNOWN?"
 _UNKNOWN_FOLDER_FIELD_RE = re.compile(r"KHONG[_\s-]RO[_\s-](?:ID|TEN|TUOI)", re.IGNORECASE)
 
 
+# `<patient id> - <name> - <age> - <download date>`, the name both the app
+# (`dcom_pipeline.patient_download_folder_name`) and the extension
+# (`lib/pacs.js buildPatientFolderName`) write, kept identical by
+# `tests/test_folder_name_parity.py`. Either date order, because archives on
+# disk carry both.
+_DOWNLOAD_FOLDER_NAME_RE = re.compile(
+    r"^.+\s+-\s+.+\s+-\s+.+\s+-\s+(?:\d{2}-\d{2}-\d{4}|\d{4}-\d{2}-\d{2})$"
+)
+
+
+def looks_like_download_folder_name(name: str) -> bool:
+    """Whether `name` is a patient folder a download wrote.
+
+    Used to tell a folder that GROUPS patients from one that IS a patient. A
+    folder the extension filled carries no `patient-index.json` — it writes
+    images, not manifests — so the manifest test alone reported the extension's
+    whole output folder as a single patient, merging everyone inside it into one
+    worklist row. Two patients under one name is the one thing the worklist may
+    never do.
+    """
+    return bool(_DOWNLOAD_FOLDER_NAME_RE.match(str(name or "").strip()))
+
+
 def _blank_if_unknown(value: str) -> str:
     """A folder field the pipeline marked unknown reads back as blank."""
     text = str(value or "").strip()
@@ -3869,6 +3892,21 @@ class WorklistScanner:
         series_count = max(1, len(series_folders)) if (dicom_count or photo_count) else 0
         slice_count = dicom_count if dicom_count else (photo_count + doc_count if (photo_count or doc_count) else video_count)
 
+        # What the browser extension left beside the study it downloaded. It
+        # carries the viewer link the DICOM tags cannot, and how many images the
+        # download believed it had written. Patient identity is deliberately not
+        # read from here — the tags stay the source of truth, so a stale or
+        # hand-edited sidecar can never rename a patient.
+        #
+        # Reading it here, and not only on the "Nhập từ thư mục" path, is what
+        # makes a folder the extension filled behave the same whether the reader
+        # imported it or simply pointed the archive at it.
+        sidecar = dcom_pipeline.read_extension_sidecar(study_dir)
+        try:
+            expected_images = int(sidecar.get("imageCount") or 0)
+        except (TypeError, ValueError):
+            expected_images = 0
+
         # `patient-index.json` records how far the download actually got:
         # "complete" everything, "selected" only the series the doctor picked,
         # "incomplete" a run that stopped early. A folder with no manifest entry
@@ -3880,6 +3918,17 @@ class WorklistScanner:
             status, status_label = "part", "Chưa hoàn tất"
         elif slice_count == 0:
             status, status_label = "miss", "Folder trống"
+        elif expected_images and dicom_count and dicom_count < expected_images:
+            # The extension saved fewer images than it set out to, or images
+            # have gone missing since. Either way the reader is looking at an
+            # incomplete study, and saying "Đã tải" would hide that. The count
+            # only ever downgrades a study that would otherwise read as
+            # complete, and only when there are DICOM files to compare against —
+            # a study already converted to JPG has none left to count.
+            status = "part"
+            status_label = "Thiếu {}/{} ảnh".format(
+                expected_images - dicom_count, expected_images,
+            )
         else:
             status, status_label = "done", "Đã tải"
 
@@ -3909,7 +3958,15 @@ class WorklistScanner:
             "sizeBytes": size_bytes,
             # Lets the UI offer "Tải tiếp" on a study that stopped early: the
             # retry path needs the viewer link the first run came from.
-            "viewerUrl": str(record.get("viewerUrl") or record.get("downloadUrl") or ""),
+            # The manifest wins when it has one; the sidecar is what a folder the
+            # extension filled carries before it has ever been indexed. Without
+            # this fallback "Tải tiếp" is dark on exactly those studies.
+            "viewerUrl": str(
+                record.get("viewerUrl")
+                or record.get("downloadUrl")
+                or sidecar.get("sourceUrl")
+                or ""
+            ),
             # Only the pipeline probes video length, so this stays None for a
             # folder that was merely copied in — the UI hides the stat then.
             "durationSeconds": record.get("durationSeconds"),
@@ -3975,6 +4032,13 @@ class WorklistScanner:
         children = self._child_dirs(folder)
         if any(self._is_patient_archive(child) for child in children):
             return True
+        # A folder the extension filled has no manifest anywhere under it, so
+        # the test above says "not a category" and the caller then files the
+        # whole thing as one patient. The folder names are the evidence left:
+        # both tools write `<id> - <name> - <age> - <date>`, so a folder full of
+        # those is holding patients, not being one.
+        if any(looks_like_download_folder_name(child.name) for child in children):
+            return True
         return any(self._is_category_folder(child, budget - 1) for child in children)
 
     def _discover_patient_archives(self, root: Path, max_depth: int = 4) -> list[tuple[Path, str]]:
@@ -3987,7 +4051,11 @@ class WorklistScanner:
         existed: dropping those is how a case a doctor had just filed into a new
         category disappeared from the worklist without a word.
         """
-        if self._is_patient_archive(root):
+        # The same naming evidence that marks a folder as GROUPING patients
+        # marks one as BEING a patient. Without this, opening a single folder a
+        # download wrote — no manifest yet — filed each of its studies as a
+        # separate patient.
+        if self._is_patient_archive(root) or looks_like_download_folder_name(root.name):
             return [(root, "")]
 
         archives: list[tuple[Path, str]] = []

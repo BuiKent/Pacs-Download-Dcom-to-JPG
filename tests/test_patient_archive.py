@@ -1136,8 +1136,10 @@ class PatientDemographicsTests(unittest.TestCase):
             extensionless = dicom_dir / "one"
             with_suffix.rename(extensionless)
 
+            # dd-mm-yyyy, the order every folder either tool writes now uses.
+            # See tests/test_jpg_folder_naming.py.
             self.assertEqual(
-                "2026-12-30 - MR - MR BRAIN",
+                "30-12-2026 - MR - MR BRAIN",
                 dcom_pipeline._jpg_folder_name(dicom_dir),
             )
 
