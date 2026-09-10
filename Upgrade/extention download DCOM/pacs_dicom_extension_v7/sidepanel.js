@@ -260,11 +260,25 @@ async function startDownload(){
     const pref=st[SAVE_MODE_KEY]||'';
     const subfolder=String(st[SUBFOLDER_KEY]||'').trim()||DEFAULT_SUBFOLDER;
     let saveMode='downloads';
-    const storedHandle=await fsGet();
-    if(pref==='filesystem'||storedHandle){
+
+    // Always prefer direct File System mode to eliminate Save As popup flood.
+    if(pref!=='downloads'){
       const h=await ensureFolder(true).catch(()=>null);
-      if(h)saveMode='filesystem';
-      else toast('Write permission not granted for selected folder — saving to Downloads.');
+      if(h){
+        saveMode='filesystem';
+      }else{
+        // Hard guard: Never silently fallback to 'downloads' when folder permission is missing,
+        // which triggers hundreds of browser Save As popups.
+        setTopLoader(false);
+        isStartingDownload=false;
+        show('jobNote',true);
+        $('jobNote').textContent='Cần chọn thư mục lưu (hoặc cấp quyền ghi) để tải ngầm toàn bộ ảnh DICOM.';
+        toast('Chưa cấp quyền thư mục. Đã dừng để tránh hiện hàng loạt popup lưu file.',true);
+        updateSelected();
+        return;
+      }
+    }else{
+      saveMode='downloads';
     }
     await renderFolder();
     const r=await send('START_DOWNLOAD',{tabId,selectedSeries:selectedIds(),options:{concurrency:saveMode==='downloads'?3:6,frameConcurrency:6,saveMode,subfolder}});

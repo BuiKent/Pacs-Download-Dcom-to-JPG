@@ -8,8 +8,10 @@ export function shouldPreserveTerminalContext(current, {
   transitionType = '',
 } = {}) {
   if (!isTerminalTracking(current)) return false;
-  const sameKnownStudy = Boolean(oldStudy && nextStudy && oldStudy === nextStudy);
-  return sameKnownStudy || transitionType === 'reload';
+  if (current === 'stopped') return true;
+  if (transitionType === 'reload') return true;
+  if (oldStudy && nextStudy && oldStudy !== nextStudy) return false;
+  return true;
 }
 
 export function trackingAfterDocumentChange(current, {

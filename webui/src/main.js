@@ -80,6 +80,24 @@ const CLIPBOARD_FIELDS = [
   { id: "patient-id", kind: "patientId" },
   { id: "direct-url", kind: "url" },
 ];
+const PATIENT_RAIL_STORAGE_KEY = "dcom_patient_rail_collapsed";
+
+function getSavedPatientRailCollapsed() {
+  try {
+    if (typeof localStorage !== "undefined") {
+      return localStorage.getItem(PATIENT_RAIL_STORAGE_KEY) === "1";
+    }
+  } catch (_) {}
+  return false;
+}
+
+function savePatientRailCollapsed(collapsed) {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(PATIENT_RAIL_STORAGE_KEY, collapsed ? "1" : "0");
+    }
+  } catch (_) {}
+}
 
 let app = typeof document !== "undefined" ? document.querySelector("#app") : null;
 
@@ -177,6 +195,7 @@ const state = {
   mode: "single",
   tool: "window",
   downloadOpen: true,
+  patientRailCollapsed: getSavedPatientRailCollapsed(),
   studies: [],
   patient: null,
   downloadAllFiles: true,
@@ -2133,7 +2152,22 @@ function renderPatientRail() {
   };
 
   return `
-    <aside class="rec-rail">
+    <aside class="rec-rail patient-history-rail">
+      <div class="rail-collapsed-strip" data-action="toggle-patient-rail" title="${escapeHtml(t("Mở thông tin ca ( [ )"))}">
+        <button class="rail-expand-trigger" type="button" data-action="toggle-patient-rail"
+          ${state.patientRailCollapsed ? "" : "hidden"}
+          title="${escapeHtml(t("Mở thông tin ca ( [ )"))}" aria-label="${escapeHtml(t("Mở thông tin ca"))}">
+          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <span class="rail-vertical-title">${escapeHtml(t("Thông tin ca"))}</span>
+      </div>
+      <div class="rec-rail-header">
+        <span class="rec-rail-title">${escapeHtml(t("Thông tin ca"))}</span>
+        <button class="rail-toggle-btn" type="button" data-action="toggle-patient-rail"
+          title="${escapeHtml(t("Thu gọn thông tin ca ( [ )"))}" aria-label="${escapeHtml(t("Thu gọn thông tin ca"))}">
+          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
       ${renderInfoCard()}
 
       <div class="rec-timeline-head"><b>${escapeHtml(t("Lịch sử khám"))}</b></div>
@@ -3627,10 +3661,18 @@ function render() {
 
       ${renderWinbar()}
 
-      ${downloadPanelVisible() ? `
+      ${state.activeTabId === "worklist" ? `
       <aside class="download-panel">
+        <div class="rail-collapsed-strip" data-action="toggle-download" title="${escapeHtml(t("Mở khu tải phim"))}">
+          <button class="download-expand-trigger" type="button" data-action="toggle-download"
+            ${state.downloadOpen ? "hidden" : ""}
+            title="${escapeHtml(t("Mở khu tải phim"))}" aria-label="${escapeHtml(t("Mở khu tải phim"))}">
+            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <span class="rail-vertical-title">${escapeHtml(t("Tải ca chụp"))}</span>
+        </div>
         <div class="panel-title"><b>${escapeHtml(t("TẢI MRI / CT"))}</b>
-          <button data-action="toggle-download" title="${escapeHtml(t("Thu gọn khu tải phim"))}">×</button></div>
+          <button class="panel-toggle-btn" data-action="toggle-download" title="${escapeHtml(t("Thu gọn khu tải phim"))}" aria-label="${escapeHtml(t("Thu gọn khu tải phim"))}"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
         <section class="dicom-source-card">
           <button data-action="import-dicom-folder"
             title="${escapeHtml(t("Tính năng xuất JPG riêng; không dùng để mở DICOM trong viewer."))}">${escapeHtml(t("Chuyển Dcom → JPG"))}</button>
@@ -3713,7 +3755,7 @@ function render() {
       ` : ""}
 
       ${state.activeTabId === "worklist" ? renderWorklistView() : `
-      <main class="viewer-main">
+      <main class="viewer-main ${state.patientRailCollapsed ? "rail-collapsed" : ""}">
         ${renderPatientRail()}
         ${isDiagnosticSeries ? `
         <nav class="toolbar mode-${state.mode}">
@@ -4528,12 +4570,16 @@ function bindActionsIn(container) {
     if (WORKLIST_OWNED_ACTIONS.has(element.dataset.action)) continue;
     if (boundActionElements.has(element)) continue;
     boundActionElements.add(element);
-    element.addEventListener("click", () => action(element.dataset.action, element));
+    element.addEventListener("click", (event) => {
+      event.stopPropagation();
+      action(element.dataset.action, element);
+    });
     // A div carrying a click is only a button once the keyboard can reach it.
     if (element.getAttribute("role") === "button") {
       element.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
+        event.stopPropagation();
         action(element.dataset.action, element);
       });
     }
@@ -5574,6 +5620,25 @@ async function action(name, element = null) {
         toggle.title = t(state.downloadOpen ? "Thu gọn khu tải phim" : "Mở khu tải phim");
         const icon = toggle.querySelector("span");
         if (icon) icon.textContent = state.downloadOpen ? "⇤" : "⇥";
+      }
+      const expandBtn = app.querySelector(".download-expand-trigger");
+      if (expandBtn) {
+        expandBtn.hidden = state.downloadOpen;
+      }
+      return;
+    }
+    if (name === "toggle-patient-rail") {
+      state.patientRailCollapsed = !state.patientRailCollapsed;
+      savePatientRailCollapsed(state.patientRailCollapsed);
+      const viewerMain = app.querySelector(".viewer-main");
+      if (viewerMain) {
+        viewerMain.classList.toggle("rail-collapsed", state.patientRailCollapsed);
+        const expandBtn = viewerMain.querySelector(".rail-expand-trigger");
+        if (expandBtn) {
+          expandBtn.hidden = !state.patientRailCollapsed;
+        }
+      } else {
+        render();
       }
       return;
     }
@@ -7492,6 +7557,12 @@ function installKeyboardShortcuts() {
     }
     if (isTypingTarget(event.target)) return;
 
+    if (event.key === "[" && !event.ctrlKey && !event.altKey && !event.metaKey && state.activeTabId !== "worklist") {
+      event.preventDefault();
+      action("toggle-patient-rail");
+      return;
+    }
+
     if (handlePhotoStudioKey(event)) return;
 
     if (event.key === "Tab" && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
@@ -7889,4 +7960,6 @@ export {
   switchTab,
   applyArchive,
   bindEvents,
+  render,
+  installKeyboardShortcuts,
 };

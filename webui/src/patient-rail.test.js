@@ -11,6 +11,8 @@ import {
   bindTextViewerButtons,
   action,
   switchTab,
+  render,
+  installKeyboardShortcuts,
 } from "./main.js";
 
 const PATIENT = {
@@ -438,5 +440,119 @@ describe("Boot with an empty archive", () => {
   it("renders the rail and an empty timeline instead of throwing", () => {
     expect(() => renderPatientRail()).not.toThrow();
     expect(renderPatientRail()).toContain("Chưa có dữ liệu nào trong hồ sơ này.");
+  });
+});
+
+describe("Collapsible Patient Rail and Download Panel", () => {
+  beforeEach(() => {
+    setLanguage("vi");
+    if (!document.querySelector("#app")) document.body.innerHTML = '<div id="app"></div>';
+    state.activeTabId = "tab-1";
+    state.patientRailCollapsed = false;
+    state.downloadOpen = true;
+    state.archive = { root: "D:\\PACS\\BN", patient: { ...PATIENT }, series: SERIES.map((s) => ({ ...s })) };
+    state.selectedId = "s1";
+    state.tabs = [{ id: "tab-1", title: "BN01", patientName: "BN01" }];
+  });
+
+  it("renders the patient rail header with title and collapse button", () => {
+    const markup = renderPatientRail();
+    expect(markup).toContain('class="rec-rail-header"');
+    expect(markup).toContain('class="rec-rail-title"');
+    expect(markup).toContain("Thông tin ca");
+    expect(markup).toContain('data-action="toggle-patient-rail"');
+  });
+
+  it("toggles patient rail collapsed state via real DOM click on toggle button", () => {
+    render();
+    const appEl = document.querySelector("#app");
+    const toggleBtn = appEl.querySelector(".rail-toggle-btn");
+    expect(toggleBtn).not.toBeNull();
+    expect(state.patientRailCollapsed).toBe(false);
+
+    // Real DOM click event
+    toggleBtn.click();
+    expect(state.patientRailCollapsed).toBe(true);
+    expect(appEl.querySelector(".viewer-main")?.classList.contains("rail-collapsed")).toBe(true);
+
+    // Expand trigger should now be visible and clickable
+    const expandBtn = appEl.querySelector(".rail-expand-trigger");
+    expect(expandBtn).not.toBeNull();
+    expect(expandBtn.hidden).toBe(false);
+
+    // Real DOM click to re-expand
+    expandBtn.click();
+    expect(state.patientRailCollapsed).toBe(false);
+    expect(appEl.querySelector(".viewer-main")?.classList.contains("rail-collapsed")).toBe(false);
+    expect(expandBtn.hidden).toBe(true);
+  });
+
+  it("supports keyboard shortcut [ to toggle patient rail in viewer", () => {
+    installKeyboardShortcuts();
+    render();
+    expect(state.patientRailCollapsed).toBe(false);
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "[" }));
+    expect(state.patientRailCollapsed).toBe(true);
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "[" }));
+    expect(state.patientRailCollapsed).toBe(false);
+  });
+
+  it("toggles download panel in worklist and shows expand trigger when collapsed", () => {
+    state.activeTabId = "worklist";
+    state.downloadOpen = true;
+    render();
+    const appEl = document.querySelector("#app");
+
+    const collapseBtn = appEl.querySelector(".panel-toggle-btn");
+    expect(collapseBtn).not.toBeNull();
+
+    // Click collapse button
+    collapseBtn.click();
+    expect(state.downloadOpen).toBe(false);
+    expect(appEl.querySelector(".app-shell")?.classList.contains("download-collapsed")).toBe(true);
+
+    // Expand trigger should be visible
+    const expandTrigger = appEl.querySelector(".download-expand-trigger");
+    expect(expandTrigger).not.toBeNull();
+    expect(expandTrigger.hidden).toBe(false);
+
+    // Click expand trigger to re-open
+    expandTrigger.click();
+    expect(state.downloadOpen).toBe(true);
+    expect(appEl.querySelector(".app-shell")?.classList.contains("download-collapsed")).toBe(false);
+    expect(expandTrigger.hidden).toBe(true);
+  });
+
+  it("renders vertical rail strip with title and allows clicking strip itself to re-expand", () => {
+    // 1. Viewer rail
+    state.activeTabId = "tab-test";
+    state.patientRailCollapsed = true;
+    render();
+    const appEl = document.querySelector("#app");
+    const viewerStrip = appEl.querySelector(".viewer-main .rail-collapsed-strip");
+    expect(viewerStrip).not.toBeNull();
+    const viewerTitle = viewerStrip.querySelector(".rail-vertical-title");
+    expect(viewerTitle?.textContent).toContain("Thông tin ca");
+
+    // Click strip itself
+    viewerStrip.click();
+    expect(state.patientRailCollapsed).toBe(false);
+    expect(appEl.querySelector(".viewer-main")?.classList.contains("rail-collapsed")).toBe(false);
+
+    // 2. Worklist download panel
+    state.activeTabId = "worklist";
+    state.downloadOpen = false;
+    render();
+    const downloadStrip = appEl.querySelector(".download-panel .rail-collapsed-strip");
+    expect(downloadStrip).not.toBeNull();
+    const downloadTitle = downloadStrip.querySelector(".rail-vertical-title");
+    expect(downloadTitle?.textContent).toContain("Tải ca chụp");
+
+    // Click strip itself
+    downloadStrip.click();
+    expect(state.downloadOpen).toBe(true);
+    expect(appEl.querySelector(".app-shell")?.classList.contains("download-collapsed")).toBe(false);
   });
 });

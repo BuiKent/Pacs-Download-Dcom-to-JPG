@@ -23,6 +23,15 @@ assert.equal(
   false,
   'a new study must invalidate the old inventory',
 );
+assert.equal(
+  shouldPreserveTerminalContext('completed', {
+    oldStudy: '',
+    nextStudy: '',
+    transitionType: 'link',
+  }),
+  true,
+  'in-page navigation on viewers without study hint must preserve completed state',
+);
 
 assert.equal(
   trackingAfterDocumentChange('completed', {

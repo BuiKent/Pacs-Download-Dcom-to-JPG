@@ -103,6 +103,11 @@ const EN = {
   "Mở folder": "Open folder",
 
   // Viewer tab: the patient rail and its record timeline
+  "Thông tin ca": "Case details",
+  "Thu gọn thông tin ca": "Collapse case details",
+  "Mở thông tin ca": "Expand case details",
+  "Mở thông tin ca ( [ )": "Expand case details ( [ )",
+  "Tải ca chụp": "Downloads",
   "Lịch sử mở gần đây": "Recent history",
   "Thông tin bệnh nhân": "Patient Information",
   "Sửa thông tin bệnh nhân": "Edit Patient Info",
