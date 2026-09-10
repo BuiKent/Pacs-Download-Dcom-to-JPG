@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nhật Ký Hoạt Động - PACS DICOM Downloader</title>
+  <style>
+    :root {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: #1e293b;
+      background: #f8fafc;
+      --border: #cbd5e1;
+      --muted: #64748b;
+      --blue: #2563eb;
+      --blue-hover: #1d4ed8;
+      --green: #16a34a;
+      --amber: #d97706;
+      --red: #dc2626;
+      --card-bg: #ffffff;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color: #f1f5f9;
+        background: #0f172a;
+        --border: #334155;
+        --muted: #94a3b8;
+        --card-bg: #1e293b;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 16px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 32px);
+    }
+    .header {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: rgba(127,127,127,0.03);
+    }
+    .title-group h1 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .title-group p {
+      margin: 2px 0 0;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .actions-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    button {
+      font: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--card-bg);
+      color: inherit;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+    button:hover {
+      background: rgba(127,127,127,0.08);
+      border-color: var(--muted);
+    }
+    button.primary {
+      background: var(--blue);
+      color: #fff;
+      border-color: var(--blue-hover);
+    }
+    button.primary:hover {
+      background: var(--blue-hover);
+    }
+    button.danger {
+      color: var(--red);
+    }
+    button.danger:hover {
+      background: rgba(220,38,38,0.08);
+      border-color: var(--red);
+    }
+    .filter-bar {
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: rgba(127,127,127,0.01);
+    }
+    .filter-bar input[type="search"] {
+      flex: 1;
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--card-bg);
+      color: inherit;
+      font-size: 12px;
+      outline: none;
+    }
+    .filter-bar input[type="search"]:focus {
+      border-color: var(--blue);
+    }
+    .filter-bar select {
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--card-bg);
+      color: inherit;
+      font-size: 12px;
+      outline: none;
+      cursor: pointer;
+    }
+    .log-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12px;
+    }
+    .log-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 6px 8px;
+      border-radius: 5px;
+      border-bottom: 1px solid rgba(127,127,127,0.08);
+    }
+    .log-row:hover {
+      background: rgba(127,127,127,0.05);
+    }
+    .log-time {
+      color: var(--muted);
+      white-space: nowrap;
+      font-size: 11px;
+    }
+    .badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+    .badge.info { background: rgba(37,99,235,0.12); color: var(--blue); }
+    .badge.warn { background: rgba(217,119,6,0.12); color: var(--amber); }
+    .badge.error { background: rgba(220,38,38,0.12); color: var(--red); }
+    .badge.success { background: rgba(22,163,74,0.12); color: var(--green); }
+    .badge.category { background: rgba(127,127,127,0.1); color: var(--muted); }
+    .log-msg {
+      flex: 1;
+      word-break: break-word;
+    }
+    .log-details {
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 3px;
+      white-space: pre-wrap;
+    }
+    .empty-state {
+      padding: 48px;
+      text-align: center;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="title-group">
+        <h1>📋 Nhật Ký Hoạt Động (Activity Log)</h1>
+        <p>Ghi nhận tiến trình phát hiện PACS, phiên tải ảnh DICOM và các thông báo lỗi</p>
+      </div>
+      <div class="actions-group">
+        <button id="btnRefresh" title="Làm mới danh sách">🔄 Làm mới</button>
+        <button id="btnCopy" title="Sao chép toàn bộ log">📋 Sao chép</button>
+        <button id="btnDownload" class="primary" title="Tải file text về máy">📥 Tải file .txt</button>
+        <button id="btnClear" class="danger" title="Xóa toàn bộ nhật ký">🗑️ Xóa log</button>
+      </div>
+    </div>
+    <div class="filter-bar">
+      <input id="searchInput" type="search" placeholder="🔍 Tìm kiếm trong log (tên bệnh nhân, URL, lỗi, mã SOP...)" />
+      <select id="levelFilter">
+        <option value="ALL">Tất cả mức độ</option>
+        <option value="INFO">Chỉ INFO</option>
+        <option value="SUCCESS">Chỉ SUCCESS</option>
+        <option value="WARN">Chỉ CẢNH BÁO (WARN)</option>
+        <option value="ERROR">Chỉ LỖI (ERROR)</option>
+      </select>
+      <select id="categoryFilter">
+        <option value="ALL">Tất cả danh mục</option>
+        <option value="SYSTEM">Hệ thống (SYSTEM)</option>
+        <option value="DETECTION">Nhận diện PACS</option>
+        <option value="TRACKING">Theo dõi Tab</option>
+        <option value="CAPTURE">Bắt gói tin DICOM</option>
+        <option value="DOWNLOAD">Tải xuống</option>
+        <option value="STORAGE">Thư mục / Lưu trữ</option>
+      </select>
+    </div>
+    <div id="logContainer" class="log-container">
+      <div class="empty-state">Đang nạp nhật ký...</div>
+    </div>
+  </div>
+  <script type="module" src="log_viewer.js"></script>
+</body>
+</html>

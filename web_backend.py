@@ -3392,6 +3392,17 @@ def _format_file_size(size_bytes: int) -> str:
     return f"{val:.1f}".replace(".", ",") + f" {units[idx]}"
 
 
+# Extensions that never name a DICOM slice, used to keep sidecars, thumbnails
+# and stray media from being counted as images when they sit inside a DICOM
+# folder. A file with no extension at all is still counted: that is how most
+# PACS and disc exports write their slices.
+_NON_DICOM_EXTENSIONS = frozenset({
+    ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp",
+    ".pdf", ".txt", ".xml", ".json", ".db", ".ini", ".log",
+    ".mp4", ".avi", ".mkv", ".mov", ".webm",
+})
+
+
 class WorklistScanner:
     """Discovers patient and study hierarchy for the clinical Worklist.
 
@@ -3403,6 +3414,33 @@ class WorklistScanner:
     def __init__(self, controller: "WebController"):
         self.controller = controller
 
+    def _read_patient_manifest_raw(self, patient_dir: Path) -> Optional[dict]:
+        manifest_path = patient_dir / "patient-index.json"
+        try:
+            mtime = manifest_path.stat().st_mtime
+        except OSError:
+            return None
+        cached = getattr(self, "_manifest_cache", None)
+        if cached is None:
+            self._manifest_cache = {}
+            cached = self._manifest_cache
+        try:
+            cache_key = str(manifest_path.resolve()).casefold()
+        except OSError:
+            cache_key = str(manifest_path).casefold()
+        if cache_key in cached:
+            cached_mtime, cached_data = cached[cache_key]
+            if cached_mtime == mtime:
+                return cached_data
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                cached[cache_key] = (mtime, data)
+                return data
+        except Exception:
+            pass
+        return None
+
     def _manifest_patient_meta(self, patient_dir: Path) -> Optional[dict]:
         """Patient identity straight from `patient-index.json`, when present.
 
@@ -3411,12 +3449,8 @@ class WorklistScanner:
         it is also the only way to get sex and birth date right — a folder named
         `BN-9999` carries neither.
         """
-        try:
-            raw = (patient_dir / "patient-index.json").read_text(encoding="utf-8")
-            data = json.loads(raw)
-        except Exception:
-            return None
-        if not isinstance(data, dict) or not data.get("patientId"):
+        data = self._read_patient_manifest_raw(patient_dir)
+        if not data or not data.get("patientId"):
             return None
         # DICOM DA is YYYYMMDD; the worklist column only shows the year.
         birth = re.sub(r"\D", "", str(data.get("patientBirthDate") or ""))
@@ -3445,10 +3479,8 @@ class WorklistScanner:
         directory, which record describes it. Keys are casefolded absolute
         paths because that is what `_scan_study` has in hand.
         """
-        try:
-            raw = (patient_dir / "patient-index.json").read_text(encoding="utf-8")
-            data = json.loads(raw)
-        except Exception:
+        data = self._read_patient_manifest_raw(patient_dir)
+        if not data:
             return {}
         studies = data.get("studies") if isinstance(data, dict) else None
         if not isinstance(studies, dict):
@@ -3738,6 +3770,30 @@ class WorklistScanner:
                 clean_study_name = clean_study_name.lstrip("- ").strip()
             study_name = clean_study_name or study_dir.name
 
+        study_mtime = 0.0
+        try:
+            study_mtime = study_dir.stat().st_mtime
+        except OSError:
+            pass
+
+        cached_studies = getattr(self, "_study_scan_cache", None)
+        if cached_studies is None:
+            self._study_scan_cache = {}
+            cached_studies = self._study_scan_cache
+
+        cache_key = (
+            folder_str.casefold(),
+            study_mtime,
+            record.get("status"),
+            record.get("readAt"),
+            record.get("description"),
+            record.get("date"),
+            record.get("modality"),
+            record.get("viewerUrl"),
+        )
+        if cache_key in cached_studies:
+            return dict(cached_studies[cache_key])
+
         dicom_count = 0
         photo_count = 0
         video_count = 0
@@ -3755,6 +3811,16 @@ class WorklistScanner:
                 elif len(rel.parts) == 2:
                     if rel.parts[0].upper() in {"DICOM", "JPG", "RAW_JPG", "DCOM", "DCM"}:
                         series_folders.add(rel.parts[1])
+                # A file counts as DICOM when ANY folder between the study and
+                # the file is a DICOM folder, not only its immediate parent:
+                # exports from disc are routinely laid out as
+                # `DICOM/<SeriesInstanceUID>/IM00001` with no file extension,
+                # and matching only the parent reported those studies as empty.
+                # `rel` deliberately excludes the study folder's own name, so a
+                # study called "… - DICOM CT" does not turn its JPGs into slices.
+                in_dicom_tree = any(
+                    part.casefold() in {"dicom", "dcom", "dcm"} for part in rel.parts
+                )
                 for f in files:
                     fp = root_path / f
                     try:
@@ -3763,7 +3829,9 @@ class WorklistScanner:
                     except OSError:
                         pass
                     ext = fp.suffix.lower()
-                    if ext in {".dcm", ".ima", ".dicom"} or "dicom" in str(fp).casefold():
+                    if ext in {".dcm", ".ima", ".dicom"} or (
+                        in_dicom_tree and ext not in _NON_DICOM_EXTENSIONS
+                    ):
                         dicom_count += 1
                     elif ext in {".mp4", ".avi", ".mkv", ".mov", ".webm"}:
                         video_count += 1
@@ -3828,7 +3896,7 @@ class WorklistScanner:
             status = "busy"
             status_label = "Đang tải"
 
-        return {
+        res = {
             "id": hashlib.sha256(folder_str.encode("utf-8")).hexdigest()[:16],
             "studyDate": study_date,
             "studyDateSort": self._sortable_study_date(study_date),
@@ -3859,6 +3927,8 @@ class WorklistScanner:
             "readAt": str(record.get("readAt") or ""),
             "isRead": bool(str(record.get("readAt") or "").strip()),
         }
+        cached_studies[cache_key] = res
+        return res
 
     # Folders that belong to a patient's own material rather than being another
     # patient. Kept in one place so discovery and the study scan agree.

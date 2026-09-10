@@ -5,10 +5,12 @@ import {compatibleAdapterIds,mapSeriesSelection,tasksBelongToStudy,cumulativeAtt
 import {extractManifestCandidates,candidateProbePlan,recordsForSuccessfulShapes,manifestRecipeFromDiscovery,studyProfileFromProbeDetails,looksLikeDicomJson,urlShape} from './lib/generic_discovery.js';
 import {isTerminalTracking,shouldPreserveTerminalContext,trackingAfterDocumentChange,trackingAfterSameDocumentStudyChange} from './lib/tracking_state.js';
 import {resolveBulkDicomSaveMode} from './lib/save_policy.js';
+import {appendLog,getLogsFromStorage,clearAllLogs} from './lib/logger.js';
 
 const TAB_PREFIX='pacs6_tab_',INV_PREFIX='pacs6_inv_',JOB_PREFIX='pacs6_job_',HISTORY_KEY='pacs6_history',RECIPES_KEY='pacs6_site_recipes';
 const MAX_HISTORY=100,MAX_NAV=60,MAX_REQUESTS=500,AUTO_SCORE=50,AUTO_ARM_SCORE=70;
 const analyzeTimers=new Map(),contextTimers=new Map(),probeTimers=new Map(),learnTimers=new Map(),jobMemory=new Map(),jobFlushTimers=new Map();
+const trackedTabIds=new Set(),badgeCache=new Map(),activeAnalysis=new Map();
 let learnedRecipes={};
 const tabKey=id=>`${TAB_PREFIX}${id}`,invKey=id=>`${INV_PREFIX}${id}`,jobKey=id=>`${JOB_PREFIX}${id}`;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -126,7 +128,8 @@ function pruneStateForStorage(s){
   if(!s||typeof s!=='object')return s;
   return{
     ...s,
-    pacsRequests:(s.pacsRequests||[]).slice(-30).map(r=>({
+    _directUrlSet:undefined,
+    pacsRequests:(s.pacsRequests||[]).slice(-50).map(r=>({
       type:r.type,url:r.url,method:r.method,requestId:r.requestId,score:r.score,contentType:r.contentType,time:r.time,_id:r._id,
       requestBody:r.requestBody?.kind==='form'?r.requestBody:null
     })),
@@ -134,22 +137,27 @@ function pruneStateForStorage(s){
       url:r.url,display:r.display,method:r.method,requestId:r.requestId,type:r.type,contentType:r.contentType,status:r.status,contentLength:r.contentLength,time:r.time
     })),
     binaryCandidates:(s.binaryCandidates||[]).slice(-20),
-    genericDirectUrls:(s.genericDirectUrls||[]).slice(-300),
-    genericEntries:(s.genericEntries||[]).slice(-80).map(e=>({
-      url:e.url,method:e.method,contentType:e.contentType,shape:e.shape,source:e.source,declared:e.declared,meta:e.meta
+    genericDirectUrls:(s.genericDirectUrls||[]).slice(-6000),
+    genericEntries:(s.genericEntries||[]).slice(-500).map(e=>({
+      url:e.url,method:e.method,contentType:e.contentType,shape:e.shape,source:e.source,declared:e.declared,meta:e.meta,requestKey:e.requestKey
     }))
   };
 }
 
 async function getSession(key,fallback=null){
-  if(key.startsWith('tab|')){const tabId=Number(key.slice(4));if(tabMemory.has(tabId))return tabMemory.get(tabId);}
-  else if(key.startsWith('inv|')){const tabId=Number(key.slice(4));if(invMemory.has(tabId))return invMemory.get(tabId);}
+  if(key.startsWith(TAB_PREFIX)){const tabId=Number(key.slice(TAB_PREFIX.length));if(tabMemory.has(tabId))return tabMemory.get(tabId);}
+  else if(key.startsWith(INV_PREFIX)){const tabId=Number(key.slice(INV_PREFIX.length));if(invMemory.has(tabId))return invMemory.get(tabId);}
   try{const o=await chrome.storage.session.get(key);return o[key]??fallback;}catch{return fallback;}
 }
 const tabSaveTimers=new Map();
 async function setSession(key,value){
-  if(key.startsWith('tab|')){
-    const tabId=Number(key.slice(4));tabMemory.set(tabId,value);
+  if(key.startsWith(TAB_PREFIX)){
+    const tabId=Number(key.slice(TAB_PREFIX.length));tabMemory.set(tabId,value);
+    if(value&&(['watching','candidate'].includes(value.tracking)||value.learning?.active)){
+      trackedTabIds.add(tabId);
+    }else if(value&&value.tracking==='stopped'){
+      trackedTabIds.delete(tabId);
+    }
     if(!tabSaveTimers.has(tabId)){
       tabSaveTimers.set(tabId,setTimeout(async()=>{
         tabSaveTimers.delete(tabId);
@@ -158,8 +166,8 @@ async function setSession(key,value){
     }
     return;
   }
-  if(key.startsWith('inv|')){
-    const tabId=Number(key.slice(4));invMemory.set(tabId,value);
+  if(key.startsWith(INV_PREFIX)){
+    const tabId=Number(key.slice(INV_PREFIX.length));invMemory.set(tabId,value);
     try{await chrome.storage.session.set({[key]:value});}catch{try{await chrome.storage.session.remove(key);}catch{}}
     return;
   }
@@ -173,7 +181,7 @@ function pushUnique(list,value,max=MAX_NAV){if(!value)return;const i=list.indexO
 async function getHistory(){const o=await chrome.storage.local.get(HISTORY_KEY);return Array.isArray(o[HISTORY_KEY])?o[HISTORY_KEY]:[];}
 function historyKey(inv){if(inv?.studyUid)return`study|${inv.studyUid}`;const p=inv?.patient||{};return p.id&&p.studyDate?`patient|${p.id}|${p.studyDate}|${p.description||''}`:'';}
 async function findHistory(inv){const h=await getHistory();if(inv?.studyUid){const x=h.find(v=>v.studyUid===inv.studyUid);if(x)return x;}const p=inv?.patient||{};if(p.id&&p.studyDate){let c=h.filter(v=>v.patientId===p.id&&v.studyDate===p.studyDate);if(p.accession)c=c.filter(v=>!v.accession||v.accession===p.accession);if(p.description)c=c.filter(v=>!v.description||v.description===p.description);return c.length===1?c[0]:null;}return null;}
-async function upsertHistory(inv,patch={}){if(!inv)return null;const key=historyKey(inv);if(!key)return null;const list=await getHistory();let i=list.findIndex(x=>x.key===key||(inv.studyUid&&x.studyUid===inv.studyUid));const old=i>=0?list[i]:{};const next={...old,key,adapter:inv.adapter||old.adapter||'',studyUid:inv.studyUid||old.studyUid||'',patientName:inv.patient?.name||old.patientName||'',patientId:inv.patient?.id||old.patientId||'',studyDate:inv.patient?.studyDate||old.studyDate||'',description:inv.patient?.description||old.description||'',accession:inv.patient?.accession||old.accession||'',seriesCount:inv.series?.length||old.seriesCount||0,...patch,updatedAt:Date.now()};if(old.status==='done'&&patch.status&&patch.status!=='done')next.status='done';if(i>=0)list.splice(i,1);list.unshift(next);list.length=Math.min(list.length,MAX_HISTORY);await chrome.storage.local.set({[HISTORY_KEY]:list});chrome.runtime.sendMessage({type:'HISTORY_UPDATED',history:list}).catch(()=>{});return next;}
+async function upsertHistory(inv,patch={}){if(!inv)return null;const key=historyKey(inv);if(!key)return null;const list=await getHistory();let i=list.findIndex(x=>x.key===key||(inv.studyUid&&x.studyUid===inv.studyUid));const old=i>=0?list[i]:{};const next={...old,key,adapter:inv.adapter||old.adapter||'',studyUid:inv.studyUid||old.studyUid||'',patientName:inv.patient?.name||old.patientName||'',patientId:inv.patient?.id||old.patientId||'',studyDate:inv.patient?.studyDate||old.studyDate||'',description:inv.patient?.description||old.description||'',accession:inv.patient?.accession||old.accession||'',seriesCount:inv.series?.length||old.seriesCount||0,studyFolder:patch.studyFolder||old.studyFolder||(inv?safeFolderName(inv):'')||'',...patch,updatedAt:Date.now()};if(old.status==='done'&&patch.status&&patch.status!=='done')next.status='done';if(i>=0)list.splice(i,1);list.unshift(next);list.length=Math.min(list.length,MAX_HISTORY);await chrome.storage.local.set({[HISTORY_KEY]:list});chrome.runtime.sendMessage({type:'HISTORY_UPDATED',history:list}).catch(()=>{});return next;}
 
 function urlConfidence(raw){const shell=classifyViewerShell(raw);return Math.max(0,Number(viewerUrlScore(raw))||0,Number(shell?.score)||0);}
 async function hasOrigin(url){const p=originPattern(url);if(!p)return false;return chrome.permissions.contains({origins:[p]});}
@@ -187,7 +195,30 @@ async function ensurePanel(tabId){
   }catch{}
 }
 
-async function setBadge(tabId){if(tabId<0)return;const s=await getTabState(tabId),inv=await getSession(invKey(tabId)),job=jobMemory.get(tabId)||await getSession(jobKey(tabId));let text='',color='#64748b',title='PACS DICOM Downloader';if(job&&['preparing','downloading','cancelling'].includes(job.status)){text='↓';color='#2563eb';title='Downloading DICOM';}else if(inv?.previousDownload?.status==='done'){text='✓';color='#168a52';title='Study downloaded';}else if(inv?.series?.length){text=String(Math.min(99,inv.series.length));color='#168a52';title=`${inv.series.length} series`;}else if(s.tracking==='watching'){text='•';color='#2563eb';title='Tracking PACS';}else if(s.tracking==='candidate'){text='?';color='#b7791f';title='Possible PACS';}else if(s.tracking==='stopped'){text='Ⅱ';color='#7c8798';title='Tracking stopped';}await chrome.action.setBadgeBackgroundColor({tabId,color}).catch(()=>{});await chrome.action.setBadgeText({tabId,text}).catch(()=>{});await chrome.action.setTitle({tabId,title}).catch(()=>{});}
+async function setBadge(tabId){
+  if(tabId<0)return;
+  const s=await getTabState(tabId),inv=await getSession(invKey(tabId)),job=jobMemory.get(tabId)||await getSession(jobKey(tabId));
+  let text='',color='#64748b',title='PACS DICOM Downloader';
+  if(job&&['preparing','downloading','cancelling'].includes(job.status)){
+    text='↓';color='#2563eb';title='Downloading DICOM';
+  }else if(inv?.previousDownload?.status==='done'){
+    text='✓';color='#168a52';title='Study downloaded';
+  }else if(inv?.series?.length){
+    text=String(Math.min(99,inv.series.length));color='#168a52';title=`${inv.series.length} series`;
+  }else if(s.tracking==='watching'){
+    text='•';color='#2563eb';title='Tracking PACS';
+  }else if(s.tracking==='candidate'){
+    text='?';color='#b7791f';title='Possible PACS';
+  }else if(s.tracking==='stopped'){
+    text='Ⅱ';color='#7c8798';title='Tracking stopped';
+  }
+  const prev=badgeCache.get(tabId);
+  if(prev&&prev.text===text&&prev.color===color&&prev.title===title)return;
+  badgeCache.set(tabId,{text,color,title});
+  await chrome.action.setBadgeBackgroundColor({tabId,color}).catch(()=>{});
+  await chrome.action.setBadgeText({tabId,text}).catch(()=>{});
+  await chrome.action.setTitle({tabId,title}).catch(()=>{});
+}
 
 async function markCandidate(tabId,url){
   const clean=cleanUrl(url);
@@ -212,8 +243,8 @@ async function markCandidate(tabId,url){
   }
 }
 async function maybeRecaptureVietmy(tabId){try{const s=await getTabState(tabId);if(s.tracking!=='watching'||s.vietmyRecaptureDone)return;const shell=classifyViewerShell(s.currentUrl||'');if(shell?.type!=='SHARE_STUDY')return;const summary=await scanTab(tabId),seen=summary.requests.some(x=>x.type==='VIETMY_MANIFEST'),captured=(s.pacsRequests||[]).some(x=>x.type==='VIETMY_MANIFEST');if(seen&&!captured){s.vietmyRecaptureDone=true;await saveTabState(tabId,s);await chrome.tabs.reload(tabId);}}catch{}}
-async function startTracking(tabId,manual=false){const s=await getTabState(tabId);s.tracking='watching';if(manual)s.manual=true;await saveTabState(tabId,s);await injectContent(tabId);await injectGenericHook(tabId);s.genericHookActive=true;await saveTabState(tabId,s);await setBadge(tabId);chrome.tabs.sendMessage(tabId,{type:'RESTART_TRACKING'}).catch(()=>{});scheduleAnalyze(tabId,250);if(manual)setTimeout(()=>maybeRecaptureVietmy(tabId),450);return s;}
-async function stopTracking(tabId){const s=await getTabState(tabId);s.tracking='stopped';await saveTabState(tabId,s);await setBadge(tabId);chrome.tabs.sendMessage(tabId,{type:'CLEANUP_TRACKING'}).catch(()=>{});return s;}
+async function startTracking(tabId,manual=false){trackedTabIds.add(tabId);const s=await getTabState(tabId);s.tracking='watching';if(manual)s.manual=true;await saveTabState(tabId,s);await injectContent(tabId);await injectGenericHook(tabId);s.genericHookActive=true;await saveTabState(tabId,s);await setBadge(tabId);chrome.tabs.sendMessage(tabId,{type:'RESTART_TRACKING'}).catch(()=>{});scheduleAnalyze(tabId,250);if(manual)setTimeout(()=>maybeRecaptureVietmy(tabId),450);appendLog({level:'info',category:'pacs',message:`Bắt đầu theo dõi tab ${tabId} (${manual?'thủ công':'tự động'})`}).catch(()=>{});return s;}
+async function stopTracking(tabId){trackedTabIds.delete(tabId);const s=await getTabState(tabId);s.tracking='stopped';await saveTabState(tabId,s);await setBadge(tabId);chrome.tabs.sendMessage(tabId,{type:'CLEANUP_TRACKING'}).catch(()=>{});appendLog({level:'info',category:'pacs',message:`Dừng theo dõi tab ${tabId}`}).catch(()=>{});return s;}
 
 async function rememberBeforeNavigate(tabId,raw){if(tabId<0)return;const u=cleanUrl(raw);if(!u)return;const s=await getTabState(tabId);pushUnique(s.pendingNavUrls,u);s.currentUrl=u;await saveTabState(tabId,s);markCandidate(tabId,u).catch(()=>{});}
 async function invalidate(tabId,reason){perfScanCache.delete(tabId);invMemory.delete(tabId);await chrome.storage.session.remove(invKey(tabId)).catch(()=>{});chrome.runtime.sendMessage({type:'TAB_CONTEXT_CHANGED',tabId,reason}).catch(()=>{});}
@@ -235,7 +266,18 @@ function requestMetaForObserved(state,url,method='GET',requestId=''){
 }
 function probeTaskFromRow(state,row){return{url:row.url,method:row.method||'GET',requestBody:row.requestBody||null,contentType:row.contentType||'',headers:headersForUrl(state,row.url)};}
 function genericEntryKey(entry){return entry?.requestKey||`${String(entry?.method||'GET').toUpperCase()}|${entry?.url||''}|${storedBodySignature(entry?.requestBody)}`;}
-function mergeGenericEntry(list,entry){const key=genericEntryKey(entry);const out=(list||[]).filter(x=>genericEntryKey(x)!==key);out.push({...entry,requestKey:key});return out.slice(-6000);}
+function mergeGenericEntry(list,entry){
+  const key=genericEntryKey(entry);
+  const arr=list||[];
+  const idx=arr.findIndex(x=>(x.requestKey||genericEntryKey(x))===key);
+  if(idx>=0){
+    arr[idx]={...arr[idx],...entry,requestKey:key};
+    return arr;
+  }
+  arr.push({...entry,requestKey:key});
+  if(arr.length>6000)arr.splice(0,arr.length-6000);
+  return arr;
+}
 async function saveManifestDiscoveryRecipe(manifestUrl,requestMeta,winningRows){
   const learned=manifestRecipeFromDiscovery(manifestUrl,requestMeta,winningRows);if(!learned)return;
   try{const origin=new URL(manifestUrl).origin,recipe=recipeForOrigin(origin),rows=[...(recipe.manifestRecipes||[])].filter(x=>x.manifestShape!==learned.manifestShape);rows.push(learned);recipe.manifestRecipes=rows.slice(-30);recipe.updatedAt=Date.now();learnedRecipes[origin]=recipe;await chrome.storage.local.set({[RECIPES_KEY]:learnedRecipes});}catch{}
@@ -297,7 +339,20 @@ async function rememberDicomResponse(tabId,url,contentType,status,method='GET',c
   if(!strong&&!['watching','candidate'].includes(s.tracking))return;
   if(strong){
     const entry={url:u,method:m,requestBody:req?.requestBody||null,contentType:req?.contentType||ct,requestId:req?.requestId||requestId||'',requestKey:`${m}|${u}|${storedBodySignature(req?.requestBody)}`,declared:{},meta:null,shape:pathSignature(u),source:'observed-dicom'};
-    s.genericEntries=mergeGenericEntry(s.genericEntries,entry);if(m==='GET')s.genericDirectUrls=[...new Set([...(s.genericDirectUrls||[]),u])].slice(-6000);s.genericDirectMeta[u]={contentType:ct,learned};s.confidence=Math.max(Number(s.confidence)||0,learned?95:90);await saveTabState(tabId,s);recordCapabilities(u,{directDicom:true,retrieveMethods:[m]}).catch(()=>{});scheduleAnalyze(tabId,500);return;
+    s.genericEntries=mergeGenericEntry(s.genericEntries,entry);
+    if(m==='GET'){
+      if(!s.genericDirectUrls)s.genericDirectUrls=[];
+      if(!s._directUrlSet)s._directUrlSet=new Set(s.genericDirectUrls);
+      if(!s._directUrlSet.has(u)){
+        s._directUrlSet.add(u);
+        s.genericDirectUrls.push(u);
+        if(s.genericDirectUrls.length>6000){
+          const removed=s.genericDirectUrls.shift();
+          s._directUrlSet.delete(removed);
+        }
+      }
+    }
+    s.genericDirectMeta[u]={contentType:ct,learned};s.confidence=Math.max(Number(s.confidence)||0,learned?95:90);await saveTabState(tabId,s);recordCapabilities(u,{directDicom:true,retrieveMethods:[m]}).catch(()=>{});scheduleAnalyze(tabId,500);return;
   }
   const binary=(ct.includes('application/octet-stream')||ct.includes('application/binary')||ct.includes('binary/octet-stream'))&&!/\.(?:js|css|woff2?|ttf|png|jpe?g|gif|svg|ico|mp4|webm)(?:\?|$)/i.test(u)&&!/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(u);
   if(binary&&s.tracking==='watching'){
@@ -307,6 +362,7 @@ async function rememberDicomResponse(tabId,url,contentType,status,method='GET',c
 chrome.webRequest.onBeforeRequest.addListener(d=>{
   if(d.tabId<0)return;
   const hit=classifyPacsUrl(d.url),learnedManifest=isLearnedManifestUrl(d.url);
+  if(!hit&&!learnedManifest&&!trackedTabIds.has(d.tabId))return;
   getTabState(d.tabId).then(s=>{
     if(s.learning?.active)rememberLearningRequest(d.tabId,d,s).catch(()=>{});
     if(s.tracking==='stopped')return;
@@ -317,10 +373,13 @@ chrome.webRequest.onBeforeRequest.addListener(d=>{
   });
 },{urls:['<all_urls>']},['requestBody']);
 chrome.webRequest.onBeforeSendHeaders.addListener(d=>{
-  if(d.tabId>=0)rememberHeaders(d.tabId,d.url,d.requestHeaders,d.requestId).catch(()=>{});
-},{urls:['<all_urls>']},['requestHeaders','extraHeaders']);
+  if(d.tabId<0)return;
+  if(!trackedTabIds.has(d.tabId)&&!classifyPacsUrl(d.url)&&!isLearnedUrl(d.url))return;
+  rememberHeaders(d.tabId,d.url,d.requestHeaders,d.requestId).catch(()=>{});
+},{urls:['<all_urls>']},['requestHeaders']);
 chrome.webRequest.onHeadersReceived.addListener(d=>{
   if(d.tabId<0)return;
+  if(!trackedTabIds.has(d.tabId)&&!classifyPacsUrl(d.url)&&!isLearnedUrl(d.url))return;
   let ct='',len=0;
   for(const h of(d.responseHeaders||[])){
     const n=String(h.name).toLowerCase();
@@ -329,7 +388,7 @@ chrome.webRequest.onHeadersReceived.addListener(d=>{
   }
   rememberDicomResponse(d.tabId,d.url,ct,d.statusCode,d.method,len,d.requestId).catch(()=>{});
   rememberLearningResponse(d.tabId,d,ct,len).catch(()=>{});
-},{urls:['<all_urls>']},['responseHeaders','extraHeaders']);
+},{urls:['<all_urls>']},['responseHeaders']);
 
 function scheduleDeepProbe(tabId,delay=1000){clearTimeout(probeTimers.get(tabId));probeTimers.set(tabId,setTimeout(()=>{probeTimers.delete(tabId);deepProbeTab(tabId).catch(()=>{});},delay));}
 async function deepProbeTab(tabId){
@@ -400,37 +459,46 @@ function inheritQuery(target,source){const t=new URL(target),s=new URL(source);f
 function normalizeStudy(inv){const p=inv.patient||{};return{adapter:inv.adapter||'',studyUid:String(inv.studyUid||''),patient:{name:String(p.name||''),id:String(p.id||''),birthDate:String(p.birthDate||''),studyDate:String(p.studyDate||''),description:String(p.description||''),accession:String(p.accession||'')},series:Array.isArray(inv.series)?inv.series:[],context:inv.context||{}};}
 function adapterContext(summary,state){return{summary,state,fetchJson:(url,accept,req,timeoutMs)=>fetchJsonFor(state,url,accept,req,timeoutMs),headersForUrl:url=>headersForUrl(state,url),inheritQuery,normalizeStudy,zfpInfo:()=>zfpInfo(state.tabId)};}
 async function analyzeTab(tabId){
-  const summary=await scanTab(tabId),state=await getTabState(tabId);
-  let inv=null,lastError=null;
-  const inventories={};
-  const allMatching=matchingAdapters(summary,state);
-  const currentUrl=summary.currentUrl||state.currentUrl||'';
-  const recipe=recipeForUrl(currentUrl);
-  // Tie-breaker maintains registry order — JS sort is stable.
-  const ranked=[...allMatching].sort((a,b)=>adapterScore(recipe.adapters?.[b.id])-adapterScore(recipe.adapters?.[a.id]));
-  for(const adapter of ranked){
+  if(activeAnalysis.has(tabId))return activeAnalysis.get(tabId);
+  const p=(async()=>{
     try{
-      const candidate=await adapter.analyze(adapterContext(summary,state));
-      if(candidate)inventories[adapter.id]={...candidate,adapter:adapter.id,tabId,createdAt:Date.now()};
-    }catch(e){lastError=e;}
-  }
-  const primaryId=ranked.map(a=>a.id).find(id=>inventories[id]);
-  if(primaryId){
-    inv={...inventories[primaryId]};
-    inv.adapterCandidates=compatibleAdapterIds(inv,inventories,ranked.map(a=>a.id));
-    inv.adapterInventories=Object.fromEntries(inv.adapterCandidates.map(id=>[id,inventories[id]]));
-  }
-  if(!inv){
-    if(summary.detector==='RENDERED_ONLY')throw new Error('Viewer currently serves rendered images only, no DICOM data.');
-    throw lastError||new Error(summary.tracking==='stopped'?'Tracking stopped.':'No DICOM/manifest captured yet.');
-  }
-  inv.tabId=tabId;inv.summary=summary;inv.createdAt=Date.now();
-  const prev=await findHistory(inv);
-  if(prev)inv.previousDownload=prev;
-  await setSession(invKey(tabId),inv);
-  await upsertHistory(inv,{status:prev?.status==='done'?'done':'viewed',analyzedAt:Date.now()});
-  await setBadge(tabId);
-  return inv;
+      const summary=await scanTab(tabId),state=await getTabState(tabId);
+      let inv=null,lastError=null;
+      const inventories={};
+      const allMatching=matchingAdapters(summary,state);
+      const currentUrl=summary.currentUrl||state.currentUrl||'';
+      const recipe=recipeForUrl(currentUrl);
+      // Tie-breaker maintains registry order — JS sort is stable.
+      const ranked=[...allMatching].sort((a,b)=>adapterScore(recipe.adapters?.[b.id])-adapterScore(recipe.adapters?.[a.id]));
+      for(const adapter of ranked){
+        try{
+          const candidate=await adapter.analyze(adapterContext(summary,state));
+          if(candidate)inventories[adapter.id]={...candidate,adapter:adapter.id,tabId,createdAt:Date.now()};
+        }catch(e){lastError=e;}
+      }
+      const primaryId=ranked.map(a=>a.id).find(id=>inventories[id]);
+      if(primaryId){
+        inv={...inventories[primaryId]};
+        inv.adapterCandidates=compatibleAdapterIds(inv,inventories,ranked.map(a=>a.id));
+        inv.adapterInventories=Object.fromEntries(inv.adapterCandidates.map(id=>[id,inventories[id]]));
+      }
+      if(!inv){
+        if(summary.detector==='RENDERED_ONLY')throw new Error('Viewer currently serves rendered images only, no DICOM data.');
+        throw lastError||new Error(summary.tracking==='stopped'?'Tracking stopped.':'No DICOM/manifest captured yet.');
+      }
+      inv.tabId=tabId;inv.summary=summary;inv.createdAt=Date.now();
+      const prev=await findHistory(inv);
+      if(prev)inv.previousDownload=prev;
+      await setSession(invKey(tabId),inv);
+      await upsertHistory(inv,{status:prev?.status==='done'?'done':'viewed',analyzedAt:Date.now()});
+      await setBadge(tabId);
+      return inv;
+    }finally{
+      activeAnalysis.delete(tabId);
+    }
+  })();
+  activeAnalysis.set(tabId,p);
+  return p;
 }
 function scheduleAnalyze(tabId,delay=500){clearTimeout(analyzeTimers.get(tabId));analyzeTimers.set(tabId,setTimeout(async()=>{analyzeTimers.delete(tabId);try{const inv=await analyzeTab(tabId);chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});}catch{}},delay));}
 
@@ -473,7 +541,7 @@ if(inv){
       });
     }
   }catch{}
-}if(job.status==='done'){const st=await getTabState(tabId);st.tracking='completed';await saveTabState(tabId,st);chrome.tabs.sendMessage(tabId,{type:'CLEANUP_TRACKING'}).catch(()=>{});}chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});if(inv)chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});await setDownloadUi(true);await setBadge(tabId);}
+}if(job.status==='done'){const st=await getTabState(tabId);st.tracking='completed';await saveTabState(tabId,st);chrome.tabs.sendMessage(tabId,{type:'CLEANUP_TRACKING'}).catch(()=>{});}chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});if(inv)chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});await setDownloadUi(true);await setBadge(tabId);appendLog({level:job.status==='done'?'info':['partial','cancelled'].includes(job.status)?'warn':'error',category:'download',message:`Kết thúc tải tab ${tabId} [${job.status}]: đã lưu ${job.completed}/${job.total} ảnh (lỗi: ${job.failed||0})`,details:{tabId,status:job.status,completed:job.completed,total:job.total,failed:job.failed}}).catch(()=>{});}
 async function startJob(tabId,selected,options={}){
   const existing=await getJob(tabId);
   if(existing&&['preparing','downloading','cancelling'].includes(existing.status))throw new Error('This tab is currently downloading DICOM.');
@@ -481,6 +549,7 @@ async function startJob(tabId,selected,options={}){
   if(!inv)throw new Error('Study not yet recognized.');
   const tasks=await buildTasks(inv,selected);
   if(!tasks.length)throw new Error('No DICOM images in selected series.');
+  appendLog({level:'info',category:'download',message:`Bắt đầu tải DICOM tab ${tabId}: ${selected.length} series (${tasks.length} ảnh, adapter: ${inv.adapter})`,details:{tabId,selected:selected.length,total:tasks.length,adapter:inv.adapter}}).catch(()=>{});
   await ensureOffscreen();
   const attemptId=crypto.randomUUID();
   const expectedSopUids=[...new Set(tasks.map(t=>String(t.sopInstanceUid||'').trim()).filter(Boolean))];
@@ -761,6 +830,9 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
     if(m?.type==='GET_HISTORY')return{ok:true,history:await getHistory()};
     if(m?.type==='CAPTURE_TAB_FOR_QR'){try{const dataUrl=await chrome.tabs.captureVisibleTab(null,{format:'png'});return{ok:true,dataUrl};}catch(e){return{ok:false,error:String(e?.message||e)};}}
     if(m?.type==='CLEAR_HISTORY'){await chrome.storage.local.set({[HISTORY_KEY]:[]});chrome.runtime.sendMessage({type:'HISTORY_UPDATED',history:[]}).catch(()=>{});return{ok:true};}
+    if(m?.type==='GET_LOGS')return{ok:true,logs:await getLogsFromStorage()};
+    if(m?.type==='CLEAR_LOGS'){await clearAllLogs();return{ok:true};}
+    if(m?.type==='LOG_EVENT'){await appendLog(m.entry||{level:m.level,category:m.category,message:m.message,details:m.details});return{ok:true};}
     return{ok:false,error:'Unknown message'};
   })().then(sendResponse).catch(e=>sendResponse({ok:false,error:String(e?.message||e)}));return true;
 });
@@ -774,9 +846,9 @@ chrome.action.onClicked.addListener(async tab=>{
     try{if(tab.windowId)await chrome.sidePanel.open({windowId:tab.windowId});}catch{}
   }
 });
-chrome.tabs.onCreated.addListener(tab=>{if(tab.id)ensurePanel(tab.id).catch(()=>{});});
-chrome.tabs.onActivated.addListener(activeInfo=>{const tabId=activeInfo.tabId;if(!tabId)return;(async()=>{await ensurePanel(tabId);const tab=await chrome.tabs.get(tabId).catch(()=>null);if(!tab?.url)return;const clean=cleanUrl(tab.url),score=urlConfidence(clean),shell=classifyViewerShell(clean);if(score>=AUTO_ARM_SCORE||Boolean(shell)){const s=await getTabState(tabId);if(!['watching','stopped','completed'].includes(s.tracking))await startTracking(tabId,false);}})().catch(()=>{});});
-chrome.tabs.onUpdated.addListener((tabId,change,tab)=>{ensurePanel(tabId).catch(()=>{});const u=change.url||tab.url||'';if(u)markCandidate(tabId,u).catch(()=>{});if(change.status==='complete'&&u)hasOrigin(u).then(ok=>{if(ok)setTimeout(()=>{injectContent(tabId);getTabState(tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(tabId);});},150);}).catch(()=>{});});
-chrome.tabs.onRemoved.addListener(tabId=>{(async()=>{const j=jobMemory.get(tabId)||await getSession(jobKey(tabId));if(j&&['preparing','downloading','cancelling'].includes(j.status)){chrome.storage.session.remove(tabKey(tabId)).catch(()=>{});return;}jobMemory.delete(tabId);chrome.storage.session.remove([tabKey(tabId),invKey(tabId),jobKey(tabId)]).catch(()=>{});})().catch(()=>{});});
-async function boot(){await setDownloadUi(true);await loadRecipes();await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});await chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true}).catch(()=>{});for(const tab of await chrome.tabs.query({})){if(!tab.id)continue;await ensurePanel(tab.id);if(tab.url){await markCandidate(tab.id,tab.url);if(await hasOrigin(tab.url))await injectContent(tab.id);}}}
+chrome.tabs.onCreated.addListener(tab=>{if(tab.id&&tab.url&&/^https?:/i.test(tab.url))ensurePanel(tab.id).catch(()=>{});});
+chrome.tabs.onActivated.addListener(activeInfo=>{const tabId=activeInfo.tabId;if(!tabId)return;(async()=>{const tab=await chrome.tabs.get(tabId).catch(()=>null);if(!tab?.url||!/^https?:/i.test(tab.url))return;await ensurePanel(tabId);const clean=cleanUrl(tab.url),score=urlConfidence(clean),shell=classifyViewerShell(clean);if(score>=AUTO_ARM_SCORE||Boolean(shell)){const s=await getTabState(tabId);if(!['watching','stopped','completed'].includes(s.tracking))await startTracking(tabId,false);}})().catch(()=>{});});
+chrome.tabs.onUpdated.addListener((tabId,change,tab)=>{if(!change.url&&!change.status&&!change.title)return;const u=change.url||tab?.url||'';if(!u||!/^https?:/i.test(u))return;ensurePanel(tabId).catch(()=>{});if(change.url)markCandidate(tabId,u).catch(()=>{});if(change.status==='complete')hasOrigin(u).then(ok=>{if(ok)setTimeout(()=>{injectContent(tabId);getTabState(tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(tabId);});},150);}).catch(()=>{});});
+chrome.tabs.onRemoved.addListener(tabId=>{(async()=>{const j=jobMemory.get(tabId)||await getSession(jobKey(tabId));if(j&&['preparing','downloading','cancelling'].includes(j.status)){chrome.storage.session.remove(tabKey(tabId)).catch(()=>{});return;}jobMemory.delete(tabId);tabMemory.delete(tabId);invMemory.delete(tabId);perfScanCache.delete(tabId);trackedTabIds.delete(tabId);badgeCache.delete(tabId);activeAnalysis.delete(tabId);chrome.storage.session.remove([tabKey(tabId),invKey(tabId),jobKey(tabId)]).catch(()=>{});})().catch(()=>{});});
+async function boot(){await setDownloadUi(true);await loadRecipes();await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});await chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true}).catch(()=>{});appendLog({level:'info',category:'system',message:'PACS DICOM Extension v7.1.1 khởi động hoàn tất.'}).catch(()=>{});const tabs=await chrome.tabs.query({});await Promise.allSettled(tabs.map(async tab=>{if(!tab?.id||!tab?.url||!/^https?:/i.test(tab.url))return;await ensurePanel(tab.id);await markCandidate(tab.id,tab.url);if(await hasOrigin(tab.url))await injectContent(tab.id);}));}
 chrome.runtime.onInstalled.addListener(details=>{boot().catch(()=>{});if(details?.reason==='install')chrome.tabs.create({url:chrome.runtime.getURL('onboarding.html')}).catch(()=>{});});chrome.runtime.onStartup.addListener(()=>boot().catch(()=>{}));chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true}).catch(()=>{});

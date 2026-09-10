@@ -10,21 +10,21 @@
     if(observer)try{observer.disconnect();}catch(_){}
   };
   globalThis.__PACS_DICOM_V7_CLEANUP__=cleanup;
-  function extractPatientFromDom(){
+  function extractPatientFromDom(cachedBodyText){
     const p={};
     const isMach7=/ClinicalStudio/i.test(location.href)||/Diagnostic\s*Studio|MACH7/i.test(document.title)||Boolean(document.querySelector('#patientBanner, #appCrumbBanner, .m7t-app-container, .m7t-drk-body'));
     if(isMach7)p.isMach7=true;
 
     // Collect text from specific overlay elements as well as full body (use textContent to prevent synchronous layout reflow/lag)
     const overlayEls = document.querySelectorAll(
-      '.overlay, .viewport-overlay, [class*="overlay" i], .cornerstone-overlay, [class*="corner" i], .m7t-sub-header, .patient-banner, .patient-info, .patient-header, [id*="patient" i], [id*="viewport" i], [class*="viewport" i], [class*="view-port" i]'
+      '.overlay, .viewport-overlay, [class*="overlay" i], .cornerstone-overlay, .m7t-sub-header, .patient-banner, .patient-info, .patient-header, [id*="patient" i], [class*="viewport" i]'
     );
     let overlayText = '';
     for(const el of overlayEls){
-      const t = (el.textContent || el.innerText)?.trim();
+      const t = el.textContent?.trim();
       if(t) overlayText += '\n' + t;
     }
-    const rawText = (overlayText + '\n' + (document.body?.textContent || document.body?.innerText || '')).slice(0, 100000);
+    const rawText = (overlayText + '\n' + (cachedBodyText || '')).slice(0, 100000);
 
     const nameEl = document.querySelector('#patientBanner .patient-name, #patientBanner .pat-name, .patientName, [id*="patname" i], [class*="patname" i]');
     if((nameEl?.textContent || nameEl?.innerText)?.trim()) p.patientName = (nameEl.textContent || nameEl.innerText).trim();
@@ -111,13 +111,17 @@
     return p;
   }
 
-  function extractSeriesFromDom(){
+  function extractSeriesFromDom(cachedBodyText){
     const list = [];
     const seenNumbers = new Set();
 
-    // 1. Search viewports text for Se: X ... Im: Y / Total
-    const fullText = document.body?.textContent || document.body?.innerText || '';
-    const seMatches = [...fullText.matchAll(/Se\s*:\s*(\d+)(?:[^\n]*\n)*?\s*(?:(?:W\/L:[^\n]*\n\s*)?(\d+)\s*\/\s*(\d+))/gi)];
+    // 1. Search viewports text for Se: X ... Im: Y / Total.
+    // The quantifier is bounded to stop catastrophic backtracking AND lazy
+    // (`{0,5}?`) so each series still binds to the FIRST count that follows it.
+    // A greedy `{0,5}` reaches across the next "Se:" line, stealing that
+    // series' image count and dropping the series from the list entirely.
+    const fullText = cachedBodyText || (document.body?.textContent || '').slice(0, 100000);
+    const seMatches = [...fullText.matchAll(/Se\s*:\s*(\d+)(?:[^\n]*\n){0,5}?\s*(?:(?:W\/L:[^\n]*\n\s*)?(\d+)\s*\/\s*(\d+))/gi)];
     for(const m of seMatches){
       const seNum = m[1];
       const count = Number(m[3]) || 0;
@@ -179,15 +183,24 @@
     else if(document.querySelectorAll('canvas').length>=2)add(9,'canvas');
     const iframeUrls=[];for(const f of document.querySelectorAll('iframe[src],frame[src]')){try{const u=new URL(f.getAttribute('src')||'',location.href);if(/^https?:$/.test(u.protocol))iframeUrls.push(u.href);}catch{}}
     if(iframeUrls.length)add(Math.min(18,iframeUrls.length*5),'frames');
-    let text='';try{text=(document.body?.textContent||document.body?.innerText||'').slice(0,18000);}catch{}if(/xem\s*(?:hình|ảnh)|chẩn\s*đoán\s*hình\s*ảnh|diagnostic\s*imaging|view\s*image|pacs|dicom/i.test(text))add(14,'medical-ui');
+    // One body-text serialisation per report, shared by the keyword score and
+    // by both DOM extractors below. `textContent` walks the whole tree, so
+    // building it three times was the dominant cost on a heavy viewer.
+    // The 100k window is the one this extractor has always used: patient
+    // identity often sits far down the document, behind a long series sidebar.
+    // Trimming it saves almost nothing — `textContent` has already walked the
+    // whole tree by then — while costing real identity matches. The keyword
+    // score only needs the opening 18k it always used.
+    let bodyText='';try{bodyText=(document.body?.textContent||'').slice(0,100000);}catch{}
+    if(/xem\s*(?:hình|ảnh)|chẩn\s*đoán\s*hình\s*ảnh|diagnostic\s*imaging|view\s*image|pacs|dicom/i.test(bodyText.slice(0,18000)))add(14,'medical-ui');
     // Detect GE Centricity Universal Viewer (ZFP)
     const zfpViewer=/\/ZFP(\/|\?|#|$)/i.test(url)||/Universal Viewer|Zero Footprint/i.test(title);
     if(zfpViewer)add(40,'ge-zfp');
     // Detect Mach7 Diagnostic Studio (ClinicalStudio)
     const isMach7=/ClinicalStudio/i.test(url)||/Diagnostic\s*Studio|MACH7/i.test(title)||Boolean(document.querySelector('#patientBanner, #appCrumbBanner, .m7t-app-container, .m7t-drk-body'));
     if(isMach7)add(45,'mach7');
-    const domPatient=extractPatientFromDom();
-    const domSeries=extractSeriesFromDom();
+    const domPatient=extractPatientFromDom(bodyText);
+    const domSeries=extractSeriesFromDom(bodyText);
     return{score:Math.min(100,Math.max(0,score)),reasons:[...new Set(reasons)].slice(0,8),iframeUrls:[...new Set(iframeUrls)].slice(0,60),url,title,readyState:document.readyState,zfpViewer,domPatient,domSeries};
   }
   function report(){
@@ -271,7 +284,21 @@
     return true;
   });
   function schedule(){if(stopped)return;clearTimeout(timer);timer=setTimeout(report,800);}
-  const start=()=>{stopped=false;try{if(observer)observer.disconnect();observer=new MutationObserver(schedule);observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['src','href']});}catch{}schedule();if(intervalId)clearInterval(intervalId);intervalId=setInterval(report,10000);};
+  const start=()=>{
+    stopped=false;
+    try{
+      if(observer)observer.disconnect();
+      observer=new MutationObserver(schedule);
+      observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['src','href']});
+    }catch{}
+    schedule();
+    if(intervalId)clearInterval(intervalId);
+    const isTopFrame = window.self === window.top;
+    const hasViewer = Boolean(document.querySelector('canvas, .cornerstone-canvas, [data-cornerstone-enabled], #patientBanner'));
+    if(isTopFrame || hasViewer){
+      intervalId=setInterval(report,10000);
+    }
+  };
   globalThis.__PACS_DICOM_V7_CONTROLLER__={start,cleanup};
   if(document.documentElement)start();else document.addEventListener('DOMContentLoaded',start,{once:true});
   window.addEventListener('load',schedule,{once:true});window.addEventListener('hashchange',schedule,true);window.addEventListener('popstate',schedule,true);

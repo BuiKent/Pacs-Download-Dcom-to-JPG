@@ -57,6 +57,20 @@ from dicom_io import discover_dicom_files
 LogFn = Callable[[str], None]
 
 
+def set_background_process_priority() -> None:
+    """Hạ ưu tiên tiến trình CPU xuống BELOW_NORMAL_PRIORITY_CLASS trên Windows.
+
+    Giúp việc convert và tải hàng nghìn lát cắt không làm đứng hình hay giật lag hệ thống.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            # 0x00004000 = BELOW_NORMAL_PRIORITY_CLASS
+            ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x00004000)
+        except Exception:
+            pass
+
+
 def _default_log(msg: str) -> None:
     try:
         import app_logging
@@ -7491,6 +7505,7 @@ def run_pipeline(
     download_attachments_flag: bool = True,
     attachments: Optional[list[dict]] = None,
 ):
+    set_background_process_priority()
     out_base = Path(out_base)
     dicom_dir = out_base / "DICOM"
     jpg_dir = out_base / "JPG"

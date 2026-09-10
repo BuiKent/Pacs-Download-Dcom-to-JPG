@@ -101,7 +101,7 @@ async function getPathRoot(root,studyFolder,subfolder='DCom to JPG'){
   return d;
 }
 async function resolveDir(root,segments){let d=root;for(const s of segments)d=await getDir(d,s);return d;}
-async function existingValid(base,relativePath){const seg=relativePath.split('/').filter(Boolean),file=seg.pop();let d=base;try{for(const s of seg)d=await d.getDirectoryHandle(s,{create:false});const h=await d.getFileHandle(file,{create:false});const f=await h.getFile();if(f.size<256)return null;const b=new Uint8Array(await f.arrayBuffer()),check=validatePart10(b);return check.ok?check.meta:null;}catch{return null;}}
+async function existingValid(base,relativePath){const seg=relativePath.split('/').filter(Boolean),file=seg.pop();let d=base;try{for(const s of seg)d=await d.getDirectoryHandle(s,{create:false});const h=await d.getFileHandle(file,{create:false});const f=await h.getFile();if(f.size<256)return null;const sliceBytes=new Uint8Array(await f.slice(0,8192).arrayBuffer()),check=validatePart10(sliceBytes);return check.ok?check.meta:null;}catch{return null;}}
 async function writeFile(base,relativePath,bytes){const seg=relativePath.split('/').filter(Boolean),name=seg.pop();const d=await resolveDir(base,seg);const h=await d.getFileHandle(name,{create:true});const w=await h.createWritable({keepExistingData:false});try{await w.write(bytes);await w.close();}catch(e){try{await w.abort();}catch{}throw e;}}
 async function writeViaDownloads(subfolder,studyFolder,relativePath,bytes,job){
   const blob=new Blob([bytes],{type:'application/dicom'}),url=URL.createObjectURL(blob);
@@ -143,7 +143,7 @@ async function runTask(job,task,index){
     const identityError=dicomTaskIdentityError(task,existing);if(identityError)throw new Error(identityError);
     const sopUid=String(existing.sopInstanceUid||declaredSop||'').trim();
     if(sopUid&&!job.completedSopUids.has(sopUid)){job.completed++;job.completedSopUids.add(sopUid);}
-    job.skipped++;emit(job,true);return;
+    job.skipped++;emit(job,false);return;
   }
   let last='';
   for(let attempt=1;attempt<=3;attempt++){
@@ -154,7 +154,7 @@ async function runTask(job,task,index){
       await commit(job,task,got);
       if(got.route)job.routeHits.set(got.route,(job.routeHits.get(got.route)||0)+1);
       if(task.strategy==='fetch-dicom'&&task.url)chrome.runtime.sendMessage({type:'ENGINE_LEARNED_URL',tabId:job.tabId,url:task.url}).catch(()=>{});
-      emit(job,true);
+      emit(job,false);
       return;
     }catch(e){
       last=String(e?.message||e);
@@ -190,9 +190,9 @@ async function runZfpJob(job,tasks){
       done.add(sop);job.currentFile=task.relativePath;
       try{
         const existing=job.saveMode==='filesystem'?await existingValid(job.studyRoot,task.relativePath):null;
-        if(existing){const identityError=dicomTaskIdentityError(task,existing);if(identityError)throw new Error(identityError);const existingSop=String(existing.sopInstanceUid||'').trim();if(!job.completedSopUids.has(existingSop)){job.completed++;job.completedSopUids.add(existingSop);}job.skipped++;emit(job,true);continue;}
+        if(existing){const identityError=dicomTaskIdentityError(task,existing);if(identityError)throw new Error(identityError);const existingSop=String(existing.sopInstanceUid||'').trim();if(!job.completedSopUids.has(existingSop)){job.completed++;job.completedSopUids.add(existingSop);}job.skipped++;emit(job,false);continue;}
         const got=zfpBytes(task,r);if(got.meta&&!lastMeta.patientId)lastMeta=got.meta;
-        await commit(job,task,got);emit(job,true);
+        await commit(job,task,got);emit(job,false);
       }catch(e){failTask(job,task.relativePath,String(e?.message||e));}
       continue;
     }
@@ -283,6 +283,7 @@ async function runJob(spec){
   };
   jobs.set(job.tabId,job);
   emit(job,true);
+  chrome.runtime.sendMessage({type:'LOG_EVENT',entry:{level:'INFO',category:'ENGINE',message:`Offscreen bắt đầu lưu ${spec.tasks.length} file DICOM (${job.saveMode}), thư mục: ${studyFolder}`,details:{jobId:spec.jobId,tasksCount:spec.tasks.length,saveMode:job.saveMode}}}).catch(()=>{});
   let next=0;
   async function worker(){while(true){if(job.cancelled)return;const i=next++;if(i>=spec.tasks.length)return;try{await runTask(job,spec.tasks[i],i);}catch(e){if(job.cancelled||e?.name==='AbortError'||String(e?.message||e).toLowerCase().includes('abort')||String(e?.message||e).toLowerCase().includes('user_canceled'))return;job.failed++;job.errors.push(`${spec.tasks[i]?.relativePath||i}: ${e?.message||e}`);emit(job,true);}}}
   if(isZfp){const m=await runZfpJob(job,spec.tasks);if(m&&!Object.keys(resolvedMeta).length)resolvedMeta=m;}
@@ -290,6 +291,7 @@ async function runJob(spec){
   job.status=job.cancelled?'cancelled':job.failed?(job.completed?'done_with_errors':'error'):'done';
   job.currentFile='';
   emit(job,true);
+  chrome.runtime.sendMessage({type:'LOG_EVENT',entry:{level:job.status==='done'?'INFO':(job.completed>0?'WARN':'ERROR'),category:'ENGINE',message:`Offscreen hoàn tất [${job.status}]: đã ghi ${job.completed}/${job.total} ảnh (lỗi: ${job.failed}, bỏ qua: ${job.skipped})`,details:{status:job.status,completed:job.completed,total:job.total,failed:job.failed,errors:job.errors?.slice(0,5)}}}).catch(()=>{});
   jobs.delete(job.tabId);
   if(job.completed>0)await writeStudySidecar(job,info,spec,job);
   return{

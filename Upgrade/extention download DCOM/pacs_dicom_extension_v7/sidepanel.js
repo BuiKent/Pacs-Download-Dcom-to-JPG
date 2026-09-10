@@ -1,6 +1,7 @@
 'use strict';
 import { decodeQrFromBlob, decodeQrFromDataUrl, parseQrResult, isLikelyPacsViewerUrl } from './lib/qr_decoder.js';
 import { resolveBulkDicomSaveMode } from './lib/save_policy.js';
+import { formatLogsAsText } from './lib/logger.js';
 const $=id=>document.getElementById(id),show=(id,on)=>$(id).classList.toggle('hidden',!on);const TERMINAL=new Set(['done','partial','done_with_errors','error','cancelled']);
 let tabId=null,summary=null,state=null,inventory=null,job=null,history=[],revealDownloaded=false,refreshTimer=null,activeTabUrl='',isStartingDownload=false,currentQrUrl='';
 function setTopLoader(on){const e=$('topLoader');if(e)e.classList.toggle('active',Boolean(on));}
@@ -192,13 +193,15 @@ function renderJob(){
       show('resumeBtn',true);
       $('resumeBtn').disabled=true;
       $('resumeBtn').classList.add('btn-loading');
-      $('resumeBtn').innerHTML='<span class="spinner"></span> Reconnecting...';
+      const resumeHtml='<span class="spinner"></span> Reconnecting...';
+      if($('resumeBtn').innerHTML!==resumeHtml)$('resumeBtn').innerHTML=resumeHtml;
       show('jobNote',true);
       $('jobNote').textContent='Preparing and reconnecting to PACS...';
     }
     $('downloadBtn').disabled=true;
     $('downloadBtn').classList.add('btn-loading');
-    $('downloadBtn').innerHTML=`<span class="spinner"></span> ${jobLabel(job?.status||'preparing')}...`;
+    const dlHtml=`<span class="spinner"></span> ${jobLabel(job?.status||'preparing')}...`;
+    if($('downloadBtn').innerHTML!==dlHtml)$('downloadBtn').innerHTML=dlHtml;
   }else{
     $('cancelBtn').textContent='Cancel';
     if(['cancelled','done_with_errors','error','partial'].includes(job.status)){
@@ -324,6 +327,28 @@ $('historyOpenBtn').addEventListener('click',async()=>{show('historyCard',true);
 $('historyToggle').addEventListener('click',async()=>{const open=$('historyCard').classList.contains('hidden');show('historyCard',open);$('historyToggle').querySelector('span').textContent=open?'⌄':'›';if(open)await refreshHistory();});
 $('historySearch').addEventListener('input',renderHistory);
 $('clearHistoryBtn').addEventListener('click',async()=>{await send('CLEAR_HISTORY');await refreshHistory();});
+if($('openLogBtn'))$('openLogBtn').addEventListener('click',async()=>{try{await chrome.tabs.create({url:chrome.runtime.getURL('log_viewer.html')});}catch(e){toast(e.message||String(e),true);}});
+if($('exportLogBtn'))$('exportLogBtn').addEventListener('click',async()=>{
+  try{
+    const logs=(await send('GET_LOGS')).logs||[];
+    if(!logs.length)return toast('No activity has been logged yet.',true);
+    const blob=new Blob([formatLogsAsText(logs,chrome.runtime.getManifest().version)],{type:'text/plain;charset=utf-8'});
+    const url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download=`pacs_extension_activity_${new Date().toISOString().slice(0,10)}.log`;a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),5000);
+  }catch(e){toast(e.message||String(e),true);}
+});
+// Bulk DICOM always lands in the folder picked through File System Access
+// (`resolveBulkDicomSaveMode`), and that API exposes no path the extension may
+// hand to the shell. So this names the destination instead of opening it:
+// revealing Chrome's default downloads folder would point the reader at a
+// folder the images were deliberately kept out of since 7.0.3.
+if($('historyFolderBtn'))$('historyFolderBtn').addEventListener('click',async()=>{
+  const st=await chrome.storage.local.get([FOLDER_NAME_KEY,SUBFOLDER_KEY]);
+  const folder=String(st[FOLDER_NAME_KEY]||'').trim();
+  const sub=String(st[SUBFOLDER_KEY]||'').trim()||DEFAULT_SUBFOLDER;
+  toast(folder?`Saving to: ${folder}/${sub}`:'No save folder chosen yet.',!folder);
+});
 chrome.tabs.onActivated.addListener(()=>bindActive().catch(()=>{}));chrome.tabs.onUpdated.addListener((id,change,tab)=>{if(id===tabId&&(change.url||change.title||change.status==='complete')){activeTabUrl=tab.url||activeTabUrl;scheduleRefresh(150);}});
 chrome.runtime.onMessage.addListener(m=>{if(['JOB_UPDATED','INVENTORY_UPDATED','PACS_SIGNAL','TAB_CONTEXT_CHANGED','LEARN_UPDATED'].includes(m?.type)&&Number(m.tabId)!==Number(tabId))return;if(m?.type==='JOB_UPDATED'){job=m.job;renderJob();}else if(m?.type==='INVENTORY_UPDATED'){inventory=m.inventory;renderInventory();scheduleRefresh(80);}else if(['PACS_SIGNAL','TAB_CONTEXT_CHANGED','LEARN_UPDATED'].includes(m?.type))scheduleRefresh(800);else if(m?.type==='HISTORY_UPDATED'){history=m.history||[];if(!$('historyCard').classList.contains('hidden'))renderHistory();}});
 bindActive().then(refreshHistory).catch(e=>toast(e.message||String(e),true));

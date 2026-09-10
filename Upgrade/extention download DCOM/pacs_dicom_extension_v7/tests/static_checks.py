@@ -110,4 +110,29 @@ dicom_lib=(root/'lib/dicom.js').read_text(encoding='utf-8')
 assert 'FRAME_TS_BY_MEDIA_TYPE' in dicom_lib
 assert "if(!sourceTs)throw new Error" in dicom_lib
 
+# Every button in the side panel must be wired.
+# Three log/folder buttons once shipped with no listener at all: the markup was
+# added, then a revert took the handlers with it and nothing complained. The
+# panel is the only way in to a download, so a button that does nothing is not
+# cosmetic — the reader has no way to tell it apart from a failure.
+panel_html = (root / 'sidepanel.html').read_text(encoding='utf-8')
+button_ids = set(re.findall(r'<button[^>]*\bid="([^"]+)"', panel_html))
+assert button_ids, 'side panel must declare buttons'
+unwired = sorted(
+    bid for bid in button_ids
+    if f"$('{bid}')" not in side and f'getElementById("{bid}")' not in side
+)
+assert not unwired, f'side panel buttons with no handler in sidepanel.js: {unwired}'
+
+# The activity log viewer is reachable and reports the running version.
+assert (root / 'log_viewer.html').exists() and (root / 'lib/logger.js').exists()
+assert 'log_viewer.html' in side, 'side panel must open the activity log viewer'
+log_viewer = (root / 'log_viewer.js').read_text(encoding='utf-8')
+assert "'7." not in log_viewer, 'log viewer must read the version from the manifest, not hard-code it'
+assert 'getManifest().version' in log_viewer and 'getManifest().version' in side
+
+# Bulk DICOM never reveals Chrome's default downloads folder: since 7.0.3 the
+# images deliberately do not go there, so pointing the reader at it is a lie.
+assert 'showDefaultFolder' not in bg + side
+
 print('Static architecture checks OK')

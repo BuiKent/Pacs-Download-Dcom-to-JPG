@@ -69,7 +69,13 @@
 
   <button id="historyToggle" class="history-toggle">History <span>›</span></button>
   <section id="historyCard" class="card hidden">
-    <div class="section-head"><div><h3>History</h3><p>Search by name, ID or date</p></div><button id="clearHistoryBtn" class="link-btn">Clear</button></div>
+    <div class="section-head">
+      <div><h3>History</h3><p>Search by name, ID or date</p></div>
+      <div class="mini-actions">
+        <button id="historyFolderBtn" class="link-btn" title="Mở thư mục lưu trữ">📁 Thư mục</button>
+        <button id="clearHistoryBtn" class="link-btn">Clear</button>
+      </div>
+    </div>
     <input id="historySearch" class="search" type="search" placeholder="Name / Patient ID / Study Date">
     <div id="historyList" class="history-list"></div>
   </section>
@@ -78,6 +84,8 @@
     <div class="storage-header">
       <h3>Save location</h3>
       <div class="storage-btns">
+        <button id="openLogBtn" class="secondary small" title="Mở nhật ký hoạt động trong tab mới">📋 Log</button>
+        <button id="exportLogBtn" class="secondary small" title="Tải file log text về máy">📥 Xuất Log</button>
         <button id="folderResetBtn" class="secondary small hidden" title="Forget the selected folder">Forget</button>
         <button id="folderBtn" class="secondary small" title="Choose specific folder on disk">📁 Change Folder</button>
       </div>
