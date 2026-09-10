@@ -3022,6 +3022,9 @@ def _parse_study_folder_name(name: str) -> tuple[str, str, str]:
             mod = ""
             desc = rem
         return d, mod, desc
+    lead_date = _leading_folder_date(name)
+    if lead_date:
+        return lead_date, "", ""
     date = _extract_folder_date(name)
     if date:
         tokens = [t.strip() for t in re.split(r"[\s\-_·]+", name) if t.strip()]
