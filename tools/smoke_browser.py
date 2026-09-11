@@ -29,6 +29,7 @@ import subprocess
 import sys
 import os
 import tempfile
+import time
 from pathlib import Path
 
 # Force UTF-8 output on Windows consoles
@@ -106,6 +107,44 @@ def create_synthetic_smoke_archive(root: Path) -> Path:
     return patient_dir
 
 
+# The record held back so two opens overlap, and for how long.
+SLOW_RECORD_ID = "1234"
+SLOW_RECORD_SECONDS = 2.5
+
+
+def create_second_smoke_patient(root: Path, source_clip: Path) -> Path:
+    """A second record, so the run can open two at once.
+
+    One patient could never catch a record opening into another record's tab:
+    there was no other tab to land in. That is the shape of the bug this step
+    exists for, and it was invisible to a single-record run.
+    """
+    patient_dir = root / "5678 - TRAN THI B"
+    study = patient_dir / "03.09.2026-video-phau-thuat"
+    study.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source_clip, study / "clip_01.mp4")
+    manifest = {
+        "patientId": "5678",
+        "patientName": "TRAN THI B",
+        "gender": "Nữ",
+        "birthYear": "1991",
+        "studies": {
+            "study-video-3": {
+                "folder": "03.09.2026-video-phau-thuat",
+                "studyDate": "2026-09-03",
+                "modality": "VIDEO",
+                "description": "Video phẫu thuật bệnh nhân thứ hai",
+                "status": "complete",
+            },
+        },
+    }
+    (patient_dir / "patient-index.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return patient_dir
+
+
 def require(page, selector: str, label: str):
     """The element this step acts on, or a failure naming what was missing.
 
@@ -133,7 +172,10 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         archive_root = Path(tmp)
-        create_synthetic_smoke_archive(archive_root)
+        first_patient = create_synthetic_smoke_archive(archive_root)
+        create_second_smoke_patient(
+            archive_root, first_patient / "01.09.2026-video-phau-thuat" / "clip_01.mp4"
+        )
 
         # This drives a real server, so `running_under_test()` — which keys on
         # the test runner being loaded — does not see it. Without the override
@@ -146,7 +188,22 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
         controller = WebController()
         controller.output_root = archive_root
         controller.source_folders = [str(archive_root)]
-        controller.open_archive(str(archive_root))
+        # `ArchiveCatalog.open` refuses a folder holding several patients, to
+        # keep two people's films from being mixed. The worklist still scans
+        # the whole root; only the tab open at boot names one record.
+        controller.open_archive(str(first_patient))
+        # One record is made slow to open on purpose. The bug this run has to
+        # catch only appears when two scans overlap and the slower one returns
+        # last; with both records opening instantly, the two clicks never
+        # overlap and the run passes over a broken build.
+        real_create_session = controller.sessions.create_session
+
+        def create_session_slowly(path, session_id=None, *, on_opened=None):
+            if SLOW_RECORD_ID in str(path):
+                time.sleep(SLOW_RECORD_SECONDS)
+            return real_create_session(path, session_id=session_id, on_opened=on_opened)
+
+        controller.sessions.create_session = create_session_slowly
         server = LocalApiServer(controller, static_dir)
         app_url = server.start()
         print(f"LocalApiServer running at {app_url}")
@@ -584,6 +641,99 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                             f"Gate 3: Studio layout failed at {viewport_width}px: {studio_layout}"
                         )
                 print("   Video stage, bookmarks, and action controls remain usable from 1024px to 800px.")
+
+                # 9. Two records opened while the first is still scanning.
+                #    Opening a record used to fill whichever tab was active
+                #    when its scan came back, not the tab it was opened from.
+                #    So a reader who grew tired of waiting for a large study
+                #    and opened a small one got the small one first and then
+                #    watched it be replaced by the large one — a different
+                #    patient, in the tab they were reading, with the slices of
+                #    the first still loading against the wrong catalog.
+                #
+                #    Opening them one after another cannot catch this: with the
+                #    Worklist active there is no viewer tab to land in, and the
+                #    broken build passes. The two opens have to overlap, which
+                #    is what `create_session_slowly` above is for.
+                print("9. Opening a second record while the first is still scanning...")
+                page.set_viewport_size({"width": 1280, "height": 800})
+                viewer_tabs = ".winbar-tab:not([data-tab-id='worklist'])"
+
+                def open_worklist():
+                    require(
+                        page, ".winbar-tab[data-tab-id='worklist']", "tab Worklist",
+                    ).click()
+                    page.wait_for_selector(".worklist-tree", timeout=5000)
+
+                def open_record(patient_id: str):
+                    """Click the record whose row names this patient."""
+                    for row in page.query_selector_all(".prow"):
+                        if patient_id in row.inner_text():
+                            button = row.query_selector("[data-action='open-patient-record']")
+                            if button is None:
+                                raise AssertionError(
+                                    f"Gate 3: hàng của bệnh nhân {patient_id} không có nút mở hồ sơ."
+                                )
+                            button.click()
+                            return
+                    raise AssertionError(
+                        f"Gate 3: không thấy bệnh nhân {patient_id} trong Worklist."
+                    )
+
+                # Both records must be opened fresh, so the tab opened at boot
+                # is closed first — reopening its folder would only focus it.
+                open_worklist()
+                while page.query_selector(f"{viewer_tabs} .winbar-tab-close"):
+                    page.query_selector(f"{viewer_tabs} .winbar-tab-close").click()
+                    page.wait_for_timeout(300)
+                open_worklist()
+
+                # The slow record first, then back to the Worklist and straight
+                # into the fast one, without waiting for either.
+                open_record(SLOW_RECORD_ID)
+                open_worklist()
+                open_record("5678")
+                try:
+                    page.wait_for_function(
+                        f"() => document.querySelectorAll(\"{viewer_tabs}\").length === 2"
+                        f" && !document.querySelector(\"{viewer_tabs}.loading\")",
+                        timeout=20000,
+                    )
+                except Exception as exc:
+                    open_now = page.evaluate(
+                        f"() => [...document.querySelectorAll(\"{viewer_tabs} .winbar-tab-title\")]"
+                        ".map((el) => el.textContent.trim())"
+                    )
+                    raise AssertionError(
+                        "Gate 3: mở ca thứ hai khi ca thứ nhất còn đang quét phải cho 2 tab "
+                        f"riêng, đang có {open_now}."
+                    ) from exc
+
+                titles = page.evaluate(
+                    f"() => [...document.querySelectorAll(\"{viewer_tabs} .winbar-tab-title\")]"
+                    ".map((el) => el.textContent.trim())"
+                )
+                for expected in (SLOW_RECORD_ID, "5678"):
+                    if not any(expected in title for title in titles):
+                        raise AssertionError(
+                            f"Gate 3: không thấy bệnh nhân {expected} trên thanh tab: {titles}."
+                        )
+
+                # Switching between them keeps each tab on its own record.
+                for index, expected in enumerate(sorted(titles)):
+                    handles = page.query_selector_all(viewer_tabs)
+                    ordered = sorted(handles, key=lambda handle: handle.inner_text().strip())
+                    ordered[index].click()
+                    page.wait_for_timeout(500)
+                    active = page.evaluate(
+                        f"() => document.querySelector(\"{viewer_tabs}.active .winbar-tab-title\")"
+                        "?.textContent?.trim() || ''"
+                    )
+                    if active.split("·")[0].strip() != expected.split("·")[0].strip():
+                        raise AssertionError(
+                            f"Gate 3: bấm tab '{expected}' lại mở ra '{active}'."
+                        )
+                print("   The slow record kept its own tab; neither overwrote the other.")
                 browser.close()
         finally:
             server.stop()

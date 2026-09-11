@@ -1371,17 +1371,55 @@ def _detached_records(records: dict[str, SeriesRecord]) -> dict[str, SeriesRecor
     }
 
 
-def _dicom_fingerprint(paths: list[Path]) -> str:
-    if not paths:
-        return "0:0:0"
-    count = len(paths)
-    try:
-        m0 = paths[0].stat().st_mtime_ns
-        m_mid = paths[count // 2].stat().st_mtime_ns
-        m_last = paths[-1].stat().st_mtime_ns
-        return f"{count}:{m0}:{m_mid}:{m_last}"
-    except OSError:
-        return str(count)
+def _dicom_tree_signature(root: Path) -> str:
+    """Describe a study tree without opening a single file.
+
+    `discover_dicom_files` opens every candidate and reads its header to decide
+    whether it is really DICOM. That is the honest test, and on a 1400-slice
+    study it is also the whole cost of opening a record — which used to be paid
+    ahead of both caches, so a record already scanned still cost a thousand
+    file opens every time a reader opened it.
+
+    This is what lets the discovered list be cached: `scandir` reports size and
+    mtime from the directory listing itself, so the signature costs a walk and
+    no reads. It covers every file, where the fingerprint it replaces sampled
+    the mtime of only three, and it moves whenever a file is added, removed,
+    resized or rewritten.
+    """
+    count = 0
+    total_size = 0
+    newest = 0
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                # The app's own bookkeeping lives beside the images: the cache
+                # this signature guards is written to `.dicom_cache.json` in
+                # this very folder, and `.dcom-busy.json` is rewritten by the
+                # download heartbeat every 60 seconds. Counting either would
+                # move the signature on every open and every heartbeat, so the
+                # cache could never be trusted twice. None of them is image
+                # data — `discover_dicom_files` ignores them too.
+                if entry.name.startswith("."):
+                    continue
+                info = entry.stat()
+            except OSError:
+                continue
+            count += 1
+            total_size += info.st_size
+            if info.st_mtime_ns > newest:
+                newest = info.st_mtime_ns
+    return f"{count}:{total_size}:{newest}"
 
 
 def _to_portable_rel_path(p: Path, root: Optional[Path]) -> str:
@@ -1460,7 +1498,7 @@ def _deserialize_series_record(item: dict, root: Optional[Path] = None) -> Serie
 # left every existing archive loading records with an empty UID: series that
 # still had an MPR manifest kept the real study UID while their siblings fell
 # back to the folder name, and one visit split into two rows in "Lịch sử khám".
-DICOM_CACHE_SCHEMA = 2
+DICOM_CACHE_SCHEMA = 3
 
 
 def _share_study_uid_within_group(records: dict[str, SeriesRecord]) -> None:
@@ -1951,17 +1989,15 @@ class ArchiveCatalog:
         log: Optional[Callable[[str], None]] = None,
         should_stop: Optional[Callable[[], bool]] = None,
     ) -> tuple[dict[str, SeriesRecord], int, int]:
-        paths = discover_dicom_files(root)
-        if not paths:
-            return {}, 0, 0
-
-        fp = _dicom_fingerprint(paths)
+        # The tree is described before it is discovered, so a record that has
+        # already been scanned opens without re-reading a header per slice.
         root_key = str(root.resolve()).casefold()
+        signature = _dicom_tree_signature(root)
 
         # 1. In-memory session cache
         if root_key in _DICOM_MEM_CACHE:
-            cached_fp, cached_recs, cached_unsupp, cached_total = _DICOM_MEM_CACHE[root_key]
-            if cached_fp == fp:
+            cached_sig, cached_recs, cached_unsupp, cached_total = _DICOM_MEM_CACHE[root_key]
+            if cached_sig == signature:
                 return _detached_records(cached_recs), cached_unsupp, cached_total
 
         # 2. On-disk metadata cache
@@ -1970,7 +2006,7 @@ class ArchiveCatalog:
             try:
                 data = json.loads(cache_path.read_text(encoding="utf-8"))
                 if (
-                    data.get("fingerprint") == fp
+                    data.get("treeSignature") == signature
                     and int(data.get("schema") or 0) == DICOM_CACHE_SCHEMA
                     and "records" in data
                 ):
@@ -1993,15 +2029,21 @@ class ArchiveCatalog:
                             break
                     if has_valid_images:
                         unsupported = int(data.get("unsupported", 0))
-                        total = int(data.get("total", len(paths)))
-                        _DICOM_MEM_CACHE[root_key] = (fp, records, unsupported, total)
+                        # Counted from the cache itself: the discovery
+                        # walk this branch exists to skip is what used
+                        # to supply the fallback.
+                        total = int(data.get(
+                            "total",
+                            sum(len(rec.images) for rec in records.values()),
+                        ))
+                        _DICOM_MEM_CACHE[root_key] = (signature, records, unsupported, total)
                         # If cache had old non-relative paths, upgrade to portable relative format
                         try:
                             sample_raw = next(iter(data["records"].values()))["images"][0]
                             if Path(sample_raw).is_absolute():
                                 cache_payload = {
                                     "schema": DICOM_CACHE_SCHEMA,
-                                    "fingerprint": fp,
+                                    "treeSignature": signature,
                                     "unsupported": unsupported,
                                     "total": total,
                                     "records": {uid: _serialize_series_record(rec, root) for uid, rec in records.items()},
@@ -2018,6 +2060,10 @@ class ArchiveCatalog:
                             pass
             except Exception:
                 pass
+
+        paths = discover_dicom_files(root)
+        if not paths:
+            return {}, 0, 0
 
         groups: dict[str, list[DicomHeader]] = {}
         unsupported = 0
@@ -2143,11 +2189,11 @@ class ArchiveCatalog:
             )
 
         # Cache valid results
-        _DICOM_MEM_CACHE[root_key] = (fp, records, unsupported, len(paths))
+        _DICOM_MEM_CACHE[root_key] = (signature, records, unsupported, len(paths))
         try:
             cache_payload = {
                 "schema": DICOM_CACHE_SCHEMA,
-                "fingerprint": fp,
+                "treeSignature": signature,
                 "unsupported": unsupported,
                 "total": len(paths),
                 "records": {uid: _serialize_series_record(rec, root) for uid, rec in records.items()},

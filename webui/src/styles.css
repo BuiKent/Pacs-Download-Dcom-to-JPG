@@ -501,6 +501,26 @@ button, input, select, textarea { font: inherit; }
   color: #fbbf24;
   border: 1px solid rgba(251, 191, 36, 0.4);
 }
+/* A record still being scanned. The tab is real from the click — switchable
+   and closable — so it keeps the tab styling and only says what it waits for.
+   The badge takes the chrome label token instead of the DICOM/JPG palette
+   because nothing is known about the format yet, and claiming one would be a
+   guess printed beside a patient's name. */
+.tab-fmt-badge.pending {
+  background: rgba(148, 163, 184, 0.18);
+  color: var(--label-fg, #94a9ba);
+  border: 1px solid rgba(148, 163, 184, 0.42);
+}
+.winbar-tab.loading .tab-fmt-badge.pending {
+  animation: tab-pending-pulse 1.4s var(--ease-standard, ease) infinite;
+}
+@keyframes tab-pending-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .winbar-tab.loading .tab-fmt-badge.pending { animation: none; }
+}
 .winbar-tab-close {
   display: inline-grid;
   place-items: center;

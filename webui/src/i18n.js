@@ -166,6 +166,8 @@ const EN = {
   "Đã chọn vùng {}×{} px. Chọn công cụ để áp dụng.":
     "Selected {}×{} px. Pick a tool to apply it.",
   "Đang mở hồ sơ…": "Opening record…",
+  "Đang mở…": "Opening…",
+  "Không mở được hồ sơ": "Could not open the record",
   "Ghi chẩn đoán cho hồ sơ này": "Record a diagnosis for this patient",
   "Chẩn đoán của hồ sơ này:": "Diagnosis for this patient:",
   "Đã lưu chẩn đoán vào hồ sơ bệnh nhân.": "Diagnosis saved to the patient record.",

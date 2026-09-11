@@ -713,12 +713,24 @@ function renderWinbar() {
   const tabItems = state.tabs.map((tab) => {
     const isActive = tab.id === state.activeTabId;
     const title = `${tab.patientId ? tab.patientId + " - " : ""}${tab.patientName || "Bệnh nhân"}`;
-    const isDicom = tab.archive?.series?.some((s) => s.sourceType === "dicom") ?? false;
+    if (tab.loading) {
+      return `<div class="winbar-tab loading${isActive ? " active" : ""}" data-tab-id="${tab.id}">
+      <span class="winbar-tab-title" title="${escapeHtml(title)}">${escapeHtml(title)} <span class="tab-fmt-badge pending">${escapeHtml(t("Đang mở…"))}</span></span>
+      <button class="winbar-tab-close" data-action="close-tab" data-tab-id="${tab.id}" title="${escapeHtml(t("Đóng tab"))}">×</button>
+    </div>`;
+    }
+    const seriesList = tab.archive?.series || [];
+    const isDicom = seriesList.some((item) => item.sourceType === "dicom");
     const format = isDicom ? "DICOM" : "JPG";
-    const modality = tab.archive?.series?.[0]?.modality || (isDicom ? "DICOM" : "MR");
-    const badgeText = `${modality} · ${format}`;
+    // An unrecorded modality leaves the badge without one. Filling the gap
+    // with "MR" printed a fabricated exam type beside a patient's name, on
+    // every record that is not DICOM — photo and document folders included.
+    const modality = seriesList[0]?.modality || "";
+    const badgeText = seriesList.length === 0
+      ? "—"
+      : (modality ? `${modality} · ${format}` : format);
     return `<div class="winbar-tab${isActive ? " active" : ""}" data-tab-id="${tab.id}">
-      <span class="winbar-tab-title" title="${escapeHtml(title)}">${escapeHtml(title)} <span class="tab-fmt-badge ${isDicom ? "dicom" : "jpg"}">${escapeHtml(badgeText)}</span></span>
+      <span class="winbar-tab-title" title="${escapeHtml(title)}">${escapeHtml(title)} <span class="tab-fmt-badge ${seriesList.length === 0 ? "pending" : (isDicom ? "dicom" : "jpg")}">${escapeHtml(badgeText)}</span></span>
       <button class="winbar-tab-close" data-action="close-tab" data-tab-id="${tab.id}" title="${escapeHtml(t("Đóng tab"))}">×</button>
     </div>`;
   }).join("");
@@ -1870,6 +1882,17 @@ function renderWorkspacePane(series) {
   }
   if (state.archive.series.length) {
     return `<div class="viewer-loading">${state.busyViewer ? escapeHtml(t("Đang dựng khung xem…")) : ""}</div>`;
+  }
+  const activeTab = state.tabs.find((item) => item.id === state.activeTabId);
+  if (activeTab?.loadError) {
+    return `<div class="empty-state error"><b>${escapeHtml(t("Không mở được hồ sơ"))}</b>
+      <p>${escapeHtml(activeTab.loadError)}</p></div>`;
+  }
+  if (activeTab?.loading) {
+    // A record still being scanned is not an empty archive. Showing the "Chưa
+    // mở hồ sơ nào" prompt here read as a failure on every large study.
+    return `<div class="empty-state"><b>${escapeHtml(t("Đang mở hồ sơ…"))}</b>
+      <p>${escapeHtml(activeTab.folder || "")}</p></div>`;
   }
   return `<div class="empty-state"><b>${escapeHtml(t("Chưa mở hồ sơ nào"))}</b>
       <p>${escapeHtml(t("Mở folder hồ sơ; app tự phân loại phim DICOM, ảnh, video và văn bản bên trong."))}</p>
@@ -5059,34 +5082,82 @@ function sameFolder(left, right) {
  * record it belonged to.
  */
 async function openHistoryEntry(entry) {
+  const folder = entry.folder || "";
+  // One tab per record: reopening one already on screen — or one still being
+  // scanned — focuses it instead of stacking a duplicate on the same folder.
+  // Because the tab exists from the first click, this is also what makes a
+  // double-click harmless instead of opening two sessions on one study.
+  const existing = state.tabs.find((tab) => sameFolder(tab.folder, folder));
+  if (existing) {
+    await switchTab(existing.id);
+    return;
+  }
+
+  // Re-opening restores the link that filled the folder, so a retry after a
+  // restart still knows which link to resume.
+  state.lastDirectUrl = entry.url || "";
+  const field = getDomRoot()?.querySelector("#direct-url");
+  if (field) field.value = state.lastDirectUrl;
+  syncManualInfoVisibility(state.lastDirectUrl);
+
+  // The tab opens on the click, not on the response. Scanning a large study
+  // takes seconds, and the reader used to get no tab at all in the meantime —
+  // so they clicked the next record, and whichever scan finished first took
+  // the other one's tab. Each record now owns a tab from the start and fills
+  // its own, which is what lets two records open at once.
+  const outgoing = state.tabs.find((tab) => tab.id === state.activeTabId);
+  if (outgoing) saveMediaWorkspaceToTab(outgoing);
+  resetMediaWorkspace();
+  state.editingPatientInfo = false;
+  state.patientEditDraft = null;
+  const tab = newViewerTab({
+    folder,
+    loading: true,
+    // Named after the folder on disk until the catalog says who it is. A
+    // placeholder must never invent a patient.
+    patientName: folder.split(/[\/]/).filter(Boolean).pop() || "",
+    status: t("Đang mở hồ sơ…"),
+  });
+  state.tabs.push(tab);
+  state.activeTabId = tab.id;
+  state.archive = { root: "", series: [] };
+  state.selectedId = "";
+  state.compareIds = ["", ""];
+  // Nothing in this tab can be read yet, and the session of whatever tab was
+  // open before must not answer its requests.
+  setApiSession("");
+  clearViewer();
+  render();
+  setStatus(t("Đang mở hồ sơ…"));
+
   try {
-    const folder = entry.folder || "";
-    // One tab per record: reopening one already on screen focuses it instead
-    // of stacking a duplicate tab on the same folder.
-    const existing = state.tabs.find((tab) => sameFolder(tab.folder, folder));
-    if (existing) {
-      await switchTab(existing.id);
-      return;
-    }
-
-    // Re-opening restores the link that filled the folder, so a retry after a
-    // restart still knows which link to resume.
-    state.lastDirectUrl = entry.url || "";
-    const field = getDomRoot()?.querySelector("#direct-url");
-    if (field) field.value = state.lastDirectUrl;
-    syncManualInfoVisibility(state.lastDirectUrl);
-
-    setStatus(t("Đang mở hồ sơ…"));
     const result = await api("/api/sessions/create", {
       method: "POST",
       body: JSON.stringify({ path: folder }),
     });
-    setApiSession(result.sessionId || "");
-    applyArchive(result.archive, result.sessionId || "", folder);
+    if (!fillTabWithArchive(tab.id, result.archive, result.sessionId || "", folder)) {
+      // Closed while it was scanning. Let the backend drop the catalog rather
+      // than leave it pinned in memory for a tab nobody can reach.
+      if (result.sessionId) {
+        api("/api/sessions/close", {
+          method: "POST",
+          body: JSON.stringify({ sessionId: result.sessionId }),
+        }).catch(() => {});
+      }
+      return;
+    }
     refreshHistory();
-    setStatus(t("Sẵn sàng."));
+    if (state.activeTabId === tab.id) setStatus(t("Sẵn sàng."));
   } catch (error) {
-    setStatus(humanError(error), true);
+    const message = humanError(error);
+    const failed = state.tabs.find((item) => item.id === tab.id);
+    if (failed) {
+      failed.loading = false;
+      failed.loadError = message;
+      failed.status = message;
+    }
+    if (state.activeTabId === tab.id) setStatus(message, true);
+    render();
   }
 }
 
@@ -7297,67 +7368,148 @@ export function pickInitialSeries(seriesList) {
   return ranked[0]?.id || list[0].id;
 }
 
-function applyArchive(archive, sessionId = "", folder = "") {
-  state.archive = archive;
-  for (const series of archive.series) registerSeries(series);
-  if (!archive.series.some((item) => item.id === state.selectedId)) {
-    state.selectedId = pickInitialSeries(archive.series);
-  }
-  fillCompareSlots("compare3");
-  state.mode = "single";
-  state.tool = "window";
-  state.windowPreset = defaultWindowPreset(selectedSeries());
+/**
+ * Monotonic suffix for tab ids.
+ *
+ * `Date.now()` alone repeats inside a millisecond, which two quick clicks
+ * routinely land in — and two tabs sharing an id is the exact confusion this
+ * path exists to prevent.
+ */
+let tabSequence = 0;
 
-  const tabName = archive.root ? archive.root.split(/[\\/]/).pop() : (archive.patient?.patientName || "Bệnh nhân");
-  let currentTab = state.tabs.find((t) => t.id === state.activeTabId);
+/**
+ * A viewer tab in its empty shape.
+ *
+ * A tab opened the moment the reader clicks — before its archive has been
+ * scanned — carries every field a loaded tab does, so `switchTab` can hydrate
+ * from either without a special case.
+ */
+function newViewerTab(overrides = {}) {
+  tabSequence += 1;
+  return {
+    id: `tab-${Date.now()}-${tabSequence}`,
+    sessionId: "",
+    // The folder this tab reads. Used to focus an open record instead of
+    // opening a second tab on it.
+    folder: "",
+    patientId: "",
+    patientName: "",
+    archive: { root: "", series: [] },
+    // Set between the click that opens a record and its catalog landing. A
+    // loading tab is a real, switchable, closable tab with an empty catalog.
+    loading: false,
+    loadError: "",
+    selectedId: "",
+    compareIds: ["", ""],
+    mode: "single",
+    tool: "window",
+    windowPreset: null,
+    mprPrimary: "axial",
+    scrollLinked: false,
+    status: t("Sẵn sàng."),
+    editingPatientInfo: false,
+    patientEditDraft: null,
+    mediaIndex: state.mediaIndex,
+    mediaEdits: state.mediaEdits,
+    photoLayers: {},
+    videoIn: null,
+    videoOut: null,
+    photoWorkingPath: null,
+    videoWorkingPath: null,
+    videoBookmarks: [],
+    videoFilmstrip: [],
+    lastMediaSeriesId: "",
+    textDoc: null,
+    ...overrides,
+  };
+}
+
+/**
+ * Put a loaded archive into one named tab, whichever tab is on screen.
+ *
+ * Targeting `state.activeTabId` instead of a tab id is what let a slow record
+ * overwrite a fast one: open a 1400-slice study, open a small one while it is
+ * still scanning, and the first response landed in the second study's tab. The
+ * reader lost the record in front of them, and its half-loaded slices started
+ * 404ing because the shared API session had moved to the other catalog.
+ *
+ * Returns false when the tab was closed while it loaded, so the caller can
+ * release a backend session nobody is going to read.
+ */
+function fillTabWithArchive(tabId, archive, sessionId = "", folder = "") {
+  const tab = state.tabs.find((item) => item.id === tabId);
+  if (!tab) return false;
+
+  const catalog = archive || { root: "", series: [] };
+  const seriesList = catalog.series || [];
+  for (const series of seriesList) registerSeries(series);
+  const selectedId = seriesList.some((item) => item.id === tab.selectedId)
+    ? tab.selectedId
+    : pickInitialSeries(seriesList);
+
+  tab.archive = catalog;
+  tab.loading = false;
+  tab.loadError = "";
+  if (sessionId) tab.sessionId = sessionId;
+  tab.folder = folder || catalog.root || tab.folder || "";
+  tab.patientId = catalog.patient?.patientId || tab.patientId || "";
+  tab.patientName = catalog.patient?.patientName
+    || tab.patientName
+    || (catalog.root ? catalog.root.split(/[\/]/).pop() : "");
+  tab.selectedId = selectedId;
+  tab.mode = "single";
+  tab.tool = "window";
+  tab.windowPreset = defaultWindowPreset(seriesList.find((item) => item.id === selectedId));
+  tab.status = t("Sẵn sàng.");
+
+  if (state.activeTabId !== tabId) {
+    // The reader is in another record. Repaint the tab strip so this one stops
+    // saying it is opening, and leave every global the on-screen tab reads —
+    // the archive, the selection, the API session — exactly where they are.
+    render();
+    return true;
+  }
+
+  setApiSession(tab.sessionId || "");
+  state.archive = catalog;
+  state.selectedId = selectedId;
+  state.mode = tab.mode;
+  state.tool = tab.tool;
+  state.windowPreset = tab.windowPreset;
+  fillCompareSlots("compare3");
+  tab.compareIds = [...state.compareIds];
+  render();
+  renderViewer();
+  return true;
+}
+
+/**
+ * Show an archive in the tab already in front of the reader, opening one if
+ * they are on the Worklist.
+ *
+ * This is for an archive that belongs to the current tab — a folder just
+ * picked, a re-scan of what is open. A record opened from the Worklist, or one
+ * a download just finished, goes through `fillTabWithArchive` against its own
+ * tab instead, so it can never land in whatever tab happens to be active when
+ * it arrives.
+ */
+function applyArchive(archive, sessionId = "", folder = "") {
+  const currentTab = state.tabs.find((item) => item.id === state.activeTabId);
   if (!currentTab || state.activeTabId === "worklist") {
     resetMediaWorkspace();
     state.editingPatientInfo = false;
     state.patientEditDraft = null;
-    const newTab = {
-      id: `tab-${Date.now()}`,
+    const tab = newViewerTab({
       sessionId: sessionId || "",
-      // The folder this tab reads. Used to focus an open record instead of
-      // opening a second tab on it.
-      folder: folder || archive.root || "",
-      patientId: archive.patient?.patientId || "",
-      patientName: archive.patient?.patientName || tabName,
-      archive,
-      selectedId: state.selectedId,
-      compareIds: [...state.compareIds],
-      mode: state.mode,
-      tool: state.tool,
-      windowPreset: state.windowPreset,
-      mprPrimary: "axial",
-      scrollLinked: false,
-      status: "Sẵn sàng.",
-      editingPatientInfo: false,
-      patientEditDraft: null,
-      mediaIndex: state.mediaIndex,
-      mediaEdits: state.mediaEdits,
-      photoLayers: {},
-      videoIn: null,
-      videoOut: null,
-      photoWorkingPath: null,
-      videoWorkingPath: null,
-      videoBookmarks: [],
-      videoFilmstrip: [],
-      lastMediaSeriesId: "",
-      textDoc: null,
-    };
-    state.tabs.push(newTab);
-    state.activeTabId = newTab.id;
-  } else {
-    currentTab.archive = archive;
-    currentTab.selectedId = state.selectedId;
-    currentTab.patientName = archive.patient?.patientName || currentTab.patientName;
-    currentTab.patientId = archive.patient?.patientId || currentTab.patientId;
-    currentTab.folder = folder || archive.root || currentTab.folder || "";
-    if (sessionId) currentTab.sessionId = sessionId;
+      folder: folder || archive?.root || "",
+    });
+    state.tabs.push(tab);
+    state.activeTabId = tab.id;
+    fillTabWithArchive(tab.id, archive, sessionId, folder);
+    return tab.id;
   }
-
-  render();
-  renderViewer();
+  fillTabWithArchive(currentTab.id, archive, sessionId, folder);
+  return currentTab.id;
 }
 
 function renderViewer() {
@@ -7791,8 +7943,25 @@ async function pollJob() {
         refreshWorklist();
         return;
       }
-      setApiSession(sessionId);
-      applyArchive(archive, sessionId, folder);
+      // A record that finished downloading in the background must not take
+      // the tab the reader is in. It gets a tab of its own, and only comes to
+      // the front when nothing else is open — otherwise the patient on screen
+      // was silently replaced by the one that just landed.
+      const existing = state.tabs.find((tab) => sameFolder(tab.folder, folder));
+      let targetId = existing ? existing.id : "";
+      if (!existing) {
+        const takeFocus = state.activeTabId === "worklist";
+        if (takeFocus) {
+          resetMediaWorkspace();
+          state.editingPatientInfo = false;
+          state.patientEditDraft = null;
+        }
+        const tab = newViewerTab({ folder });
+        state.tabs.push(tab);
+        if (takeFocus) state.activeTabId = tab.id;
+        targetId = tab.id;
+      }
+      fillTabWithArchive(targetId, archive, sessionId, folder);
       refreshHistory();
       // The study that just landed belongs on the list without being asked
       // for. Silent, because the reader is already looking at the record it
@@ -8078,6 +8247,11 @@ export {
   renderSeriesStripContent,
   switchTab,
   applyArchive,
+  newViewerTab,
+  fillTabWithArchive,
+  openHistoryEntry,
+  bindWorklistOpenButtons,
+  renderWinbar,
   bindEvents,
   render,
   installKeyboardShortcuts,
