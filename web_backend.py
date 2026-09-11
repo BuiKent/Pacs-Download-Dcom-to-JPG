@@ -1970,7 +1970,14 @@ class ArchiveCatalog:
             for r in group:
                 if r.source_type in {"video", "text", "doc"} or is_document_folder(r.folder):
                     continue
-                if dominant_mod and r.modality not in DIAGNOSTIC_MODALITIES:
+                # Fill a gap, never overwrite a reading. `DIAGNOSTIC_MODALITIES`
+                # lists the modalities that carry images, so testing against it
+                # treated every real non-image modality as missing: a Dose
+                # Report ("SR"), a presentation state ("PR") or a key-object
+                # note ("KO") filed beside a CT had its own modality replaced
+                # by "CT", which is the study's modality and not that series'.
+                # The `study_uid` line below already has this right.
+                if dominant_mod and normalize_modality(r.modality) in ("", "UNKNOWN"):
                     r.modality = dominant_mod
                     if isinstance(r.manifest, dict):
                         r.manifest["modality"] = dominant_mod
@@ -4044,6 +4051,16 @@ class WorklistScanner:
             status, status_label = "done", "Đã tải"
 
         job_snap = self.controller.job.snapshot()
+        # Matching the study path against the job's last log line is crude —
+        # `JobState.log` overwrites `message` on every line, so this is true
+        # only while the most recent line happens to name this folder. It is
+        # kept because it is the only signal for this app's own download:
+        # `acquire_study_lock` is taken on the download's destination folder,
+        # which is not always the study folder the worklist is scanning.
+        #
+        # It errs toward "busy", which disables "Mở viewer" on a study that may
+        # be mid-write — the safe direction. Removing it would leave a study
+        # openable while this app is writing into it.
         if job_snap.get("status") == "running" and str(study_dir).casefold() in str(job_snap.get("message", "")).casefold():
             status = "busy"
             status_label = "Đang tải"

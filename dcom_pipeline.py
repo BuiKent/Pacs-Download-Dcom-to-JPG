@@ -5187,7 +5187,27 @@ class PatientIdentityConflictError(ValueError):
 
 
 def _identity_token(value: Any) -> str:
-    """Normalize a patient/hospital identity value for local matching only."""
+    """Normalize a patient/hospital identity value for local matching only.
+
+    Vietnamese diacritics are folded away on purpose. Do not "fix" this.
+
+    A RIS sends a patient name through DICOM PN, which in practice arrives
+    ASCII-folded — "NGUYEN VAN A" — while the archive folder and the manifest
+    hold "NGUYỄN VĂN A". Comparing those with their marks intact makes one
+    patient look like two, and `ensure_patient_archive` then refuses to reuse
+    their folder and raises "tên không khớp" on an ordinary download.
+    `test_patient_folder_is_reused_and_studies_are_classified` pins exactly
+    that: the same record opened once each way must land in one folder.
+
+    The cost is that folding also makes "Hà" and "Hạ" compare equal, which are
+    different people. That is survivable because every caller uses this as a
+    *secondary* guard behind an exact PatientID match — `find_patient_archive`
+    keys on patientId plus hospitalKey, and `local_import_identity` refuses a
+    disc carrying more than one PatientID before it ever looks at a name. Two
+    different patients would have to share a hospital patient ID to collide
+    here, and that is a fault in the hospital's records, not a case this
+    comparison can be tightened to catch.
+    """
     text = unicodedata.normalize("NFKD", str(value or ""))
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     return re.sub(r"[^A-Z0-9]+", "", text.upper())
@@ -5467,6 +5487,43 @@ def _read_patient_manifest(folder: Path) -> Optional[dict]:
     return data
 
 
+def _study_entry_has_files(patient_folder: Optional[Path], entry: dict) -> Optional[bool]:
+    """Whether a study the manifest calls complete still holds files on disk.
+
+    Returns None when the entry records no folder to look in — a legacy index
+    recovered from DICOM headers has none, and an unverifiable study must not
+    be downgraded on a guess.
+
+    The manifest is written once when a download finishes and never revisited,
+    so a folder emptied afterwards to reclaim space still reads "complete".
+    That status is what leaves a study unticked in the download list as
+    "already downloaded", which is how a reader ends up without the images the
+    app told them they had.
+    """
+    relative = str(entry.get("folder") or "").strip()
+    if not patient_folder or not relative:
+        return None
+    study_dir = Path(patient_folder) / relative
+    if not study_dir.is_dir():
+        return False
+    stack = [study_dir]
+    while stack:
+        current = stack.pop()
+        try:
+            listing = list(os.scandir(current))
+        except OSError:
+            continue
+        for item in listing:
+            try:
+                if item.is_dir(follow_symlinks=False):
+                    stack.append(Path(item.path))
+                elif item.is_file(follow_symlinks=False) and not item.name.startswith("."):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def _legacy_study_index(folder: Path) -> dict[str, dict]:
     """Recover StudyInstanceUIDs from a pre-registry patient folder."""
     try:
@@ -5495,6 +5552,13 @@ def _legacy_study_index(folder: Path) -> dict[str, dict]:
             "modality": str(getattr(ds, "Modality", "") or ""),
             "description": str(getattr(ds, "StudyDescription", "") or ""),
             "folder": "",
+            # "complete", deliberately, for a folder this app did not download.
+            # There is no expected count to check it against, so "incomplete"
+            # would be just as unfounded — and far more expensive: this status
+            # becomes `local_status`, and `download-selection.js` pre-ticks
+            # every study that is not "downloaded". Calling a pre-existing
+            # archive incomplete would tick gigabytes of film the reader
+            # already has and fetch it all again.
             "status": "complete",
             "imageCount": 0,
             "downloadedAt": "",
@@ -5778,8 +5842,15 @@ def patient_archive_status(
         uid = str(study.get("study_uid") or "")
         entry = known.get(uid) if uid else None
         if isinstance(entry, dict) and study_status.is_downloaded(entry.get("status")):
-            study["local_status"] = "downloaded"
-            downloaded_count += 1
+            if _study_entry_has_files(folder, entry) is False:
+                # The manifest still says complete, but the folder it names is
+                # gone or empty. Reporting "downloaded" would leave the study
+                # unticked and send the reader away without it.
+                study["local_status"] = "incomplete"
+                incomplete_count += 1
+            else:
+                study["local_status"] = "downloaded"
+                downloaded_count += 1
         elif isinstance(entry, dict) and entry.get("status") == "selected":
             study["local_status"] = "selected"
             study["selected_series"] = list(entry.get("selectedSeries") or [])

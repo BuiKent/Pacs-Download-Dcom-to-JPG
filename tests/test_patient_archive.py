@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import dcom_pipeline
+from dicom_test_utils import write_test_dicom
 import pydicom
 from tests.test_web_backend import write_local_dicom
 from web_backend import WebController
@@ -108,6 +109,11 @@ class PatientArchiveTests(unittest.TestCase):
             self.assertTrue(folder.name.startswith("2605032022 - Nguyễn Văn A - KHONG_RO_TUOI - "))
             first_study_folder = folder / dcom_pipeline.study_archive_folder_name(studies[0])
             first_study_folder.mkdir()
+            # A downloaded study has its images on disk, and "đã tải" is now
+            # confirmed against the folder rather than taken from the manifest
+            # alone — a record emptied to reclaim space used to keep reporting
+            # itself as downloaded and was left unticked for re-download.
+            write_test_dicom(first_study_folder / "DICOM" / "IM_0001.dcm")
             dcom_pipeline.record_patient_study(
                 folder, studies[0], first_study_folder, complete=True, image_count=121,
             )
@@ -337,6 +343,7 @@ class PatientArchiveTests(unittest.TestCase):
             )
             first_folder = folder / dcom_pipeline.study_archive_folder_name(items[0])
             first_folder.mkdir()
+            write_test_dicom(first_folder / "DICOM" / "IM_0001.dcm")
             dcom_pipeline.record_patient_study(
                 folder, items[0], first_folder, complete=True, image_count=100,
             )
