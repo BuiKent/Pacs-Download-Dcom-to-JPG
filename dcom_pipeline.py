@@ -50,6 +50,8 @@ import warnings
 
 import dicom_io
 from dicom_io import discover_dicom_files
+from modality import modality_from_ris, ris_modality_flags
+import study_status
 
 # --------------------------------------------------------------------------- #
 #  Shared utilities
@@ -5775,7 +5777,7 @@ def patient_archive_status(
     for study in studies:
         uid = str(study.get("study_uid") or "")
         entry = known.get(uid) if uid else None
-        if isinstance(entry, dict) and entry.get("status") == "complete":
+        if isinstance(entry, dict) and study_status.is_downloaded(entry.get("status")):
             study["local_status"] = "downloaded"
             downloaded_count += 1
         elif isinstance(entry, dict) and entry.get("status") == "selected":
@@ -5983,18 +5985,12 @@ def record_patient_study(
             current_count = int(image_count or 0)
             prev_count = int(previous.get("imageCount") or 0)
 
-            if complete:
-                status = "complete"
-            elif selection_complete:
-                status = "selected"
-            else:
-                # If not complete, only maintain previous complete if this was purely a metadata update (current_count == 0)
-                if current_count == 0 and previous.get("status") == "complete":
-                    status = "complete"
-                elif current_count > 0:
-                    status = "partial" if current_count < prev_count else "incomplete"
-                else:
-                    status = previous.get("status", "incomplete")
+            status = study_status.manifest_status(
+                complete=bool(complete),
+                selection_complete=bool(selection_complete),
+                current_count=current_count,
+                previous=previous,
+            )
 
             final_image_count = current_count if current_count > 0 else prev_count
 
@@ -8572,11 +8568,7 @@ def search_patient_studies(
                     m_dicom = str(s.get("modalityDicom") or s.get("modality") or "").strip().upper()
                     desc = str(s.get("studyDescription") or "").strip().upper()
 
-                    # Classify MR / MRI modalities
-                    is_mr = (m_dicom in ("MR", "MRI")) or ("MR" in m_dicom) or desc.startswith("MR") or ("CONG HUONG TU" in desc) or ("CỘNG HƯỞNG TỪ" in desc)
-
-                    # Classify CT modalities
-                    is_ct = (m_dicom in ("CT", "CLVT", "CAT")) or ("CT" in m_dicom) or desc.startswith("CT") or desc.startswith("CLVT") or ("CAT LOP" in desc) or ("CẮT LỚP" in desc)
+                    is_mr, is_ct = ris_modality_flags(m_dicom, desc)
 
                     if target_mod in ("ALL", "*"):
                         match = True
@@ -8603,7 +8595,13 @@ def search_patient_studies(
                                     s, "patientSex", "PatientSex", "sex", "gender",
                                 ),
                                 "date": s.get("date", ""),
-                                "modality": m_dicom or ("CT" if is_ct else "MR"),
+                                # Filed in the app's own vocabulary, and left
+                                # empty when the RIS names no examination. A
+                                # study stored as "CLVT" used to read "CLVT" in
+                                # the study list and "CT" in the viewer, and
+                                # anything that did not look like a CT was
+                                # filed as an MR whether it was one or not.
+                                "modality": modality_from_ris(m_dicom, desc),
                                 "desc": s.get("studyDescription", "") or ""
                             })
 

@@ -491,15 +491,31 @@ button, input, select, textarea { font: inherit; }
   line-height: 1.2;
   vertical-align: middle;
 }
+/* The tab strip lives in the app shell, so it is white while the Worklist is
+   open and dark inside a record. These colours were picked for the dark one
+   and were never restated for the light one: #38bdf8 on the white winbar
+   measures 1.63:1 and #fbbf24 measures 1.39:1, against the 4.5:1 this project
+   holds itself to — and this is the badge that tells a reader whether they are
+   about to open original slices or converted pictures. */
 .tab-fmt-badge.dicom {
-  background: rgba(35, 131, 226, 0.2);
-  color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.4);
+  background: rgba(35, 131, 226, 0.14);
+  color: #1d4ed8;
+  border: 1px solid rgba(29, 78, 216, 0.35);
 }
 .tab-fmt-badge.jpg {
+  background: rgba(217, 115, 13, 0.14);
+  color: #92400e;
+  border: 1px solid rgba(146, 64, 14, 0.35);
+}
+.app-shell.viewer-active .tab-fmt-badge.dicom {
+  background: rgba(35, 131, 226, 0.2);
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.4);
+}
+.app-shell.viewer-active .tab-fmt-badge.jpg {
   background: rgba(245, 158, 11, 0.2);
   color: #fbbf24;
-  border: 1px solid rgba(251, 191, 36, 0.4);
+  border-color: rgba(251, 191, 36, 0.4);
 }
 /* A record still being scanned. The tab is real from the click — switchable
    and closable — so it keeps the tab styling and only says what it waits for.
@@ -2113,6 +2129,11 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   text-transform: uppercase;
   line-height: 1.4;
   flex-shrink: 0;
+}
+.tl-source-pill.unknown {
+  background: rgba(148, 163, 184, 0.16);
+  color: #9fb3c8;
+  border: 1px dashed rgba(148, 163, 184, 0.4);
 }
 .tl-source-pill.dicom {
   background: rgba(45, 212, 191, 0.16);
@@ -4687,15 +4708,17 @@ button.stt-cell.twist-btn:focus-visible {
   white-space: nowrap;
   flex-shrink: 0;
 }
+/* Worklist only, so always on the light shell. #2563eb measured 4.23:1 and
+   #d9730d 2.73:1 against it. */
 .fmt-badge.dicom {
   background: rgba(35, 131, 226, 0.14);
-  color: #2563eb;
-  border: 1px solid rgba(37, 99, 235, 0.3);
+  color: #1d4ed8;
+  border: 1px solid rgba(29, 78, 216, 0.3);
 }
 .fmt-badge.jpg, .fmt-badge.photo {
   background: rgba(217, 115, 13, 0.14);
-  color: #d9730d;
-  border: 1px solid rgba(217, 115, 13, 0.3);
+  color: #92400e;
+  border: 1px solid rgba(146, 64, 14, 0.3);
 }
 .fmt-badge.video {
   background: rgba(142, 68, 173, 0.14);
@@ -4706,6 +4729,14 @@ button.stt-cell.twist-btn:focus-visible {
   background: rgba(127, 140, 141, 0.14);
   color: #576574;
   border: 1px solid rgba(127, 140, 141, 0.3);
+}
+/* Nothing is recorded about this study's media. The badge says so instead of
+   picking the likeliest format: a reader checks it to know whether they are
+   looking at original slices or converted pictures. */
+.fmt-badge.unknown {
+  background: rgba(127, 140, 141, 0.10);
+  color: #576574;
+  border: 1px dashed rgba(127, 140, 141, 0.45);
 }
 
 .badge {

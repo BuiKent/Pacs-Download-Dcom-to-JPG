@@ -158,3 +158,62 @@ describe("Worklist grey and white inversion", () => {
     expect(`${patientHover}\n${studyHover}`).not.toMatch(/#f0f7ff|#e2e8f0/i);
   });
 });
+
+/**
+ * Format badges are written as literal hex in their own rules, not as tokens,
+ * so the token sweep above never saw them.
+ *
+ * They sit in the app shell, which is white while the Worklist is open and
+ * dark inside a record, and their colours were only ever chosen for the dark
+ * one: the DICOM pill measured 1.63:1 and the JPG pill 1.39:1 on the white
+ * winbar. This is the badge a reader checks to know whether they are looking
+ * at original slices or at pictures converted from them, which decides whether
+ * the grey values in front of them mean anything.
+ */
+function ruleDeclarations(css, selector) {
+  const start = css.indexOf(`${selector} {`);
+  if (start === -1) throw new Error(`no rule for ${selector}`);
+  const body = css.slice(start, css.indexOf("\n}", start));
+  const colour = /color:\s*(#[0-9a-fA-F]{6})/.exec(body);
+  const background = /background(?:-color)?:\s*rgba\(([^)]+)\)/.exec(body);
+  return {
+    colour: colour && colour[1],
+    background: background && background[1].split(",").map((part) => Number(part.trim())),
+  };
+}
+
+/** The colour an rgba tint actually resolves to over an opaque surface. */
+function flatten([r, g, b, alpha], surface) {
+  const base = surface.replace("#", "");
+  const channels = [0, 2, 4].map((offset) => parseInt(base.slice(offset, offset + 2), 16));
+  const mixed = [r, g, b].map((value, index) => Math.round(value * alpha + channels[index] * (1 - alpha)));
+  return `#${mixed.map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+}
+
+const LIGHT_SHELL = TOKENS["--panel-bg"];
+
+describe("format badges stay readable in the theme they are painted in", () => {
+  for (const [selector, where] of [
+    [".tab-fmt-badge.dicom", "DICOM tab badge on the white winbar"],
+    [".tab-fmt-badge.jpg", "JPG tab badge on the white winbar"],
+    [".fmt-badge.dicom", "DICOM badge on a Worklist row"],
+    [".fmt-badge.jpg, .fmt-badge.photo", "JPG badge on a Worklist row"],
+    [".fmt-badge.video", "video badge on a Worklist row"],
+    [".fmt-badge.doc", "document badge on a Worklist row"],
+    [".fmt-badge.unknown", "badge for a study whose format was never recorded"],
+  ]) {
+    it(`${where} reaches 4.5:1`, () => {
+      const { colour, background } = ruleDeclarations(cssSource, selector);
+      expect(colour, `${selector} declares no colour`).toBeTruthy();
+      expect(background, `${selector} declares no rgba background`).toBeTruthy();
+      const ratio = contrastRatio(colour, flatten(background, LIGHT_SHELL));
+      expect(ratio, `${where} is ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+
+  it("the dark shell keeps its own, brighter tab badges", () => {
+    const darkBlock = cssSource.slice(cssSource.indexOf(".app-shell.viewer-active .tab-fmt-badge.dicom"));
+    expect(darkBlock).toContain("#38bdf8");
+    expect(cssSource).toContain(".app-shell.viewer-active .tab-fmt-badge.jpg");
+  });
+});

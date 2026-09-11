@@ -167,6 +167,7 @@ const EN = {
     "Selected {}×{} px. Pick a tool to apply it.",
   "Đang mở hồ sơ…": "Opening record…",
   "Đang mở…": "Opening…",
+  "Chưa rõ định dạng nguồn": "Source format not recorded",
   "Không mở được hồ sơ": "Could not open the record",
   "Ghi chẩn đoán cho hồ sơ này": "Record a diagnosis for this patient",
   "Chẩn đoán của hồ sơ này:": "Diagnosis for this patient:",

@@ -17,6 +17,7 @@ import shutil
 from typing import Callable, Optional
 
 import dcom_pipeline
+from dicom_io import looks_like_dicom_file
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 DOCUMENT_SUFFIXES = {".pdf", ".docx", ".doc", ".txt", ".json"}
@@ -166,6 +167,13 @@ def _collect_dicom_files(study_folder: Path) -> list[Path]:
             path for path in dicom_dir.rglob("*")
             if path.is_file()
             and not path.name.startswith(".")
+            # Confirmed by its header, exactly as the worklist confirms a
+            # slice. Counting whatever sits in `DICOM/` meant an interrupted
+            # download or an HTML error page left behind as `.dcm` was offered
+            # for export as an image, and the count beside it said the record
+            # was complete while the study list, which does read the header,
+            # reported the same folder as missing images.
+            and looks_like_dicom_file(path)
             # The extension's sidecar holds the viewer link it downloaded from,
             # and where that link's token is the only thing identifying the
             # study the token is kept — deliberately, or "Tải tiếp" would have
@@ -181,6 +189,8 @@ def _collect_dicom_files(study_folder: Path) -> list[Path]:
             path for path in study_folder.rglob("*")
             if path.is_file()
             and path.suffix.casefold() in DICOM_SUFFIXES
+            # A known suffix is a hint, never proof.
+            and looks_like_dicom_file(path)
             and not _is_internal_sidecar(path)
             and not _is_in_skipped_folder(path, study_folder)
         ]

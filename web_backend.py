@@ -34,7 +34,14 @@ from urllib.parse import unquote, urlparse
 import dcom_pipeline
 import dicom_io
 from dicom_io import discover_dicom_files, looks_like_dicom_file
+from modality import (
+    FOLDER_LEAD_CODES,
+    modality_from_text,
+    modality_from_tokens,
+    normalize_modality,
+)
 import mpr_engine
+import study_status
 
 
 APP_VERSION = "1.1.0"
@@ -1697,17 +1704,16 @@ class ArchiveCatalog:
 
     @staticmethod
     def _modality(folder: Path, root: Path, manifest: Optional[dict]) -> str:
-        declared = str((manifest or {}).get("modality") or "").strip().upper()
-        if declared in {"CT", "MR", "MRI", "CLVT", "CHT"}:
-            return "CT" if declared in {"CT", "CLVT"} else "MR"
+        declared = normalize_modality((manifest or {}).get("modality"))
+        if declared in {"CT", "MR"}:
+            return declared
         if str((manifest or {}).get("series_type") or "").upper().startswith("T1_"):
             return "MR"
         text = f"{root.name} {folder.relative_to(root)}"
         tokens = {token for token in re.split(r"[^A-Z0-9]+", text.upper()) if token}
-        if "CT" in tokens or "CTA" in tokens or "CTV" in tokens or "CLVT" in tokens or "XUONG" in tokens:
-            return "CT"
-        if tokens.intersection({"MR", "MRI", "CHT"}):
-            return "MR"
+        named = modality_from_tokens(tokens)
+        if named:
+            return named
         if tokens.intersection(MRI_SEQUENCE_TOKENS):
             return "MR"
         if tokens.intersection(CT_TOKENS):
@@ -3080,22 +3086,15 @@ def _parse_study_folder_name(name: str) -> tuple[str, str, str]:
     """Recover (date, modality, description) from a study folder name."""
     m = _STUDY_FOLDER_RE.match(name)
     if m:
-        raw_mod = m.group(2).strip().upper()
-        if raw_mod in {"CLVT", "CT"}:
-            mod = "CT"
-        elif raw_mod in {"MRI", "CHT", "MR"}:
-            mod = "MR"
-        else:
-            mod = raw_mod
+        mod = normalize_modality(m.group(2))
         return _extract_folder_date(m.group(1)) or m.group(1), mod, m.group(3).strip()
     m2 = _STUDY_FOLDER_2PART_RE.match(name)
     if m2:
         d = _extract_folder_date(m2.group(1)) or m2.group(1)
         rem = m2.group(2).strip()
         tokens = [t.strip() for t in re.split(r"\s+-\s+|\s+·\s+", rem) if t.strip()]
-        if tokens and tokens[0].upper() in {"CT", "MR", "MRI", "CLVT", "CHT"}:
-            raw_mod = tokens[0].upper()
-            mod = "CT" if raw_mod in {"CT", "CLVT"} else "MR"
+        if tokens and tokens[0].upper() in FOLDER_LEAD_CODES:
+            mod = normalize_modality(tokens[0])
             desc = " - ".join(tokens[1:]).strip()
         else:
             mod = ""
@@ -3107,14 +3106,11 @@ def _parse_study_folder_name(name: str) -> tuple[str, str, str]:
     date = _extract_folder_date(name)
     if date:
         tokens = [t.strip() for t in re.split(r"[\s\-_·]+", name) if t.strip()]
+        # First modality word wins, so the description keeps its own order.
         mod = ""
         for t in tokens:
-            tu = t.upper()
-            if tu in {"CT", "CLVT"}:
-                mod = "CT"
-                break
-            elif tu in {"MR", "MRI", "CHT"}:
-                mod = "MR"
+            if t.upper() in FOLDER_LEAD_CODES:
+                mod = normalize_modality(t)
                 break
         m_dmy = _DATE_ANYWHERE_DMY_RE.search(name)
         m_ymd = _DATE_ANYWHERE_YMD_RE.search(name)
@@ -3125,9 +3121,8 @@ def _parse_study_folder_name(name: str) -> tuple[str, str, str]:
             clean_desc = name.strip()
         return date, mod, clean_desc or name.strip()
     tokens = [t.strip() for t in re.split(r"\s+-\s+|\s+·\s+", name) if t.strip()]
-    if tokens and tokens[0].upper() in {"CT", "MR", "MRI", "CLVT", "CHT"}:
-        raw_mod = tokens[0].upper()
-        mod = "CT" if raw_mod in {"CT", "CLVT"} else "MR"
+    if tokens and tokens[0].upper() in FOLDER_LEAD_CODES:
+        mod = normalize_modality(tokens[0])
         desc = " - ".join(tokens[1:]).strip()
         return "", mod, desc
     return "", "", name.strip()
@@ -3942,14 +3937,18 @@ class WorklistScanner:
 
         # A modality recorded from the DICOM tag beats every guess below, which
         # only reads the folder name and the file extensions on disk.
-        modality = str(record.get("modality") or "").strip().upper()
+        # The study list renders this value and its filter compares against it,
+        # so a RIS spelling left raw here split one modality into two filter
+        # options and hid half the archive behind whichever one was picked.
+        modality = normalize_modality(record.get("modality"))
         lower_name = study_dir.name.casefold()
+        # Whole words only: "ct" appearing anywhere in the name once made a
+        # folder called "PROJECT" report itself as a CT study.
+        named_in_folder = modality_from_text(study_dir.name)
         if modality:
             pass
-        elif "mr" in lower_name or "mri" in lower_name:
-            modality = "MR"
-        elif "ct" in lower_name:
-            modality = "CT"
+        elif named_in_folder:
+            modality = named_in_folder
         elif "xray" in lower_name or "x-ray" in lower_name or "xquang" in lower_name or "x-quang" in lower_name:
             modality = "X-Quang"
         elif video_count > 0 and video_count >= dicom_count:
@@ -5144,7 +5143,10 @@ class WebController:
                     continue
                 if resolved != study_folder:
                     continue
-                record["status"] = "complete" if complete else "incomplete"
+                record["status"] = (
+                    "complete" if complete
+                    else study_status.status_without_manual_completion(record)
+                )
                 manifest["updatedAt"] = dcom_pipeline._now_local()
                 dcom_pipeline._write_patient_manifest(candidate, manifest)
                 return {

@@ -620,7 +620,29 @@ function groupSeriesHierarchically(seriesList) {
   for (const dateKey of sortedDates) {
     const displayDate = dateKey === "0000-00-00" ? t("Chưa rõ ngày chụp") : formatDisplayDate(dateKey);
     for (const [studyTitle, items] of dateMap.get(dateKey).entries()) {
-      result.push({ dateKey, displayDate, studyTitle, items });
+      // Two studies can share a date and a description and still be two
+      // studies. The backend tells them apart by StudyInstanceUID, which it
+      // sends as `timelineKey`; this list keys off the text alone, so the
+      // series strip merged visits that the patient timeline beside it kept
+      // apart, and the reader scrolled from one study into another without
+      // anything on screen marking the join.
+      //
+      // Only a bucket that genuinely holds more than one study is split, so a
+      // strip that was already right is left exactly as it was.
+      const distinctStudies = new Set(items.map((item) => item.timelineKey).filter(Boolean));
+      if (distinctStudies.size <= 1) {
+        result.push({ dateKey, displayDate, studyTitle, items });
+        continue;
+      }
+      const byStudy = new Map();
+      for (const item of items) {
+        const key = item.timelineKey || "";
+        if (!byStudy.has(key)) byStudy.set(key, []);
+        byStudy.get(key).push(item);
+      }
+      for (const group of byStudy.values()) {
+        result.push({ dateKey, displayDate, studyTitle, items: group });
+      }
     }
   }
 
@@ -760,6 +782,36 @@ const MEDIA_TYPES = new Set(["dicom", "photo", "video", "doc", "text", "pdf"]);
  * An unknown value falls back to the diagnostic canvas: showing a series in
  * the reading view is always recoverable, dropping it is not.
  */
+/**
+ * What the archive actually recorded for an identity field, or "".
+ *
+ * The pipeline writes "KHONG_RO_TEN" and "KHONG_RO_ID" when a DICOM carries no
+ * patient name, or one the hospital redacted, and those strings become real
+ * folder names on disk. On screen they are neither a name nor an ID: every
+ * anonymised record carries the same text, so two different patients read
+ * identically in the list a doctor checks to confirm they opened the right
+ * one. Only the image overlay filtered them — the study list and the patient
+ * rail printed them verbatim.
+ *
+ * Display only. Nothing that matches or looks a record up goes through here,
+ * because on disk those placeholders are the record's real folder name.
+ */
+const IDENTITY_PLACEHOLDERS = new Set([
+  "KHONGROTEN", "KHONGROID", "ANON", "ANONYMOUS", "ANONYMIZED", "ANONYMISED",
+  "UNKNOWN", "NONE", "NULL", "REDACTED", "REMOVED", "HIDDEN", "NOVALUE",
+]);
+
+function recordedIdentity(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  const token = text.toUpperCase().normalize("NFD").replace(/[^A-Z0-9]/g, "");
+  if (!token) return "";
+  if (IDENTITY_PLACEHOLDERS.has(token)) return "";
+  // "XXX", "???", "***" — what a PACS writes over a name it will not release.
+  if (/^[X?*]+$/.test(token)) return "";
+  return text;
+}
+
 function getSeriesMediaType(series) {
   if (!series) return "dicom";
   return MEDIA_TYPES.has(series.mediaType) ? series.mediaType : "dicom";
@@ -1997,7 +2049,13 @@ function buildMediaTimeline(seriesList, timelineLabels = {}) {
       const isDicom = group.series.some((item) => (
         item.sourceType === "dicom" || String(item.sourceFormat || "").toUpperCase() === "DICOM"
       ));
-      let sourceFormat = "DICOM";
+      // Nothing is assumed. This pill states where a study's images came
+      // from, and it started out as "DICOM" for anything that fell past the
+      // branches below — including a series whose media type the archive never
+      // recorded, which `getSeriesMediaType` routes to the diagnostic canvas
+      // as a default. A routing default is not provenance, and the pill's own
+      // tooltip read "Dữ liệu gốc DICOM" over it.
+      let sourceFormat = "";
       if (isDicom) {
         sourceFormat = "DICOM";
       } else if (first.sourceFormat) {
@@ -2010,20 +2068,26 @@ function buildMediaTimeline(seriesList, timelineLabels = {}) {
         sourceFormat = "PDF";
       } else if (group.kind === "doc" || group.kind === "text") {
         sourceFormat = "TXT";
-      } else if (group.kind === "dicom") {
+      } else if (String(first.mediaType || "").toLowerCase() === "dicom") {
+        // The backend's own classification, not `group.kind`, which
+        // `getSeriesMediaType` fills with "dicom" for anything it does not
+        // recognise so the series still opens on a canvas. That default is a
+        // routing decision and says nothing about where the pixels came from.
         sourceFormat = "DICOM";
       }
       const sourceTitle = sourceFormat === "DICOM"
         ? t("Dữ liệu gốc DICOM (Ưu tiên dựng từ DICOM)")
-        : (sourceFormat === "JPG" ? t("Dữ liệu ảnh chuyển đổi JPG") : sourceFormat);
+        : (sourceFormat === "JPG"
+          ? t("Dữ liệu ảnh chuyển đổi JPG")
+          : (sourceFormat || t("Chưa rõ định dạng nguồn")));
       return {
         ...group,
         dateKey,
         dateLabel,
         badge,
         examName,
-        sourceFormat,
-        sourceFormatClass: sourceFormat.toLowerCase(),
+        sourceFormat: sourceFormat || "—",
+        sourceFormatClass: sourceFormat.toLowerCase() || "unknown",
         sourceTitle,
         defaultTitle: `${badge} - ${suffix}`,
         primaryId: primary?.id || "",
@@ -2085,7 +2149,7 @@ function renderPatientRail() {
   const patient = state.archive?.patient || {};
   const editPatient = state.patientEditDraft || patientInfoDraft(patient);
   const series = state.archive?.series || [];
-  const dash = (value) => (String(value || "").trim() || "—");
+  const dash = (value) => (recordedIdentity(value) || "—");
 
   const identity = [patient.gender, patient.birthYear, patient.age ? tf("{} tuổi", patient.age) : ""]
     .map((value) => String(value || "").trim())
@@ -2616,7 +2680,10 @@ function mediaTags(counts, labels = {}) {
 }
 
 function studyFormatBadge(study) {
-  const media = study.primaryMediaType || (study.mediaCounts?.dicom > 0 ? "dicom" : "photo");
+  // No default. This read `… : "photo"`, so a study the archive had counted
+  // nothing for was declared JPG before any of the branches below could say
+  // otherwise — the guess was made in the first line and never revisited.
+  const media = study.primaryMediaType || "";
   if (media === "dicom" || study.mediaCounts?.dicom > 0) {
     return `<span class="fmt-badge dicom" title="${escapeHtml(t("File DICOM gốc (.dcm)"))}">DICOM</span>`;
   }
@@ -2629,7 +2696,9 @@ function studyFormatBadge(study) {
   if (media === "doc" || study.mediaCounts?.doc > 0) {
     return `<span class="fmt-badge doc" title="${escapeHtml(t("Bệnh án / Văn bản"))}">BỆNH ÁN</span>`;
   }
-  return `<span class="fmt-badge jpg">JPG</span>`;
+  // Nothing recorded about this study's media. Saying "JPG" here claimed the
+  // films had been converted when the archive knows of no films at all.
+  return `<span class="fmt-badge unknown" title="${escapeHtml(t("Chưa rõ định dạng nguồn"))}">—</span>`;
 }
 
 function patientFormatBadges(patient) {
@@ -2641,7 +2710,9 @@ function patientFormatBadges(patient) {
   if (summary.doc > 0) tags.push(`<span class="fmt-badge doc">DOC</span>`);
   if (tags.length === 0) {
     const hasDicom = (patient.studies || []).some((s) => s.primaryMediaType === "dicom" || s.mediaCounts?.dicom > 0);
-    tags.push(hasDicom ? `<span class="fmt-badge dicom">DICOM</span>` : `<span class="fmt-badge jpg">JPG</span>`);
+    tags.push(hasDicom
+      ? `<span class="fmt-badge dicom">DICOM</span>`
+      : `<span class="fmt-badge unknown" title="${escapeHtml(t("Chưa rõ định dạng nguồn"))}">—</span>`);
   }
   return tags.join(" ");
 }
@@ -2963,8 +3034,10 @@ function renderWorklistTreeInner() {
           }
           return 0;
         });
-        const patientName = p.patientName || p.patientId || t("Chưa rõ tên BN");
-        const patientId = p.patientId || "";
+        const patientName = recordedIdentity(p.patientName)
+          || recordedIdentity(p.patientId)
+          || t("Chưa rõ tên BN");
+        const patientId = recordedIdentity(p.patientId);
         const studyDate = patientLatestStudyDateString(p);
         const createdDate = p.folderCreatedAt || "—";
         const studiesId = `worklist-patient-${pIdx}-studies`;
@@ -2978,9 +3051,9 @@ function renderWorklistTreeInner() {
                   <span class="badge-category" title="${escapeHtml(tf("Nhóm: {}", p.category))}"
                     >📁 ${escapeHtml(p.category)}</span>
                 ` : ""}
-                ${(p.patientName || p.patientId) ? `
+                ${(recordedIdentity(p.patientName) || recordedIdentity(p.patientId)) ? `
                   <button class="cell-copy-btn" type="button" data-action="copy-cell"
-                    data-copy-text="${escapeHtml(p.patientName || p.patientId)}"
+                    data-copy-text="${escapeHtml(recordedIdentity(p.patientName) || recordedIdentity(p.patientId))}"
                     title="${escapeHtml(t("Sao chép tên bệnh nhân"))}">${icons.copy}</button>
                 ` : ""}
               </span>
@@ -3040,11 +3113,11 @@ function renderWorklistTreeInner() {
                     </span>
                     <small>${escapeHtml(studyCountLine(s))}</small>
                   </span>
-                  <span class="meta pid-col sub copyable-cell" title="${escapeHtml(p.patientId || "—")}">
+                  <span class="meta pid-col sub copyable-cell" title="${escapeHtml(recordedIdentity(p.patientId) || "—")}">
                     <span>—</span>
-                    ${p.patientId ? `
+                    ${recordedIdentity(p.patientId) ? `
                       <button class="cell-copy-btn" type="button" data-action="copy-cell"
-                        data-copy-text="${escapeHtml(p.patientId)}"
+                        data-copy-text="${escapeHtml(recordedIdentity(p.patientId))}"
                         title="${escapeHtml(t("Sao chép mã BN"))}">${icons.copy}</button>
                     ` : ""}
                   </span>
@@ -8248,6 +8321,7 @@ export {
   switchTab,
   applyArchive,
   newViewerTab,
+  recordedIdentity,
   fillTabWithArchive,
   openHistoryEntry,
   bindWorklistOpenButtons,

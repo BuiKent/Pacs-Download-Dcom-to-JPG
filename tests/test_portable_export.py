@@ -17,6 +17,7 @@ from pathlib import Path
 
 import dcom_pipeline
 import portable_export
+from dicom_test_utils import write_test_dicom
 
 
 def build_archive(root: Path, *, with_manifest: bool = True, studies: int = 2) -> Path:
@@ -45,7 +46,10 @@ def build_archive(root: Path, *, with_manifest: bool = True, studies: int = 2) -
             encoding="utf-8",
         )
         (study / "DICOM").mkdir()
-        (study / "DICOM" / "IM_0001.dcm").write_bytes(b"not-really-dicom")
+        # A real slice, header and all. The export confirms a DICOM by reading
+        # its header, exactly as the worklist does, so a fixture of arbitrary
+        # bytes would only prove that the two disagree.
+        write_test_dicom(study / "DICOM" / "IM_0001.dcm")
         if with_manifest:
             dcom_pipeline.record_patient_study(
                 patient,

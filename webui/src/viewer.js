@@ -1050,7 +1050,13 @@ function updateViewportOverlays(viewportId, tl, tr, bl, br, ot, ob, ol, or) {
   const patientId = validOverlayDemographic(manifest.patientId) || validOverlayDemographic(manifest.patient_id) || "";
   const dobVal = validOverlayDemographic(manifest.patientBirthDate) || validOverlayDemographic(manifest.patient_birth_date) || "";
   const dob = dobVal ? `DOB: ${dobVal}` : "";
-  tl.innerText = [patientName, patientId, dob].filter(Boolean).join("\n");
+  // An overlay with nothing in it reads as an image that has not finished
+  // loading. When every identity field was withheld or redacted the reader
+  // has to be told that, not shown a blank corner where a name belongs.
+  const identityLines = [patientName, patientId, dob].filter(Boolean);
+  tl.innerText = identityLines.length
+    ? identityLines.join("\n")
+    : "— Hồ sơ không kèm thông tin định danh —";
   
   const modality = series.modality || manifest.modality || "";
   

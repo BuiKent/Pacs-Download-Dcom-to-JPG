@@ -114,3 +114,45 @@ describe("Series grouping by study date and study", () => {
     expect(html).toContain("T2 AX · 24 lát");
   });
 });
+
+describe("hai ca chụp trùng ngày và trùng mô tả", () => {
+  it("không bị gộp thành một mục trong dải series", () => {
+    // The backend tells two visits apart by StudyInstanceUID and sends it as
+    // `timelineKey`. This list used to key off the date and the description
+    // text only, so a patient scanned twice on one day under one protocol —
+    // pre- and post-contrast filed as separate studies, or a repeat after a
+    // failed run — read as a single study, and the reader scrolled out of one
+    // into the other with nothing marking the join.
+    const groups = groupSeriesHierarchically([
+      { id: "a1", timelineKey: "study-A", studyDate: "20260806", modality: "MR", studyDescription: "MR sọ não", description: "Ax T2" },
+      { id: "a2", timelineKey: "study-A", studyDate: "20260806", modality: "MR", studyDescription: "MR sọ não", description: "Ax T1" },
+      { id: "b1", timelineKey: "study-B", studyDate: "20260806", modality: "MR", studyDescription: "MR sọ não", description: "Ax T2" },
+    ]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups.every((group) => group.studyTitle === groups[0].studyTitle)).toBe(true);
+    expect(groups.map((group) => group.items.length).sort()).toEqual([1, 2]);
+    for (const group of groups) {
+      const keys = new Set(group.items.map((item) => item.timelineKey));
+      expect(keys.size).toBe(1);
+    }
+  });
+
+  it("một ca chụp duy nhất vẫn là một mục", () => {
+    const groups = groupSeriesHierarchically([
+      { id: "a1", timelineKey: "study-A", studyDate: "20260806", modality: "MR", studyDescription: "MR sọ não", description: "Ax T2" },
+      { id: "a2", timelineKey: "study-A", studyDate: "20260806", modality: "MR", studyDescription: "MR sọ não", description: "Ax T1" },
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].items).toHaveLength(2);
+  });
+
+  it("series chưa có khoá ca chụp vẫn gom như cũ", () => {
+    const groups = groupSeriesHierarchically([
+      { id: "a1", studyDate: "20260806", modality: "MR", studyDescription: "MR sọ não", description: "Ax T2" },
+      { id: "a2", studyDate: "20260806", modality: "MR", studyDescription: "MR sọ não", description: "Ax T1" },
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].items).toHaveLength(2);
+  });
+});
