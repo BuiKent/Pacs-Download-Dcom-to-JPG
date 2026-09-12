@@ -5188,7 +5188,7 @@ async function openHistoryEntry(entry) {
     loading: true,
     // Named after the folder on disk until the catalog says who it is. A
     // placeholder must never invent a patient.
-    patientName: folder.split(/[\/]/).filter(Boolean).pop() || "",
+    patientName: folder.split(/[\\/]/).filter(Boolean).pop() || "",
     status: t("Đang mở hồ sơ…"),
   });
   state.tabs.push(tab);
@@ -7528,7 +7528,7 @@ function fillTabWithArchive(tabId, archive, sessionId = "", folder = "") {
   tab.patientId = catalog.patient?.patientId || tab.patientId || "";
   tab.patientName = catalog.patient?.patientName
     || tab.patientName
-    || (catalog.root ? catalog.root.split(/[\/]/).pop() : "");
+    || (catalog.root ? catalog.root.split(/[\\/]/).pop() : "");
   tab.selectedId = selectedId;
   tab.mode = "single";
   tab.tool = "window";

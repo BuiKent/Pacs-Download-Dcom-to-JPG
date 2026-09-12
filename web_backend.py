@@ -6487,12 +6487,7 @@ class LocalApiServer:
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/manifest", path)
                 if match:
                     record = catalog.get(match.group(1))
-                    if not record.manifest:
-                        raise ValueError(
-                            record.mpr_reason
-                            or "Series không có dữ liệu geometry."
-                        )
-                    return record.manifest
+                    return record.manifest if isinstance(record.manifest, dict) else {}
                 match = re.fullmatch(r"/api/series/([a-f0-9]{20})/annotations", path)
                 if match:
                     return owner.controller.get_annotations(match.group(1), catalog=catalog)
