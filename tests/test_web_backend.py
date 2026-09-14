@@ -1337,6 +1337,23 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 404)
         caught.exception.close()
 
+    def test_reveal_logs_get_and_post_work(self):
+        with mock.patch("web_backend.os.startfile", create=True), \
+             mock.patch("subprocess.Popen"):
+            # Test GET /api/logs/reveal
+            with self.request("/api/logs/reveal", self.server.token) as resp:
+                self.assertEqual(resp.status, 200)
+                data = json.loads(resp.read().decode("utf-8"))
+                self.assertTrue(data.get("revealed"))
+                self.assertTrue(data.get("folder"))
+
+            # Test POST /api/logs/reveal
+            with self.post_json("/api/logs/reveal", {}, token=self.server.token) as resp:
+                self.assertEqual(resp.status, 200)
+                data = json.loads(resp.read().decode("utf-8"))
+                self.assertTrue(data.get("revealed"))
+                self.assertTrue(data.get("folder"))
+
 
 class FrameOfReferenceSyntheticTests(unittest.TestCase):
     """Verify that public_dict correctly reports frameOfReferenceSynthetic

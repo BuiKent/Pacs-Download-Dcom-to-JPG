@@ -66,3 +66,13 @@ A task is ONLY complete when all three gates have been executed sequentially and
 - Be direct, factual, and concise.
 - Provide clear diffs and test logs when reporting completed work.
 - **Strict Prohibition on Unsolicited Git Commit/Push (ZERO TOLERANCE):** NEVER run `git commit`, `git push`, `git commit -am`, or any command that creates commits or pushes code to remote repositories unless the user explicitly instructs to commit or push in their current request. All AI models (Gemini / Claude / etc.) must strictly wait for explicit user approval/instruction before executing any git commit or push commands.
+
+---
+
+## 5. UI/UX & Control Design Standards (User Global Directive)
+
+- **Standard Icons Over Text**: Prioritize standard, universally recognizable icons for controls and action buttons.
+- **Strict Prohibition on Icon + Label Redundancy**: NEVER pair an icon with a text label on the same button/control (e.g., avoid `📋 Log`). Use ONLY ONE: either a clean standard icon OR a clean text label.
+- **If Label is Mandatory, Drop the Icon**: When a text label is required for clarity (e.g., "Log"), omit any leading/trailing icon or emoji.
+- **Minimalist Tooltips / Titles**: Keep `title` / tooltip attributes minimal or omit them entirely. Avoid verbose explanations or multi-clause descriptions in button titles.
+

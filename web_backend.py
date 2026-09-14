@@ -6493,6 +6493,8 @@ class LocalApiServer:
                     return {"sessions": owner.controller.sessions.list_sessions()}
                 if path == "/api/logs/info":
                     return owner.controller.get_logs_info()
+                if path == "/api/logs/reveal":
+                    return owner.controller.reveal_logs_folder()
                 if path == "/api/media/video/status":
                     import video_engine as ve
                     return {"stats": ve.concurrency_stats()}

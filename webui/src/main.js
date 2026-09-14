@@ -3586,8 +3586,8 @@ function renderActivityPanelInner() {
 
     <div class="activity-head-row">
       <div class="activity-head">${escapeHtml(t("Nhật ký phiên làm việc (Logs)"))}</div>
-      <button class="mini-btn primary" type="button" data-action="open-logs" title="${escapeHtml(t("Mở thư mục nhật ký"))}">
-        📋 ${escapeHtml(t("Mở thư mục Log"))}
+      <button class="mini-btn primary" type="button" data-action="open-logs">
+        ${escapeHtml(t("Mở thư mục Log"))}
       </button>
     </div>
     <div class="activity-source-folders">
@@ -3849,8 +3849,7 @@ function render() {
             ) : ""}
             ${iconButton("choose-archive", icons.folder, t("Mở folder hồ sơ: phim, ảnh, video và văn bản đều được nhận diện"))}
             ${iconButton("refresh-archive", "⟳", t("Quét lại thư mục hiện tại"), false, !state.archive.root)}
-            <button class="soft-button" data-action="open-logs"
-              title="${escapeHtml(t("Mở thư mục nhật ký (log) phiên làm việc"))}">📋 ${escapeHtml(t("Log"))}</button>
+            <button class="soft-button" data-action="open-logs">Log</button>
             <button class="soft-button" data-action="toggle-language"
               title="${escapeHtml(t("Chuyển sang tiếng Anh"))}">${getLanguage() === "en" ? "VI" : "EN"}</button>
           </div>
@@ -5946,8 +5945,13 @@ async function action(name, element = null) {
     }
     if (name === "open-logs") {
       try {
-        const res = await api("/api/logs/reveal", {});
-        setStatus(tf("Đã mở thư mục nhật ký: {}", res.folder || "logs"));
+        let res;
+        if (window.pywebview?.api?.reveal_logs) {
+          res = await window.pywebview.api.reveal_logs();
+        } else {
+          res = await api("/api/logs/reveal", { method: "POST" });
+        }
+        setStatus(tf("Đã mở thư mục nhật ký: {}", res?.folder || "logs"));
       } catch (err) {
         setStatus(t("Không thể mở thư mục nhật ký: ") + (err?.message || ""), true);
       }

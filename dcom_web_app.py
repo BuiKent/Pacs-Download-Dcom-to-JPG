@@ -248,8 +248,12 @@ class NativeApi:
         """Report available media types in the folder to inform the export dialog."""
         source = str(folder or "").strip()
         if not source:
-            return {}
+            return {"hasJpg": True, "hasDicom": False}
         return self._controller.get_export_options(source)
+
+    def reveal_logs(self):
+        """Open the logs folder in Windows Explorer / OS file browser."""
+        return self._controller.reveal_logs_folder()
 
     def choose_output(self):
         path = self._safe_folder_dialog()

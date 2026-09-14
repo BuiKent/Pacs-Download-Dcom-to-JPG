@@ -521,4 +521,41 @@ describe("Worklist: scanned data replaces the history fallback", () => {
     expect(html).toContain("📂");
     expect(html).toContain("🗑️");
   });
+
+  it("open-logs button calls pywebview reveal_logs via real DOM click", async () => {
+    let calledPywebview = false;
+    window.pywebview = {
+      api: {
+        reveal_logs: async () => {
+          calledPywebview = true;
+          return { revealed: true, folder: "D:\\logs" };
+        },
+      },
+    };
+    const app = mountAndBind('<button class="soft-button" data-action="open-logs">Log</button>');
+    const btn = app.querySelector("[data-action='open-logs']");
+    expect(btn.textContent.trim()).toBe("Log");
+    expect(btn.getAttribute("title")).toBeNull();
+    btn.click();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calledPywebview).toBe(true);
+    delete window.pywebview;
+  });
+
+  it("open-logs button falls back to POST /api/logs/reveal when pywebview is absent", async () => {
+    delete window.pywebview;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      headers: { get: () => "application/json" },
+      json: async () => ({ revealed: true, folder: "D:\\logs" }),
+    });
+    const app = mountAndBind('<button class="soft-button" data-action="open-logs">Log</button>');
+    const btn = app.querySelector("[data-action='open-logs']");
+    btn.click();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetchSpy).toHaveBeenCalledWith("/api/logs/reveal", expect.objectContaining({
+      method: "POST",
+    }));
+    fetchSpy.mockRestore();
+  });
 });
