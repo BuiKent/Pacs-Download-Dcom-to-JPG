@@ -2314,7 +2314,8 @@ function filteredHistoryEntries() {
 
 /** The patient tree from the disk scan — history belongs to Activity only. */
 function getEffectiveWorklistPatients() {
-  return Array.isArray(state.worklistPatients) ? state.worklistPatients : [];
+  const list = Array.isArray(state.worklistPatients) ? state.worklistPatients : [];
+  return list.filter((p) => p && p.exists !== false && Array.isArray(p.studies) && p.studies.length > 0);
 }
 
 /**

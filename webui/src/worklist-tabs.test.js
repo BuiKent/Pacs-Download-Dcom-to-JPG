@@ -340,6 +340,17 @@ describe("Worklist: scanned data replaces the history fallback", () => {
     expect(getEffectiveWorklistPatients()).toEqual([]);
   });
 
+  it("filters out ghost patients that do not exist or have 0 studies", () => {
+    state.worklistPatients = [
+      ...PATIENTS.map((p) => ({ ...p })),
+      { id: "ghost-1", patientName: "DELETED", exists: false, studies: [] },
+      { id: "ghost-2", patientName: "EMPTY", exists: true, studies: [] },
+    ];
+    const effective = getEffectiveWorklistPatients();
+    expect(effective).toHaveLength(2);
+    expect(effective.map((p) => p.id)).toEqual(["p1", "p2"]);
+  });
+
   it("shows a loading state rather than fabricated history-derived counts", () => {
     state.worklistLoading = true;
     const html = renderWorklistTreeInner();

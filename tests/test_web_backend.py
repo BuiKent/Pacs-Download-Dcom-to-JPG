@@ -2363,6 +2363,28 @@ class OpenFileAndFileInfoTests(unittest.TestCase):
         self.assertIn("BN-TRONG-KHO", ids)
         self.assertNotIn("BN-NGOAI-KHO", ids)
 
+    def test_worklist_ignores_deleted_history_folders_and_empty_ghost_patients(self) -> None:
+        """When a user deletes a patient folder on disk, rescan must not show it as a 0-study ghost."""
+        from web_backend import WorklistScanner
+
+        existing = self.temp_dir / "BN-CON-SONG"
+        (existing / "VIDEO").mkdir(parents=True)
+        self._write_video(existing / "VIDEO" / "a.mp4")
+
+        deleted = self.temp_dir / "BN-DA-XOA-2026-09-10"
+
+        self.controller.history.add(str(existing))
+        self.controller.history.add(str(deleted))
+        self.controller.output_root = self.temp_dir
+
+        patients = WorklistScanner(self.controller).scan()
+        ids = {p["patientId"] for p in patients}
+        self.assertIn("BN-CON-SONG", ids)
+        self.assertNotIn("BN-DA-XOA-2026-09-10", ids)
+        for p in patients:
+            self.assertTrue(p.get("exists", False))
+            self.assertGreater(len(p.get("studies", [])), 0)
+
     def test_worklist_keeps_two_archive_folders_with_the_same_patient_id_separate(self) -> None:
         from web_backend import WorklistScanner
 

@@ -4251,6 +4251,8 @@ class WorklistScanner:
                 resolved = candidate.expanduser().resolve()
             except OSError:
                 continue
+            if not candidate.is_dir():
+                continue
             if any(_is_within(resolved, root) for root in roots_to_scan):
                 history_folders.append(candidate)
 
@@ -4302,6 +4304,8 @@ class WorklistScanner:
                     continue
 
         for hpath in history_folders:
+            if not hpath.is_dir():
+                continue
             # Walk up to find if hpath belongs to an existing patient archive folder
             patient_dir = hpath
             for candidate in (hpath, *hpath.parents):
@@ -4313,6 +4317,8 @@ class WorklistScanner:
             else:
                 if hpath.name.casefold() in {"dicom", "jpg", "dcom", "dcm", "raw_jpg"}:
                     patient_dir = hpath.parent
+            if not patient_dir.is_dir():
+                continue
             key = archive_key(patient_dir)
             meta = self._patient_meta_for(patient_dir)
             if key not in patient_map:
@@ -4349,6 +4355,8 @@ class WorklistScanner:
 
         patients = []
         for p in patient_map.values():
+            if not p.get("exists") or not p.get("studies"):
+                continue
             total_size = sum(s.get("sizeBytes", 0) for s in p["studies"])
             dicom_tot = sum(s["mediaCounts"]["dicom"] for s in p["studies"])
             photo_tot = sum(s["mediaCounts"]["photo"] for s in p["studies"])
@@ -4724,8 +4732,15 @@ class WebController:
         patients = data.get("patients")
         if not isinstance(patients, list):
             return {}
+        valid_patients = [
+            p for p in patients
+            if isinstance(p, dict)
+            and p.get("exists") is not False
+            and (not p.get("folder") or Path(p["folder"]).is_dir())
+            and (p.get("studies") is None or bool(p.get("studies")))
+        ]
         return {
-            "patients": patients,
+            "patients": valid_patients,
             "scannedAt": str(data.get("scannedAt") or ""),
             "revision": str(data.get("revision") or ""),
         }

@@ -4773,6 +4773,7 @@ button.stt-cell.twist-btn:focus-visible {
   align-items: center;
   justify-content: center;
   justify-self: start;
+  align-self: center;
   height: 24px;
   padding: 0 8px;
   border-radius: 4px;
