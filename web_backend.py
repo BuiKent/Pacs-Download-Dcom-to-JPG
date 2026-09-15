@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.parse import unquote, urlparse
 
+import clinical_record
 import dcom_pipeline
 import dicom_io
 from dicom_io import discover_dicom_files, looks_like_dicom_file
@@ -3244,12 +3245,18 @@ def _identity_code(value) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
 
 
-def _folder_identity(patient_id: str, patient_name: str) -> dict:
+def _folder_identity(patient_id: str, patient_name: str, diagnosis: str = "") -> dict:
     """A patient identity read off a folder name, with nothing else guessed.
 
     Sex, birth year and hospital stay empty here: a folder name that happens to
     look like it carries them is not a DICOM tag, and those are the fields a
     clinician reads to confirm they opened the right chart.
+
+    `diagnosis` is the one field read back out, and only because it is not a
+    demographic: it is the note the clinician typed into the folder name
+    themselves, so showing it is reporting what is on disk rather than guessing
+    at a patient. `_patient_meta_for` still lets the record overrule it and
+    marks which of the two ended up on screen.
     """
     return {
         "patientId": _blank_if_unknown(patient_id),
@@ -3258,6 +3265,7 @@ def _folder_identity(patient_id: str, patient_name: str) -> dict:
         "birthYear": "",
         "hospital": "",
         "hospitalKey": "",
+        "diagnosis": str(diagnosis or "").strip(),
     }
 
 
@@ -3572,6 +3580,9 @@ class WorklistScanner:
             "hospital": str(data.get("hospitalName") or "").strip(),
             "hospitalKey": str(data.get("hospitalKey") or "").strip(),
             "createdAt": str(data.get("createdAt") or "").strip(),
+            # Not a DICOM tag: the note `set_patient_diagnosis` writes. Read
+            # here so the worklist can show it without opening the record.
+            "diagnosis": str(data.get("diagnosis") or "").strip(),
         }
 
     def _manifest_studies_for(self, patient_dir: Path) -> dict[str, dict]:
@@ -3696,6 +3707,8 @@ class WorklistScanner:
         if not recorded:
             guessed["folderCreatedAt"] = created_display
             guessed["folderCreatedAtSort"] = created_sort
+            guessed["diagnosisSource"] = "folder" if guessed.get("diagnosis") else ""
+            self._apply_clinical_record(patient_dir, guessed)
             return guessed
         result = {
             key: str(recorded.get(key) or "").strip()
@@ -3706,9 +3719,40 @@ class WorklistScanner:
             folder_code = _identity_code(guessed.get("patientId"))
             if recorded_code and recorded_code == folder_code:
                 result["patientName"] = guessed["patientName"]
+        # A diagnosis typed into the record outranks one left in a folder name,
+        # and `diagnosisSource` says which of the two is on screen. The two are
+        # not equally strong evidence: the record was written for this patient,
+        # while a folder name can be stale, or belong to a folder renamed for
+        # filing rather than for reading.
+        result["diagnosisSource"] = "manifest" if result.get("diagnosis") else ""
+        if not result.get("diagnosis") and guessed.get("diagnosis"):
+            result["diagnosis"] = guessed["diagnosis"]
+            result["diagnosisSource"] = "folder"
         result["folderCreatedAt"] = created_display
         result["folderCreatedAtSort"] = created_sort
+        self._apply_clinical_record(patient_dir, result)
         return result
+
+    def _apply_clinical_record(self, patient_dir: Path, meta: dict) -> None:
+        """Overlay `clinical-index.json` on a row, and say where it is up to.
+
+        A structured record beats both a chart note and a folder name, because
+        it is the only one of the three that was entered field by field: the
+        label it produces names the histology, the grade and the side rather
+        than whatever fitted in a folder name.
+
+        The treatment stage is never read off a stored string. It is worked out
+        from the events every time the list is drawn, so a course that has been
+        closed stops being reported as running the moment it is closed.
+        """
+        record = clinical_record.read_record(patient_dir)
+        label = clinical_record.diagnosis_label(record)
+        if label:
+            meta["diagnosis"] = label
+            meta["diagnosisSource"] = "clinical"
+        stage = clinical_record.treatment_stage(record)
+        meta["treatmentStage"] = stage
+        meta["hasClinicalRecord"] = bool(record and (record.get("tumors") or record.get("events")))
 
     def _parse_patient_meta(self, folder_name: str) -> dict:
         name_clean = folder_name.replace("\\", "/").rstrip("/").split("/")[-1]
@@ -3740,15 +3784,17 @@ class WorklistScanner:
         # Folders typed by hand, hyphenated with no spaces around the hyphens:
         #   2606033997-NGUYỄN THỊ CẨM TÚ-14T-U thần kinh đệm...
         #   2401005051-Đào Trường Giang-30T-Phình mạch...
-        # Everything after the age is the operator's own note about the case,
-        # not a demographic, so it is read and discarded.
+        # Everything after the age is the operator's own note about the case.
+        # It is not a demographic, so it never fills sex or birth year, but it
+        # is the diagnosis they wrote down and the worklist now shows it.
         m = re.match(
             r"^([A-Za-z0-9._-]*\d[A-Za-z0-9._-]*)-([A-Za-zÀ-ỹ][A-Za-zÀ-ỹ\s]*?)"
-            r"(?:-\d{1,3}[A-Za-z]{0,2})?(?:-.*)?$",
+            r"(?:-\d{1,3}[A-Za-z]{0,2})?(?:-(.*))?$",
             name_clean,
         )
         if m:
-            return _folder_identity(m.group(1).strip(), m.group(2).strip())
+            return _folder_identity(
+                m.group(1).strip(), m.group(2).strip(), (m.group(3) or "").strip())
 
         patient_id = primary_chunks[0] if primary_chunks else name_clean
 
@@ -3813,6 +3859,10 @@ class WorklistScanner:
             "birthYear": birth_year,
             "hospital": hospital,
             "hospitalKey": "",
+            # This branch reached here because the name did not parse cleanly,
+            # so any leftover words are of unknown meaning. Calling them a
+            # diagnosis would be a guess.
+            "diagnosis": "",
         }
 
     def _scan_study(
@@ -4372,6 +4422,13 @@ class WorklistScanner:
                 "doc": doc_tot,
             }
             p["category"] = str(p.get("category") or "")
+            # A row read back from a cache written before this key existed has
+            # no diagnosis at all; the worklist shows a blank, not a guess.
+            p["diagnosis"] = str(p.get("diagnosis") or "")
+            p["diagnosisSource"] = str(p.get("diagnosisSource") or "")
+            if not isinstance(p.get("treatmentStage"), dict):
+                p["treatmentStage"] = clinical_record.treatment_stage(None)
+            p["hasClinicalRecord"] = bool(p.get("hasClinicalRecord"))
             # `studyDate` is already formatted dd/mm/yyyy for display, so
             # sorting it as text ordered by day and put 20/06/2026 ahead of
             # 06/08/2026. `studyDateSort` is the same date as YYYYMMDD.
@@ -5281,6 +5338,142 @@ class WebController:
             "folder": str(folder),
         }
 
+    def _patient_folder_on_screen(
+        self,
+        archive_root: str,
+        expected_patient_id: str,
+        catalog: Optional["ArchiveCatalog"],
+        action: str,
+    ) -> tuple["ArchiveCatalog", Path, dict, str]:
+        """The patient folder a write is allowed to land in, and its manifest.
+
+        The caller names the archive it is looking at and the patient ID it has
+        on screen, and both are checked before anything is written. Falling
+        back to "whichever catalog was opened last" would let a note typed in
+        one patient's tab land in another patient's record — the viewer does
+        not yet carry a session per tab, so that is a live risk rather than a
+        theoretical one.
+
+        `action` is the Vietnamese verb phrase for the message a clinician
+        reads when the folder cannot be found, as in "chưa ghi chẩn đoán được".
+        """
+        target = catalog or self.catalog
+        root = str(archive_root or "").strip() or (str(target.root) if target.root else "")
+        if not root:
+            raise ValueError(f"Chưa mở hồ sơ nào để {action}.")
+        start = Path(root).expanduser().resolve()
+        allowed = self._reveal_roots()
+        if allowed and not any(_is_within(start, base) for base in allowed):
+            raise PermissionError(
+                f"Truy cập bị từ chối: Đường dẫn nằm ngoài phạm vi cho phép ({root})"
+            )
+        # The patient folder is looked for at or above the archive root, but
+        # never above the roots the app is allowed to touch: a stray manifest
+        # further up the disk must not become the file this writes to.
+        folder = next(
+            (
+                candidate for candidate in (start, *start.parents)
+                if (not allowed or any(_is_within(candidate, base) for base in allowed))
+                and (candidate / dcom_pipeline.PATIENT_MANIFEST_NAME).is_file()
+            ),
+            None,
+        )
+        if folder is None:
+            raise ValueError(
+                f"Hồ sơ này chưa có patient-index.json nên chưa {action} được."
+            )
+        manifest = dcom_pipeline._read_patient_manifest(folder)
+        if manifest is None:
+            raise ValueError("Không đọc được patient-index.json của hồ sơ này.")
+        recorded_id = str(manifest.get("patientId") or "").strip()
+        wanted_id = str(expected_patient_id or "").strip()
+        if wanted_id and recorded_id and wanted_id != recorded_id:
+            raise ValueError(
+                f"Từ chối ghi: hồ sơ trên màn hình là {wanted_id} nhưng thư mục "
+                f"{folder.name} thuộc bệnh nhân {recorded_id}."
+            )
+        return target, folder, manifest, recorded_id
+
+    def patient_clinical(
+        self,
+        *,
+        archive_root: str = "",
+        expected_patient_id: str = "",
+        catalog: Optional["ArchiveCatalog"] = None,
+    ) -> dict:
+        """The clinical record of the patient on screen, with what it means.
+
+        A patient who has no record yet gets an empty one rather than an error:
+        the form is the same form either way, and the difference between "not
+        filled in" and "could not be read" is not one a clinician should have
+        to work out from an error message.
+
+        Reading is forgiving where writing is strict. A folder with no
+        `patient-index.json` has nowhere to keep a clinical record, but opening
+        it is a perfectly ordinary thing to do — a folder of operative photos,
+        a study imported before manifests existed — and it must not put a red
+        error over the images. Such a folder comes back empty and marked
+        `canWrite: false`, with the reason, so the card can leave the pencil
+        off rather than offer an edit that would be refused on save.
+        """
+        try:
+            _target, folder, manifest, recorded_id = self._patient_folder_on_screen(
+                archive_root, expected_patient_id, catalog, "xem hồ sơ lâm sàng",
+            )
+        except (ValueError, PermissionError) as error:
+            blank = clinical_record.empty_record()
+            return {
+                "record": blank,
+                "stage": clinical_record.treatment_stage(blank),
+                "label": "",
+                "note": "",
+                "folder": "",
+                "canWrite": False,
+                "reason": str(error),
+            }
+        record = clinical_record.read_record(folder) or clinical_record.empty_record(recorded_id)
+        return {
+            "record": record,
+            "stage": clinical_record.treatment_stage(record),
+            "label": clinical_record.diagnosis_label(record),
+            # The free-text layer stays where it has always lived, on the
+            # manifest, so an archive opened by an older build still shows it.
+            "note": str(manifest.get("diagnosis") or "").strip(),
+            "folder": str(folder),
+            "canWrite": True,
+            "reason": "",
+        }
+
+    def set_patient_clinical(
+        self,
+        record: dict,
+        *,
+        archive_root: str = "",
+        expected_patient_id: str = "",
+        catalog: Optional["ArchiveCatalog"] = None,
+    ) -> dict:
+        """Replace the clinical record of the patient on screen.
+
+        Written to `clinical-index.json`, never into `patient-index.json`: the
+        manifest is what the pipeline read off the DICOM tags, and a later run
+        of that pipeline must not be able to overwrite what a doctor typed.
+        """
+        _target, folder, manifest, recorded_id = self._patient_folder_on_screen(
+            archive_root, expected_patient_id, catalog, "ghi hồ sơ lâm sàng",
+        )
+        payload = dict(record or {})
+        payload["patientId"] = recorded_id or str(payload.get("patientId") or "")
+        saved = clinical_record.write_record(folder, payload)
+        return {
+            "record": saved,
+            "stage": clinical_record.treatment_stage(saved),
+            "label": clinical_record.diagnosis_label(saved),
+            "note": str(manifest.get("diagnosis") or "").strip(),
+            "folder": str(folder),
+            "canWrite": True,
+            "reason": "",
+        }
+
     def set_patient_diagnosis(
         self,
         text: str,
@@ -5304,41 +5497,9 @@ class WebController:
         carry a session per tab, so that is a live risk rather than a
         theoretical one.
         """
-        target = catalog or self.catalog
-        root = str(archive_root or "").strip() or (str(target.root) if target.root else "")
-        if not root:
-            raise ValueError("Chưa mở hồ sơ nào để ghi chẩn đoán.")
-        start = Path(root).expanduser().resolve()
-        allowed = self._reveal_roots()
-        if allowed and not any(_is_within(start, base) for base in allowed):
-            raise PermissionError(
-                f"Truy cập bị từ chối: Đường dẫn nằm ngoài phạm vi cho phép ({root})"
-            )
-        # The patient folder is looked for at or above the archive root, but
-        # never above the roots the app is allowed to touch: a stray manifest
-        # further up the disk must not become the file this writes to.
-        folder = next(
-            (
-                candidate for candidate in (start, *start.parents)
-                if (not allowed or any(_is_within(candidate, base) for base in allowed))
-                and (candidate / "patient-index.json").is_file()
-            ),
-            None,
+        target, folder, manifest, recorded_id = self._patient_folder_on_screen(
+            archive_root, expected_patient_id, catalog, "ghi chẩn đoán",
         )
-        if folder is None:
-            raise ValueError(
-                "Hồ sơ này chưa có patient-index.json nên chưa ghi được chẩn đoán."
-            )
-        manifest = dcom_pipeline._read_patient_manifest(folder)
-        if manifest is None:
-            raise ValueError("Không đọc được patient-index.json của hồ sơ này.")
-        recorded_id = str(manifest.get("patientId") or "").strip()
-        wanted_id = str(expected_patient_id or "").strip()
-        if wanted_id and recorded_id and wanted_id != recorded_id:
-            raise ValueError(
-                f"Từ chối ghi: hồ sơ trên màn hình là {wanted_id} nhưng thư mục "
-                f"{folder.name} thuộc bệnh nhân {recorded_id}."
-            )
         manifest["diagnosis"] = str(text or "").strip()
         dcom_pipeline._write_patient_manifest(folder, manifest)
         patient = ArchiveCatalog._patient_block(manifest)
@@ -6523,6 +6684,24 @@ class LocalApiServer:
                     # by a download that just finished, appears on its own. It
                     # stats the patient folders only, never their contents.
                     return {"revision": owner.controller.worklist_revision()}
+                if path == "/api/clinical/vocabulary":
+                    # Served rather than copied into the bundle: two copies of
+                    # a controlled vocabulary are two vocabularies the moment
+                    # one of them is edited.
+                    return {"vocabulary": clinical_record.vocabulary()}
+                if path == "/api/patient/clinical":
+                    root = ""
+                    patient_id = ""
+                    if query:
+                        from urllib.parse import parse_qs
+                        qs = parse_qs(query)
+                        root = qs.get("archiveRoot", [""])[0]
+                        patient_id = qs.get("patientId", [""])[0]
+                    return owner.controller.patient_clinical(
+                        archive_root=root,
+                        expected_patient_id=patient_id,
+                        catalog=catalog,
+                    )
                 if path == "/api/source-folders":
                     return {"sourceFolders": owner.controller.get_source_folders()}
                 if path == "/api/sessions":
@@ -6619,6 +6798,13 @@ class LocalApiServer:
                         str(payload.get("seriesId") or ""),
                         catalog=catalog,
                         media_index=_as_index(payload.get("mediaIndex")),
+                    )
+                if path == "/api/patient/clinical":
+                    return owner.controller.set_patient_clinical(
+                        payload.get("record") if isinstance(payload.get("record"), dict) else {},
+                        archive_root=str(payload.get("archiveRoot") or ""),
+                        expected_patient_id=str(payload.get("patientId") or ""),
+                        catalog=catalog,
                     )
                 if path == "/api/patient/diagnosis":
                     return owner.controller.set_patient_diagnosis(

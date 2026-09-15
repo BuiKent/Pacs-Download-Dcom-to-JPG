@@ -1,6 +1,8 @@
 import "./styles.css";
 import { api, apiBlob, configureApi, getApiSession, mediaAuthUrl, setApiSession, thumbnailPath } from "./api.js";
 import { getLanguage, setLanguage, t, tf, translateLog } from "./i18n.js";
+import { escapeHtml } from "./html.js";
+import * as clinical from "./clinical.js";
 import {
   hasCompleteSeriesSelection,
   initialiseStudySelections,
@@ -262,6 +264,9 @@ const state = {
   worklistModality: "",
   worklistPeriod: "all",
   worklistRead: "all",
+  // Where the patient is in treatment, derived from the clinical record. Empty
+  // means "every stage", including the patients nothing is recorded about.
+  worklistStage: "",
   // Which Worklist tab is showing: the patient/study list or the queue+history.
   worklistTab: "studies",
   // Latest /api/job snapshot, kept so the Activity panel can draw it.
@@ -400,14 +405,6 @@ function updateSeriesCardHighlight() {
     const memberIds = row.dataset.timelineMembers.split(",").filter(Boolean);
     row.classList.toggle("on", memberIds.some((id) => seriesVisiblePanes(id).length > 0));
   }
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
 }
 
 function iconButton(id, icon, title, active = false, disabled = false, label = "") {
@@ -2151,6 +2148,102 @@ function patientInfoFromForm(form) {
  * the images a clinician is about to read, so a plausible-looking guess here
  * is exactly the failure the archive rules exist to prevent.
  */
+/**
+ * Repaint the clinical card alone.
+ *
+ * A full `render()` would rebuild the image canvas and the series strip to
+ * change a dropdown, and would scroll the rail back to the top between one
+ * typed field and the next.
+ */
+function refreshClinicalCard() {
+  const host = app.querySelector(".dx-card");
+  if (!host) return;
+  host.outerHTML = clinical.renderClinicalCard();
+  bindClinicalCard();
+}
+
+/**
+ * Fields already carrying their listener, for the same reason
+ * `boundActionElements` exists: binding a region twice must not mean two
+ * handlers per keystroke. A repaint replaces the nodes, so anything new is
+ * genuinely absent here.
+ */
+const boundClinicalFields = new WeakSet();
+
+/**
+ * Wire the clinical card's own controls.
+ *
+ * Re-bound after every repaint of the card, because replacing its markup drops
+ * every listener that was on it.
+ */
+function bindClinicalCard() {
+  const card = app.querySelector(".dx-card");
+  if (!card) return;
+  card.querySelectorAll("[data-clinical-field]").forEach((input) => {
+    if (boundClinicalFields.has(input)) return;
+    boundClinicalFields.add(input);
+    // `input` catches typing and `change` catches a value picked out of the
+    // dropdown or a date set by the picker; both write into the same draft.
+    const handle = (event) => {
+      const needsRedraw = clinical.applyFieldEdit(event.target);
+      if (needsRedraw) refreshClinicalCard();
+    };
+    input.addEventListener("input", handle);
+    input.addEventListener("change", handle);
+  });
+  // Through the shared binder, not a listener of its own: `bindEvents` sweeps
+  // every `[data-action]` in the shell, so a second listener here would run
+  // each click twice — one "Thêm khối u" press adding two blank tumours. The
+  // WeakSet inside `bindActionsIn` makes calling it over these nodes again
+  // harmless, and the nodes an `outerHTML` swap replaced are genuinely new.
+  bindActionsIn(card);
+}
+
+/** The archive the clinical record on screen belongs to. */
+function clinicalArchiveKey() {
+  return `${state.archive?.root || ""}::${state.archive?.patient?.patientId || ""}`;
+}
+
+/**
+ * Fetch the record for the archive on screen, once per archive.
+ *
+ * The vocabulary comes from the backend rather than from a copy in this
+ * bundle: two lists of histologies are two lists as soon as one is edited.
+ */
+async function loadClinicalRecord({ force = false } = {}) {
+  const key = clinicalArchiveKey();
+  if (!state.archive?.root) return;
+  if (!force && clinical.clinicalState.loadedFor === key) return;
+  clinical.resetClinicalState();
+  clinical.clinicalState.loading = true;
+  clinical.clinicalState.loadedFor = key;
+  refreshClinicalCard();
+  try {
+    if (!clinical.clinicalState.vocabulary) {
+      const lists = await api("/api/clinical/vocabulary");
+      clinical.clinicalState.vocabulary = lists?.vocabulary || null;
+    }
+    const params = new URLSearchParams({
+      archiveRoot: state.archive?.root || "",
+      patientId: state.archive?.patient?.patientId || "",
+    });
+    const result = await api(`/api/patient/clinical?${params.toString()}`);
+    clinical.clinicalState.record = result?.record || clinical.emptyRecord();
+    clinical.clinicalState.stage = result?.stage || clinical.emptyStage();
+    clinical.clinicalState.label = String(result?.label || "");
+    clinical.clinicalState.canWrite = result?.canWrite !== false;
+    clinical.clinicalState.reason = String(result?.reason || "");
+  } catch (error) {
+    // A patient folder with no manifest cannot hold a clinical record yet.
+    // That is a state, not a failure, so it is reported in the card rather
+    // than as an error over the images.
+    clinical.clinicalState.error = humanError(error);
+  } finally {
+    clinical.clinicalState.loading = false;
+    refreshClinicalCard();
+  }
+}
+
 function renderPatientRail() {
   const patient = state.archive?.patient || {};
   const editPatient = state.patientEditDraft || patientInfoDraft(patient);
@@ -2267,6 +2360,7 @@ function renderPatientRail() {
         </button>
       </div>
       ${renderInfoCard()}
+      ${clinical.renderClinicalCard()}
 
       <div class="rec-timeline-head"><b>${escapeHtml(t("Lịch sử khám"))}</b></div>
       <div class="tl">
@@ -2570,7 +2664,8 @@ export function studyMatchesWorklistFilters(study) {
 /** True when any study filter is narrowing the list. */
 export function worklistFiltersActive() {
   return Boolean(
-    (state.worklistModality || "").trim()
+    (state.worklistStage || "").trim()
+    || (state.worklistModality || "").trim()
     || (state.worklistPeriod && state.worklistPeriod !== "all")
     || (state.worklistRead && state.worklistRead !== "all"),
   );
@@ -2584,9 +2679,18 @@ function filteredPatientList() {
       .map((p) => ({ ...p, studies: (p.studies || []).filter(studyMatchesWorklistFilters) }))
       .filter((p) => p.studies.length > 0);
   }
+  const stageFilter = state.worklistStage || "";
+  if (stageFilter) {
+    patients = patients.filter((p) => {
+      const value = p.treatmentStage && typeof p.treatmentStage === "object"
+        ? p.treatmentStage.state
+        : "unknown";
+      return (value || "unknown") === stageFilter;
+    });
+  }
   if (search) {
     patients = patients.filter((p) => {
-      const pText = `${p.category || ""} ${p.patientId || ""} ${p.patientName || ""} ${p.hospital || ""} ${p.gender || ""} ${p.birthYear || ""}`.toLowerCase();
+      const pText = `${p.category || ""} ${p.patientId || ""} ${p.patientName || ""} ${p.hospital || ""} ${p.gender || ""} ${p.birthYear || ""} ${p.diagnosis || ""}`.toLowerCase();
       if (pText.includes(search)) return true;
       return (p.studies || []).some((s) => {
         const sText = `${s.studyDate || ""} ${s.studyName || ""} ${s.modality || ""} ${s.folder || ""}`.toLowerCase();
@@ -2637,6 +2741,28 @@ function patientDemographicsLine(patient) {
     patient.hospital
   ].map((value) => String(value || "").trim()).filter(Boolean);
   return parts.length ? parts.join(" · ") : "";
+}
+
+/**
+ * The diagnosis to show on a worklist row, and how far to trust it.
+ *
+ * Two places can hold one: the note a clinician typed into the record, and the
+ * note left behind in the folder name. The backend decides which of the two
+ * won and says so in `diagnosisSource`. A folder-name reading is marked as
+ * such, because a folder gets renamed for filing rather than for reading and
+ * can say something the chart no longer does.
+ */
+export function patientDiagnosisLabel(patient) {
+  const text = String(patient?.diagnosis || "").trim();
+  if (!text) return { text: "", fromFolder: false, title: "" };
+  const fromFolder = String(patient?.diagnosisSource || "") === "folder";
+  return {
+    text,
+    fromFolder,
+    title: fromFolder
+      ? tf("Chẩn đoán đọc từ tên thư mục: {}", text)
+      : tf("Chẩn đoán ghi trong hồ sơ: {}", text),
+  };
 }
 
 function patientIdentityLine(patient) {
@@ -3033,6 +3159,7 @@ function renderWorklistTreeInner() {
         const rawStudies = p.studies || [];
         const studyCount = rawStudies.length;
         const demoLine = patientDemographicsLine(p);
+        const dx = patientDiagnosisLabel(p);
         const studies = rawStudies.slice().sort((s1, s2) => {
           if (state.worklistSortColumn === "date") {
             const d1 = parseStudyDateToTime(s1.studyDate);
@@ -3058,12 +3185,23 @@ function renderWorklistTreeInner() {
                   <span class="badge-category" title="${escapeHtml(tf("Nhóm: {}", p.category))}"
                     >📁 ${escapeHtml(p.category)}</span>
                 ` : ""}
+                ${(() => {
+                  const chip = clinical.stageChip(p.treatmentStage);
+                  return chip ? `
+                    <span class="badge-stage ${escapeHtml(chip.tone)}" title="${escapeHtml(chip.title)}"
+                      >${escapeHtml(chip.text)}</span>
+                  ` : "";
+                })()}
                 ${(recordedIdentity(p.patientName) || recordedIdentity(p.patientId)) ? `
                   <button class="cell-copy-btn" type="button" data-action="copy-cell"
                     data-copy-text="${escapeHtml(recordedIdentity(p.patientName) || recordedIdentity(p.patientId))}"
                     title="${escapeHtml(t("Sao chép tên bệnh nhân"))}">${icons.copy}</button>
                 ` : ""}
               </span>
+              ${dx.text ? `
+                <small class="dx-line${dx.fromFolder ? " from-folder" : ""}"
+                  title="${escapeHtml(dx.title)}">${escapeHtml(dx.text)}</small>
+              ` : ""}
               ${demoLine ? `<small>${escapeHtml(demoLine)}</small>` : ""}
             </span>
             <span class="meta pid-col copyable-cell" title="${escapeHtml(patientId || "—")}">
@@ -3198,6 +3336,15 @@ const WORKLIST_OWNED_ACTIONS = new Set([
   "export-patient-record",
 ]);
 
+const TREATMENT_STAGE_FILTERS = [
+  ["", "Tất cả"],
+  ["active", "Đang điều trị"],
+  ["post-op", "Hậu phẫu"],
+  ["followup", "Theo dõi"],
+  ["relapse", "Tái phát"],
+  ["unknown", "Chưa ghi"],
+];
+
 /** Wire the study filter selects and the "Bỏ lọc" button inside `host`. */
 function bindWorklistFilters(host) {
   if (!host) return;
@@ -3205,6 +3352,7 @@ function bindWorklistFilters(host) {
     ["worklist-modality", "worklistModality"],
     ["worklist-period", "worklistPeriod"],
     ["worklist-read", "worklistRead"],
+    ["worklist-stage", "worklistStage"],
   ].forEach(([field, key]) => {
     host.querySelector(`[data-field='${field}']`)?.addEventListener("change", (event) => {
       state[key] = event.target.value;
@@ -3478,6 +3626,13 @@ export function renderWorklistFilters() {
         <span>${escapeHtml(t("Trạng thái đọc"))}</span>
         <select data-field="worklist-read">
           ${readStates.map((item) => option(item, state.worklistRead)).join("")}
+        </select>
+      </label>
+      <label class="worklist-filter">
+        <span>${escapeHtml(t("Giai đoạn"))}</span>
+        <select data-field="worklist-stage">
+          ${TREATMENT_STAGE_FILTERS.map((item) => option(
+            [item[0], t(item[1])], state.worklistStage)).join("")}
         </select>
       </label>
       <span class="worklist-unread-count">${escapeHtml(tf("{} ca chưa đọc", unread))}</span>
@@ -4007,6 +4162,7 @@ function render() {
     </div>
   `;
   bindEvents();
+  bindClinicalCard();
   hydrateSeriesThumbs();
   initMediaEvents();
 
@@ -6151,6 +6307,7 @@ async function action(name, element = null) {
       state.worklistModality = "";
       state.worklistPeriod = "all";
       state.worklistRead = "all";
+      state.worklistStage = "";
       refreshStudyListPanel();
       return;
     }
@@ -6348,6 +6505,88 @@ async function action(name, element = null) {
       state.archive.patient = result.patient || state.archive.patient;
       render();
       setStatus(t("Đã lưu chẩn đoán vào hồ sơ bệnh nhân."));
+      return;
+    }
+    if (name === "edit-clinical") {
+      clinical.clinicalState.draft = clinical.draftFrom(clinical.clinicalState.record);
+      clinical.clinicalState.editing = true;
+      clinical.clinicalState.error = "";
+      refreshClinicalCard();
+      return;
+    }
+    if (name === "cancel-clinical") {
+      // The draft is a copy, so dropping it really does leave the record as it
+      // was on disk — nothing typed since the last save survives this.
+      clinical.clinicalState.draft = null;
+      clinical.clinicalState.editing = false;
+      clinical.clinicalState.error = "";
+      refreshClinicalCard();
+      return;
+    }
+    if (name === "clinical-add-tumor") {
+      clinical.addTumor();
+      refreshClinicalCard();
+      return;
+    }
+    if (name === "clinical-remove-tumor") {
+      clinical.removeTumor(Number(element?.dataset?.tumorIndex));
+      refreshClinicalCard();
+      return;
+    }
+    if (name === "clinical-add-event") {
+      clinical.addEvent();
+      refreshClinicalCard();
+      return;
+    }
+    if (name === "clinical-remove-event") {
+      clinical.removeEvent(Number(element?.dataset?.eventIndex));
+      refreshClinicalCard();
+      return;
+    }
+    if (name === "clinical-add-marker") {
+      clinical.addMarker(Number(element?.dataset?.tumorIndex));
+      refreshClinicalCard();
+      return;
+    }
+    if (name === "clinical-remove-marker") {
+      clinical.removeMarker(
+        Number(element?.dataset?.tumorIndex),
+        Number(element?.dataset?.molecularIndex),
+      );
+      refreshClinicalCard();
+      return;
+    }
+    if (name === "save-clinical") {
+      clinical.clinicalState.saving = true;
+      clinical.clinicalState.error = "";
+      refreshClinicalCard();
+      try {
+        // Name the record this tab is showing. The backend refuses to write
+        // when the folder belongs to a different patient, so a diagnosis typed
+        // here cannot land in whichever archive happened to be opened last.
+        const result = await api("/api/patient/clinical", {
+          method: "POST",
+          body: JSON.stringify({
+            record: clinical.draftForSave(),
+            archiveRoot: state.archive?.root || "",
+            patientId: state.archive?.patient?.patientId || "",
+          }),
+        });
+        clinical.clinicalState.record = result?.record || clinical.emptyRecord();
+        clinical.clinicalState.stage = result?.stage || clinical.emptyStage();
+        clinical.clinicalState.label = String(result?.label || "");
+        clinical.clinicalState.draft = null;
+        clinical.clinicalState.editing = false;
+        setStatus(t("Đã lưu hồ sơ lâm sàng."));
+        // The worklist row shows the diagnosis and the stage this just
+        // changed, so it is rescanned rather than left showing the old one.
+        refreshWorklist({ silent: true });
+      } catch (error) {
+        clinical.clinicalState.error = humanError(error);
+      } finally {
+        clinical.clinicalState.saving = false;
+        refreshClinicalCard();
+      }
       return;
     }
     if (name === "edit-timeline-label") {
@@ -7496,6 +7735,7 @@ async function switchTab(tabId) {
     // them go out, or the tab reads whichever archive was opened last.
     setApiSession(targetTab.sessionId || "");
     state.archive = targetTab.archive;
+    loadClinicalRecord();
     state.selectedId = targetTab.selectedId;
     state.compareIds = [...targetTab.compareIds];
     state.mode = targetTab.mode;
@@ -7686,6 +7926,7 @@ function fillTabWithArchive(tabId, archive, sessionId = "", folder = "") {
 
   setApiSession(tab.sessionId || "");
   state.archive = catalog;
+  loadClinicalRecord();
   state.selectedId = selectedId;
   state.mode = tab.mode;
   state.tool = tab.tool;
@@ -8325,6 +8566,10 @@ async function boot() {
   state.archive = state.bootstrap.archive;
   const initialSessionId = state.bootstrap.archiveSessionId || "";
   if (initialSessionId) setApiSession(initialSessionId);
+  // After the session is pinned, never before: the request is answered from
+  // whichever catalog the session names, and an unsessioned one is answered
+  // from whichever archive was opened last.
+  loadClinicalRecord();
   state.selectedId = pickInitialSeries(state.archive.series);
   state.compareIds = [
     state.archive.series[1]?.id || state.selectedId,
@@ -8449,6 +8694,9 @@ export {
   renderTextViewer,
   renderWorkspacePane,
   renderPatientRail,
+  bindClinicalCard,
+  refreshClinicalCard,
+  loadClinicalRecord,
   isValidTimelineDateKey,
   buildMediaTimeline,
   downloadPanelVisible,

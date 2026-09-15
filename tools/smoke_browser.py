@@ -78,6 +78,10 @@ def create_synthetic_smoke_archive(root: Path) -> Path:
         clip_03.write_bytes(mp4_bytes)
 
     manifest = {
+        # Without this the reader rejects the file, and everything that reads
+        # the patient record — the diagnosis note, the clinical record — was
+        # quietly inert against a fixture that looked complete.
+        "format": "dcom-patient-index-v1",
         "patientId": "1234",
         "patientName": "NGUYEN VAN A",
         "gender": "Nam",
@@ -124,6 +128,7 @@ def create_second_smoke_patient(root: Path, source_clip: Path) -> Path:
     study.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source_clip, study / "clip_01.mp4")
     manifest = {
+        "format": "dcom-patient-index-v1",
         "patientId": "5678",
         "patientName": "TRAN THI B",
         "gender": "Nữ",
@@ -501,6 +506,57 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                 patient_tab.click()
                 page.wait_for_selector("#surgery-video-player", timeout=5000)
                 print("   Studio remounted on the patient tab.")
+
+                # 4b. The clinical record card. It repaints itself with
+                #     `outerHTML` on every structural change, which is exactly
+                #     how a listener goes missing: the button stays on screen,
+                #     the click lands, and nothing happens. Judged by what
+                #     appears after each press, never by the press itself.
+                print("4b. Filling in the clinical record...")
+                require(page, ".dx-card", "thẻ hồ sơ lâm sàng")
+                require(page, ".dx-card [data-action='edit-clinical']", "nút sửa").click()
+                require(
+                    page, ".dx-card [data-action='clinical-add-tumor']", "nút thêm khối u",
+                ).click()
+                page.wait_for_selector(
+                    ".dx-card [data-clinical-field='histology']", timeout=5000)
+                page.fill(
+                    ".dx-card [data-clinical-field='histology']",
+                    "U nguyên bào thần kinh đệm, IDH tự nhiên",
+                )
+                page.select_option(".dx-card [data-clinical-field='grade']", "4")
+                page.select_option(".dx-card [data-clinical-field='compartment']", "Nội sọ")
+                # The location list belongs to the compartment, so the card has
+                # just redrawn itself; the field below must still be wired.
+                page.wait_for_selector(
+                    ".dx-card [data-clinical-field='location']", timeout=5000)
+                page.fill(".dx-card [data-clinical-field='location']", "Thuỳ chẩm")
+
+                require(
+                    page, ".dx-card [data-action='clinical-add-event']", "nút thêm sự kiện",
+                ).click()
+                page.wait_for_selector(".dx-card [data-clinical-field='kind']", timeout=5000)
+                page.select_option(".dx-card [data-clinical-field='kind']", "Xạ")
+                # Selecting the kind swaps in the fields that kind asks about.
+                page.wait_for_selector(
+                    ".dx-card [data-clinical-field='fractions']", timeout=5000)
+                page.fill(".dx-card [data-clinical-field='start']", "2026-08-20")
+                page.fill(".dx-card [data-clinical-field='where']", "BV K Tân Triều")
+                page.fill(".dx-card [data-clinical-field='fractions']", "30")
+
+                require(page, ".dx-card [data-action='save-clinical']", "nút lưu").click()
+                page.wait_for_selector(".dx-card .dx-stage-chip", timeout=8000)
+                chip = page.inner_text(".dx-card .dx-stage-chip").strip()
+                if "Đang xạ" not in chip:
+                    raise AssertionError(
+                        f"Gate 3: chip giai đoạn phải nói đang xạ, đang là {chip!r}."
+                    )
+                heading = page.inner_text(".dx-card .dx-tumor b").strip()
+                if "độ 4" not in heading:
+                    raise AssertionError(
+                        f"Gate 3: chẩn đoán phải kèm độ WHO, đang là {heading!r}."
+                    )
+                print(f"   Saved and read back: {heading} · {chip}")
 
                 # 5. Clip switching. A click that lands on a button with no
                 #    listener is completely silent — no exception, no console

@@ -364,7 +364,19 @@ describe("Viewer tab: patient rail", () => {
     document.querySelector('input[name="patientName"]').value = "Bệnh nhân đã sửa";
 
     let resolveFetch;
-    global.fetch = vi.fn(() => new Promise((resolve) => { resolveFetch = resolve; }));
+    // Only the save is held open. Switching tabs also fetches that tab's
+    // clinical record, and a mock that deferred every call would hand the
+    // resolver below to whichever request went out last.
+    global.fetch = vi.fn((url) => {
+      if (String(url).includes("/api/patient/update")) {
+        return new Promise((resolve) => { resolveFetch = resolve; });
+      }
+      return Promise.resolve({
+        ok: true,
+        headers: { get: () => "application/json" },
+        json: async () => ({}),
+      });
+    });
     const save = action(
       "save-patient-info",
       document.querySelector('[data-action="save-patient-info"]'),
