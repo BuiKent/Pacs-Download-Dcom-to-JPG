@@ -16,6 +16,7 @@ import re
 import shutil
 from typing import Callable, Optional
 
+import clinical_record
 import dcom_pipeline
 from dicom_io import looks_like_dicom_file
 
@@ -31,6 +32,14 @@ INTERNAL_SIDECAR_NAMES = {
     ".direct-download.json",
     dcom_pipeline.STUDY_LOCK_NAME.casefold(),
     "mpr-volume.json",
+    # The clinical record is the reading doctor's own working notes —
+    # histology, WHO grade, what was resected and where the patient is being
+    # irradiated. An exported record travels home on a USB stick, and a
+    # patient opening it should find their images, not a colleague's notes
+    # about them. A flat archive with no study subfolders is walked from the
+    # patient folder itself, so without this the file is offered as a
+    # document alongside the reports.
+    clinical_record.CLINICAL_RECORD_NAME.casefold(),
 }
 UNKNOWN = "—"
 

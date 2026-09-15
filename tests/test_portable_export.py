@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import clinical_record
 import dcom_pipeline
 import portable_export
 from dicom_test_utils import write_test_dicom
@@ -203,6 +204,41 @@ class ExportTests(unittest.TestCase):
             self.assertNotIn(".dcom-busy.json", exported_names)
             for exported in (path for path in export_folder.rglob("*") if path.is_file()):
                 self.assertNotIn(secret.encode(), exported.read_bytes())
+
+    def test_the_clinical_record_stays_with_the_doctor_who_wrote_it(self):
+        """Histology, WHO grade and where the patient is being irradiated are
+        the reading doctor's own notes.
+
+        An exported record goes home on a USB stick. The patient opening it
+        should find their images, not a colleague's working notes about them.
+        A flat archive is the case that bites: with no study subfolders the
+        export walks the patient folder itself, and `clinical-index.json` sits
+        right there with a `.json` suffix that reads as a document.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            patient = root / "2607009886 - NGUYEN VAN A - 58T - 2026-09-15"
+            patient.mkdir(parents=True)
+            write_test_dicom(patient / "IM_0001.dcm")
+            clinical_record.write_record(patient, {
+                "tumors": [{
+                    "histology": "U nguyên bào thần kinh đệm, IDH tự nhiên",
+                    "grade": "4",
+                }],
+                "events": [{"kind": "Xạ", "start": "2026-08-20", "where": "BV K Tân Triều"}],
+            })
+            # The flat layout is what puts the file in the export's path.
+            self.assertEqual(portable_export._study_folders(patient), [patient])
+
+            result = portable_export.export_patient_record(
+                patient, root / "usb", mode="both",
+            )
+            export_folder = Path(result["folder"])
+
+            self.assertEqual(list(export_folder.rglob("clinical-index.json")), [])
+            for exported in (path for path in export_folder.rglob("*") if path.is_file()):
+                self.assertNotIn("U nguyên bào thần kinh đệm".encode(), exported.read_bytes())
+                self.assertNotIn("BV K Tân Triều".encode(), exported.read_bytes())
 
     def test_a_record_holding_only_documents_is_still_exported(self):
         """A report with no pictures is the whole record for some patients."""
