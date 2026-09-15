@@ -10,11 +10,74 @@ const vradPayload={data:[{PatientName:'TEST^PATIENT',PatientID:'P1',StudyDate:'2
 let summary={detector:'VRAD',requests:[{type:'VRAD_MANIFEST',url:'https://x.test/StudyData/GetStudies',score:100,method:'GET'},{type:'DICOM_IMAGE_API',url:'https://x.test/GetImage?vendor=1',score:88}]};
 let state={pacsRequests:summary.requests};let ctx={summary,state,normalizeStudy,headersForUrl,inheritQuery,fetchJson:async()=>vradPayload};
 let inv=await VradAdapter.analyze(ctx);let tasks=await VradAdapter.enumerate(inv,[inv.series[0].id],ctx);if(tasks.length!==1||tasks[0].strategy!=='fetch-dicom'||!tasks[0].url.includes('imageObjKey=abc'))throw new Error('VRAD adapter');
+
+// Test VRAD URL-based synthetic recovery
+const vradUrl='https://viewer.vnrad.vn:7198/Viewer/s#/view?id=43f434ee-fbd7-4952-ba6e-b3fdbf3b97b0';
+if(!VradAdapter.match({currentUrl:vradUrl,requests:[]}))throw new Error('VRAD URL match failed');
+let vradCallCount=0;
+const vradSynthCtx={
+  summary:{currentUrl:vradUrl,requests:[]},
+  state:{pacsRequests:[]},
+  normalizeStudy,headersForUrl,inheritQuery,
+  fetchJson:async(u)=>{
+    vradCallCount++;
+    if(u.includes('GetShareInfo'))return {data:{serverSignature:'sig123',serverAddr:'10.0.0.1:8080',expires:12345678}};
+    if(u.includes('GetStudies'))return vradPayload;
+    throw new Error('Unexpected URL: '+u);
+  }
+};
+const vradSynthInv=await VradAdapter.analyze(vradSynthCtx);
+if(vradSynthInv.studyUid!=='1.2.3'||vradSynthInv.series.length!==1)throw new Error('VRAD synthetic analyze failed');
+const vradSynthTasks=await VradAdapter.enumerate(vradSynthInv,[vradSynthInv.series[0].id],vradSynthCtx);
+if(vradSynthTasks.length!==1||!vradSynthTasks[0].url.includes('imageObjKey=abc'))throw new Error('VRAD synthetic enumerate failed');
+
 const vrp={data:{studyList:[{studyInstanceUID:'2.3.4',patientName:'TEST',patientId:'P2',studyDate:'20260813',seriesList:[{SeriesInstanceUID:'2.3.4.1',SeriesNumber:'2',SeriesDescription:'CT',Modality:'CT',imageIds:['wadouri:/study-get-public?file=a.dcm']}]}]}};
 summary={detector:'VRPACS',requests:[{type:'VRPACS_MANIFEST',url:'https://y.test/get-share-patient-image',score:100,method:'GET'}]};state={pacsRequests:summary.requests};ctx={summary,state,normalizeStudy,headersForUrl,inheritQuery,fetchJson:async()=>vrp};inv=await VrpacsAdapter.analyze(ctx);tasks=await VrpacsAdapter.enumerate(inv,[inv.series[0].id],ctx);if(tasks.length!==1||!tasks[0].url.includes('study-get-public'))throw new Error('VRPACS adapter');
 const qido='https://z.test/dicomweb/studies/3.4.5/series';const series=[{'0020000E':{vr:'UI',Value:['3.4.5.1']},'00200011':{vr:'IS',Value:['3']},'0008103E':{vr:'LO',Value:['T1']},'00080060':{vr:'CS',Value:['MR']},'00201209':{vr:'IS',Value:[1]}}];
 const inst=[{'00080018':{vr:'UI',Value:['3.4.5.1.1']},'0020000E':{vr:'UI',Value:['3.4.5.1']},'00280008':{vr:'IS',Value:[1]}}];
 summary={detector:'DICOMWEB',requests:[{type:'QIDO_SERIES',url:qido,score:110}]};state={pacsRequests:summary.requests};ctx={summary,state,normalizeStudy,headersForUrl,inheritQuery,fetchJson:async url=>url.endsWith('/series')?series:url.includes('/instances')?inst:[]};inv=await DicomwebAdapter.analyze(ctx);tasks=await DicomwebAdapter.enumerate(inv,[inv.series[0].id],ctx);if(tasks.length!==1||tasks[0].strategy!=='dicomweb-instance'||tasks[0].sopInstanceUid!=='3.4.5.1.1')throw new Error('DICOMweb adapter');
+
+// Test MedDream Structure with DICOMWEB adapter
+const meddreamStructure = {
+  study: {
+    uid: '1.2.840.113619.2.1.99',
+    patient: { name: 'HFH PATIENT', id: 'HFH123', birthDate: '19800101' },
+    date: '20260915',
+    description: 'CT BRAIN',
+    series: [
+      {
+        uid: '1.2.840.113619.2.1.99.1',
+        number: '1',
+        description: 'AXIAL 5MM',
+        modality: 'CT',
+        instances: [
+          { uid: '1.2.840.113619.2.1.99.1.1', number: '1' },
+          { uid: '1.2.840.113619.2.1.99.1.2', number: '2' }
+        ]
+      }
+    ]
+  }
+};
+const medSummary = {
+  detector: 'DICOMWEB',
+  requests: [{ type: 'MEDDREAM_STRUCTURE', url: 'https://pportal.hfh.com.vn:8085/studies/1.2.840.113619.2.1.99/structure?storageId=HFH-SCP', score: 105 }]
+};
+const medState = { pacsRequests: medSummary.requests };
+const medCtx = {
+  summary: medSummary,
+  state: medState,
+  normalizeStudy, headersForUrl, inheritQuery,
+  fetchJson: async () => meddreamStructure
+};
+const medInv = await DicomwebAdapter.analyze(medCtx);
+if (medInv.studyUid !== '1.2.840.113619.2.1.99' || medInv.patient.name !== 'HFH PATIENT' || medInv.series.length !== 1 || medInv.series[0].imageCount !== 2) {
+  throw new Error('MedDream structure analyze failed: ' + JSON.stringify(medInv));
+}
+const medTasks = await DicomwebAdapter.enumerate(medInv, [medInv.series[0].id], medCtx);
+if (medTasks.length !== 2 || medTasks[0].sopInstanceUid !== '1.2.840.113619.2.1.99.1.1') {
+  throw new Error('MedDream structure enumerate failed: ' + JSON.stringify(medTasks));
+}
+
 console.log('Adapter registry tests OK');
 
 const vietPayload={d:JSON.stringify({PatientName:'NGUYEN THI VAN',PatientID:'81T',StudyDate:'20260730',StudyInstanceUID:'1.2.840.100',Series:[{SeriesInstanceUID:'1.2.840.100.7',SeriesNumber:'7',SeriesDescription:'T2 SAG',Modality:'MR',Images:[{SOPInstanceUID:'1.2.840.100.7.1',InstanceNumber:'1',filePath:'/ws/getfile.ashx?file=a&stoken=abc',imagePath:'/ws/getimagefile.ashx?file=a&stoken=abc'},{SOPInstanceUID:'1.2.840.100.7.2',InstanceNumber:'2',filePath:'/ws/getfile.ashx?file=b&stoken=abc',imagePath:'/ws/getimagefile.ashx?file=b&stoken=abc'}]},{SeriesInstanceUID:'1.2.840.100.8',SeriesNumber:'8',SeriesDescription:'T1 SAG',Modality:'MR',Images:[{SOPInstanceUID:'1.2.840.100.8.1',InstanceNumber:'1',filePath:'/ws/getfile.ashx?file=c&stoken=abc'}]}]})};

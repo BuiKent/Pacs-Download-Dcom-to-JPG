@@ -20,6 +20,25 @@ export function originPattern(raw) {
   } catch { return null; }
 }
 
+export function originPatterns(raw) {
+  try {
+    const u = new URL(raw);
+    if (!['http:', 'https:'].includes(u.protocol)) return [];
+    const base = `${u.protocol}//${u.host}/*`;
+    const list = [base];
+    if (u.port === '7198') {
+      list.push(`${u.protocol}//${u.hostname}:7194/*`);
+    } else if (u.port === '7194') {
+      list.push(`${u.protocol}//${u.hostname}:7198/*`);
+    } else if (u.port === '8083') {
+      list.push(`${u.protocol}//${u.hostname}:8085/*`);
+    } else if (u.port === '8085') {
+      list.push(`${u.protocol}//${u.hostname}:8083/*`);
+    }
+    return list;
+  } catch { return []; }
+}
+
 export function classifyPacsUrl(raw) {
   const url = cleanUrl(raw);
   if (!url) return null;
@@ -33,9 +52,10 @@ export function classifyPacsUrl(raw) {
   if (/\/ws\/ws\.asmx\/getlistimagefileinfo$/i.test(path)) return { type:'VIETMY_MANIFEST', url, score:120 };
   if (/\/ws\/getfile\.ashx$/i.test(path)) return { type:'VIETMY_DICOM', url, score:112 };
   if (/\/ws\/getimagefile\.ashx$/i.test(path)) return { type:'RENDERED_JPEG', url, score:42 };
-  if (lower.includes('studydata/getstudies')) return { type:'VRAD_MANIFEST', url, score:100 };
+  if (lower.includes('studydata/getstudies') || lower.includes('studydata/getshareinfo')) return { type:'VRAD_MANIFEST', url, score:100 };
   if (lower.includes('get-share-patient-image')) return { type:'VRPACS_MANIFEST', url, score:100 };
   if (lower.includes('study-get-public')) return { type:'VRPACS_DICOM', url, score:96 };
+  if (/\/studies\/[^/]+\/structure(?:\/|$|\?)/i.test(url) || /\/studies\/[^/]+\/structure$/.test(path)) return { type:'MEDDREAM_STRUCTURE', url, score:108 };
   if (/\/studies\/[^/]+\/series$/.test(path)) return { type:'QIDO_SERIES', url, score:110 };
   if (/\/studies\/[^/]+\/series\/[^/]+\/instances$/.test(path)) return { type:'QIDO_INSTANCES', url, score:105 };
   if (/\/studies\/[^/]+\/series\/[^/]+\/instances\/[^/]+\/metadata$/.test(path)) return { type:'DICOM_METADATA', url, score:102 };
@@ -115,7 +135,7 @@ export function classifyViewerShell(raw) {
   if (/\/ClinicalStudio\/Procedures\/ProcedureComposite/i.test(path) || (/\/ClinicalStudio/i.test(path) && u.searchParams.has('ID'))) return { type:'MACH7_SHELL', url, score:96 };
   if (/\/ris\/vr_?viewer(?:\/|$)/i.test(path)) return { type:'RIS_VRVIEWER', url, score:82 };
   if (/\/pages\/sharestudy\.aspx$/i.test(path) && (u.searchParams.has('stoken') || u.searchParams.has('token') || Boolean(unnamedToken(u.searchParams)))) return { type:'SHARE_STUDY', url, score:92 };
-  if (path.includes('/viewer/s') && /(?:^#|\/)view\?id=/.test(hash)) return { type:'VRAD_SHELL', url, score:78 };
+  if (/(?:^#|\/)view\?id=/i.test(hash) || (path.includes('/viewer/s') && /(?:^#|\/)view\?id=/.test(hash)) || (/(?:^#|\/)view/i.test(hash) && (u.searchParams.has('id') || u.searchParams.has('shareId')))) return { type:'VRAD_SHELL', url, score:88 };
   if (path.includes('/viewer') && u.searchParams.has('studies')) return { type:'DICOMWEB_VIEWER', url, score:88 };
   const tokenKeys=['token','stoken','access_token','access-token','jwt','share','session'];
   const hasBootstrapToken=tokenKeys.some(k=>u.searchParams.has(k)) || Boolean(unnamedToken(u.searchParams));
@@ -265,6 +285,23 @@ export function deriveDicomweb(rawUrl) {
     }
   }
   return null;
+}
+
+export function extractVradShareId(urlOrSummary) {
+  const raw = typeof urlOrSummary === 'string' ? urlOrSummary : (urlOrSummary?.currentUrl || urlOrSummary?.bestViewerUrl || '');
+  if (!raw) return '';
+  try {
+    const u = new URL(raw);
+    const hash = u.hash || '';
+    const hashMatch = hash.match(/[?&]id=([0-9a-fA-F-]{32,36})/);
+    if (hashMatch) return hashMatch[1];
+    if (u.searchParams.has('shareId')) return u.searchParams.get('shareId');
+    if (u.searchParams.has('id')) {
+      const id = u.searchParams.get('id');
+      if (/^[0-9a-fA-F-]{32,36}$/.test(id)) return id;
+    }
+  } catch {}
+  return '';
 }
 
 export function bestDetectedRequest(requests, types) {
@@ -939,7 +976,8 @@ export async function fetchQidoPaged(fetchJson, url, {
   const out = [], seen = new Set();
   for (let page = 0, offset = 0; page < maxPages; page++) {
     const batch = await fetchJson(withQueryParams(url, { limit: pageSize, offset }), accept);
-    const rows = Array.isArray(batch) ? batch : (batch && typeof batch === 'object' ? [batch] : []);
+    const isDcmObj = batch && typeof batch === 'object' && Boolean(batch['00080018'] || batch['0020000E'] || batch['0020000D'] || batch['00100010']);
+    const rows = Array.isArray(batch) ? batch : (isDcmObj ? [batch] : []);
     if (!rows.length) break;
     let added = 0;
     for (const row of rows) {

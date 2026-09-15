@@ -1,3 +1,26 @@
+# 7.2.4
+
+Declare `host_permissions` in manifest to allow `webRequest` API event interception without Chrome configuration error.
+
+- Declare `host_permissions: ["http://*/*", "https://*/*"]` directly in `manifest.json`.
+  Previously, using only `optional_host_permissions` caused Chrome Manifest V3 to raise
+  "You need to request host permissions in the manifest file in order to be notified about
+  requests from the webRequest API" upon startup and prevented webRequest listeners from
+  capturing PACS DICOM network requests.
+
+# 7.2.3
+
+Fixes critical syntax error in offscreen background worker and adds autonomous recovery for VradViewer and MedDream.
+
+- Fix fatal ES module syntax error in `offscreen.js`: an extraneous closing brace
+  prematurely closed `readStudyClaims`, placing `return claims;` at module root and
+  breaking offscreen initialization in Chrome.
+- Add VradViewer autonomous recovery: synthesize study manifests directly via port
+  7194 (`GetShareInfo` -> `GetStudies` -> `GetDicomSeriesInfo`) without requiring
+  pre-sniffed network requests.
+- Add MedDream Viewer structure support in `DicomwebAdapter` for `/studies/<uid>/structure`.
+- Fix Chrome download shelf flickering during concurrent multi-tab downloads.
+
 # 7.2.2
 
 The study claim becomes a real lock, and the state that survives a worker

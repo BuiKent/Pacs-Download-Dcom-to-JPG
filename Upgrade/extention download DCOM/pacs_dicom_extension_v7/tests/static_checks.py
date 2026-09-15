@@ -4,8 +4,7 @@ root=Path(__file__).parents[1]
 m=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
 assert m['version'].startswith('7.')
 assert 'debugger' not in m.get('permissions',[])
-assert not m.get('host_permissions')
-assert m.get('optional_host_permissions')==['http://*/*','https://*/*']
+assert m.get('host_permissions')==['http://*/*','https://*/*']
 assert (root/'generic-hook.js').exists() and (root/'lib/generic_discovery.js').exists()
 bg=(root/'background.js').read_text(encoding='utf-8')
 off=(root/'offscreen.js').read_text(encoding='utf-8')
@@ -162,4 +161,14 @@ for js_path in sorted(root.glob('*.js')) + sorted((root / 'lib').rglob('*.js')):
 # images deliberately do not go there, so pointing the reader at it is a lie.
 assert 'showDefaultFolder' not in bg + side
 
+import subprocess
+res = subprocess.run(
+    ['node', '-e', "import('node:fs').then(async fs=>{const path=await import('node:path'),dir='.';let errs=0;async function walk(d){for(const f of fs.readdirSync(d)){const p=path.join(d,f);if(fs.statSync(p).isDirectory()){if(f!=='node_modules'&&!f.startsWith('.'))await walk(p);}else if(p.endsWith('.js')||p.endsWith('.mjs')){try{await import('file:///'+path.resolve(p).replace(/\\\\/g,'/'));}catch(e){if(e.name==='SyntaxError'){errs++;console.error('SYNTAX ERROR in',p,':',e.message);}}}}}await walk(dir);if(errs>0)process.exit(1);});"],
+    cwd=str(root),
+    capture_output=True,
+    text=True
+)
+assert res.returncode == 0, f'Extension has JavaScript syntax errors:\n{res.stderr or res.stdout}'
+
 print('Static architecture checks OK')
+

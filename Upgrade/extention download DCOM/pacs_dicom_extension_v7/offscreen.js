@@ -293,7 +293,6 @@ async function readStudyClaims(job) {
       } catch { /* a missing or partial contender cannot own the folder */ }
     }
   } catch { /* unavailable folder */ }
-  }
   return claims;
 }
 
