@@ -18,6 +18,7 @@ import {
   state,
   bindEvents,
   bindClinicalCard,
+  refreshTimelinePhases,
   renderPatientRail,
   renderWorklistTreeInner,
   filteredPatientList,
@@ -26,6 +27,10 @@ import {
   clinicalState,
   resetClinicalState,
   stageChip,
+  studyPhase,
+  phaseChip,
+  intervalLabel,
+  dateKeyToIso,
   eventPeriod,
   eventDetail,
   tumorHeading,
@@ -422,6 +427,155 @@ describe("Treatment stage on the worklist", () => {
   it("shows every stage when the filter is cleared", () => {
     state.worklistStage = "";
     expect(filteredPatientList()).toHaveLength(3);
+  });
+});
+
+describe("Where a study sits in the treatment around it", () => {
+  beforeEach(() => setLanguage("vi"));
+
+  const SURGERY = { kind: "Mổ", start: "2026-07-10", end: "2026-07-10" };
+  const RT_CLOSED = { kind: "Xạ", start: "2026-08-01", end: "2026-09-10", expectedEnd: "" };
+  const RT_OPEN = { kind: "Xạ", start: "2026-08-01", end: "", expectedEnd: "2026-09-12" };
+  const TODAY = { today: "2026-12-01" };
+
+  it("says nothing when there is nothing to measure against", () => {
+    // An interval from no known event is not an interval.
+    expect(studyPhase([], "2026-08-01", TODAY)).toBeNull();
+    expect(studyPhase([SURGERY], "", TODAY)).toBeNull();
+    expect(studyPhase([SURGERY], "khong-ro", TODAY)).toBeNull();
+  });
+
+  it("places a study before everything that was done", () => {
+    const phase = studyPhase([SURGERY, RT_CLOSED], "2026-07-01", TODAY);
+    expect(phase.phase).toBe("before");
+    expect(phase.kind).toBe("Mổ");
+    expect(phaseChip(phase).text).toBe("Trước mổ");
+  });
+
+  it("places a study inside a course that was still running", () => {
+    const phase = studyPhase([SURGERY, RT_CLOSED], "2026-08-20", TODAY);
+    expect(phase.phase).toBe("during");
+    expect(phase.kind).toBe("Xạ");
+    expect(phaseChip(phase).text).toBe("Trong đợt xạ");
+    expect(phaseChip(phase).tone).toBe("during");
+  });
+
+  it("measures from the most recent thing that had finished", () => {
+    const phase = studyPhase([SURGERY], "2026-07-22", TODAY);
+    expect(phase.phase).toBe("after");
+    expect(phase.kind).toBe("Mổ");
+    expect(phase.days).toBe(12);
+    expect(phaseChip(phase).text).toBe("Sau mổ 12 ngày");
+  });
+
+  it("flags a scan inside the twelve weeks after radiotherapy", () => {
+    // Not a reading of the scan — a statement of where it sits in time, so an
+    // enlarging enhancement is weighed against treatment effect first.
+    const phase = studyPhase([SURGERY, RT_CLOSED], "2026-10-15", TODAY);
+    expect(phase.pseudoprogression).toBe(true);
+    const chip = phaseChip(phase);
+    expect(chip.tone).toBe("pseudo");
+    expect(chip.text).toBe("Sau xạ 5 tuần");
+    expect(chip.title).toContain("giả tiến triển");
+  });
+
+  it("stops flagging once the window has passed", () => {
+    const phase = studyPhase([SURGERY, RT_CLOSED], "2027-02-01", TODAY);
+    expect(phase.pseudoprogression).toBe(false);
+    expect(phaseChip(phase).tone).toBe("after");
+  });
+
+  it("never flags a scan after an operation alone", () => {
+    expect(studyPhase([SURGERY], "2026-07-22", TODAY).pseudoprogression).toBe(false);
+  });
+
+  it("marks an interval counted from an end date nobody confirmed", () => {
+    // The course is still open; its end was worked out from the fraction
+    // count. A reader is entitled to know which of the two they are reading.
+    const phase = studyPhase([RT_OPEN], "2026-10-15", TODAY);
+    expect(phase.phase).toBe("after");
+    expect(phase.estimated).toBe(true);
+    expect(phaseChip(phase).title).toContain("ước tính");
+  });
+
+  it("reads an interval in the unit a person would say it in", () => {
+    expect(intervalLabel(0)).toBe("cùng ngày");
+    expect(intervalLabel(9)).toBe("9 ngày");
+    expect(intervalLabel(35)).toBe("5 tuần");
+    expect(intervalLabel(180)).toBe("6 tháng");
+    expect(intervalLabel(-1)).toBe("");
+  });
+
+  it("converts the key the timeline uses into the one the record uses", () => {
+    expect(dateKeyToIso("20260806")).toBe("2026-08-06");
+    expect(dateKeyToIso("")).toBe("");
+    expect(dateKeyToIso("2026-08-06")).toBe("");
+  });
+});
+
+describe("The phase on a timeline row", () => {
+  beforeEach(() => {
+    setLanguage("vi");
+    state.activeTabId = "tab-1";
+    state.editingPatientInfo = false;
+    state.patientEditDraft = null;
+    state.tabs = [];
+    state.worklistPatients = [];
+    state.selectedId = "s1";
+    state.archive = {
+      root: "D:/Kho/2607009886",
+      patient: { patientId: "2607009886" },
+      series: [
+        { id: "s1", timelineKey: "mr-pre", studyDate: "20260701", mediaType: "dicom",
+          modality: "MR", studyDescription: "MR sọ não trước mổ", sliceCount: 100 },
+        { id: "s2", timelineKey: "mr-post", studyDate: "20261015", mediaType: "dicom",
+          modality: "MR", studyDescription: "MR sọ não theo dõi", sliceCount: 100 },
+      ],
+    };
+    resetClinicalState();
+    clinicalState.vocabulary = VOCABULARY;
+    clinicalState.loadedFor = "D:/Kho/2607009886::2607009886";
+  });
+
+  it("fills the chip on each row once the record is in hand", () => {
+    clinicalState.record = {
+      tumors: [],
+      events: [
+        { id: "e1", kind: "Xạ", start: "2026-08-01", end: "2026-09-10", expectedEnd: "" },
+        { id: "e2", kind: "Mổ", start: "2026-07-10", end: "2026-07-10" },
+      ],
+    };
+    mountRail();
+    refreshTimelinePhases();
+
+    const chips = [...document.querySelectorAll(".tl-phase")]
+      .filter((node) => !node.hidden)
+      .map((node) => node.textContent.trim());
+    expect(chips).toContain("Trước mổ");
+    expect(chips).toContain("Sau xạ 5 tuần");
+    expect(document.querySelector(".tl-phase.pseudo")).not.toBeNull();
+  });
+
+  it("leaves every chip hidden while nothing has been recorded", () => {
+    mountRail();
+    refreshTimelinePhases();
+
+    const shown = [...document.querySelectorAll(".tl-phase")].filter((node) => !node.hidden);
+    expect(shown).toHaveLength(0);
+  });
+
+  it("leaves the button that opens the study working", () => {
+    // The chip is filled in place for this reason: rewriting the row would
+    // take the open button and the rename field with it.
+    clinicalState.record = {
+      tumors: [],
+      events: [{ id: "e1", kind: "Mổ", start: "2026-07-10", end: "2026-07-10" }],
+    };
+    mountRail();
+    refreshTimelinePhases();
+
+    expect(document.querySelectorAll(".tl-item .tl-open[data-series-id]").length).toBe(2);
+    expect(document.querySelectorAll(".tl-item .tl-name-input").length).toBe(2);
   });
 });
 

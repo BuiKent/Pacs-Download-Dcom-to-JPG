@@ -279,6 +279,41 @@ class StorageTests(unittest.TestCase):
             self.assertIsNone(clinical_record.read_record(folder))
 
 
+class DerivedForTheInterfaceTests(unittest.TestCase):
+    """`with_derived` hands the web UI what it would otherwise recompute.
+
+    The interface needs to know when an open course was due to finish, to say
+    how long after radiotherapy a scan was taken. Working it out here keeps one
+    implementation of the arithmetic instead of a second copy in JavaScript,
+    and computing it on the way out rather than storing it means a corrected
+    fraction count corrects the expected end with it.
+    """
+
+    def test_a_radiotherapy_course_carries_the_end_its_fractions_imply(self):
+        record = _record(events=[{"kind": "Xạ", "start": "2026-08-20", "fractions": 30}])
+        served = clinical_record.with_derived(record)
+        self.assertEqual(served["events"][0]["expectedEnd"], "2026-10-01")
+
+    def test_a_course_that_did_not_say_its_length_claims_no_end(self):
+        record = _record(events=[
+            {"kind": "Xạ", "start": "2026-08-20"},
+            {"kind": "Hoá", "start": "2026-08-20", "cycles": 6},
+        ])
+        served = clinical_record.with_derived(record)
+        self.assertEqual({e["expectedEnd"] for e in served["events"]}, {""})
+
+    def test_nothing_is_written_back_to_disk(self):
+        with TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            clinical_record.write_record(folder, {
+                "events": [{"kind": "Xạ", "start": "2026-08-20", "fractions": 30}],
+            })
+            clinical_record.with_derived(clinical_record.read_record(folder))
+            saved = json.loads(
+                clinical_record.record_path(folder).read_text(encoding="utf-8"))
+            self.assertNotIn("expectedEnd", saved["events"][0])
+
+
 class WorklistIntegrationTests(unittest.TestCase):
     """What the scan hands to a worklist row."""
 

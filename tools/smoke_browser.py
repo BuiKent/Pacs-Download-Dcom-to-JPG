@@ -558,6 +558,27 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                     )
                 print(f"   Saved and read back: {heading} · {chip}")
 
+                # The timeline rows say where each study sits in that
+                # treatment. The chip is filled in place rather than by
+                # rewriting the row, so this is where a broken fill shows up:
+                # the rows are dated inside the radiotherapy course just saved.
+                page.wait_for_selector(".tl-item .tl-phase:not([hidden])", timeout=5000)
+                phases = [
+                    node.inner_text().strip()
+                    for node in page.query_selector_all(".tl-item .tl-phase")
+                    if node.is_visible()
+                ]
+                if not any("xạ" in text.lower() for text in phases):
+                    raise AssertionError(
+                        f"Gate 3: mốc trên timeline phải nói vị trí so với đợt xạ, đang là {phases}."
+                    )
+                # And the row still opens the study it belongs to.
+                if not page.query_selector(".tl-item .tl-open[data-series-id]"):
+                    raise AssertionError(
+                        "Gate 3: điền chip đã làm mất nút mở ca chụp trên timeline."
+                    )
+                print(f"   Timeline rows placed against treatment: {phases}")
+
                 # 5. Clip switching. A click that lands on a button with no
                 #    listener is completely silent — no exception, no console
                 #    error — so the swap is judged by what changed on screen,

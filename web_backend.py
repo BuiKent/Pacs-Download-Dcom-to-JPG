@@ -5433,7 +5433,7 @@ class WebController:
             }
         record = clinical_record.read_record(folder) or clinical_record.empty_record(recorded_id)
         return {
-            "record": record,
+            "record": clinical_record.with_derived(record),
             "stage": clinical_record.treatment_stage(record),
             "label": clinical_record.diagnosis_label(record),
             # The free-text layer stays where it has always lived, on the
@@ -5465,7 +5465,7 @@ class WebController:
         payload["patientId"] = recorded_id or str(payload.get("patientId") or "")
         saved = clinical_record.write_record(folder, payload)
         return {
-            "record": saved,
+            "record": clinical_record.with_derived(saved),
             "stage": clinical_record.treatment_stage(saved),
             "label": clinical_record.diagnosis_label(saved),
             "note": str(manifest.get("diagnosis") or "").strip(),

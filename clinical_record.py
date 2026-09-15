@@ -456,6 +456,25 @@ def _expected_end(event: dict) -> str:
     return (begins + datetime.timedelta(weeks=weeks)).isoformat()
 
 
+def with_derived(record: Optional[dict]) -> dict:
+    """The record as the interface reads it, with each event's expected end.
+
+    Only radiotherapy can state its own length precisely enough for this, in
+    fractions, and the value is worked out here rather than saved: a stored
+    expected end would go on being right about a fraction count that has since
+    been corrected. It is computed on the way out so the web UI does not have
+    to carry a second copy of the arithmetic.
+    """
+    if not record:
+        return empty_record()
+    events = []
+    for event in record.get("events") or []:
+        if not isinstance(event, dict):
+            continue
+        events.append({**event, "expectedEnd": _expected_end(event)})
+    return {**record, "events": events}
+
+
 def treatment_stage(record: Optional[dict], today: Optional[datetime.date] = None) -> dict:
     """Where the patient is right now, worked out from the events.
 

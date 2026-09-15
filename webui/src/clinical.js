@@ -189,6 +189,188 @@ export function tumorHeading(tumor) {
 }
 
 // ---------------------------------------------------------------------------
+// Where one study sits in the treatment it belongs to
+// ---------------------------------------------------------------------------
+
+// Read as whole phrases rather than assembled from a preposition and a kind,
+// so each one can be translated as the phrase a clinician actually says.
+const PHASE_BEFORE = {
+  "Mổ": "Trước mổ",
+  "Xạ": "Trước xạ",
+  "Hoá": "Trước hoá",
+  "Đích/Miễn dịch": "Trước điều trị đích",
+};
+const PHASE_DURING = {
+  "Xạ": "Trong đợt xạ",
+  "Hoá": "Trong đợt hoá",
+  "Đích/Miễn dịch": "Trong đợt điều trị đích",
+};
+const PHASE_AFTER = {
+  "Mổ": "Sau mổ",
+  "Xạ": "Sau xạ",
+  "Hoá": "Sau hoá",
+  "Đích/Miễn dịch": "Sau điều trị đích",
+  "Tái phát/Tiến triển": "Sau khi ghi tái phát",
+  "Biến chứng": "Sau biến chứng",
+  "Theo dõi": "Sau lần khám",
+};
+
+/**
+ * How long after radiotherapy an enlarging enhancement may still be treatment
+ * effect rather than tumour.
+ *
+ * Twelve weeks is the window the response criteria draw around the end of
+ * chemoradiation. The flag is a reminder of where the scan sits in time — it
+ * is not a reading of the scan, and the card says so.
+ */
+export const PSEUDOPROGRESSION_WINDOW_DAYS = 84;
+
+/** `YYYYMMDD` as the timeline keys it, to `YYYY-MM-DD` as the record dates it. */
+export function dateKeyToIso(dateKey) {
+  const text = String(dateKey || "").trim();
+  if (!/^\d{8}$/.test(text)) return "";
+  return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+}
+
+function daysBetween(fromIso, toIso) {
+  const from = Date.parse(`${fromIso}T00:00:00Z`);
+  const to = Date.parse(`${toIso}T00:00:00Z`);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
+  return Math.round((to - from) / 86400000);
+}
+
+/**
+ * When a course stopped, as far as the record can say.
+ *
+ * A closed course gives its end date. An open one gives the end its own
+ * fraction count implies, and `estimated` marks that difference: a scan dated
+ * "five weeks after radiotherapy" reads very differently when the five weeks
+ * were counted from a date nobody confirmed.
+ */
+function courseEnd(event) {
+  if (event.end) return { date: event.end, estimated: false };
+  if (event.expectedEnd) return { date: event.expectedEnd, estimated: true };
+  return { date: "", estimated: false };
+}
+
+/**
+ * Where a study sits among the things done to the patient.
+ *
+ * Worked out from the dates every time, never stored on the study. A scan
+ * tagged "sau mổ" by hand stays tagged that way after a second operation, and
+ * a reader who trusts the tag is reading the wrong interval.
+ *
+ * Returns null when nothing has been recorded to measure against, because an
+ * interval from no known event is not an interval.
+ */
+export function studyPhase(events, studyDateIso, { today = "" } = {}) {
+  const date = String(studyDateIso || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const list = (Array.isArray(events) ? events : []).filter(
+    (event) => event && typeof event === "object" && event.start,
+  );
+  if (!list.length) return null;
+
+  // A course the study fell inside. Still-open courses count: the record says
+  // they had not stopped by today, and the study is not in the future.
+  const now = today || new Date().toISOString().slice(0, 10);
+  const inside = list.find((event) => {
+    if (!PHASE_DURING[event.kind]) return false;
+    if (event.start > date) return false;
+    const finished = event.end || (event.expectedEnd && event.expectedEnd < now ? event.expectedEnd : "");
+    return !finished || finished >= date;
+  });
+  if (inside) {
+    return {
+      phase: "during",
+      kind: inside.kind,
+      anchorDate: inside.start,
+      days: daysBetween(inside.start, date),
+      estimated: false,
+      pseudoprogression: false,
+    };
+  }
+
+  // Otherwise the most recent thing that had finished by then.
+  let latest = null;
+  for (const event of list) {
+    const { date: ended, estimated } = courseEnd(event);
+    const when = ended || event.start;
+    if (when > date) continue;
+    if (!latest || when > latest.when) latest = { event, when, estimated };
+  }
+  if (latest) {
+    const days = daysBetween(latest.when, date);
+    return {
+      phase: "after",
+      kind: latest.event.kind,
+      anchorDate: latest.when,
+      days,
+      estimated: latest.estimated,
+      // Only after radiotherapy, and only for the window the response criteria
+      // draw. Everything else is an interval, stated plainly.
+      pseudoprogression: latest.event.kind === "Xạ"
+        && days !== null
+        && days >= 0
+        && days <= PSEUDOPROGRESSION_WINDOW_DAYS,
+    };
+  }
+
+  // Nothing had happened yet: the study is earlier than every recorded event.
+  const earliest = list.reduce((a, b) => (a.start <= b.start ? a : b));
+  return {
+    phase: "before",
+    kind: earliest.kind,
+    anchorDate: earliest.start,
+    days: daysBetween(date, earliest.start),
+    estimated: false,
+    pseudoprogression: false,
+  };
+}
+
+/** An interval in the unit a person would say it in. */
+export function intervalLabel(days) {
+  const value = Number(days);
+  if (!Number.isFinite(value) || value < 0) return "";
+  if (value === 0) return t("cùng ngày");
+  if (value < 14) return tf("{} ngày", value);
+  if (value < 70) return tf("{} tuần", Math.round(value / 7));
+  return tf("{} tháng", Math.round(value / 30));
+}
+
+/** The chip a timeline row carries, or nothing when there is nothing to say. */
+export function phaseChip(phase) {
+  if (!phase || typeof phase !== "object") return null;
+  const interval = intervalLabel(phase.days);
+  let text = "";
+  let tone = "";
+
+  if (phase.phase === "during") {
+    text = t(PHASE_DURING[phase.kind] || phase.kind);
+    tone = "during";
+  } else if (phase.phase === "before") {
+    text = t(PHASE_BEFORE[phase.kind] || phase.kind);
+    tone = "before";
+  } else {
+    const head = t(PHASE_AFTER[phase.kind] || phase.kind);
+    text = interval ? `${head} ${interval}` : head;
+    tone = "after";
+  }
+
+  const notes = [];
+  if (phase.estimated) {
+    // The interval was measured from a date the record worked out rather than
+    // one anybody confirmed, and a reader is entitled to know which.
+    notes.push(t("Ngày kết thúc là ước tính từ số buổi xạ, chưa ai xác nhận."));
+  }
+  if (phase.pseudoprogression) {
+    tone = "pseudo";
+    notes.push(t("Nằm trong 12 tuần sau xạ — cân nhắc giả tiến triển trước khi kết luận tiến triển."));
+  }
+  return { text, tone, title: [text, ...notes].join(" · "), estimated: Boolean(phase.estimated) };
+}
+
+// ---------------------------------------------------------------------------
 // Drafting
 // ---------------------------------------------------------------------------
 

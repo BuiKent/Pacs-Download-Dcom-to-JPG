@@ -2160,6 +2160,7 @@ function refreshClinicalCard() {
   if (!host) return;
   host.outerHTML = clinical.renderClinicalCard();
   bindClinicalCard();
+  refreshTimelinePhases();
 }
 
 /**
@@ -2197,6 +2198,31 @@ function bindClinicalCard() {
   // WeakSet inside `bindActionsIn` makes calling it over these nodes again
   // harmless, and the nodes an `outerHTML` swap replaced are genuinely new.
   bindActionsIn(card);
+}
+
+/**
+ * Say where each study sits in the treatment recorded for this patient.
+ *
+ * Worked out from the dates every time the record changes, never written onto
+ * the study: a scan tagged "sau mổ" by hand keeps that tag through a second
+ * operation, and the reader who trusts it reads the wrong interval.
+ *
+ * Only the chip is touched. The row around it owns the button that opens the
+ * study and the field that renames it, and rewriting the row would take both
+ * listeners with it.
+ */
+function refreshTimelinePhases() {
+  const events = clinical.clinicalState.record?.events;
+  app.querySelectorAll(".tl-phase").forEach((slot) => {
+    const chip = clinical.phaseChip(
+      clinical.studyPhase(events, clinical.dateKeyToIso(slot.dataset.dateKey)),
+    );
+    slot.className = chip ? `tl-phase ${chip.tone}` : "tl-phase";
+    slot.textContent = chip ? chip.text : "";
+    if (chip) slot.setAttribute("title", chip.title);
+    else slot.removeAttribute("title");
+    slot.hidden = !chip;
+  });
 }
 
 /** The archive the clinical record on screen belongs to. */
@@ -2384,6 +2410,7 @@ function renderPatientRail() {
                     </div>
                     <div class="tl-card-body">
                       <span class="nm">${escapeHtml(row.title !== row.defaultTitle ? row.title : (row.examName || row.title))}</span>
+                      <span class="tl-phase" data-date-key="${escapeHtml(row.dateKey || "")}" hidden></span>
                     </div>
                   </button>
                   <input class="tl-name-input" value="${escapeHtml(row.title)}"
@@ -4163,6 +4190,7 @@ function render() {
   `;
   bindEvents();
   bindClinicalCard();
+  refreshTimelinePhases();
   hydrateSeriesThumbs();
   initMediaEvents();
 
@@ -8695,6 +8723,7 @@ export {
   renderWorkspacePane,
   renderPatientRail,
   bindClinicalCard,
+  refreshTimelinePhases,
   refreshClinicalCard,
   loadClinicalRecord,
   isValidTimelineDateKey,

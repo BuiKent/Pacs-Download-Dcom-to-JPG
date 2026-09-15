@@ -5807,3 +5807,23 @@ button.stt-cell.twist-btn:focus-visible {
   color: #f3a09c;
   font-size: 11px;
 }
+
+/* Where a study sits in the treatment around it, on its timeline row. */
+.tl-phase {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  background: #18222b;
+  color: #aebecb;
+}
+
+.tl-phase.during { background: #0e2a27; color: #7fe3d2; }
+.tl-phase.before { background: #1b242b; color: #aebecb; }
+
+/* The one that is a warning rather than a fact: a scan inside the window where
+   an enlarging enhancement may still be treatment effect. */
+.tl-phase.pseudo { background: #2e2413; color: #f0c47a; }
