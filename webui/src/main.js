@@ -275,6 +275,12 @@ const state = {
   exportModalFolder: "",
   exportModalOptions: null,
   exportModalPatientName: "",
+  showLogModal: false,
+  logModalContent: "",
+  logModalLoading: false,
+  logModalFilename: "",
+  logModalFolder: "",
+  logModalFileList: [],
 };
 let viewerQueue = Promise.resolve();
 let viewerRequestId = 0;
@@ -3997,6 +4003,7 @@ function render() {
       ${renderFileInfoModal()}
       ${renderConcatModal()}
       ${renderExportModal()}
+      ${renderLogModal()}
     </div>
   `;
   bindEvents();
@@ -4419,6 +4426,80 @@ function renderExportModal() {
   `;
 }
 
+function renderLogModal() {
+  if (!state.showLogModal) return "";
+  return `
+    <div class="file-info-overlay log-modal-overlay">
+      <div class="file-info-dialog log-modal-dialog">
+        <header class="file-info-header">
+          <div class="file-info-title-wrap">
+            <h3 class="file-info-title log-modal-title">${escapeHtml(t("Nhật ký phiên làm việc"))}</h3>
+            ${state.logModalFileList && state.logModalFileList.length > 1 ? `
+              <select class="log-file-select" data-field="log-file-select" aria-label="${escapeHtml(t("Chọn file nhật ký"))}">
+                ${state.logModalFileList.map((f) => `
+                  <option value="${escapeHtml(f)}" ${f === state.logModalFilename ? "selected" : ""}>
+                    ${escapeHtml(f)}${f === state.logModalFileList[0] ? " (" + escapeHtml(t("Hiện tại")) + ")" : ""}
+                  </option>
+                `).join("")}
+              </select>
+            ` : (state.logModalFilename ? `<span class="file-info-subtitle">${escapeHtml(state.logModalFilename)}</span>` : "")}
+          </div>
+          <div class="log-modal-header-actions">
+            <button type="button" class="soft-button" data-action="reveal-logs-folder">
+              ${escapeHtml(t("Thư mục"))}
+            </button>
+            <button type="button" class="soft-button" data-action="copy-modal-logs">
+              ${escapeHtml(t("Sao chép"))}
+            </button>
+            <button type="button" class="file-info-close-btn" data-action="close-log-modal">✕</button>
+          </div>
+        </header>
+        <div class="file-info-body log-modal-body">
+          <pre class="modal-log-pre ${state.logModalLoading ? "loading" : ""}">${escapeHtml(state.logModalContent || (state.logModalLoading ? t("Đang tải nhật ký...") : t("Chưa có nhật ký phát sinh.")))}</pre>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function handleLogFileSelectChange(event) {
+  const select = event.target;
+  const filename = select?.value;
+  if (!filename) return;
+  const modal = select.closest(".log-modal-dialog") || document.querySelector(".log-modal-dialog") || app;
+  const pre = modal?.querySelector(".modal-log-pre");
+  if (pre) pre.classList.add("loading");
+  try {
+    const res = await api(`/api/logs/content?file=${encodeURIComponent(filename)}`);
+    state.logModalContent = res?.content || "";
+    state.logModalFilename = res?.filename || filename;
+    state.logModalFolder = res?.folder || "";
+    if (res?.fileList) state.logModalFileList = res.fileList;
+    if (pre) {
+      pre.textContent = state.logModalContent || t("Chưa có nhật ký phát sinh.");
+      pre.scrollTop = pre.scrollHeight;
+    }
+  } catch (err) {
+    const errMsg = t("Không thể đọc nhật ký: ") + (err?.message || "");
+    state.logModalContent = errMsg;
+    if (pre) pre.textContent = errMsg;
+  } finally {
+    if (pre) pre.classList.remove("loading");
+  }
+}
+
+function wireLogModal(modalEl) {
+  if (!modalEl) return;
+  modalEl.addEventListener("click", (event) => {
+    if (event.target === modalEl) {
+      state.showLogModal = false;
+      modalEl.remove();
+    }
+  });
+  modalEl.querySelector("[data-field='log-file-select']")?.addEventListener("change", handleLogFileSelectChange);
+}
+
+
 
 function showCopyToast(message = t("Đã sao chép vào clipboard!")) {
   const existing = document.querySelector(".copy-toast");
@@ -4810,6 +4891,9 @@ function bindEvents() {
       render();
     }
   });
+
+  const logOverlay = app.querySelector(".log-modal-overlay");
+  wireLogModal(logOverlay);
   app.querySelector("[data-field='concat-resolution']")?.addEventListener("change", (event) => {
     state.concatTargetHeight = Number(event.target.value) || 1080;
   });
@@ -5944,16 +6028,68 @@ async function action(name, element = null) {
       return;
     }
     if (name === "open-logs") {
+      state.logModalLoading = true;
       try {
-        let res;
-        if (window.pywebview?.api?.reveal_logs) {
-          res = await window.pywebview.api.reveal_logs();
-        } else {
-          res = await api("/api/logs/reveal", { method: "POST" });
-        }
-        setStatus(tf("Đã mở thư mục nhật ký: {}", res?.folder || "logs"));
+        const res = await api("/api/logs/content");
+        state.logModalContent = res?.content || "";
+        state.logModalFilename = res?.filename || "";
+        state.logModalFolder = res?.folder || "";
+        state.logModalFileList = res?.fileList || [];
       } catch (err) {
-        setStatus(t("Không thể mở thư mục nhật ký: ") + (err?.message || ""), true);
+        state.logModalContent = t("Không thể đọc nhật ký: ") + (err?.message || "");
+      } finally {
+        state.logModalLoading = false;
+      }
+      state.showLogModal = true;
+
+      const existing = (app || document).querySelector(".log-modal-overlay");
+      if (existing) existing.remove();
+
+      const appEl = syncAppRoot() ? app : document.querySelector("#app");
+      if (appEl && appEl.children.length > 0) {
+        const temp = document.createElement("div");
+        temp.innerHTML = renderLogModal();
+        const modalEl = temp.firstElementChild;
+        if (modalEl) {
+          appEl.appendChild(modalEl);
+          bindActionsIn(modalEl);
+          wireLogModal(modalEl);
+          const pre = modalEl.querySelector(".modal-log-pre");
+          if (pre) pre.scrollTop = pre.scrollHeight;
+          return;
+        }
+      }
+      render();
+      const pre = (app || document).querySelector(".modal-log-pre");
+      if (pre) pre.scrollTop = pre.scrollHeight;
+      return;
+    }
+    if (name === "close-log-modal") {
+      state.showLogModal = false;
+      const overlay = (app || document).querySelector(".log-modal-overlay");
+      if (overlay) {
+        overlay.remove();
+      } else {
+        render();
+      }
+      return;
+    }
+    if (name === "reveal-logs-folder") {
+      try {
+        if (window.pywebview?.api?.reveal_logs) {
+          await window.pywebview.api.reveal_logs();
+        } else {
+          await api("/api/logs/reveal", { method: "POST" });
+        }
+      } catch (err) {
+        setStatus(t("Không thể mở thư mục: ") + (err?.message || ""), true);
+      }
+      return;
+    }
+    if (name === "copy-modal-logs") {
+      const text = state.logModalContent || "";
+      if (text) {
+        await copyTextToClipboard(text, t("Đã sao chép toàn bộ nhật ký!"));
       }
       return;
     }
@@ -8332,6 +8468,7 @@ export {
   bindWorklistOpenButtons,
   renderWinbar,
   bindEvents,
+  renderLogModal,
   render,
   installKeyboardShortcuts,
 };

@@ -4857,6 +4857,42 @@ class WebController:
         except Exception as exc:
             return {"error": str(exc), "logDir": "logs", "recentLogs": []}
 
+    def get_logs_content(self, filename: str = "", max_lines: int = 500) -> dict:
+        """Return the content of current or specified log file for viewer display."""
+        try:
+            import app_logging
+            logger = app_logging.get_logger()
+            log_dir = logger.log_dir
+            recent_files = logger.list_recent_logs(30)
+            file_list = [f.name for f in recent_files]
+
+            target_file = None
+            if filename:
+                safe_name = Path(filename).name
+                candidate = (log_dir / safe_name).resolve()
+                if candidate.is_file() and candidate.parent == log_dir.resolve():
+                    target_file = candidate
+
+            if not target_file:
+                target_file = logger.log_file
+                if not target_file or not target_file.exists():
+                    if recent_files and recent_files[0].exists():
+                        target_file = recent_files[0]
+
+            if target_file and target_file.exists():
+                text = target_file.read_text(encoding="utf-8", errors="replace")
+                lines = text.splitlines()
+                return {
+                    "content": "\n".join(lines[-max_lines:]),
+                    "filename": target_file.name,
+                    "folder": str(log_dir),
+                    "totalLines": len(lines),
+                    "fileList": file_list,
+                }
+            return {"content": "", "filename": "", "folder": str(log_dir), "totalLines": 0, "fileList": file_list}
+        except Exception as exc:
+            return {"content": f"Lỗi đọc log: {exc}", "filename": "", "folder": "logs", "totalLines": 0, "fileList": []}
+
     def open_archive(self, path: str) -> dict:
         return self.catalog.open(path)
 
@@ -6493,6 +6529,13 @@ class LocalApiServer:
                     return {"sessions": owner.controller.sessions.list_sessions()}
                 if path == "/api/logs/info":
                     return owner.controller.get_logs_info()
+                if path == "/api/logs/content":
+                    fn = ""
+                    if query:
+                        from urllib.parse import parse_qs
+                        qs = parse_qs(query)
+                        fn = qs.get("file", [""])[0]
+                    return owner.controller.get_logs_content(filename=fn)
                 if path == "/api/logs/reveal":
                     return owner.controller.reveal_logs_folder()
                 if path == "/api/media/video/status":
@@ -6621,6 +6664,9 @@ class LocalApiServer:
                     )
                 if path == "/api/worklist/reveal-folder":
                     return owner.controller.reveal_folder(str(payload.get("folder") or ""))
+                if path == "/api/logs/content":
+                    fn = str(payload.get("file") or "")
+                    return owner.controller.get_logs_content(filename=fn)
                 if path == "/api/logs/reveal":
                     return owner.controller.reveal_logs_folder()
                 if path == "/api/source-folders/add":

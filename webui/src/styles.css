@@ -2935,6 +2935,53 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   color: #fff;
 }
 
+.log-modal-dialog {
+  width: min(960px, 95vw);
+  height: min(650px, 85vh);
+}
+
+.log-modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-file-select {
+  height: 28px;
+  background: var(--field-bg, #111b26);
+  color: var(--field-fg, #d8e6ef);
+  border: 1px solid var(--control-border, #1f3347);
+  border-radius: var(--control-radius, 4px);
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  outline: none;
+}
+.log-file-select:focus {
+  border-color: var(--focus-ring, #60c5ff);
+}
+
+.modal-log-pre {
+  flex: 1;
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--log-bg, #05090d);
+  color: var(--log-fg, #d8e6ef);
+  border: 1px solid var(--log-border, #1d2a35);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-y: auto;
+  transition: opacity 0.15s ease;
+}
+
+.modal-log-pre.loading {
+  opacity: 0.45;
+}
+
 .file-info-body {
   padding: 18px 20px;
   overflow-y: auto;

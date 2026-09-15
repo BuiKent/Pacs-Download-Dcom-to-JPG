@@ -14,6 +14,7 @@ import {
   studyCountLine,
   filteredPatientList,
   syncToolHighlight,
+  renderLogModal,
   bindEvents,
 } from "./main.js";
 
@@ -522,40 +523,51 @@ describe("Worklist: scanned data replaces the history fallback", () => {
     expect(html).toContain("🗑️");
   });
 
-  it("open-logs button calls pywebview reveal_logs via real DOM click", async () => {
-    let calledPywebview = false;
-    window.pywebview = {
-      api: {
-        reveal_logs: async () => {
-          calledPywebview = true;
-          return { revealed: true, folder: "D:\\logs" };
-        },
-      },
-    };
+  it("open-logs button opens Log Modal with content via real DOM click", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      headers: { get: () => "application/json" },
+      json: async () => ({
+        content: "Session started at 12:00\nConnected to PACS",
+        filename: "app_2026.log",
+        folder: "D:\\logs",
+        fileList: ["app_2026.log", "app_2025.log"],
+      }),
+    });
     const app = mountAndBind('<button class="soft-button" data-action="open-logs">Log</button>');
     const btn = app.querySelector("[data-action='open-logs']");
     expect(btn.textContent.trim()).toBe("Log");
     expect(btn.getAttribute("title")).toBeNull();
-    btn.click();
-    await new Promise((r) => setTimeout(r, 20));
-    expect(calledPywebview).toBe(true);
-    delete window.pywebview;
-  });
 
-  it("open-logs button falls back to POST /api/logs/reveal when pywebview is absent", async () => {
-    delete window.pywebview;
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      headers: { get: () => "application/json" },
-      json: async () => ({ revealed: true, folder: "D:\\logs" }),
-    });
-    const app = mountAndBind('<button class="soft-button" data-action="open-logs">Log</button>');
-    const btn = app.querySelector("[data-action='open-logs']");
+    // Click Log button
     btn.click();
     await new Promise((r) => setTimeout(r, 20));
-    expect(fetchSpy).toHaveBeenCalledWith("/api/logs/reveal", expect.objectContaining({
-      method: "POST",
-    }));
+
+    expect(state.showLogModal).toBe(true);
+    expect(state.logModalFileList).toEqual(["app_2026.log", "app_2025.log"]);
+    expect(fetchSpy).toHaveBeenCalledWith("/api/logs/content", expect.anything());
+
+    // Modal dialog is mounted in DOM with the log content
+    const modalHtml = renderWorklistView() + renderLogModal();
+    const mountedApp = mountAndBind(modalHtml);
+    expect(state.logModalContent).toContain("Session started at 12:00");
+
+    const selectEl = mountedApp.querySelector("[data-field='log-file-select']");
+    expect(selectEl).toBeTruthy();
+    expect(selectEl.options.length).toBe(2);
+
+    // Test file switching via real DOM change event
+    selectEl.value = "app_2025.log";
+    selectEl.dispatchEvent(new Event("change"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetchSpy).toHaveBeenCalledWith("/api/logs/content?file=app_2025.log", expect.anything());
+
+    // Close button dismisses modal
+    const closeBtn = mountedApp.querySelector("[data-action='close-log-modal']");
+    expect(closeBtn).toBeTruthy();
+    closeBtn.click();
+    expect(state.showLogModal).toBe(false);
+
     fetchSpy.mockRestore();
   });
 });

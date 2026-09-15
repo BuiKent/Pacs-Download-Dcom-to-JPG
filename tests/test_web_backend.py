@@ -1354,6 +1354,23 @@ class ServerSecurityTests(unittest.TestCase):
                 self.assertTrue(data.get("revealed"))
                 self.assertTrue(data.get("folder"))
 
+    def test_logs_content_get_and_post_work(self):
+        # Test GET /api/logs/content
+        with self.request("/api/logs/content", self.server.token) as resp:
+            self.assertEqual(resp.status, 200)
+            data = json.loads(resp.read().decode("utf-8"))
+            self.assertIn("content", data)
+            self.assertIn("folder", data)
+            self.assertIn("fileList", data)
+
+        # Test POST /api/logs/content with specific file
+        target_fn = data.get("filename") or ""
+        with self.post_json("/api/logs/content", {"file": target_fn}, token=self.server.token) as resp:
+            self.assertEqual(resp.status, 200)
+            data2 = json.loads(resp.read().decode("utf-8"))
+            self.assertIn("content", data2)
+            self.assertIn("fileList", data2)
+
 
 class FrameOfReferenceSyntheticTests(unittest.TestCase):
     """Verify that public_dict correctly reports frameOfReferenceSynthetic
