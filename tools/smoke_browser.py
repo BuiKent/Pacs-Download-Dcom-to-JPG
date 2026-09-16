@@ -606,7 +606,7 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                     raise AssertionError(
                         f"Gate 3: chip giai đoạn phải nói đang xạ, đang là {chip!r}."
                     )
-                phone = page.inner_text(".rec-info-card .rec-facts").strip()
+                phone = page.inner_text(".rec-info-card .rec-contact").strip()
                 if "0912345678" not in phone:
                     raise AssertionError(
                         "Gate 3: lưu xong mà số điện thoại vừa nhập không lên thẻ."

@@ -131,20 +131,38 @@ describe("Viewer tab: patient rail", () => {
     expect(html).toContain("BV Hà Tĩnh");
   });
 
-  it("prints a dash for every field the manifest does not carry", () => {
+  it("prints what the manifest carries and leaves out what it does not", () => {
     // Phone and address have no source in a local archive — no RIS, no DICOM
-    // tag — so they stay dashes until a clinician types one.
+    // tag — so an unrecorded one costs no line at all rather than a row
+    // holding a dash.
     const html = renderPatientRail();
-    expect(html).toMatch(/<dd>—<\/dd>/);
+    expect(html).toContain("BV Hà Tĩnh");
+    expect(html).not.toContain('class="rec-contact">BV Hà Tĩnh · ');
     // And the note line is absent rather than empty: nothing was written.
     expect(html).not.toContain('class="dx-note"');
 
     state.archive.patient = {};
     const blank = renderPatientRail();
     expect(blank).toContain("Chưa có tên bệnh nhân");
+    expect(blank).not.toContain('class="rec-contact"');
     // Nothing is filled in from the folder path or from another patient.
     expect(blank).not.toContain("NGUYỄN HỮU SỰ");
     expect(blank).not.toContain("1962");
+  });
+
+  it("hands the name and the patient ID to the clipboard when pressed", async () => {
+    // These two are what a reader retypes into the hospital system, and a
+    // mistyped patient ID is how the wrong record gets opened.
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    mountApp();
+
+    await press(".rec-copy-name");
+    expect(writeText).toHaveBeenCalledWith("NGUYỄN HỮU SỰ");
+
+    await press(".rec-identity .rec-copy");
+    expect(writeText).toHaveBeenLastCalledWith("2607063527");
   });
 
   it("shows one row per examination, with no counts and no sequence names", () => {
@@ -239,8 +257,8 @@ describe("Viewer tab: patient rail", () => {
     const html = renderPatientRail();
     expect(html).toContain("rec-info-card");
     expect(html).toContain("rec-name-row");
-    expect(html).toContain("0912345678");
-    expect(html).toContain("Hà Nội");
+    // One line, in the order a reader reads it: where, then how to reach them.
+    expect(html).toContain("BV Hà Tĩnh · 0912345678 · Hà Nội");
     expect(html).toContain('data-action="edit-record"');
     // Button should only contain the icon glyph '✎', not trailing text
     expect(html).toContain('>✎</button>');

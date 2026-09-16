@@ -2326,10 +2326,17 @@ async function loadClinicalRecord({ force = false } = {}) {
 function renderPatientRail() {
   const patient = state.archive?.patient || {};
   const series = state.archive?.series || [];
-  const dash = (value) => (recordedIdentity(value) || "—");
 
   const identity = [patient.gender, patient.birthYear, patient.age ? tf("{} tuổi", patient.age) : ""]
     .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" · ");
+
+  // Hospital, phone and address used to be a six-row list that repeated the
+  // line above it and pushed the record itself below the fold. They are one
+  // line now, and only where somebody recorded them.
+  const contact = [patient.hospital, patient.phone, patient.address]
+    .map((value) => recordedIdentity(value))
     .filter(Boolean)
     .join(" · ");
 
@@ -2347,24 +2354,27 @@ function renderPatientRail() {
       <div class="rec-card rec-info-card">
         <div class="rec-id">
           <div class="rec-name-row">
-            <b>${escapeHtml(dash(patient.patientName) === "—"
-              ? t("Chưa có tên bệnh nhân")
-              : patient.patientName)}</b>
+            ${recordedIdentity(patient.patientName) ? `
+              <button class="rec-copy rec-copy-name" type="button" data-action="copy-patient-field"
+                data-copy-text="${escapeHtml(patient.patientName)}"
+                title="${escapeHtml(t("Sao chép tên bệnh nhân"))}"
+                >${escapeHtml(patient.patientName)}</button>
+            ` : `<b class="rec-unnamed">${escapeHtml(t("Chưa có tên bệnh nhân"))}</b>`}
             ${clinical.clinicalState.canWrite && !clinical.clinicalState.editing ? `
               <button class="rec-edit-btn" type="button" data-action="edit-record"
                 title="${escapeHtml(t("Sửa hồ sơ bệnh nhân"))}">✎</button>
             ` : ""}
           </div>
-          <small>${escapeHtml(dash(patient.patientId))}${identity ? ` · ${escapeHtml(identity)}` : ""}</small>
+          <small class="rec-identity">
+            ${recordedIdentity(patient.patientId) ? `
+              <button class="rec-copy" type="button" data-action="copy-patient-field"
+                data-copy-text="${escapeHtml(patient.patientId)}"
+                title="${escapeHtml(t("Sao chép mã BN"))}"
+                >${escapeHtml(patient.patientId)}</button>
+            ` : "—"}${identity ? ` · ${escapeHtml(identity)}` : ""}
+          </small>
+          ${contact ? `<small class="rec-contact">${escapeHtml(contact)}</small>` : ""}
         </div>
-        <dl class="rec-facts">
-          <div class="rfact"><dt>${escapeHtml(t("Mã BN"))}</dt><dd>${escapeHtml(dash(patient.patientId))}</dd></div>
-          <div class="rfact"><dt>${escapeHtml(t("Giới tính"))}</dt><dd>${escapeHtml(dash(patient.gender))}</dd></div>
-          <div class="rfact"><dt>${escapeHtml(t("Năm sinh"))}</dt><dd>${escapeHtml(dash(patient.birthYear))}${patient.age ? ` (${tf("{} tuổi", patient.age)})` : ""}</dd></div>
-          <div class="rfact"><dt>${escapeHtml(t("Điện thoại"))}</dt><dd>${escapeHtml(dash(patient.phone))}</dd></div>
-          <div class="rfact"><dt>${escapeHtml(t("Địa chỉ"))}</dt><dd>${escapeHtml(dash(patient.address))}</dd></div>
-          <div class="rfact"><dt>${escapeHtml(t("Bệnh viện"))}</dt><dd>${escapeHtml(dash(patient.hospital))}</dd></div>
-        </dl>
         <div class="dx-divider">${escapeHtml(t("Chẩn đoán & điều trị"))}</div>
         ${clinical.renderClinicalCard()}
         ${String(patient.diagnosis || "").trim() ? `
@@ -6705,7 +6715,10 @@ async function action(name, element = null) {
       closeFileInfoModal();
       return;
     }
-    if (name === "copy-cell") {
+    // `copy-cell` belongs to the worklist, which binds its own subtree and is
+    // skipped by the shell binder; the rail needs a name of its own to be
+    // wired at all. Same behaviour, so the same branch.
+    if (name === "copy-cell" || name === "copy-patient-field") {
       const text = element?.dataset?.copyText;
       if (text && text !== "—") {
         await copyTextToClipboard(text, `${t("Đã sao chép")}: ${text.length > 25 ? text.slice(0, 22) + "..." : text}`);
