@@ -23,7 +23,7 @@ export function extractPacsSite(rawUrl) {
  * Strip patient identity out of a log line.
  *
  * The activity log is exported to a file and read on screen, and it lives in
- * `chrome.storage.local` for 1500 entries. Folder names carry
+ * `chrome.storage.local` for up to 3000 entries. Folder names carry
  * `<mã BN> - <họ tên> - <tuổi> - <ngày>` and viewer urls carry share tokens, so
  * a log written verbatim is a second copy of the record with none of its
  * protections. What is useful for diagnosis — counts, status, timings — has no
@@ -41,6 +41,9 @@ const PATIENT_FOLDER_IN_TEXT = new RegExp(
 
 const CREDENTIAL_IN_URL =
   /([?&#](?:token|stoken|access_token|session|sessionid|auth|sig|signature|key|password|pwd|secret|bearer)=)[^&#\s]*/gi;
+const DICOM_UID_IN_TEXT = /\b\d+(?:\.\d+){4,}\b/g;
+const DISCOVERY_PATIENT_IN_TEXT = /(Nhận diện thành công ca chụp:\s*)[^—\r\n]+(\s*—)/gi;
+const CLINICAL_DETAIL_KEY = /^(?:patient|patientname|patientid|patientbirthdate|birthdate|patientage|accession|accessionnumber|studyuid|studyinstanceuid|seriesinstanceuid|sopinstanceuid)$/i;
 
 export function redactIdentifiers(text) {
   return String(text == null ? '' : text)
@@ -49,15 +52,25 @@ export function redactIdentifiers(text) {
     // mistaken for one.
     .replace(PATIENT_FOLDER_IN_TEXT, '<hồ sơ đã ẩn>')
     // Any credential carried in a url that reaches the log.
-    .replace(CREDENTIAL_IN_URL, '$1<đã ẩn>');
+    .replace(CREDENTIAL_IN_URL, '$1<đã ẩn>')
+    .replace(DISCOVERY_PATIENT_IN_TEXT, '$1<hồ sơ đã ẩn>$2')
+    .replace(DICOM_UID_IN_TEXT, '<UID đã ẩn>');
 }
 
 function sanitizeDetails(details) {
   if (details == null) return '';
-  if (typeof details === 'string') return details.slice(0, 1000);
+  if (typeof details === 'string') {
+    const trimmed = details.trim();
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try { return sanitizeDetails(JSON.parse(trimmed)); } catch { /* keep plain diagnostic text */ }
+    }
+    return details.slice(0, 1000);
+  }
   if (typeof details === 'number' || typeof details === 'boolean') return String(details);
   try {
-    const str = JSON.stringify(details);
+    const str = JSON.stringify(details, (key, value) =>
+      key && CLINICAL_DETAIL_KEY.test(key) ? '<hồ sơ đã ẩn>' : value
+    );
     return str.length > 1000 ? str.slice(0, 997) + '...' : str;
   } catch {
     return String(details).slice(0, 1000);
@@ -66,7 +79,7 @@ function sanitizeDetails(details) {
 
 export function createLogEntry(levelOrObj, category, message, details = null) {
   let level = levelOrObj, cat = category, msg = message, det = details;
-  let tabId = null, pacsSite = '', url = '', studyUid = '';
+  let tabId = null, pacsSite = '', url = '';
   if (levelOrObj && typeof levelOrObj === 'object') {
     level = levelOrObj.level;
     cat = levelOrObj.category;
@@ -75,7 +88,6 @@ export function createLogEntry(levelOrObj, category, message, details = null) {
     tabId = levelOrObj.tabId != null ? Number(levelOrObj.tabId) : null;
     url = levelOrObj.url ? redactIdentifiers(levelOrObj.url) : '';
     pacsSite = levelOrObj.pacsSite || extractPacsSite(levelOrObj.url);
-    studyUid = levelOrObj.studyUid ? String(levelOrObj.studyUid) : '';
   }
   const now = new Date();
   return {
@@ -89,7 +101,7 @@ export function createLogEntry(levelOrObj, category, message, details = null) {
     pacsSite: String(pacsSite || ''),
     tabId: tabId != null && !Number.isNaN(tabId) ? tabId : null,
     url: url || '',
-    studyUid: studyUid || ''
+    studyUid: ''
   };
 }
 
@@ -97,13 +109,17 @@ function sanitizeStoredEntry(entry) {
   if (!entry || typeof entry !== 'object') return null;
   const site = entry.pacsSite || extractPacsSite(entry.url);
   return {
-    ...entry,
+    id: String(entry.id || ''),
+    timestamp: String(entry.timestamp || ''),
+    timeFormatted: String(entry.timeFormatted || ''),
+    level: String(entry.level || 'INFO').toUpperCase(),
+    category: String(entry.category || 'SYSTEM').toUpperCase(),
     message: redactIdentifiers(entry.message),
     details: redactIdentifiers(sanitizeDetails(entry.details)),
     pacsSite: String(site || ''),
     tabId: entry.tabId != null && !Number.isNaN(Number(entry.tabId)) ? Number(entry.tabId) : null,
     url: entry.url ? redactIdentifiers(entry.url) : '',
-    studyUid: entry.studyUid ? String(entry.studyUid) : ''
+    studyUid: ''
   };
 }
 

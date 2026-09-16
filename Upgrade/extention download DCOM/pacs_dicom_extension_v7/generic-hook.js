@@ -4,8 +4,11 @@
  * are cloned, capped, and posted to the isolated content script.
  */
 (()=>{
-  if(globalThis.__PACS_DICOM_V7_GENERIC_HOOK__)return;
-  globalThis.__PACS_DICOM_V7_GENERIC_HOOK__=true;
+  const existingController=globalThis.__PACS_DICOM_V7_GENERIC_HOOK__;
+  if(existingController?.enable){existingController.enable();return;}
+  let active=true;
+  const controller={enable(){active=true;},disable(){active=false;}};
+  globalThis.__PACS_DICOM_V7_GENERIC_HOOK__=controller;
   const MAX_TEXT=2*1024*1024;
   const sensitive=u=>/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(String(u||''));
   const maybeJsonText=t=>{const s=String(t||'').trim();return(s.startsWith('{')&&s.endsWith('}'))||(s.startsWith('[')&&s.endsWith(']'));};
@@ -16,10 +19,11 @@
     return null;
   };
   function emit(row){
-    try{if(!row?.url||sensitive(row.url))return;window.postMessage({__pacsGeneric:'json',row},'*');}catch{}
+    try{if(!active||!row?.url||sensitive(row.url))return;window.postMessage({__pacsGeneric:'json',row},'*');}catch{}
   }
   async function inspectFetchResponse(resp,req){
     try{
+      if(!active)return;
       const url = resp.url || req.url || '';
       if(/\/signalr\//i.test(url))return;
       const ct=String(resp.headers.get('content-type')||'').toLowerCase();
@@ -34,19 +38,22 @@
   const origFetch=window.fetch;
   if(typeof origFetch==='function'){
     window.fetch=function(input,init){
+      if(!active)return origFetch.apply(this,arguments);
       let url='',method='GET',body=null;
       try{url=typeof input==='string'?input:(input?.url||'');method=String(init?.method||input?.method||'GET').toUpperCase();body=cleanBody(init?.body);}catch{}
       const p=origFetch.apply(this,arguments);p.then(r=>inspectFetchResponse(r,{url,method,body})).catch(()=>{});return p;
     };
   }
   const XO=XMLHttpRequest.prototype.open,XS=XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open=function(method,url){try{this.__pacsV7={method:String(method||'GET').toUpperCase(),url:new URL(String(url),location.href).href};}catch{this.__pacsV7={method:String(method||'GET').toUpperCase(),url:String(url||'')};}return XO.apply(this,arguments);};
+  XMLHttpRequest.prototype.open=function(method,url){if(!active){delete this.__pacsV7;return XO.apply(this,arguments);}try{this.__pacsV7={method:String(method||'GET').toUpperCase(),url:new URL(String(url),location.href).href};}catch{this.__pacsV7={method:String(method||'GET').toUpperCase(),url:String(url||'')};}return XO.apply(this,arguments);};
   XMLHttpRequest.prototype.send=function(body){
+    if(!active)return XS.apply(this,arguments);
     const self=this,meta=this.__pacsV7||{method:'GET',url:''};
     meta.body=cleanBody(body);
     if(/\/signalr\//i.test(meta.url))return XS.apply(this,arguments);
     this.addEventListener('load',()=>{
       try{
+        if(!active)return;
         if(sensitive(meta.url))return;
         const ct=String(self.getResponseHeader('content-type')||'').toLowerCase();
         if(ct.includes('event-stream'))return;

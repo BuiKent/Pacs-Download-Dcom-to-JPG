@@ -4,7 +4,8 @@ root=Path(__file__).parents[1]
 m=json.loads((root/'manifest.json').read_text(encoding='utf-8'))
 assert m['version'].startswith('7.')
 assert 'debugger' not in m.get('permissions',[])
-assert m.get('host_permissions')==['http://*/*','https://*/*']
+assert m.get('optional_host_permissions')==['http://*/*','https://*/*']
+assert not m.get('host_permissions'), 'per-site mode must not silently grant access to every website'
 assert (root/'generic-hook.js').exists() and (root/'lib/generic_discovery.js').exists()
 bg=(root/'background.js').read_text(encoding='utf-8')
 off=(root/'offscreen.js').read_text(encoding='utf-8')
@@ -82,6 +83,20 @@ assert 'studyLockFilename(job.claimId)' in off, 'each job needs its own contende
 # Stopped tracking must strictly halt request logging.
 assert "s.tracking!=='watching'" in bg
 assert bg.count("s.tracking==='stopped')return")>=2, 'webRequest must respect stopped tracking state'
+assert 'if(!stateIsTracked(s))return false;' in bg, \
+    'content scripts must never be injected into idle, unrelated tabs'
+assert 'if(!(await shouldHandleNavigation(tab.id,tab.url)))return;' in bg, \
+    'startup must skip idle, unrelated websites before content injection'
+assert bg.count('cleanupTabInstrumentation(tabId)') >= 2, \
+    'manual stop and completed downloads must both release frame instrumentation'
+assert 'sendTabMessageToAllFrames(tabId,{type:\'CLEANUP_TRACKING\'})' in bg, \
+    'cleanup must disconnect observers in every injected frame'
+assert 'setGenericHookActive(tabId,false)' in bg, \
+    'cleanup must disable the MAIN-world fetch/XHR hook'
+assert "s.learning={...(s.learning||{}),active:false};s.tracking='stopped'" in bg, \
+    'manual stop must also end learning so the tab cannot re-enter the tracked set'
+assert "if(!shouldInspectRequest({restored:trackedTabsRestored,tracked:trackedTabIds,tabId:d.tabId}))return;\n  const hit=" in bg, \
+    'webRequest must reject unrelated tabs before classifying each resource URL'
 assert 'RECIPES_KEY' in bg and 'ENGINE_LEARNED_URL' in bg
 assert 'START_LEARNING' in bg and 'LEARN_CANDIDATE' in bg and 'materializeLearnedManifest' in bg
 assert 'learnToggleBtn' in ui and 'learnList' in ui
@@ -171,4 +186,3 @@ res = subprocess.run(
 assert res.returncode == 0, f'Extension has JavaScript syntax errors:\n{res.stderr or res.stdout}'
 
 print('Static architecture checks OK')
-

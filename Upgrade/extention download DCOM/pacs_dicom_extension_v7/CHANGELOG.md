@@ -1,3 +1,13 @@
+# 7.2.7
+
+Stop extension instrumentation from following unrelated browsing and close the remaining tracking lifecycle leaks:
+
+- Restore HTTP/HTTPS access to `optional_host_permissions`, so the onboarding choice between all-site and per-site access is real again. MV3 `webRequest` listeners remain registered before any site is granted.
+- Gate navigation, content-script injection, and `webRequest` processing by the tab tracking state before running PACS URL classification. An all-site grant no longer makes ordinary tabs pay the discovery cost.
+- On manual stop or completed download, disconnect content observers in every frame, disable the MAIN-world `fetch`/XHR hook, and cancel pending analysis timers.
+- Remove patient name, patient ID, and DICOM UIDs from activity logs, including nested details and records written by 7.2.5/7.2.6.
+- Browser benchmark with 81 frames: ordinary-page renderer heap returned from 46.2 MiB to about 27.7 MiB, matching the no-extension baseline; CPU and event-loop delay returned within run-to-run variance.
+
 # 7.2.6
 
 Fix multi-iframe injection storm, protect real-time SignalR streams, and add Meditec Clinic ULite PACS support:

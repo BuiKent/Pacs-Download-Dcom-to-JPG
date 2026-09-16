@@ -11,6 +11,16 @@ await context.fetch('https://pacs.test/api/list',{method:'POST',body:'{"study":1
 await new Promise(r=>setTimeout(r,10));
 if(events.length!==1||events[0].__pacsGeneric!=='json')throw new Error('generic hook did not emit JSON');
 if(events[0].row.method!=='POST'||!events[0].row.text.includes('/x/1'))throw new Error('generic hook metadata');
+const controller=context.__PACS_DICOM_V7_GENERIC_HOOK__;
+if(typeof controller?.disable!=='function'||typeof controller?.enable!=='function')throw new Error('generic hook has no lifecycle controller');
+controller.disable();
+await context.fetch('https://pacs.test/api/list');
+await new Promise(r=>setTimeout(r,10));
+if(events.length!==1)throw new Error('disabled generic hook still cloned and emitted JSON');
+controller.enable();
+await context.fetch('https://pacs.test/api/list');
+await new Promise(r=>setTimeout(r,10));
+if(events.length!==2)throw new Error('generic hook did not resume after enable');
 // HTML/text that is not JSON must not be emitted.
 const before=events.length;const r2={...response,headers:{get:k=>k==='content-type'?'text/html':''},clone(){return{text:async()=>'<html>login</html>'}}};
 context.fetch=async()=>r2; // wrapper already holds original fetch; this replacement intentionally should not affect installed wrapper

@@ -3,7 +3,7 @@ import {cleanUrl,classifyPacsUrl,viewerUrlScore,originPattern,originPatterns,bes
 import {matchingAdapters,adapterById} from './lib/adapters/registry.js';
 import {compatibleAdapterIds,mapSeriesSelection,tasksBelongToStudy,cumulativeAttemptCounters,inventoryIsCovered,dedupeTasksBySop} from './lib/orchestrator.js';
 import {extractManifestCandidates,candidateProbePlan,recordsForSuccessfulShapes,manifestRecipeFromDiscovery,studyProfileFromProbeDetails,looksLikeDicomJson,urlShape} from './lib/generic_discovery.js';
-import {isTerminalTracking,shouldPreserveTerminalContext,trackingAfterDocumentChange,trackingAfterSameDocumentStudyChange} from './lib/tracking_state.js';
+import {shouldPreserveTerminalContext,trackingAfterDocumentChange,trackingAfterSameDocumentStudyChange} from './lib/tracking_state.js';
 import {resolveBulkDicomSaveMode} from './lib/save_policy.js';
 import {appendLog,getLogsFromStorage,clearAllLogs,extractPacsSite} from './lib/logger.js';
 import {TRACKED_TABS_KEY,stateIsTracked,shouldInspectRequest,serializeTrackedTabs,deserializeTrackedTabs,mergeRestoredTabs} from './lib/tracked_tabs.js';
@@ -200,15 +200,49 @@ async function hasOrigin(url){const p=originPattern(url);if(!p)return false;retu
 async function missingPatterns(urls){const out=[],allPatterns=(urls||[]).flatMap(originPatterns);for(const p of [...new Set(allPatterns.filter(Boolean))])if(!(await chrome.permissions.contains({origins:[p]})))out.push(p);return out;}
 async function injectContent(tabId, frameId = null){
   const s=await getTabState(tabId);
-  if(isTerminalTracking(s.tracking))return false;
+  if(!stateIsTracked(s))return false;
   const target = (frameId !== null && frameId !== undefined) ? {tabId, frameIds:[frameId]} : {tabId, allFrames:true};
   try{await chrome.scripting.executeScript({target,files:['content.js']});return true;}
   catch{try{await chrome.scripting.executeScript({target:{tabId},files:['content.js']});return true;}catch{return false;}}
 }
 async function injectGenericHook(tabId, frameId = null){
+  const s=await getTabState(tabId);
+  if(s.tracking!=='watching'&&!s.learning?.active)return false;
   const target = (frameId !== null && frameId !== undefined) ? {tabId, frameIds:[frameId]} : {tabId, allFrames:true};
   try{await chrome.scripting.executeScript({target,world:'MAIN',files:['generic-hook.js']});return true;}
   catch{try{await chrome.scripting.executeScript({target:{tabId},world:'MAIN',files:['generic-hook.js']});return true;}catch{return false;}}
+}
+async function setGenericHookActive(tabId,active){
+  const injection={
+    target:{tabId,allFrames:true},
+    world:'MAIN',
+    func:enabled=>globalThis.__PACS_DICOM_V7_GENERIC_HOOK__?.[enabled?'enable':'disable']?.(),
+    args:[Boolean(active)]
+  };
+  try{await chrome.scripting.executeScript(injection);return true;}
+  catch{try{await chrome.scripting.executeScript({...injection,target:{tabId}});return true;}catch{return false;}}
+}
+async function sendTabMessageToAllFrames(tabId,message){
+  const frames=await chrome.webNavigation.getAllFrames({tabId}).catch(()=>[]);
+  if(!frames.length){await chrome.tabs.sendMessage(tabId,message).catch(()=>{});return;}
+  await Promise.allSettled(frames.map(frame=>chrome.tabs.sendMessage(tabId,message,{frameId:frame.frameId})));
+}
+function clearTabInstrumentationTimers(tabId){
+  for(const timers of[analyzeTimers,contextTimers,probeTimers]){
+    clearTimeout(timers.get(tabId));
+    timers.delete(tabId);
+  }
+  for(const[key,timer]of learnTimers.entries())if(String(key).startsWith(`${tabId}|`)){
+    clearTimeout(timer);
+    learnTimers.delete(key);
+  }
+}
+async function cleanupTabInstrumentation(tabId){
+  clearTabInstrumentationTimers(tabId);
+  await Promise.allSettled([
+    sendTabMessageToAllFrames(tabId,{type:'CLEANUP_TRACKING'}),
+    setGenericHookActive(tabId,false)
+  ]);
 }
 async function ensurePanel(tabId){
   try{
@@ -259,8 +293,8 @@ async function markCandidate(tabId,url){
     await startTracking(tabId,false);
   }else if(score>=AUTO_SCORE&&!['watching','stopped','completed'].includes(s.tracking)){
     s.tracking='candidate';
-    if(await hasOrigin(clean))await injectContent(tabId);
     await saveTabState(tabId,s);
+    if(await hasOrigin(clean))await injectContent(tabId);
     await setBadge(tabId);
   }else{
     await saveTabState(tabId,s);
@@ -269,13 +303,17 @@ async function markCandidate(tabId,url){
 }
 async function maybeRecaptureVietmy(tabId){try{const s=await getTabState(tabId);if(s.tracking!=='watching'||s.vietmyRecaptureDone)return;const shell=classifyViewerShell(s.currentUrl||'');if(shell?.type!=='SHARE_STUDY')return;const summary=await scanTab(tabId),seen=summary.requests.some(x=>x.type==='VIETMY_MANIFEST'),captured=(s.pacsRequests||[]).some(x=>x.type==='VIETMY_MANIFEST');if(seen&&!captured){s.vietmyRecaptureDone=true;await saveTabState(tabId,s);await chrome.tabs.reload(tabId);}}catch{}}
 async function startTracking(tabId,manual=false){markTracked(tabId,true);const s=await getTabState(tabId);s.tracking='watching';if(manual)s.manual=true;await saveTabState(tabId,s);await injectContent(tabId);await injectGenericHook(tabId);s.genericHookActive=true;await saveTabState(tabId,s);await setBadge(tabId);chrome.tabs.sendMessage(tabId,{type:'RESTART_TRACKING'}).catch(()=>{});scheduleAnalyze(tabId,250);if(manual)setTimeout(()=>maybeRecaptureVietmy(tabId),450);logEvent('INFO','TRACKING',`Bắt đầu theo dõi tab ${tabId} (${manual?'thủ công':'tự động'})`,{url:s.currentUrl,confidence:s.confidence},{tabId,url:s.currentUrl});return s;}
-async function stopTracking(tabId){markTracked(tabId,false);const s=await getTabState(tabId);s.tracking='stopped';await saveTabState(tabId,s);await setBadge(tabId);chrome.tabs.sendMessage(tabId,{type:'CLEANUP_TRACKING'}).catch(()=>{});logEvent('INFO','TRACKING',`Dừng theo dõi tab ${tabId}`,{url:s.currentUrl},{tabId,url:s.currentUrl});return s;}
+async function stopTracking(tabId){markTracked(tabId,false);const s=await getTabState(tabId);s.learning={...(s.learning||{}),active:false};s.tracking='stopped';await saveTabState(tabId,s);await setBadge(tabId);await cleanupTabInstrumentation(tabId);logEvent('INFO','TRACKING',`Dừng theo dõi tab ${tabId}`,{url:s.currentUrl},{tabId,url:s.currentUrl});return s;}
 
-async function rememberBeforeNavigate(tabId,raw){if(tabId<0)return;const u=cleanUrl(raw);if(!u)return;const s=await getTabState(tabId);pushUnique(s.pendingNavUrls,u);s.currentUrl=u;await saveTabState(tabId,s);markCandidate(tabId,u).catch(()=>{});}
+async function shouldHandleNavigation(tabId,raw){
+  await trackedTabsReady;
+  return trackedTabIds.has(tabId)||urlConfidence(raw)>=AUTO_SCORE||Boolean(classifyViewerShell(raw));
+}
+async function rememberBeforeNavigate(tabId,raw){if(tabId<0)return;const u=cleanUrl(raw);if(!u||!(await shouldHandleNavigation(tabId,u)))return;const s=await getTabState(tabId);pushUnique(s.pendingNavUrls,u);s.currentUrl=u;await saveTabState(tabId,s);markCandidate(tabId,u).catch(()=>{});}
 async function invalidate(tabId,reason){perfScanCache.delete(tabId);invMemory.delete(tabId);await chrome.storage.session.remove(invKey(tabId)).catch(()=>{});chrome.runtime.sendMessage({type:'TAB_CONTEXT_CHANGED',tabId,reason}).catch(()=>{});}
-async function rememberCommitted(d){if(d.tabId<0)return;const u=cleanUrl(d.url);if(!u)return;if(d.frameId!==0){const s=await getTabState(d.tabId);pushUnique(s.frameUrls,u);await saveTabState(d.tabId,s);markCandidate(d.tabId,u).catch(()=>{});if(await hasOrigin(u))setTimeout(()=>{injectContent(d.tabId, d.frameId);getTabState(d.tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(d.tabId, d.frameId);});},100);return;}const s=await getTabState(d.tabId);const oldStudy=s.studyHint||'';const nextStudy=viewerStudyHint(u)||'';const docChanged=Boolean(s.mainDocumentId&&d.documentId&&s.mainDocumentId!==d.documentId);const studyChanged=Boolean(oldStudy&&nextStudy&&oldStudy!==nextStudy);const changed=Boolean(docChanged||studyChanged||(s.currentUrl&&s.currentUrl!==u));if(changed){const transitionType=d.transitionType||'';const preserveContext=shouldPreserveTerminalContext(s.tracking,{oldStudy,nextStudy,transitionType});const nextTracking=trackingAfterDocumentChange(s.tracking,{oldStudy,nextStudy,transitionType});if(!preserveContext){s.navUrls=[...(s.pendingNavUrls||[])];s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.pageHintScore=0;s.pageHintReasons=[];s.confidence=0;await invalidate(d.tabId,'document');}s.studyHint=nextStudy;s.vietmyRecaptureDone=false;s.tracking=nextTracking;}pushUnique(s.navUrls,u);s.pendingNavUrls=[];s.currentUrl=u;s.mainDocumentId=d.documentId||s.mainDocumentId||'';if(!s.studyHint)s.studyHint=viewerStudyHint(u)||'';await saveTabState(d.tabId,s);await markCandidate(d.tabId,u);if(await hasOrigin(u))setTimeout(()=>{injectContent(d.tabId);getTabState(d.tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(d.tabId);});},100);}
-async function rememberSameDocument(tabId,raw){if(tabId<0)return;const u=cleanUrl(raw);if(!u)return;const s=await getTabState(tabId);const old=s.studyHint||'',next=viewerStudyHint(u)||'';if(old&&next&&old!==next){s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.studyHint=next;s.tracking=trackingAfterSameDocumentStudyChange(s.tracking);await invalidate(tabId,'study');}else if(!old&&next)s.studyHint=next;pushUnique(s.navUrls,u);s.currentUrl=u;await saveTabState(tabId,s);await markCandidate(tabId,u);}
-chrome.webNavigation.onBeforeNavigate.addListener(d=>{if(d.frameId===0)rememberBeforeNavigate(d.tabId,d.url).catch(()=>{});});
+async function rememberCommitted(d){if(d.tabId<0)return;const u=cleanUrl(d.url);if(!u||!(await shouldHandleNavigation(d.tabId,u)))return;if(d.frameId!==0){const s=await getTabState(d.tabId);pushUnique(s.frameUrls,u);await saveTabState(d.tabId,s);await markCandidate(d.tabId,u);if(await hasOrigin(u))setTimeout(()=>{injectContent(d.tabId, d.frameId);getTabState(d.tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(d.tabId, d.frameId);});},100);return;}const s=await getTabState(d.tabId);const oldStudy=s.studyHint||'';const nextStudy=viewerStudyHint(u)||'';const docChanged=Boolean(s.mainDocumentId&&d.documentId&&s.mainDocumentId!==d.documentId);const studyChanged=Boolean(oldStudy&&nextStudy&&oldStudy!==nextStudy);const changed=Boolean(docChanged||studyChanged||(s.currentUrl&&s.currentUrl!==u));if(changed){const transitionType=d.transitionType||'';const preserveContext=shouldPreserveTerminalContext(s.tracking,{oldStudy,nextStudy,transitionType});const nextTracking=trackingAfterDocumentChange(s.tracking,{oldStudy,nextStudy,transitionType});if(!preserveContext){s.navUrls=[...(s.pendingNavUrls||[])];s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.pageHintScore=0;s.pageHintReasons=[];s.confidence=0;await invalidate(d.tabId,'document');}s.studyHint=nextStudy;s.vietmyRecaptureDone=false;s.tracking=nextTracking;}pushUnique(s.navUrls,u);s.pendingNavUrls=[];s.currentUrl=u;s.mainDocumentId=d.documentId||s.mainDocumentId||'';if(!s.studyHint)s.studyHint=viewerStudyHint(u)||'';await saveTabState(d.tabId,s);await markCandidate(d.tabId,u);if(await hasOrigin(u))setTimeout(()=>{injectContent(d.tabId);getTabState(d.tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(d.tabId);});},100);}
+async function rememberSameDocument(tabId,raw){if(tabId<0)return;const u=cleanUrl(raw);if(!u||!(await shouldHandleNavigation(tabId,u)))return;const s=await getTabState(tabId);const old=s.studyHint||'',next=viewerStudyHint(u)||'';if(old&&next&&old!==next){s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.studyHint=next;s.tracking=trackingAfterSameDocumentStudyChange(s.tracking);await invalidate(tabId,'study');}else if(!old&&next)s.studyHint=next;pushUnique(s.navUrls,u);s.currentUrl=u;await saveTabState(tabId,s);await markCandidate(tabId,u);}
+chrome.webNavigation.onBeforeNavigate.addListener(d=>{if(d.frameId!==0)return;if(urlConfidence(d.url)>=AUTO_SCORE||Boolean(classifyViewerShell(d.url)))markTracked(d.tabId,true);rememberBeforeNavigate(d.tabId,d.url).catch(()=>{});});
 chrome.webNavigation.onCommitted.addListener(d=>rememberCommitted(d).catch(()=>{}));
 chrome.webNavigation.onHistoryStateUpdated.addListener(d=>{if(d.frameId===0)rememberSameDocument(d.tabId,d.url).catch(()=>{});else rememberCommitted(d).catch(()=>{});});
 chrome.webNavigation.onReferenceFragmentUpdated.addListener(d=>{if(d.frameId===0)rememberSameDocument(d.tabId,d.url).catch(()=>{});else rememberCommitted(d).catch(()=>{});});
@@ -386,8 +424,8 @@ async function rememberDicomResponse(tabId,url,contentType,status,method='GET',c
 }
 chrome.webRequest.onBeforeRequest.addListener(d=>{
   if(d.tabId<0)return;
+  if(!shouldInspectRequest({restored:trackedTabsRestored,tracked:trackedTabIds,tabId:d.tabId}))return;
   const hit=classifyPacsUrl(d.url),learnedManifest=isLearnedManifestUrl(d.url);
-  if(!shouldInspectRequest({restored:trackedTabsRestored,tracked:trackedTabIds,tabId:d.tabId,recognised:Boolean(hit)||learnedManifest}))return;
   getTabState(d.tabId).then(s=>{
     if(s.learning?.active)rememberLearningRequest(d.tabId,d,s).catch(()=>{});
     if(s.tracking==='stopped')return;
@@ -399,12 +437,12 @@ chrome.webRequest.onBeforeRequest.addListener(d=>{
 },{urls:['<all_urls>']},['requestBody']);
 chrome.webRequest.onBeforeSendHeaders.addListener(d=>{
   if(d.tabId<0)return;
-  if(!shouldInspectRequest({restored:trackedTabsRestored,tracked:trackedTabIds,tabId:d.tabId,recognised:Boolean(classifyPacsUrl(d.url))||isLearnedUrl(d.url)}))return;
+  if(!shouldInspectRequest({restored:trackedTabsRestored,tracked:trackedTabIds,tabId:d.tabId}))return;
   rememberHeaders(d.tabId,d.url,d.requestHeaders,d.requestId).catch(()=>{});
 },{urls:['<all_urls>']},['requestHeaders']);
 chrome.webRequest.onHeadersReceived.addListener(d=>{
   if(d.tabId<0)return;
-  if(!shouldInspectRequest({restored:trackedTabsRestored,tracked:trackedTabIds,tabId:d.tabId,recognised:Boolean(classifyPacsUrl(d.url))||isLearnedUrl(d.url)}))return;
+  if(!shouldInspectRequest({restored:trackedTabsRestored,tracked:trackedTabIds,tabId:d.tabId}))return;
   let ct='',len=0;
   for(const h of(d.responseHeaders||[])){
     const n=String(h.name).toLowerCase();
@@ -518,10 +556,9 @@ async function analyzeTab(tabId){
         if(summary.detector==='RENDERED_ONLY')throw new Error('Viewer currently serves rendered images only, no DICOM data.');
         throw lastError||new Error(summary.tracking==='stopped'?'Tracking stopped.':'No DICOM/manifest captured yet.');
       }
-      const patientLabel = [inv.patient?.name, inv.patient?.id ? `[${inv.patient.id}]` : ''].filter(Boolean).join(' ') || 'Chưa rõ tên';
       const seriesTotal = Array.isArray(inv.series) ? inv.series.length : 0;
       const imagesTotal = Array.isArray(inv.series) ? inv.series.reduce((s, x) => s + (Number(x.imageCount) || 0), 0) : 0;
-      logEvent('INFO','DISCOVERY',`Nhận diện thành công ca chụp: ${patientLabel} — ${seriesTotal} series (~${imagesTotal} ảnh, adapter: ${inv.adapter})`,{adapter:inv.adapter,patient:inv.patient,seriesCount:seriesTotal,imageCount:imagesTotal,studyUid:inv.studyUid},{tabId,url:currentUrl,studyUid:inv.studyUid});
+      logEvent('INFO','DISCOVERY',`Nhận diện thành công ca chụp tab ${tabId}: ${seriesTotal} series (~${imagesTotal} ảnh, adapter: ${inv.adapter})`,{adapter:inv.adapter,seriesCount:seriesTotal,imageCount:imagesTotal},{tabId,url:currentUrl});
       inv.tabId=tabId;inv.summary=summary;inv.createdAt=Date.now();
       if(state.truncated){
         inv.context={...(inv.context||{}),completeKnown:false,storageTruncated:true};
@@ -581,7 +618,7 @@ if(inv){
       });
     }
   }catch{}
-}if(job.status==='done'){const st=await getTabState(tabId);st.tracking='completed';await saveTabState(tabId,st);chrome.tabs.sendMessage(tabId,{type:'CLEANUP_TRACKING'}).catch(()=>{});}chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});if(inv)chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});if(!hasActiveDownloadJobs(tabId)&&(!activeDownloads||activeDownloads.size===0))await setDownloadUi(true);await setBadge(tabId);logEvent(job.status==='done'?'INFO':['partial','cancelled'].includes(job.status)?'WARN':'ERROR','DOWNLOAD',`Kết thúc tải tab ${tabId} [${job.status}]: đã lưu ${job.completed}/${job.total} ảnh (lỗi: ${job.failed||0})`,{tabId,status:job.status,completed:job.completed,total:job.total,failed:job.failed,errors:job.errors?.slice(0,5)},{tabId,url:inv?.summary?.currentUrl||'',studyUid:inv?.studyUid||''});}
+}if(job.status==='done'){const st=await getTabState(tabId);st.tracking='completed';await saveTabState(tabId,st);await cleanupTabInstrumentation(tabId);}chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});if(inv)chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});if(!hasActiveDownloadJobs(tabId)&&(!activeDownloads||activeDownloads.size===0))await setDownloadUi(true);await setBadge(tabId);logEvent(job.status==='done'?'INFO':['partial','cancelled'].includes(job.status)?'WARN':'ERROR','DOWNLOAD',`Kết thúc tải tab ${tabId} [${job.status}]: đã lưu ${job.completed}/${job.total} ảnh (lỗi: ${job.failed||0})`,{tabId,status:job.status,completed:job.completed,total:job.total,failed:job.failed,errors:job.errors?.slice(0,5)},{tabId,url:inv?.summary?.currentUrl||'',studyUid:inv?.studyUid||''});}
 async function startJob(tabId,selected,options={}){
   const existing=await getJob(tabId);
   if(existing&&['preparing','downloading','cancelling'].includes(existing.status))throw new Error('This tab is currently downloading DICOM.');
@@ -589,7 +626,7 @@ async function startJob(tabId,selected,options={}){
   if(!inv)throw new Error('Study not yet recognized.');
   const tasks=await buildTasks(inv,selected);
   if(!tasks.length)throw new Error('No DICOM images in selected series.');
-  logEvent('INFO','DOWNLOAD',`Bắt đầu tải DICOM tab ${tabId}: ${selected.length} series (${tasks.length} ảnh, adapter: ${inv.adapter})`,{tabId,selected:selected.length,total:tasks.length,adapter:inv.adapter,patient:inv.patient?.name},{tabId,url:inv?.summary?.currentUrl||'',studyUid:inv?.studyUid||''});
+  logEvent('INFO','DOWNLOAD',`Bắt đầu tải DICOM tab ${tabId}: ${selected.length} series (${tasks.length} ảnh, adapter: ${inv.adapter})`,{tabId,selected:selected.length,total:tasks.length,adapter:inv.adapter},{tabId,url:inv?.summary?.currentUrl||''});
   await ensureOffscreen();
   const attemptId=crypto.randomUUID();
   const expectedSopUids=[...new Set(tasks.map(t=>String(t.sopInstanceUid||'').trim()).filter(Boolean))];
@@ -659,7 +696,7 @@ async function startJob(tabId,selected,options={}){
 
 async function cancelJob(tabId){const j=await getJob(tabId);if(!j)return;jobMemory.set(tabId,{...j,status:'cancelling',updatedAt:Date.now()});scheduleJobFlush(tabId,true);await ensureOffscreen();await chrome.runtime.sendMessage({target:'offscreen',type:'CANCEL_ENGINE',tabId}).catch(()=>{});}
 
-async function siteAccessChanged(tabId){await injectContent(tabId);await startTracking(tabId,true);return scanTab(tabId);}
+async function siteAccessChanged(tabId){await startTracking(tabId,true);return scanTab(tabId);}
 async function currentOverview(tabId){const [summary,state,inventory,job]=await Promise.all([scanTab(tabId),getTabState(tabId),getSession(invKey(tabId)),getJob(tabId)]);return{summary,state,inventory,job};}
 
 async function handleEngineProgress(m){
@@ -889,7 +926,7 @@ chrome.action.onClicked.addListener(async tab=>{
 });
 chrome.tabs.onCreated.addListener(tab=>{if(tab.id&&tab.url&&/^https?:/i.test(tab.url))ensurePanel(tab.id).catch(()=>{});});
 chrome.tabs.onActivated.addListener(activeInfo=>{const tabId=activeInfo.tabId;if(!tabId)return;(async()=>{const tab=await chrome.tabs.get(tabId).catch(()=>null);if(!tab?.url||!/^https?:/i.test(tab.url))return;await ensurePanel(tabId);const clean=cleanUrl(tab.url),score=urlConfidence(clean),shell=classifyViewerShell(clean);if(score>=AUTO_ARM_SCORE||Boolean(shell)){const s=await getTabState(tabId);if(!['watching','stopped','completed'].includes(s.tracking))await startTracking(tabId,false);}})().catch(()=>{});});
-chrome.tabs.onUpdated.addListener((tabId,change,tab)=>{if(!change.url&&!change.status&&!change.title)return;const u=change.url||tab?.url||'';if(!u||!/^https?:/i.test(u))return;ensurePanel(tabId).catch(()=>{});if(change.url)markCandidate(tabId,u).catch(()=>{});if(change.status==='complete')hasOrigin(u).then(ok=>{if(ok)setTimeout(()=>{injectContent(tabId);getTabState(tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(tabId);});},150);}).catch(()=>{});});
-chrome.tabs.onRemoved.addListener(tabId=>{(async()=>{const j=jobMemory.get(tabId)||await getSession(jobKey(tabId));if(j&&['preparing','downloading','cancelling'].includes(j.status)){chrome.storage.session.remove(tabKey(tabId)).catch(()=>{});return;}jobMemory.delete(tabId);tabMemory.delete(tabId);invMemory.delete(tabId);perfScanCache.delete(tabId);markTracked(tabId,false);badgeCache.delete(tabId);activeAnalysis.delete(tabId);chrome.storage.session.remove([tabKey(tabId),invKey(tabId),jobKey(tabId)]).catch(()=>{});})().catch(()=>{});});
-async function boot(){await trackedTabsReady;await setDownloadUi(true);await loadRecipes();await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});await chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true}).catch(()=>{});appendLog({level:'info',category:'system',message:`PACS DICOM Extension v${chrome.runtime.getManifest().version} khởi động hoàn tất.`}).catch(()=>{});const tabs=await chrome.tabs.query({});await Promise.allSettled(tabs.map(async tab=>{if(!tab?.id||!tab?.url||!/^https?:/i.test(tab.url))return;await ensurePanel(tab.id);await markCandidate(tab.id,tab.url);if(await hasOrigin(tab.url))await injectContent(tab.id);}));}
+chrome.tabs.onUpdated.addListener((tabId,change,tab)=>{if(!change.url&&!change.status&&!change.title)return;const u=change.url||tab?.url||'';if(!u||!/^https?:/i.test(u))return;ensurePanel(tabId).catch(()=>{});(async()=>{if(change.url&&await shouldHandleNavigation(tabId,u))await markCandidate(tabId,u);if(change.status==='complete'&&await shouldHandleNavigation(tabId,u)&&await hasOrigin(u))setTimeout(()=>{injectContent(tabId);getTabState(tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(tabId);});},150);})().catch(()=>{});});
+chrome.tabs.onRemoved.addListener(tabId=>{(async()=>{clearTabInstrumentationTimers(tabId);const j=jobMemory.get(tabId)||await getSession(jobKey(tabId));if(j&&['preparing','downloading','cancelling'].includes(j.status)){chrome.storage.session.remove(tabKey(tabId)).catch(()=>{});return;}jobMemory.delete(tabId);tabMemory.delete(tabId);invMemory.delete(tabId);perfScanCache.delete(tabId);markTracked(tabId,false);badgeCache.delete(tabId);activeAnalysis.delete(tabId);chrome.storage.session.remove([tabKey(tabId),invKey(tabId),jobKey(tabId)]).catch(()=>{});})().catch(()=>{});});
+async function boot(){await trackedTabsReady;await setDownloadUi(true);await loadRecipes();await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});await chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true}).catch(()=>{});appendLog({level:'info',category:'system',message:`PACS DICOM Extension v${chrome.runtime.getManifest().version} khởi động hoàn tất.`}).catch(()=>{});const tabs=await chrome.tabs.query({});await Promise.allSettled(tabs.map(async tab=>{if(!tab?.id||!tab?.url||!/^https?:/i.test(tab.url))return;await ensurePanel(tab.id);if(!(await shouldHandleNavigation(tab.id,tab.url)))return;await markCandidate(tab.id,tab.url);if(await hasOrigin(tab.url))await injectContent(tab.id);}));}
 chrome.runtime.onInstalled.addListener(details=>{boot().catch(()=>{});if(details?.reason==='install')chrome.tabs.create({url:chrome.runtime.getURL('onboarding.html')}).catch(()=>{});});chrome.runtime.onStartup.addListener(()=>boot().catch(()=>{}));chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true}).catch(()=>{});

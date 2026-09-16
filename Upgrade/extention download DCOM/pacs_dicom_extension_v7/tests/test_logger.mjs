@@ -27,6 +27,32 @@ assert.equal(pacsEntry.tabId, 42);
 assert.ok(!pacsEntry.url.includes('SECRET_ABC'), 'URL must be redacted of tokens');
 assert.ok(pacsEntry.url.includes('<đã ẩn>'));
 
+const clinicalEntry = createLogEntry({
+  level: 'info',
+  category: 'DISCOVERY',
+  message: 'Study inventory ready',
+  studyUid: '1.2.840.113619.2.55.3.604688123.123',
+  details: {
+    patient: {name: 'NGUYEN VAN AN', id: '2606033997'},
+    patientName: 'NGUYEN VAN AN',
+    patientId: '2606033997',
+    studyUid: '1.2.840.113619.2.55.3.604688123.123',
+    seriesCount: 4,
+  },
+});
+const clinicalText = JSON.stringify(clinicalEntry);
+for (const secret of ['NGUYEN VAN AN', '2606033997', '1.2.840.113619.2.55.3.604688123.123']) {
+  assert.ok(!clinicalText.includes(secret), `activity log leaked clinical identifier: ${secret}`);
+}
+assert.ok(clinicalEntry.details.includes('seriesCount'), 'non-identifying diagnostic counts must remain');
+const legacyDiscovery = createLogEntry(
+  'info',
+  'discovery',
+  'Nhận diện thành công ca chụp: NGUYEN VAN AN [2606033997] — 4 series',
+);
+assert.ok(!legacyDiscovery.message.includes('NGUYEN VAN AN'));
+assert.ok(!legacyDiscovery.message.includes('2606033997'));
+
 // Test 2: formatLogsAsText
 const logs = [
   entry,

@@ -35,8 +35,8 @@ assert.equal(
   'an unrelated tab is skipped once the set is known — this is the whole saving',
 );
 assert.equal(
-  shouldInspectRequest({restored: true, tracked, tabId: 99, recognised: true}), true,
-  'a recognised PACS url is inspected whatever tab it came from',
+  shouldInspectRequest({restored: true, tracked, tabId: 99, recognised: true}), false,
+  'a recognised PACS url on an unrelated tab must not defeat per-tab tracking',
 );
 
 // The regression this file exists for. MV3 tears the worker down after ~30s

@@ -30,12 +30,12 @@ export function stateIsTracked(state) {
 /**
  * `true` when a request must be inspected.
  *
- * `recognised` is for a URL that already looks like PACS traffic or a learned
- * endpoint: those are always inspected, whatever tab they came from, which is
- * what keeps downloads working even in the window before `restored` flips.
+ * URL recognition must not bypass this gate. Doing so would make a global
+ * host grant inspect unrelated browsing and contradict the per-tab tracking
+ * contract. Before restoration finishes the gate still fails open so a
+ * revived worker does not silently lose a request from a tracked tab.
  */
-export function shouldInspectRequest({restored, tracked, tabId, recognised}) {
-  if (recognised) return true;
+export function shouldInspectRequest({restored, tracked, tabId}) {
   if (!restored) return true;
   return Boolean(tracked && tracked.has(tabId));
 }
