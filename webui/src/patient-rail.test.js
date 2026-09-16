@@ -127,7 +127,8 @@ describe("Viewer tab: patient rail", () => {
 
     expect(html).toContain("NGUYỄN HỮU SỰ");
     expect(html).toContain("2607063527");
-    expect(html).toContain("Nam · 1962 · 63 tuổi");
+    // Short enough for a 246px column, and in the language on screen.
+    expect(html).toContain("Nam · 1962 · 63T");
     expect(html).toContain("BV Hà Tĩnh");
   });
 
@@ -148,6 +149,18 @@ describe("Viewer tab: patient rail", () => {
     // Nothing is filled in from the folder path or from another patient.
     expect(blank).not.toContain("NGUYỄN HỮU SỰ");
     expect(blank).not.toContain("1962");
+  });
+
+  it("writes the sex and the age in the language on screen", () => {
+    // `patient.gender` is a recorded value, so an entry it has no translation
+    // for passes through as it stands rather than being guessed at.
+    setLanguage("en");
+    const english = renderPatientRail();
+    expect(english).toContain("Male · 1962 · 63y");
+
+    setLanguage("vi");
+    state.archive.patient.gender = "M";
+    expect(renderPatientRail()).toContain("M · 1962 · 63T");
   });
 
   it("hands the name and the patient ID to the clipboard when pressed", async () => {
@@ -258,7 +271,9 @@ describe("Viewer tab: patient rail", () => {
     expect(html).toContain("rec-info-card");
     expect(html).toContain("rec-name-row");
     // One line, in the order a reader reads it: where, then how to reach them.
-    expect(html).toContain("BV Hà Tĩnh · 0912345678 · Hà Nội");
+    // The phone sits in a button of its own, because it is dialled.
+    expect(html).toMatch(/BV Hà Tĩnh · <button[^>]*data-copy-text="0912345678"/);
+    expect(html).toContain("· Hà Nội");
     expect(html).toContain('data-action="edit-record"');
     // Button should only contain the icon glyph '✎', not trailing text
     expect(html).toContain('>✎</button>');

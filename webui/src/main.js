@@ -2327,18 +2327,31 @@ function renderPatientRail() {
   const patient = state.archive?.patient || {};
   const series = state.archive?.series || [];
 
-  const identity = [patient.gender, patient.birthYear, patient.age ? tf("{} tuổi", patient.age) : ""]
+  // "41T" rather than "41 tuổi": the same shorthand the reader's own folder
+  // names use, and the column it has to fit in is 246px wide.
+  const identity = [
+    genderLabel(patient.gender),
+    patient.birthYear,
+    patient.age ? tf("{}T", patient.age) : "",
+  ]
     .map((value) => String(value || "").trim())
     .filter(Boolean)
     .join(" · ");
 
   // Hospital, phone and address used to be a six-row list that repeated the
   // line above it and pushed the record itself below the fold. They are one
-  // line now, and only where somebody recorded them.
-  const contact = [patient.hospital, patient.phone, patient.address]
-    .map((value) => recordedIdentity(value))
-    .filter(Boolean)
-    .join(" · ");
+  // line now, and only where somebody recorded them. The phone number is a
+  // copy button like the name and the ID: it is dialled, not read.
+  const contact = [
+    escapeHtml(recordedIdentity(patient.hospital)),
+    recordedIdentity(patient.phone)
+      ? `<button class="rec-copy" type="button" data-action="copy-patient-field"
+          data-copy-text="${escapeHtml(patient.phone)}"
+          title="${escapeHtml(t("Sao chép số điện thoại"))}"
+          >${escapeHtml(patient.phone)}</button>`
+      : "",
+    escapeHtml(recordedIdentity(patient.address)),
+  ].filter(Boolean).join(" · ");
 
   const timeline = buildMediaTimeline(series, patient.timelineLabels || {});
 
@@ -2373,7 +2386,7 @@ function renderPatientRail() {
                 >${escapeHtml(patient.patientId)}</button>
             ` : "—"}${identity ? ` · ${escapeHtml(identity)}` : ""}
           </small>
-          ${contact ? `<small class="rec-contact">${escapeHtml(contact)}</small>` : ""}
+          ${contact ? `<small class="rec-contact">${contact}</small>` : ""}
         </div>
         <div class="dx-divider">${escapeHtml(t("Chẩn đoán & điều trị"))}</div>
         ${clinical.renderClinicalCard()}
@@ -2776,9 +2789,21 @@ function filteredPatientList() {
  * patient's images is exactly the kind of detail a clinician trusts to confirm
  * they opened the right chart.
  */
+/**
+ * The sex as the interface writes it.
+ *
+ * `t()` hands back whatever it was given when it has no entry, so a manifest
+ * carrying "M", "O" or a word nobody planned for passes through as it stands
+ * rather than being guessed at or blanked.
+ */
+function genderLabel(value) {
+  const text = String(value || "").trim();
+  return text ? t(text) : "";
+}
+
 function patientDemographicsLine(patient) {
   const parts = [
-    patient.gender,
+    genderLabel(patient.gender),
     patient.birthYear ? (String(patient.birthYear).toLowerCase().includes("t") ? patient.birthYear : `${patient.birthYear}`) : "",
     patient.hospital
   ].map((value) => String(value || "").trim()).filter(Boolean);

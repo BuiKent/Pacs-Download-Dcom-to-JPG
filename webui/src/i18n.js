@@ -142,6 +142,9 @@ export const EN = {
   "Chưa rõ ngày chụp": "Date not recorded",
   "Chưa có mô tả": "No description",
   "{} tuổi": "{} years old",
+  // The short form, for the identity line in a 246px rail.
+  "{}T": "{}y",
+  "Sao chép số điện thoại": "Copy phone number",
   "Series DICOM này thiếu hình học: chỉ xem/zoom/pan; không dùng kết quả đo vật lý.":
     "This DICOM series has no usable geometry: view/zoom/pan only; do not rely on physical measurements.",
   "Tên hiển thị trên timeline": "Timeline display name",
