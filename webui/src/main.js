@@ -2202,10 +2202,91 @@ function refreshClinicalEditor() {
   bindClinicalCard();
 }
 
+/**
+ * True while a repaint is running, and whether one was asked for meanwhile.
+ *
+ * Replacing the form takes away whatever was focused, and the browser answers
+ * that by firing `change` on the very field it has just removed — inside the
+ * `outerHTML` assignment doing the removing. That handler asking for a repaint
+ * of its own starts a second one against a node the first is halfway through
+ * replacing, which throws NotFoundError and leaves the form half drawn. Chrome
+ * even names the cause: "Perhaps it was moved in a blur event handler?".
+ *
+ * So a nested request is remembered rather than run, and served once the DOM
+ * is whole again. Remembered rather than dropped because the nested handler
+ * has already written into the draft, and the markup the outer repaint is
+ * inserting was built before that write.
+ */
+let clinicalRepainting = false;
+let clinicalRepaintPending = false;
+
 /** Repaint both places the record shows: the rail summary and the form. */
 function refreshClinicalSurfaces() {
-  refreshClinicalCard();
-  refreshClinicalEditor();
+  if (clinicalRepainting) {
+    clinicalRepaintPending = true;
+    return;
+  }
+  clinicalRepainting = true;
+  try {
+    // Bounded: a repaint can ask for one more, and that one settles because by
+    // then nothing focused is left to be taken away. The cap is what stops a
+    // bug elsewhere turning this into a frozen tab.
+    for (let pass = 0; pass < 3; pass += 1) {
+      clinicalRepaintPending = false;
+      refreshClinicalCard();
+      refreshClinicalEditor();
+      if (!clinicalRepaintPending) break;
+    }
+  } finally {
+    clinicalRepainting = false;
+    clinicalRepaintPending = false;
+  }
+}
+
+/**
+ * Where the caret is, so the redraw about to happen can put it back.
+ *
+ * A repaint replaces the form wholesale and the node being worked in goes with
+ * it, which leaves focus on the document body in the middle of a form.
+ * Choosing a diagnosis off the list redraws the grade beside it, so this is
+ * the field it happens in most.
+ */
+function clinicalFocusPlace(input) {
+  const field = input?.dataset?.clinicalField;
+  if (!field) return null;
+  // Only the field that actually holds the caret. A `<select>` changed without
+  // being focused — which is what a keyboard-driven or scripted change looks
+  // like — must not pull the caret out of the text field the person is in.
+  if (document.activeElement !== input) return null;
+  const tumor = input.closest("[data-tumor-index]");
+  const event = input.closest("[data-event-index]");
+  const scope = tumor
+    ? `[data-tumor-index="${tumor.dataset.tumorIndex}"]`
+    : event
+      ? `[data-event-index="${event.dataset.eventIndex}"]`
+      : "";
+  let caret = null;
+  // `selectionStart` throws on an input that has no caret to report — a date,
+  // a number — and returns null on a select.
+  try {
+    caret = input.selectionStart;
+  } catch {
+    caret = null;
+  }
+  return { selector: `${scope} [data-clinical-field="${field}"]`, caret };
+}
+
+function restoreClinicalFocus(place) {
+  if (!place) return;
+  const node = app?.querySelector(`.dx-workspace ${place.selector}`);
+  if (!node) return;
+  node.focus();
+  if (place.caret === null || typeof node.setSelectionRange !== "function") return;
+  try {
+    node.setSelectionRange(place.caret, place.caret);
+  } catch {
+    // An input with no caret. Focus alone is what mattered.
+  }
 }
 
 /**
@@ -2239,8 +2320,11 @@ function bindClinicalHost(card) {
     // `input` catches typing and `change` catches a value picked out of the
     // dropdown or a date set by the picker; both write into the same draft.
     const handle = (event) => {
-      const needsRedraw = clinical.applyFieldEdit(event.target);
-      if (needsRedraw) refreshClinicalSurfaces();
+      const needsRedraw = clinical.applyFieldEdit(event.target, event.type);
+      if (!needsRedraw) return;
+      const place = clinicalFocusPlace(event.target);
+      refreshClinicalSurfaces();
+      restoreClinicalFocus(place);
     };
     input.addEventListener("input", handle);
     input.addEventListener("change", handle);

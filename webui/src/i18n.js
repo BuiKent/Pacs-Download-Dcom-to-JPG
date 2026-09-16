@@ -418,6 +418,8 @@ export const EN = {
   "{} chu kỳ": "{} cycles",
   "{} (độ {})": "{} (grade {})",
   "Độ {}": "Grade {}",
+  // The grade range beside a diagnosis in the list: "độ 2-4".
+  "độ {}": "grade {}",
   "Khối u chưa mô tả": "Tumour not described",
   "Hồ sơ lâm sàng": "Clinical record",
   "Hồ sơ bệnh nhân": "Patient record",
@@ -955,7 +957,7 @@ export const CLINICAL_EN = {
 
   // WHO CNS5 entity names. English is the nomenclature these were written in,
   // so it is the name a report, a guideline and a tumour board all use.
-  "U tế bào hình sao, IDH đột biến": "Astrocytoma, IDH-mutant",
+  "U sao bào, IDH đột biến": "Astrocytoma, IDH-mutant",
   "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q":
     "Oligodendroglioma, IDH-mutant, 1p/19q-codeleted",
   "U nguyên bào thần kinh đệm, IDH tự nhiên": "Glioblastoma, IDH-wildtype",
@@ -963,9 +965,9 @@ export const CLINICAL_EN = {
     "Diffuse midline glioma, H3 K27-altered",
   "U thần kinh đệm lan toả bán cầu, H3 G34 đột biến":
     "Diffuse hemispheric glioma, H3 G34-mutant",
-  "U tế bào hình sao lông": "Pilocytic astrocytoma",
-  "U tế bào hình sao vàng đa hình": "Pleomorphic xanthoastrocytoma (PXA)",
-  "U tế bào hình sao dưới màng não thất tế bào khổng lồ":
+  "U sao bào lông": "Pilocytic astrocytoma",
+  "U sao bào vàng đa hình": "Pleomorphic xanthoastrocytoma (PXA)",
+  "U sao bào dưới màng não thất tế bào khổng lồ":
     "Subependymal giant cell astrocytoma (SEGA)",
   "U màng não thất": "Ependymoma",
   "U dưới màng não thất": "Subependymoma",

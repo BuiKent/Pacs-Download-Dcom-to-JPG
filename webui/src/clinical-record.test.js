@@ -88,7 +88,11 @@ const VOCABULARY = {
   locations: { "Nội sọ": ["Thuỳ chẩm", "Thuỳ trán"], "Tuỷ sống": ["Nón tuỷ"] },
   axes: { "Nội sọ": ["Trong trục", "Ngoài trục"], "Tuỷ sống": ["Nội tuỷ"] },
   sides: ["P", "T", "Giữa", "Hai bên"],
-  histologies: ["U màng não", "U nguyên bào thần kinh đệm, IDH tự nhiên"],
+  histologies: [
+    "U màng não",
+    "U nguyên bào thần kinh đệm, IDH tự nhiên",
+    "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q",
+  ],
   grades: ["1", "2", "3", "4"],
   molecularMarkers: ["IDH1/2", "MGMT"],
   diagnosisBases: ["Hình ảnh", "Mô bệnh học"],
@@ -96,9 +100,15 @@ const VOCABULARY = {
   resectionExtents: ["Lấy toàn bộ", "Sinh thiết"],
   radiotherapyTechniques: ["IMRT", "VMAT"],
   chemoRegimens: ["Temozolomide đồng thời"],
+  gradesByHistology: {
+    "U màng não": ["1", "2", "3"],
+    "U nguyên bào thần kinh đệm, IDH tự nhiên": ["4"],
+    "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q": ["2", "3"],
+  },
   histologyGroups: {
     "U màng não": "U màng não và u trung mô",
     "U nguyên bào thần kinh đệm, IDH tự nhiên": "U thần kinh đệm",
+    "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q": "U thần kinh đệm",
   },
 };
 
@@ -735,19 +745,6 @@ describe("Clinical terms in two languages", () => {
     expect(options("side").find((o) => o.value === "P").text).toBe("R");
   });
 
-  it("puts the family and the WHO name beside every diagnosis on offer", async () => {
-    await openFormWithATumour();
-
-    const list = form().querySelector("#dx-histologies");
-    expect(list, "no diagnosis list").not.toBeNull();
-    const gbm = [...list.options].find(
-      (option) => option.value === "U nguyên bào thần kinh đệm, IDH tự nhiên",
-    );
-    expect(gbm.label).toBe("U thần kinh đệm · Glioblastoma, IDH-wildtype");
-    expect([...list.options].find((option) => option.value === "U màng não").label)
-      .toBe("U màng não và u trung mô · Meningioma");
-  });
-
   it("reads a saved record back in the language on screen", async () => {
     clinicalState.record = {
       tumors: [{
@@ -772,6 +769,110 @@ describe("Clinical terms in two languages", () => {
     expect(card().textContent).toContain("Intra-axial");
     expect(card().textContent).toContain("Histopathology");
     expect(card().textContent).toContain("Radiotherapy");
+  });
+
+  /** The grades the form is offering right now, blank option excluded. */
+  function gradesOffered() {
+    const select = form().querySelector("select[data-clinical-field='grade']");
+    expect(select, "no grade select").not.toBeNull();
+    return [...select.options].map((option) => option.value).filter(Boolean);
+  }
+
+  it("offers only the grades the chosen diagnosis can carry", async () => {
+    await openFormWithATumour();
+    // Nothing chosen yet, so nothing is ruled out.
+    expect(gradesOffered()).toEqual(["1", "2", "3", "4"]);
+
+    type(form().querySelector("[data-clinical-field='histology']"),
+      "U nguyên bào thần kinh đệm, IDH tự nhiên");
+    await settle();
+    // A glioblastoma, IDH-wildtype is grade 4 by definition.
+    expect(gradesOffered()).toEqual(["4"]);
+
+    type(form().querySelector("[data-clinical-field='histology']"),
+      "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q");
+    await settle();
+    expect(gradesOffered()).toEqual(["2", "3"]);
+  });
+
+  it("survives a change arriving from the field the redraw just took away", async () => {
+    // What the browser really does: replacing the form removes whatever was
+    // focused, and it answers that by firing `change` on the field it has just
+    // removed. In a real browser that arrives *inside* the `outerHTML` doing
+    // the removing, and a second repaint started from there throws
+    // NotFoundError and leaves the form half drawn — which is what
+    // `tools/smoke_browser.py` caught. jsdom fires no events on an `outerHTML`
+    // swap, so what is pinned here is the other half of it: the late event
+    // itself, off a node no longer on screen, must not damage what is.
+    await openFormWithATumour();
+    const stale = form().querySelector("[data-clinical-field='histology']");
+    type(stale, "U màng não");
+    await settle();
+    expect(stale.isConnected).toBe(false);
+
+    stale.value = "U nguyên bào thần kinh đệm, IDH tự nhiên";
+    expect(() => stale.dispatchEvent(new window.Event("change", { bubbles: true })))
+      .not.toThrow();
+    await settle();
+
+    expect(document.querySelectorAll("#app .dx-workspace").length).toBe(1);
+    expect(form().querySelector("[data-clinical-field='histology']").value)
+      .toBe("U nguyên bào thần kinh đệm, IDH tự nhiên");
+    // And the form is still live: the grade list followed the new diagnosis.
+    expect(gradesOffered()).toEqual(["4"]);
+  });
+
+  it("leaves the caret where it was after the form redraws itself", async () => {
+    // Picking a diagnosis redraws the grade field beside it, which replaces
+    // the whole form. Without the caret being put back, the person is left
+    // typing into the document body halfway down a record.
+    await openFormWithATumour();
+    const field = form().querySelector("[data-clinical-field='histology']");
+    field.focus();
+    type(field, "U màng não");
+    await settle();
+
+    const active = document.activeElement;
+    expect(active.dataset.clinicalField).toBe("histology");
+    expect(active.closest("[data-tumor-index]").dataset.tumorIndex).toBe("0");
+    // And it is the field on screen now, not the one the repaint threw away.
+    expect(form().contains(active)).toBe(true);
+  });
+
+  it("keeps the whole range for a diagnosis typed off a report", async () => {
+    await openFormWithATumour();
+    type(form().querySelector("[data-clinical-field='histology']"),
+      "U sao bào kiểu hiếm, chưa phân loại");
+    await settle();
+    expect(gradesOffered()).toEqual(["1", "2", "3", "4"]);
+  });
+
+  it("does not drop a grade already recorded that the new diagnosis rules out", async () => {
+    // Somebody wrote 2 down. Editing the diagnosis beside it must not make it
+    // vanish without anyone seeing — it stays on the list, visibly wrong.
+    await openFormWithATumour();
+    type(form().querySelector("[data-clinical-field='histology']"), "U màng não");
+    await settle();
+    const grade = form().querySelector("select[data-clinical-field='grade']");
+    grade.value = "2";
+    grade.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await settle();
+
+    type(form().querySelector("[data-clinical-field='histology']"),
+      "U nguyên bào thần kinh đệm, IDH tự nhiên");
+    await settle();
+    expect(gradesOffered()).toEqual(["4", "2"]);
+    expect(clinicalState.draft.tumors[0].grade).toBe("2");
+  });
+
+  it("puts the family, the WHO name and the grade beside each diagnosis", async () => {
+    await openFormWithATumour();
+    const list = form().querySelector("#dx-histologies");
+    expect(list, "no diagnosis list").not.toBeNull();
+    const label = (value) => [...list.options].find((o) => o.value === value).label;
+    expect(label("U nguyên bào thần kinh đệm, IDH tự nhiên"))
+      .toBe("U thần kinh đệm · Glioblastoma, IDH-wildtype · độ 4");
+    expect(label("U màng não")).toBe("U màng não và u trung mô · Meningioma · độ 1-3");
   });
 
   it("leaves a diagnosis typed off a report exactly as it was written", async () => {

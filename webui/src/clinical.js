@@ -443,6 +443,7 @@ function vocab() {
     histologies: value?.histologies || [],
     histologyGroups: value?.histologyGroups || {},
     grades: value?.grades || [],
+    gradesByHistology: value?.gradesByHistology || {},
     molecularMarkers: value?.molecularMarkers || [],
     diagnosisBases: value?.diagnosisBases || [],
     eventKinds: value?.eventKinds || [],
@@ -470,6 +471,36 @@ function datalist(id, options, hintFor = null) {
   }</datalist>`;
 }
 
+/**
+ * The grades one diagnosis can carry, and the already-recorded one besides.
+ *
+ * A glioblastoma is grade 4 and an oligodendroglioma is 2 or 3, so offering
+ * all four against either of them is offering a combination that does not
+ * exist. A diagnosis the table says nothing about — a metastasis, a colloid
+ * cyst, anything typed off a report — keeps the whole range.
+ *
+ * `current` is always kept, even when it falls outside the range. Somebody
+ * wrote it down, and a grade that quietly disappears because the diagnosis
+ * beside it was edited is worse than one that looks wrong and can be seen.
+ */
+function gradesFor(histology, current) {
+  const lists = vocab();
+  const allowed = lists.gradesByHistology[String(histology || "").trim()];
+  if (!allowed) return lists.grades;
+  const kept = String(current || "").trim();
+  return kept && !allowed.includes(kept) ? [...allowed, kept] : allowed;
+}
+
+/** "độ 4", or "độ 2-4" — the grades a listed diagnosis can carry. */
+function gradeRangeHint(histology) {
+  const allowed = vocab().gradesByHistology[histology];
+  if (!allowed || !allowed.length) return "";
+  const span = allowed.length > 1
+    ? `${allowed[0]}-${allowed[allowed.length - 1]}`
+    : allowed[0];
+  return tf("độ {}", span);
+}
+
 /** The standard English name of a term, or nothing when it is already one. */
 function englishHint(term) {
   return CLINICAL_EN[term] || "";
@@ -484,7 +515,8 @@ function englishHint(term) {
  */
 function histologyHint(name) {
   const group = (vocab().histologyGroups || {})[name];
-  return [group ? tc(group) : "", englishHint(name)].filter(Boolean).join(" · ");
+  return [group ? tc(group) : "", englishHint(name), gradeRangeHint(name)]
+    .filter(Boolean).join(" · ");
 }
 
 /**
@@ -583,7 +615,7 @@ function renderTumorForm(tumor, index) {
       <div class="dxf-row">
         <label class="dxf-field">
           <span>${escapeHtml(t("Độ WHO"))}</span>
-          ${select("grade", tumor.grade, lists.grades, "—")}
+          ${select("grade", tumor.grade, gradesFor(tumor.histology, tumor.grade), "—")}
         </label>
         <label class="dxf-field">
           <span>${escapeHtml(t("Ngày có kết quả"))}</span>
@@ -968,8 +1000,13 @@ function readNumber(raw) {
  * a compartment decides which locations are offered, an event kind decides
  * whether the form asks about fractions or cycles — so the caller knows it has
  * to redraw rather than leave a stale list behind.
+ *
+ * `eventType` is the browser event this came from, because one of those fields
+ * is a text box: the diagnosis decides which WHO grades are offered, and
+ * redrawing it on every `input` would rebuild the box under the person typing
+ * in it. `change` is the moment they pick from the list or leave the field.
  */
-export function applyFieldEdit(input) {
+export function applyFieldEdit(input, eventType = "change") {
   const draft = clinicalState.draft;
   if (!draft || !input) return false;
   const field = input.dataset.clinicalField;
@@ -999,6 +1036,11 @@ export function applyFieldEdit(input) {
     const tumor = draft.tumors[Number(tumorBlock.dataset.tumorIndex)];
     if (!tumor) return false;
     tumor[field] = input.value;
+    // Only on `change`. The diagnosis is a text field, and redrawing it on
+    // every keystroke would take the cursor out from under the person typing;
+    // `change` arrives when they pick from the list or leave the field, which
+    // is when the grade beside it needs to be a different list.
+    if (field === "histology") return eventType === "change";
     if (field === "compartment") {
       // The location and axis lists belong to a compartment. Anything typed
       // under the old one is kept — it may still be right, and silently

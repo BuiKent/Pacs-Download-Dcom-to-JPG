@@ -112,14 +112,14 @@ SIDES = ("P", "T", "Giữa", "Hai bên")
 # thirty cannot cover a pathology report.
 HISTOLOGY_GROUPS = {
     "U thần kinh đệm": (
-        "U tế bào hình sao, IDH đột biến",
+        "U sao bào, IDH đột biến",
         "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q",
         "U nguyên bào thần kinh đệm, IDH tự nhiên",
         "U thần kinh đệm lan toả đường giữa, H3 K27 thay đổi",
         "U thần kinh đệm lan toả bán cầu, H3 G34 đột biến",
-        "U tế bào hình sao lông",
-        "U tế bào hình sao vàng đa hình",
-        "U tế bào hình sao dưới màng não thất tế bào khổng lồ",
+        "U sao bào lông",
+        "U sao bào vàng đa hình",
+        "U sao bào dưới màng não thất tế bào khổng lồ",
     ),
     "U màng não thất và đám rối mạch mạc": (
         "U màng não thất",
@@ -168,6 +168,44 @@ HISTOLOGY_GROUPS = {
 HISTOLOGIES = tuple(
     name for entities in HISTOLOGY_GROUPS.values() for name in entities
 )
+
+# Which grades an entity can actually carry, per WHO CNS5 2021.
+#
+# A grade in this classification belongs to the entity, not to the tumour on
+# its own: a glioblastoma, IDH-wildtype is grade 4 by definition, an
+# oligodendroglioma is 2 or 3 and never 4, and a pilocytic astrocytoma is 1.
+# The form used to offer all four against every diagnosis, which let "u nguyên
+# bào thần kinh đệm độ 2" be recorded — a combination that does not exist.
+#
+# An entity absent from this table is one the classification does not grade
+# (metastasis, lymphoma, a colloid cyst) or one somebody typed in full, and
+# those keep the whole range. This is deliberately fail-open: the form's job is
+# to make the right answer easy, not to refuse a pathology report it has never
+# seen.
+GRADES_BY_HISTOLOGY = {
+    "U sao bào, IDH đột biến": ("2", "3", "4"),
+    "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q": ("2", "3"),
+    "U nguyên bào thần kinh đệm, IDH tự nhiên": ("4",),
+    "U thần kinh đệm lan toả đường giữa, H3 K27 thay đổi": ("4",),
+    "U thần kinh đệm lan toả bán cầu, H3 G34 đột biến": ("4",),
+    "U sao bào lông": ("1",),
+    "U sao bào vàng đa hình": ("2", "3"),
+    "U sao bào dưới màng não thất tế bào khổng lồ": ("1",),
+    "U màng não thất": ("2", "3"),
+    "U dưới màng não thất": ("1",),
+    "U đám rối mạch mạc": ("1", "2", "3"),
+    "U hạch thần kinh đệm": ("1",),
+    "U biểu mô thần kinh loạn sản phôi": ("1",),
+    "U nguyên bào tuỷ": ("4",),
+    "U quái không điển hình/dạng cơ vân": ("4",),
+    "U màng não": ("1", "2", "3"),
+    "U xơ đơn độc": ("1", "2", "3"),
+    "U nguyên bào mạch máu": ("1",),
+    "U bao sợi thần kinh": ("1",),
+    "U sợi thần kinh": ("1",),
+    "U sọ hầu": ("1",),
+    "U nhu mô tuyến tùng": ("1", "2", "3", "4"),
+}
 
 # WHO grades are 1 to 4. An empty grade is a grade nobody has assigned yet, and
 # it stays empty.
@@ -242,6 +280,11 @@ def vocabulary() -> dict:
             for name in entities
         },
         "grades": list(GRADES),
+        # The grades each entity can carry, so the form stops offering four
+        # against a diagnosis that only has one.
+        "gradesByHistology": {
+            name: list(grades) for name, grades in GRADES_BY_HISTOLOGY.items()
+        },
         "molecularMarkers": list(MOLECULAR_MARKERS),
         "diagnosisBases": list(DIAGNOSIS_BASES),
         "eventKinds": list(EVENT_KINDS),

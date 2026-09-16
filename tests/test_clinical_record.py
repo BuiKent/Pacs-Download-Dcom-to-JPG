@@ -68,6 +68,51 @@ class VocabularyTests(unittest.TestCase):
         self.assertEqual(index["U màng não"], "U màng não và u trung mô")
         self.assertEqual(index["U nguyên bào thần kinh đệm, IDH tự nhiên"], "U thần kinh đệm")
 
+    def test_a_grade_is_offered_only_where_the_entity_can_carry_it(self):
+        """WHO CNS5 grades the entity, not the tumour on its own.
+
+        A glioblastoma, IDH-wildtype is grade 4 by definition and an
+        oligodendroglioma is 2 or 3 and never 4, so a form offering all four
+        against either of them is offering a diagnosis that does not exist.
+        """
+        table = clinical_record.GRADES_BY_HISTOLOGY
+        self.assertEqual(table["U nguyên bào thần kinh đệm, IDH tự nhiên"], ("4",))
+        self.assertEqual(table["U sao bào, IDH đột biến"], ("2", "3", "4"))
+        self.assertEqual(
+            table["U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q"], ("2", "3")
+        )
+        self.assertEqual(table["U sao bào lông"], ("1",))
+        self.assertEqual(table["U màng não"], ("1", "2", "3"))
+
+        # Nothing here may name an entity the list does not offer, or a grade
+        # outside 1-4 — either would be a dropdown nobody can satisfy.
+        for name, grades in table.items():
+            self.assertIn(name, clinical_record.HISTOLOGIES, name)
+            self.assertTrue(set(grades) <= set(clinical_record.GRADES), name)
+            self.assertEqual(list(grades), sorted(grades), name)
+
+        # And the entities WHO CNS5 does not grade stay out of it, so the form
+        # keeps the full range for them rather than inventing a constraint.
+        for name in ("U di căn", "U lympho thần kinh trung ương nguyên phát", "Nang keo"):
+            self.assertNotIn(name, table)
+
+        self.assertEqual(
+            clinical_record.vocabulary()["gradesByHistology"]["U nguyên bào thần kinh đệm, IDH tự nhiên"],
+            ["4"],
+        )
+
+    def test_the_astrocytic_entities_use_the_wording_a_report_uses(self):
+        """"U sao bào" is the stem the Ministry of Health's own WHO table uses
+        (Quyết định 1514/QĐ-BYT 2020, Bài 19, §2.4.1), and the wording a
+        Vietnamese pathology report is written in. "U tế bào hình sao" is the
+        longer alternate spelling, and it was what the list offered.
+        """
+        histologies = clinical_record.vocabulary()["histologies"]
+        self.assertIn("U sao bào, IDH đột biến", histologies)
+        self.assertIn("U sao bào lông", histologies)
+        self.assertIn("U sao bào vàng đa hình", histologies)
+        self.assertEqual([h for h in histologies if "tế bào hình sao" in h], [])
+
     def test_the_web_ui_can_read_every_term_out_in_english(self):
         """A Vietnamese term the interface has no English for is a term that
         reaches an English screen in Vietnamese.
