@@ -81,6 +81,30 @@ describe("light chrome palette contrast", () => {
   });
 });
 
+/**
+ * The clinical record fills the reading pane, and the reading pane is dark by
+ * rule rather than by token — hardcoded so that a light chrome cannot leak a
+ * bright surface in beside the images. Tokens cannot be looked up here, so
+ * each pair is written out and checked against the stylesheet for presence.
+ */
+const READING_PANE_PAIRS = [
+  ["#d7dde3", "#0b1119", "the form body on the pane"],
+  ["#e6ebf0", "#0f1620", "the form title in its bar"],
+  ["#9bacba", "#0f1620", "the patient name beside that title"],
+  ["#e6ebf0", "#1b2229", "a value typed into a field"],
+  ["#d7dde3", "#1b2229", "the Đóng button"],
+  ["#ffffff", "#1f6f8b", "the Lưu button"],
+  ["#ddc98c", "#0f1620", "the warning that a draft is unsaved"],
+];
+
+describe("clinical record on the reading pane", () => {
+  it.each(READING_PANE_PAIRS)("%s on %s stays legible (%s)", (foreground, background) => {
+    expect(cssSource).toContain(foreground);
+    expect(cssSource).toContain(background);
+    expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
 describe("controls the browser paints for us", () => {
   it("keeps the colour scheme aligned with the surface underneath", () => {
     // Without these the UA picks system colours for input text, the caret and

@@ -1,0 +1,1702 @@
+import{i as us,a as hs,b as ps,P as Nn,Z as Dn,W as se,S as na,L as Ti,A as Mi,E as Ln,c as En,d as _e,C as ue,T as xe,R as st,e as Zt,M as ia,f as en,g as fs,s as Pi,h as Pt,j as Nt,O as ne,V as It,k as oa,l as ms,m as Tt,n as gs,o as aa,p as ys,q as Wt,r as vs,t as bs,u as ws,I as dn}from"./cornerstone-DTOWQiL2.js";import"./vendor-4o8CNpcx.js";(function(){const e=document.createElement("link").relList;if(e&&e.supports&&e.supports("modulepreload"))return;for(const a of document.querySelectorAll('link[rel="modulepreload"]'))i(a);new MutationObserver(a=>{for(const r of a)if(r.type==="childList")for(const c of r.addedNodes)c.tagName==="LINK"&&c.rel==="modulepreload"&&i(c)}).observe(document,{childList:!0,subtree:!0});function n(a){const r={};return a.integrity&&(r.integrity=a.integrity),a.referrerPolicy&&(r.referrerPolicy=a.referrerPolicy),a.crossOrigin==="use-credentials"?r.credentials="include":a.crossOrigin==="anonymous"?r.credentials="omit":r.credentials="same-origin",r}function i(a){if(a.ep)return;a.ep=!0;const r=n(a);fetch(a.href,r)}})();let Ni="",Ut="";function ks(t){Ni=t}function Ne(t){return Ut=String(t||""),Ut}function $s(){return Ut}function un(t){const e=new URLSearchParams({token:Ni});return Ut&&e.set("session",Ut),`${t}${t.includes("?")?"&":"?"}${e.toString()}`}function Di(){const t={"X-DCom-Token":Ni};return Ut&&(t["X-Viewer-Session"]=Ut),t}async function N(t,e={}){const n=await fetch(t,{...e,cache:"no-store",headers:{"Content-Type":"application/json",...Di(),...e.headers||{}}}),a=(n.headers.get("content-type")||"").includes("application/json")?await n.json():await n.text();if(!n.ok)throw new Error(a?.error||a||`HTTP ${n.status}`);return a}async function He(t){const e=await fetch(t,{cache:"no-store",headers:Di()});if(!e.ok){let n=`HTTP ${e.status}`;try{n=(await e.json()).error||n}catch{}throw new Error(n)}return e.blob()}async function xs(t){const e=await fetch(t,{cache:"no-store",headers:Di()});if(!e.ok){let i=`HTTP ${e.status}`;try{i=(await e.json()).error||i}catch{}throw new Error(i)}const n=(i,a)=>{const r=Number(e.headers.get(i));return Number.isFinite(r)?r:a};return{buffer:await e.arrayBuffer(),pixelType:e.headers.get("X-DCom-Pixel-Type")||"uint16",rows:n("X-DCom-Rows",0),columns:n("X-DCom-Columns",0),samples:n("X-DCom-Samples",1),min:n("X-DCom-Min",0),max:n("X-DCom-Max",0),slope:n("X-DCom-Slope",1),intercept:n("X-DCom-Intercept",0),windowCenter:n("X-DCom-Window-Center",0),windowWidth:n("X-DCom-Window-Width",1),photometric:e.headers.get("X-DCom-Photometric")||"MONOCHROME2"}}function ra(t,e){return`/api/series/${t}/image/${e}`}function Ss(t){return`/api/series/${t}/thumbnail`}let De="en";function sa(t){return De=t==="vi"?"vi":"en",De}function Le(){return De}const si={"DICOM/JPG Downloader & Viewer":"DICOM/JPG Downloader & Viewer",Series:"Series","So sánh ba series cạnh nhau":"Compare three series side by side","Khoá cuộn theo vị trí":"Lock scrolling by position","Đã bỏ khoá: mỗi khung cuộn riêng.":"Unlocked: each pane scrolls on its own.","Thu gọn khu tải phim":"Collapse download panel","Mở khu tải phim":"Expand download panel","Tải phim":"Download","Mở folder DICOM hoặc JPG/PNG trong viewer":"Open a DICOM or JPG/PNG folder in the viewer","Quét lại thư mục hiện tại":"Rescan the current folder","Chuyển sang tiếng Anh":"Switch to Vietnamese","Mở thư mục nhật ký (log) phiên làm việc":"Open session log folder","Mở thư mục nhật ký":"Open log folder","Nhật ký phiên làm việc (Logs)":"Session Activity Logs","Mở thư mục Log":"Open Logs Folder","Mở thư mục Log trong Explorer":"Open Logs folder in Explorer","Ghi log tự động mỗi lần khởi chạy — lưu tại thư mục logs/":"Session logs automatically recorded upon each launch in logs/ folder","Giao diện":"Theme","Lịch sử":"History","Mở lại thư mục đã tải hoặc đã xem":"Reopen a downloaded or previously viewed folder","Chưa có lịch sử":"No history yet","(thư mục không còn)":"(folder is gone)","Worklist & Danh Sách Ca Chụp":"Worklist & Study List","Danh sách bệnh nhân & ca chụp":"Patient Worklist & Studies","Danh sách bệnh nhân":"Patient list","Hoạt động & hàng đợi":"Activity & Queue","Tổng hồ sơ":"Total records","Tab đang mở":"Open tabs","Tìm kiếm mã BN, tên bệnh nhân, thư mục...":"Search patient ID, name, folder...","Chưa có hồ sơ nào trong danh sách":"No records in list","Mở folder bệnh nhân":"Open patient folder","Xem phim":"View study","Đóng tab":"Close tab","Chưa rõ mã BN":"Patient ID unknown","Chưa có thông tin hành chính":"No demographics recorded",STT:"No.","Họ và tên":"Patient Name","Mã BN":"Patient ID","Bệnh nhân / Đợt khám":"Patient / Studies","Ngày chụp":"Study date","Trạng thái":"Status","Thao tác":"Actions",Action:"Actions","{} đợt khám":"{} studies","Sắp xếp theo Họ và tên":"Sort by Patient Name","Sắp xếp theo Mã BN":"Sort by Patient ID","Sắp xếp theo Ngày chụp":"Sort by Study Date","Ngày thêm":"Date added","Sắp xếp theo Ngày thêm":"Sort by Date Added","Sao chép ngày thêm":"Copy date added","Loại chụp":"Modality","Trạng thái đọc":"Read status","Mọi thời điểm":"Any date","Hôm nay":"Today","7 ngày":"Last 7 days","30 ngày":"Last 30 days","Tất cả":"All","Chưa đọc":"Unread","Đã đọc":"Read","Bỏ lọc":"Clear filters","{} ca chưa đọc":"{} unread","Đánh dấu đã đọc":"Mark as read","Bỏ đánh dấu đã đọc":"Mark as unread","Xuất hồ sơ":"Export record","Xuất hồ sơ cho bệnh nhân":"Export record for the patient","Xuất ảnh JPG kèm trang index.html để bệnh nhân mở bằng trình duyệt":"Export the JPGs with an index.html the patient can open in a browser","Đang xuất hồ sơ sang thư mục đã chọn…":"Exporting the record to the chosen folder…","Hồ sơ này chưa có thư mục trên đĩa.":"This record has no folder on disk.","Chọn thư mục xuất cần chạy trong ứng dụng WebView2.":"Choosing an export folder requires the WebView2 app.","Thu nhỏ cửa sổ":"Minimize","Phóng to / Khôi phục":"Maximize / Restore","Đóng ứng dụng":"Close","Mở folder hồ sơ: phim, ảnh, video và văn bản đều được nhận diện":"Open a record folder — studies, photos, video and text are all detected","Chưa mở hồ sơ nào":"No record open","Mở folder hồ sơ; app tự phân loại phim DICOM, ảnh, video và văn bản bên trong.":"Open a record folder; the app sorts the DICOM studies, photos, video and text inside it.","Mở folder":"Open folder","Thông tin ca":"Case details","Thu gọn thông tin ca":"Collapse case details","Mở thông tin ca":"Expand case details","Mở thông tin ca ( [ )":"Expand case details ( [ )","Tải ca chụp":"Downloads","Lịch sử mở gần đây":"Recent history","Thông tin bệnh nhân":"Patient Information","Sửa thông tin bệnh nhân":"Edit Patient Info","Chỉnh sửa thông tin bệnh nhân":"Edit patient information",Sửa:"Edit",Lưu:"Save","Lưu thay đổi":"Save changes",Hủy:"Cancel","Giới tính":"Gender","Năm sinh":"Birth Year","Số điện thoại":"Phone Number","Điện thoại":"Phone","Địa chỉ":"Address","Nhập họ tên":"Enter patient name","Nhập mã BN":"Enter patient ID","Nhập SĐT":"Enter phone number","Nhập địa chỉ":"Enter address","Tên bệnh viện":"Hospital name","Chẩn đoán / Ghi chú":"Diagnosis / Notes",Nam:"Male",Nữ:"Female",Khác:"Other","Đã lưu thông tin bệnh nhân.":"Patient information saved.","Lỗi:":"Error:","Chưa có tên bệnh nhân":"Patient name not recorded","Bệnh viện":"Hospital","Chẩn đoán":"Diagnosis","Lịch sử khám":"Exam history","Chưa có dữ liệu nào trong hồ sơ này.":"Nothing recorded for this patient yet.","Chưa rõ ngày chụp":"Date not recorded","Chưa có mô tả":"No description","{} tuổi":"{} years old","Series DICOM này thiếu hình học: chỉ xem/zoom/pan; không dùng kết quả đo vật lý.":"This DICOM series has no usable geometry: view/zoom/pan only; do not rely on physical measurements.","Tên hiển thị trên timeline":"Timeline display name","Đổi tên lần chụp hoặc loại media":"Rename this study or media entry","Lưu tên":"Save name","Bỏ thay đổi tên":"Cancel name change","Đã lưu tên hiển thị trên timeline.":"Timeline display name saved.","Dữ liệu gốc DICOM (Ưu tiên dựng từ DICOM)":"Original DICOM data (prioritized for reconstruction)","Dữ liệu ảnh chuyển đổi JPG":"Converted JPG image data","Hoàn tác bước chỉnh sửa":"Undo the last edit","Làm lại bước vừa hoàn tác":"Redo the edit just undone","Đã hoàn tác đến bước {}/{}.":"Undid to edit {} of {}.","Đã làm lại đến bước {}/{}.":"Redid to edit {} of {}.","Đã quay lại file gốc trong hồ sơ.":"Back to the original file in the record.",Ảnh:"Photos","Phim chụp":"Study","Văn bản":"Text","Bệnh án PDF":"PDF records","Chưa có tài liệu nào":"No document here","Lưu vào hồ sơ":"Save to record","Chưa có chỉnh sửa nào để lưu.":"There is no edit to save yet.","Đã lưu vào hồ sơ: {}":"Saved to the record: {}","Hãy kéo chuột trên ảnh để chọn vùng trước.":"Drag on the image to select a region first.","Đã chọn vùng {}×{} px. Chọn công cụ để áp dụng.":"Selected {}×{} px. Pick a tool to apply it.","Đang mở hồ sơ…":"Opening record…","Đang mở…":"Opening…","Chưa rõ định dạng nguồn":"Source format not recorded","Không mở được hồ sơ":"Could not open the record","Ghi chẩn đoán cho hồ sơ này":"Record a diagnosis for this patient","Chẩn đoán của hồ sơ này:":"Diagnosis for this patient:","Đã lưu chẩn đoán vào hồ sơ bệnh nhân.":"Diagnosis saved to the patient record.","Chưa có văn bản nào":"No text file here","Đang đọc file…":"Reading file…",Chép:"Copy","Series video hoặc văn bản, không dựng MPR.":"Video or text series — no MPR reconstruction.","Ca chụp chưa có mô tả":"Study has no description","Chưa đếm":"Not counted yet","Chưa quét":"Not scanned yet","{} series":"{} series","{} lát":"{} slices",series:"series",video:"videos",trang:"pages","bệnh nhân":"patients","hồ sơ":"studies","ảnh & lát":"images & slices","phút video":"video length","trên đĩa":"on disk","cần xử lý":"need attention","Tải tiếp":"Resume download","Ca chụp này không lưu link viewer để tải tiếp.":"This study has no stored viewer link to resume from.","Đã nạp link của ca chụp. Quét series rồi bấm Thử lại để tải tiếp.":"Study link loaded. Scan the series, then press Retry to resume.","Đã tải series đã chọn":"Selected series downloaded","Chưa hoàn tất":"Incomplete","Thiếu folder":"Folder missing","Đang tải":"Downloading","X-Quang":"X-ray","Bệnh án":"Records","Tổng quan kho & dữ liệu":"Archive & Data Overview","Thư mục nguồn bệnh nhân":"Patient Source Folders","Thêm thư mục nguồn":"Add source folder","Thêm thư mục":"Add folder","Mặc định":"Default","Không tồn tại":"Not found","Mở trong Explorer":"Open in Explorer","Xóa thư mục khỏi danh sách":"Remove folder from list","Nhập đường dẫn thư mục nguồn:":"Enter source folder path:","Đã thêm thư mục nguồn: {}":"Added source folder: {}","Đã thêm thư mục nguồn thành công.":"Source folder added successfully.","Đã xóa thư mục nguồn: {}":"Removed source folder: {}","Chưa có thư mục nguồn nào được cấu hình.":"No source folders configured.","Hồ sơ gần đây":"Recent records","Series trong kho":"Series in archive","Ảnh & lát cắt":"Images & slices","Đang xử lý":"In progress","Gần đây":"Recent",Mở:"Open","Đang chạy...":"Running...","Không có tác vụ nào đang chạy.":"No task is running.","Chưa có thư mục nào được mở hoặc tải.":"No folder has been opened or downloaded yet.","Tác vụ nền":"Background task","Tải ca theo mã bệnh nhân":"Download by patient ID","Tải theo link viewer":"Download from viewer link","Nhập thư mục từ đĩa":"Import folder from disk","Quét lại kho":"Rescan archive","Tìm ca chụp":"Search studies","Dò danh sách series":"Discover series list","Đang tải danh sách bệnh nhân…":"Loading patient list…","Danh sách đã cập nhật":"Patient list is up to date","Danh sách lúc {}":"Patient list as of {}","Ca chụp đang được tải, mở lúc này sẽ thiếu lát cắt":"This study is still downloading; opening it now would show missing slices","Không đồng bộ được danh sách":"Patient list could not be synced","Không tải được danh sách bệnh nhân":"Could not load the patient list","Đang hiển thị dữ liệu lần quét trước.":"Showing data from the previous scan.","Thử quét lại":"Try scanning again","Quét lại":"Rescan","Phòng Xử Lý Video Phẫu Thuật":"Surgery Video Studio","Trình Chỉnh Sửa Ảnh & Tài Liệu":"Photo & Document Editor","Tua lùi 5s":"Rewind 5s","Tua tới 5s":"Forward 5s","Tốc độ":"Speed","Cắt clip":"Trim Clip","Đánh dấu mốc":"Add Bookmark","Mốc phẫu thuật / Ghi chú":"Surgical Bookmarks / Notes","Mốc phẫu thuật":"Surgical bookmark","Bấm để tua video đến mốc này":"Click to seek the clip to this point","Tua đến {} — {}":"Seek to {} — {}","Đã tua đến {}.":"Seeked to {}.","Chuyển sang clip này và tua đến mốc":"Switch to this clip and seek to the point","Thời điểm bắt đầu":"Start Time","Thời điểm kết thúc":"End Time","Xuất clip":"Export Clip","Ghép video":"Concat Videos","Chụp khung hình":"Capture Snapshot","Xoay 90°":"Rotate 90°","Tùy chọn xuất hồ sơ":"Export Record Options","Hồ sơ này có cả ảnh JPG và file gốc DICOM. Vui lòng chọn định dạng muốn xuất ra USB / thư mục:":"This record contains both JPG images and raw DICOM files. Please choose the export format:","Web PACS Viewer (Ảnh JPG)":"Interactive Web PACS Viewer (JPG)","Khuyên dùng":"Recommended","Tạo trang web tự động chạy offline trên mọi trình duyệt. Có thanh cuộn lát cắt, đổi chuỗi xung, phóng to/thu nhỏ, tương phản W/L và so sánh 2 xung song song.":"Creates an offline web viewer running on any browser. Features slice scrolling, series switching, zoom/pan, W/L contrast and 2-up comparison.","ảnh JPG":"JPG images","Nhẹ, mở tức thì trên mọi máy tính":"Lightweight, opens instantly on any PC","File gốc DICOM":"Original DICOM Files","Máy trạm PACS":"PACS Workstations","Xuất toàn bộ file chụp gốc DICOM tiêu chuẩn y khoa chất lượng cao nhất, kèm file hướng dẫn mở bằng RadiAnt, Weasis, MicroDicom, Horos...":"Exports all original diagnostic-quality DICOM files with instructions for RadiAnt, Weasis, MicroDicom, Horos...","file DICOM":"DICOM files","Dành cho bác sĩ CĐHA chuyên sâu":"For radiologists and specialized PACS viewers","Xuất đầy đủ (Cả Web Viewer + DICOM)":"Complete Export (Web Viewer + DICOM)","Tất cả định dạng":"All formats","Bao gồm cả Web PACS Viewer xem nhanh trên trình duyệt lẫn thư mục file gốc DICOM đầy đủ cho máy trạm.":"Includes both the browser-friendly Web PACS Viewer and the complete raw DICOM folder for workstations.","Cắt vùng chọn":"Crop","Che tên/danh tính":"Redact / Hide Identity","Vẽ mũi tên":"Arrow","Khoanh vùng":"Box","Ghi chú chữ":"Text","Công cụ vẽ":"Drawing tools","Chọn / di chuyển":"Select / move","Mũi tên chỉ điểm":"Arrow","Đường thẳng":"Line","Khung chữ nhật":"Rectangle","Khung bầu dục":"Ellipse","Bút vẽ tay":"Freehand","Chèn chữ":"Text","Đánh số thứ tự":"Numbered marker","Tô sáng vùng":"Highlight","Làm mờ vùng":"Pixelate","Che kín danh tính":"Redact identity","Cắt ảnh theo vùng chọn":"Crop to selection",Màu:"Colour","Chọn màu tuỳ ý":"Pick any colour",Nét:"Width","Cỡ chữ":"Text size","Độ đậm":"Opacity","Tô đặc":"Filled","Cắt theo vùng chọn":"Crop to selection","Xoá hình đang chọn":"Delete selected","Xoá hết nét vẽ":"Clear drawing","Nội dung ghi chú trên ảnh":"Note text on the image","Xoay trái 90°":"Rotate left 90°","Xoay phải 90°":"Rotate right 90°","Thu nhỏ":"Zoom out","Phóng to":"Zoom in","Vừa khung":"Fit","Áp dụng lên ảnh":"Apply to image","Vẽ đè vĩnh viễn lên ảnh":"Burn the drawing into the image","Tải ảnh về":"Download image","Chưa vẽ gì":"Nothing drawn","Chưa vẽ gì trên ảnh.":"Nothing drawn on the image.","{} nét chưa áp dụng":"{} not applied yet","Đang chọn: {}":"Selected: {}","Đã chọn vùng cắt {}×{} px. Bấm “Cắt ảnh” để áp dụng.":"Crop area {}×{} px selected. Press “Crop” to apply.","Hãy kéo chuột để chọn vùng cần cắt.":"Drag on the image to choose the crop area.","Hãy kéo chuột trên ảnh để chọn vùng cần cắt.":"Drag on the image to choose the crop area.","Đã xoá các nét vẽ chưa áp dụng.":"Cleared the unapplied drawing.","Chưa vẽ gì trên ảnh để áp dụng.":"Nothing has been drawn on the image yet.","Đang vẽ {} chi tiết lên ảnh...":"Burning {} marks into the image...","Đã vẽ {} chi tiết lên ảnh.":"Burned {} marks into the image.","Đã cắt ảnh còn {}×{} px.":"Cropped to {}×{} px.","Ảnh chưa có chỉnh sửa nào; hãy mở file gốc trong thư mục hồ sơ.":"This photo has no edits yet; open the original from the record folder.","Đã tải ảnh đã chỉnh sửa về máy.":"Edited image downloaded.","Đã hoàn tác nét vẽ.":"Drawing step undone.","Đã vẽ lại nét vừa hoàn tác.":"Drawing step redone.","Cắt giữ lại đoạn đã đánh dấu":"Keep only the marked span","Ghi nét vẽ vĩnh viễn vào video":"Burn the drawing into the video","Áp dụng lên video":"Apply to video","Thanh tua video":"Video scrubber","Đặt điểm đầu tại vị trí đang xem":"Set the in point at the playhead","Đặt điểm cuối tại vị trí đang xem":"Set the out point at the playhead",Đầu:"In",Cuối:"Out","Chưa chọn đoạn":"No span marked","Bỏ đoạn đã đánh dấu":"Clear the marked span","Hãy đặt điểm đầu trước, ở vị trí sớm hơn điểm cuối.":"Set the in point first, earlier than the out point.","Đã đặt điểm đầu tại {}.":"In point set at {}.","Đã chọn đoạn {} → {}.":"Span {} → {} selected.","Đã bỏ đoạn đã đánh dấu.":"Marked span cleared.","Chưa vẽ gì trên video để áp dụng.":"Nothing has been drawn on the video yet.","Đang ghi {} nét vẽ vào video ({} → {})...":"Burning {} marks into the video ({} → {})...","Đang ghi {} nét vẽ vào toàn bộ video...":"Burning {} marks into the whole video...","Đã ghi {} nét vẽ vào video.":"Burned {} marks into the video.","Hãy đánh dấu điểm đầu (I) và điểm cuối (O) trên thanh tua trước.":"Mark the in (I) and out (O) points on the scrubber first.",Hiện:"Show for","Toàn bộ":"Whole clip","Nhóm: {}":"Group: {}","Chẩn đoán ghi trong hồ sơ: {}":"Diagnosis recorded in the chart: {}","Trước mổ":"Before surgery","Trước xạ":"Before radiotherapy","Trước hoá":"Before chemotherapy","Trước điều trị đích":"Before targeted therapy","Trong đợt xạ":"During radiotherapy","Trong đợt hoá":"During chemotherapy","Trong đợt điều trị đích":"During targeted therapy","Sau mổ":"After surgery","Sau xạ":"After radiotherapy","Sau hoá":"After chemotherapy","Sau điều trị đích":"After targeted therapy","Sau khi ghi tái phát":"After the recorded relapse","Sau biến chứng":"After the complication","Sau lần khám":"After the visit","cùng ngày":"same day","{} ngày":"{} days","{} tuần":"{} weeks","{} tháng":"{} months","Ngày kết thúc là ước tính từ số buổi xạ, chưa ai xác nhận.":"The end date is estimated from the fraction count; nobody has confirmed it.","Nằm trong 12 tuần sau xạ — cân nhắc giả tiến triển trước khi kết luận tiến triển.":"Within 12 weeks of radiotherapy — weigh pseudoprogression before calling this progression.","Thư mục này chưa có patient-index.json nên chưa ghi được hồ sơ lâm sàng.":"This folder has no patient-index.json, so it cannot hold a clinical record.",Xoá:"Remove","Ghi chú":"Note","Chưa rõ":"Not recorded","Vị trí":"Location","Tái phát":"Relapse","Hậu phẫu":"Post-op","Đang xạ":"On radiotherapy","Đang hoá":"On chemotherapy","Đang điều trị đích":"On targeted therapy",xạ:"radiotherapy",hoá:"chemo",đích:"targeted","chưa cập nhật":"not updated","Đang điều trị":"In treatment","Chưa ghi":"Not recorded","Giai đoạn":"Stage","từ {}":"from {}","đến {}":"until {}","Chưa rõ ngày":"Date not recorded","{} buổi":"{} fractions","{} chu kỳ":"{} cycles","{} (độ {})":"{} (grade {})","Độ {}":"Grade {}","Khối u chưa mô tả":"Tumour not described","Hồ sơ lâm sàng":"Clinical record","Đang lưu…":"Saving…","Đang sửa ở khung bên phải.":"Being edited in the pane on the right.","Còn bản sửa chưa lưu.":"There are unsaved edits.","Sửa hồ sơ lâm sàng":"Edit clinical record","Lưu hồ sơ lâm sàng":"Save clinical record","Đang tải hồ sơ lâm sàng…":"Loading clinical record…","Đã lưu hồ sơ lâm sàng.":"Clinical record saved.","Chưa ghi hồ sơ lâm sàng cho bệnh nhân này.":"No clinical record has been entered for this patient.","Chẩn đoán dựa trên: {}":"Diagnosis based on: {}","Chưa ghi chẩn đoán này dựa trên gì":"Nobody has recorded what this diagnosis rests on","Chưa rõ căn cứ":"Basis not recorded","Khối u {}":"Tumour {}","Thêm khối u":"Add tumour","Chưa có khối u nào được mô tả.":"No tumour has been described yet.",Khoang:"Compartment","Chưa chọn":"Not chosen","Chọn hoặc gõ vị trí":"Pick or type a location",Bên:"Side",Trục:"Axis","Chọn hoặc gõ":"Pick or type","Mô bệnh học":"Histology","Chọn hoặc gõ chẩn đoán":"Pick or type a diagnosis","Độ WHO":"WHO grade","Căn cứ":"Basis","Ngày có kết quả":"Result date","Ghi chú khối u":"Tumour note","Tuỳ chọn":"Optional","Dấu ấn phân tử":"Molecular markers","Tên dấu ấn":"Marker","Kết quả":"Result","Thêm dấu ấn":"Add marker","Xoá dấu ấn":"Remove marker","Dấu ấn mới":"New marker","Điều trị":"Treatment","Sự kiện {}":"Event {}","Thêm sự kiện":"Add event","Chưa có mốc điều trị nào.":"No treatment has been recorded yet.",Loại:"Kind","Bắt đầu":"Start","Kết thúc":"End","Để trống ngày kết thúc nghĩa là đang diễn ra.":"Leaving the end date empty means it is still going.","Nơi thực hiện":"Where","Bệnh viện, trung tâm":"Hospital or centre","Mức độ lấy u":"Extent of resection","Kỹ thuật":"Technique","Liều (Gy)":"Dose (Gy)","Số buổi":"Fractions","Có số buổi thì app tự biết đợt xạ quá hạn cập nhật.":"With a fraction count the app can tell when a course is overdue an update.","Phác đồ":"Regimen","Đã xong":"Done","Tổng chu kỳ":"Total cycles","Chẩn đoán đọc từ tên thư mục: {}":"Diagnosis read from the folder name: {}","suốt video":"for the whole clip","Trình duyệt không mở được định dạng này":"The browser cannot open this format","File vẫn còn nguyên trong hồ sơ. Chuyển sang MP4 để xem, cắt và vẽ lên nó.":"The file is untouched in the record. Convert it to MP4 to view, trim and draw on it.","Chuyển sang MP4":"Convert to MP4","Nét vẽ mới sẽ hiện {}.":"New marks will show {}.","Đã đổi “{}” sang hiện {}. Nét vẽ mới cũng vậy.":"Changed “{}” to show {}. New marks too.","Đang ghi {} nét vẽ vào video ({} nét theo mốc thời gian)...":"Burning {} marks into the video ({} of them timed)...","Trình duyệt không phát được định dạng {} — bấm “Tối ưu MP4” để chuyển đổi rồi xem.":"The browser cannot play {} — press “Optimise MP4” to convert it first.","Xuất file PDF":"Export PDF","Lưu ảnh mới":"Save New Image",Phát:"Play","Tạm dừng":"Pause","Đã sao chép":"Copied","Sao chép":"Copy","Đã sao chép vào clipboard!":"Copied to clipboard!","Không thể sao chép":"Could not copy","Nhấp đúp hoặc bấm icon để sao chép":"Double-click or click icon to copy","Sao chép tên bệnh nhân":"Copy patient name","Sao chép mã BN":"Copy patient ID","Sao chép ngày chụp":"Copy study date","Sao chép tên ca chụp":"Copy study heading","Chưa có video nào":"No video selected","Chưa có ảnh nào":"No photo selected","TẢI MRI / CT":"DOWNLOAD MRI / CT","Tính năng xuất JPG riêng; không dùng để mở DICOM trong viewer.":"A separate JPG export feature; not the way to open DICOM in the viewer.","Chuyển Dcom → JPG":"Convert DICOM → JPG","Phát hiện tài liệu & Báo cáo đính kèm":"Detected Attachments & Reports","Tải kèm toàn bộ tài liệu đính kèm (PDF, TXT, Báo cáo)":"Download all attachments (PDF, TXT, Reports)","Các tệp này sẽ được tải riêng vào thư mục DOCUMENTS":"These files will be saved in the DOCUMENTS folder","Tài liệu đính kèm":"Attachments","Tải kèm":"Include","Tài liệu":"Documents","Mã bệnh nhân":"Patient ID","Tìm ca":"Find studies","Tìm các ca MRI/CT của mã bệnh nhân này trên RIS":"Search RIS for this patient's MRI/CT studies","Link viewer":"Viewer link","Xóa mã bệnh nhân":"Clear the patient code","Xóa link viewer":"Clear the viewer link","Bổ sung thông tin bệnh nhân":"Add patient info","Tên bệnh nhân":"Patient name","Mã BN (ID)":"Patient ID","Năm sinh / Ngày sinh":"DOB / Birth year","Chất lượng JPG (70-100)":"JPG quality (70-100)","Tải tất cả file":"Download all files","Hiện trình duyệt tải":"Show the download browser","Quét danh sách series":"Scan series list","Chọn tất cả series":"Select all series","Bỏ chọn tất cả series":"Deselect all series","Bỏ chế độ tải tất cả, sau đó quét để chọn T1, T2, FLAIR hoặc series cụ thể.":"Turn off download all, then scan to choose T1, T2, FLAIR, or an exact series.","Hãy chọn ca chụp hoặc nhập link viewer trước khi quét series.":"Select a study or enter a viewer link before scanning series.","Hãy tích ít nhất một ngày chụp trước khi quét series.":"Tick at least one study date before scanning series.","Đang quét danh sách series; chưa tải file ảnh…":"Scanning the series list; no image files are being downloaded…","Đã quét {} nhóm series; hãy bỏ tích những series không muốn tải.":"Scanned {} series groups; untick the series you do not want.","Chưa quét hoặc chưa chọn series cho link viewer.":"The viewer link has not been scanned or no series is selected.","Hãy tích ít nhất một ngày chụp để tải.":"Tick at least one study date to download.","Chưa quét series cho ca {}; hãy bấm Quét danh sách series.":"No series scanned for {}; press Scan series list.","Ca {} chưa tích series nào.":"{} has no series ticked.","Còn {} ca đang tích chưa chọn được series nào.":"{} ticked studies still have no series selected.",ảnh:"images","T1 sau tiêm":"Post-contrast T1","Tưới máu":"Perfusion","Mạch máu":"Angiography","Thư mục lưu":"Storage folder","Đổi thư mục lưu":"Change the storage folder","Tải ca đã chọn":"Download selected","Tải các ca đang tích ở danh sách trên":"Download the studies ticked above","Tải link":"Download link","Tải mới từ link đã dán vào một folder riêng":"Download the pasted link into a new folder","Thử lại":"Retry","Thử lại link vừa dán và gộp vào folder cũ, bỏ qua ảnh đã có":"Retry the pasted link, merging into the existing folder and skipping images already downloaded",Dừng:"Stop","Dừng an toàn tác vụ đang chạy":"Safely stop the running task","Không tạo được phiên riêng cho hồ sơ vừa tải.":"Could not create an isolated viewer session for the downloaded record.","Chưa tìm ca chụp.":"No studies found yet.","Đã tải":"Downloaded","Tải chưa hoàn tất":"Incomplete","Phim mới":"New study","Sao chép toàn bộ nhật ký":"Copy complete log to clipboard","Xoá hiển thị":"Clear display","Chưa có nội dung nhật ký để sao chép.":"No log contents to copy.","Đã sao chép toàn bộ nhật ký (log)!":"Copied complete log to clipboard!","Đã xoá hiển thị nhật ký.":"Log display cleared.","Không tự động gộp bệnh nhân":"Automatic patient merge blocked","Mã {} đã lưu tên “{}”, nhưng RIS trả “{}”. Hãy kiểm tra lại.":"Code {} is stored under the name “{}”, but RIS returned “{}”. Please re-check.","Đã có trong kho · {} ca đã tải · {} ca mới · {} ca chưa hoàn tất":"Already in the archive · {} downloaded · {} new · {} incomplete","{} ca chưa có trong kho; app sẽ tạo một folder bệnh nhân.":"{} studies are not in the archive yet; a patient folder will be created.","Đã nhận diện {} ca từ folder Classic cũ":"Recognised {} studies from an old Classic folder","Một khung ảnh":"Single pane","So sánh hai series cạnh nhau":"Compare two series side by side","Xem tuần tự 6 lát":"View 6 consecutive slices","Xem tuần tự 8 lát":"View 8 consecutive slices","MPR ba mặt phẳng":"Three-plane MPR","Series không đủ MPR":"Series cannot support MPR","Dựng volume 3D toàn màn hình":"Full-screen 3D volume rendering","Series không đủ 3D":"Series cannot support 3D","DICOM mặc định":"DICOM default","Toàn dải":"Full range","Cửa sổ rộng":"Wide window","Mô mềm JPG":"JPG soft tissue","Cửa sổ hẹp":"Narrow window","Tương phản cao":"High contrast","Cửa sổ Hounsfield (HU)":"Hounsfield window (HU)","Cửa sổ theo WC/WW trong file":"Window from the file's own WC/WW","Preset thị giác 8-bit":"8-bit visual preset",Não:"Brain","Đột quỵ / hố sau":"Stroke / posterior fossa","Máu tụ dưới màng cứng":"Subdural",Xương:"Bone","Xương thái dương":"Temporal bone","Định vị MPR":"MPR crosshair","Xoay khối 3D tự do":"Orbit the 3D volume","Ghi chú chữ lên ảnh":"Add a text note","Nội dung ghi chú":"Note text",Thêm:"Add",Bỏ:"Cancel","Lật dọc khung đang chọn":"Flip the active pane vertically","Xóa mọi phép đo, ROI và ghi chú":"Clear every measurement, ROI and note","Lưu đo/ROI/ghi chú":"Save measurements, ROIs and notes","Khung đang xem không đảo màu được.":"The current pane cannot be inverted.","Di chuyển":"Pan","Thu/phóng":"Zoom","Sáng/tương phản":"Window level","Đo chiều dài (mm)":"Measure length (mm)","Đo chiều dài (pixel)":"Measure length (pixels)","Đo góc":"Measure angle","Kính lúp":"Magnifier","Thước tỉ lệ (mm)":"Scale bar (mm)","ROI ellipse":"Ellipse ROI","ROI tự do":"Freehand ROI","Đặt lại ba mặt phẳng":"Reset all three planes","Đặt lại góc nhìn":"Reset the camera","Đặt lại hiển thị":"Reset the display","Xoay khung đang chọn 90° theo chiều kim đồng hồ":"Rotate the active pane 90° clockwise","Lật ngang khung đang chọn":"Flip the active pane horizontally","Lưu ảnh 3D":"Save the 3D image","Lưu ảnh":"Save image","Lưu đo/ROI":"Save measurements/ROIs","Tính thể tích ROI":"Compute ROI volume","Đảo màu":"Invert","Chạy phim":"Play cine","Đang chạy phim — nhấn Space để dừng.":"Cine running — press Space to stop.","Đã dừng chạy phim.":"Cine stopped.","Mở folder DICOM hoặc JPG/PNG":"Open a DICOM or JPG/PNG folder","Mở folder trong viewer":"Open a folder in the viewer","Đang khởi động...":"Starting up...","Đang dựng khung xem…":"Building the layout…","Đang mở ảnh…":"Opening images…","Không mở được khung xem":"Could not open the layout","An toàn hiển thị":"Display safety",khung:"frames","chỉ đồng bộ các cặp tương thích; mặt phẳng khác hướng giữ lát độc lập":"only compatible pairs are synchronized; differently oriented planes remain independent","Hai mặt phẳng giữ lát độc lập; đường tham chiếu biểu diễn giao tuyến 3D.":"The two planes remain independently scrollable; the reference line shows their 3D intersection.","Không khoá cuộn vì hai series khác hệ tọa độ (Frame of Reference).":"Scroll lock is unavailable because the two series use different Frames of Reference.","Không khởi động được DICOM/JPG Downloader & Viewer":"Could not start DICOM/JPG Downloader & Viewer","Tải lại":"Reload","Thiếu token phiên local.":"The local session token is missing.","Sẵn sàng. Nhấn ⌨ trên thanh công cụ để xem phím tắt.":"Ready. Click ⌨ on the toolbar for the keyboard shortcuts.",lát:"slices","Đang nhận diện DICOM hoặc JPG/PNG trong folder…":"Identifying DICOM or JPG/PNG files in the folder…","Đang đọc và chuyển folder DICOM local…":"Reading and converting the local DICOM folder…","Đang quét lại thư mục phim trong nền…":"Rescanning the image folder in the background…","Đã đổi kho lưu; hãy tìm lại mã bệnh nhân để đối chiếu phim cũ/mới.":"Storage root changed; search the patient code again to re-check old and new studies.","Chọn thư mục cần chạy trong ứng dụng WebView2.":"Choosing a folder requires the WebView2 application.","Nhập DICOM local cần chạy trong ứng dụng WebView2.":"Importing local DICOM requires the WebView2 application.","Chế độ classic chỉ có trong ứng dụng desktop.":"Classic mode is only available in the desktop application.","Tên bệnh nhân không khớp; app đã chặn tự động gộp.":"The patient name does not match; the automatic merge was blocked.","Không có phim mới/chưa hoàn tất được chọn để tải.":"No new or incomplete study is selected for download.","Chưa chọn khung ảnh để xoay.":"No pane is selected to rotate.","Chưa chọn khung ảnh để lật.":"No pane is selected to flip.","Chưa có link viewer để tải.":"There is no viewer link to download.","Không lưu được phép đo trước khi đổi khung xem.":"Could not save measurements before changing the layout.","Khung xem hiện tại không có phép đo/ROI để xóa.":"The current layout has no measurements or ROIs to clear.","Đang mở lại thư mục từ lịch sử…":"Reopening the folder from history…","Đã xóa {} phép đo/ROI.":"Cleared {} measurements/ROIs.","Đã lưu {} phép đo/ROI.":"Saved {} measurements/ROIs.",'Đã lưu ảnh PNG của khung "{}".':'Saved a PNG of the "{}" pane.',"Thể tích ROI thủ công: {} mL (tổng diện tích lát × khoảng cách lát).":"Manual ROI volume: {} mL (sum of slice areas × slice spacing).","Đang dựng MPR từ {} lát…":"Building MPR from {} slices…","Đang dựng mô hình 3D từ {} lát…":"Building the 3D model from {} slices…","CT đã chuyển sang JPG 8-bit: chỉ dùng xem hình thái và đo hình học; không dùng mức xám để suy luận HU hay cửa sổ CT chẩn đoán.":"This CT was converted to 8-bit JPG: use it for morphology and geometric measurement only. Do not infer HU values or diagnostic CT windows from its grey levels.","Chưa xác định được modality của series JPG 8-bit; không dùng mức xám để định lượng tín hiệu hoặc đậm độ.":"The modality of this 8-bit JPG series is unknown; do not use its grey levels to quantify signal or density.","Hết bộ đệm ảnh. Hãy đóng series khác hoặc chọn series ít lát hơn rồi thử lại.":"The image cache is full. Close another series or pick one with fewer slices, then try again.","Mất kết nối tới dịch vụ nội bộ của ứng dụng. Hãy khởi động lại ứng dụng.":"Lost the connection to the application's local service. Restart the application.","Trình kết xuất GPU gặp sự cố. Hãy khởi động lại ứng dụng; nếu lặp lại, cập nhật driver card đồ họa.":"The GPU renderer failed. Restart the application; if it repeats, update your graphics driver.","chi tiết":"details","Con trỏ tham chiếu đã bật.":"Reference cursor on.","Mở file...":"Open file...","Mở file DICOM hoặc file ảnh":"Open a DICOM file or image file","Mở file DICOM hoặc JPG/PNG đơn lẻ trong viewer":"Open a single DICOM or JPG/PNG file in the viewer","Thông tin file & Link tải":"File Info & Download Link","Chi tiết file & Thẻ DICOM":"File Details & DICOM Tags","Nguồn gốc & Link tải":"Provenance & Download Link","Link tải / Viewer":"Download / Viewer Link","Sao chép link":"Copy link","Đã sao chép link tải vào clipboard!":"Download link copied to clipboard!","Không thể sao chép liên kết":"Could not copy link","Mở liên kết":"Open URL","Mã ca chụp (Accession No)":"Accession number","Bệnh viện / Cơ sở":"Hospital / Facility","Phương thức tải":"Download method","Thời gian tải":"Downloaded at","Thông tin ca chụp":"Study & Patient Demographics","Thông số ảnh":"Image Parameters","Đường dẫn file":"File path","Kích thước file":"File size","Ngày sửa đổi":"Modified date","Lát cắt hiện tại":"Current slice","Độ phân giải":"Resolution","Độ dày lát cắt":"Slice thickness","Khoảng cách lát cắt":"Slice spacing","Pixel Spacing":"Pixel spacing","Bảng thẻ DICOM Header":"DICOM Header Tags","Tìm kiếm thẻ (Tag, Tên, Giá trị)...":"Search tags (Tag, Name, Value)...",Tag:"Tag",VR:"VR","Tên thẻ":"Tag Name","Giá trị":"Value","Không tìm thấy thẻ phù hợp":"No matching tags found","Chưa có thông tin link tải cho file này.":"No download link recorded for this file.","Đang đọc thông tin file...":"Reading file details...","Không tải được thông tin file":"Could not load file details",Đóng:"Close","+ Mốc":"+ Bookmark","Bấm “+ Thêm mốc” hoặc phím M khi đang xem":"Press “+ Add bookmark”, or M while watching","Bật/tắt clip này":"Select or clear this clip","Bắt đầu ghép ({} clip)":"Concat now ({} clips)","Bệnh nhân":"Patient","Bệnh án / Văn bản":"Records / Text","Ca chụp chưa phân loại":"Unclassified study","Chưa có mốc nào trong clip này.":"No bookmarks in this clip yet.","Chưa có nhật ký phát sinh.":"Nothing has been logged yet.","Chưa rõ tên BN":"Patient name not recorded","Chọn các clip và sử dụng nút ▲/▼ để sắp xếp thứ tự ghép nối theo trình tự phẫu thuật:":"Pick the clips and use ▲/▼ to put them in the order the operation ran:","Chọn file nhật ký":"Choose a log file",Chụp:"Snapshot","Clip khác":"Other clips","Con trỏ tham chiếu":"Reference cursor","Cài đặt hiển thị":"Display preset","Cần chọn ít nhất 2 clip video để ghép.":"Concatenating needs at least 2 clips selected.","Cần ít nhất 2 clip video trong ca mổ để ghép.":"This operation needs at least 2 clips before they can be concatenated.","Cắt đoạn":"Trim","Di chuyển lên trước":"Move earlier","Di chuyển xuống sau":"Move later","File DICOM gốc (.dcm)":"Original DICOM file (.dcm)","File định dạng MPG/MPEG cần chuyển sang MP4 để xem, cắt và vẽ lên nó.":"An MPG/MPEG file has to be converted to MP4 before it can be viewed, trimmed and drawn on.","Ghép & Sắp xếp thứ tự clip phẫu thuật":"Concat and order the surgical clips","Ghép clips":"Concat clips","Ghép các clip video":"Concat the video clips","Hiện tại":"Current",Huỷ:"Cancel","Hủy bỏ":"Cancel","Không lưu được mốc phẫu thuật: {}":"Could not save the surgical bookmark: {}","Không rõ thời lượng":"Duration not known","Không thể mở thư mục: ":"Could not open the folder: ","Không thể đọc nhật ký: ":"Could not read the log: ","Không tìm thấy clip video nào trong ca mổ":"No video clip found in this operation","Không tìm thấy đường dẫn video gốc.":"The original video path was not found.","Không tìm thấy đường dẫn ảnh gốc.":"The original photo path was not found.","Không đủ số lượng file video hợp lệ để ghép.":"Not enough usable video files to concatenate.","Kéo hoặc dùng phím mũi tên; nhấp đúp để đặt lại":"Drag, or use the arrow keys; double-click to reset",Lỗi:"Error",Modality:"Modality","Mô tả ca":"Study description",Mượt:"Smooth","Mật khẩu":"Password","Mốc từ clip khác trong ca mổ":"Bookmark from another clip in this operation","Mốc {}":"Bookmark {}","Mở hồ sơ":"Open record","Mở rộng hoặc thu gọn bệnh nhân {}":"Expand or collapse patient {}","Mở viewer":"Open viewer","Nhập ghi chú / mốc phẫu thuật:":"Note for this surgical bookmark:","Nhập đường dẫn thư mục xuất:":"Path of the export folder:","Nhật ký phiên làm việc":"Session activity log","Phát / Tạm dừng":"Play / Pause","Sẵn sàng.":"Ready.","Sửa tên mốc":"Rename bookmark","Theo dõi":"Follow-up","Thu gọn thông tin ca ( [ )":"Collapse case details ( [ )","Thêm mốc":"Add bookmark","Thêm mốc tại thời điểm hiện tại":"Add a bookmark at the current time","Thêm mốc tại thời điểm hiện tại (phím M)":"Add a bookmark at the current time (M)","Thư mục":"Folder","Tiêu chuẩn":"Standard","Trích xuất ảnh đại diện Thumbnail":"Extract a thumbnail","Tài khoản":"Account","Tìm theo tên hoặc mã bệnh nhân, đợt khám…":"Search by patient name, patient ID or study…","Tạo Filmstrip":"Make filmstrip","Tạo Thumbnail":"Make thumbnail","Tạo chuỗi ảnh Filmstrip":"Make a filmstrip of frames","Tốc độ khung hình:":"Frame rate:","Tối ưu MP4":"Optimise MP4","Tối ưu hoá mã hoá MP4 (H.264)":"Optimise the MP4 encoding (H.264)",Video:"Video","Vui lòng nhập tài khoản RIS dự phòng:":"Enter a fallback RIS account:","Xoá mốc":"Delete bookmark","Đang chuẩn bị ghép {} clip video...":"Preparing to concat {} clips...","Đang cắt video bằng FFmpeg...":"Trimming the video with FFmpeg...","Đang cắt ảnh...":"Cropping the photo...","Đang ghép {} clip video bằng FFmpeg...":"Concatenating {} clips with FFmpeg...","Đang trích xuất chuỗi khung hình filmstrip...":"Extracting the filmstrip frames...","Đang tạo ảnh đại diện thumbnail tại {:.1f}s...":"Making the thumbnail at {:.1f}s...","Đang tải nhật ký...":"Loading the log...","Đang tối ưu hoá mã hoá video MP4 (H.264)...":"Optimising the MP4 (H.264) encoding...","Đang xoay ảnh 90°...":"Rotating the photo 90°...","Đang xuất file PDF...":"Exporting the PDF...","Đang đóng dấu thông tin lên video...":"Stamping the details onto the video...","Đã chuyển sang clip: {} tại {}.":"Moved to clip: {} at {}.","Đã cắt đoạn video ({:.1f}s - {:.1f}s) thành công.":"Trimmed the video ({:.1f}s - {:.1f}s).","Đã ghép thành công {} đoạn video clip.":"Concatenated {} clips.","Đã khoá cuộn: {} — {}.":"Scroll locked: {} — {}.","Đã lưu khung hình snapshot PNG.":"Saved the frame as a PNG.","Đã sao chép toàn bộ nhật ký!":"Copied the whole log.","Đã trích xuất {} khung hình filmstrip.":"Extracted {} filmstrip frames.","Đã tạo ảnh đại diện thumbnail thành công ({:.1f}s).":"Thumbnail made ({:.1f}s).","Đã tối ưu hoá và xuất video MP4 thành công.":"Optimised and exported the MP4.","Đã xoay ảnh 90° thành công.":"Rotated the photo 90°.","Đã xoá mốc phẫu thuật.":"Surgical bookmark deleted.","Đã xuất PDF thành công: {}":"PDF exported: {}","Đã đánh dấu mốc tại {}.":"Bookmarked at {}.","Đã đóng dấu thông tin lên video thành công.":"The details were stamped onto the video.","Đóng dấu / Chèn thông tin phẫu thuật":"Stamp the surgical details onto the video","Đóng dấu thông tin":"Stamp details","Đăng nhập & Thử lại":"Sign in and retry","Đăng nhập RIS thất bại":"RIS sign-in failed","Đường tham chiếu":"Reference lines","Định dạng":"Format","Đổi độ rộng cột {}":"Resize the {} column","Độ phân giải:":"Resolution:","đồng bộ theo vị trí 3D":"synced by 3D position","Ảnh JPG đã giải nén":"Decompressed JPG image","⚠ đồng bộ theo số thứ tự lát (không có đồng bộ không gian)":"⚠ synced by slice number (no spatial sync)"};function s(t){return De==="vi"?t:si[t]??t}function $(t,...e){let n=0;return s(t).replace(/\{\}/g,()=>n<e.length?String(e[n++]):"{}")}const Cs=[[/Lần đầu chạy trên máy này: đang tải nhân trình duyệt Chromium \(~150MB, chỉ 1 lần\)\.\.\./g,"First run on this machine: downloading the Chromium browser engine (~150MB, one time)..."],[/Đã tải xong Chromium\./g,"Chromium downloaded successfully."],[/Không tự tải được Chromium \((.+)\)\. Hãy chạy thủ công: python -m playwright install chromium/g,"Could not auto-download Chromium ($1). Please run manually: python -m playwright install chromium"],[/Thử lại: đã có sẵn (\d+) ảnh trong folder — sẽ bổ sung ảnh mới, bỏ trùng\./g,"Retry: found $1 existing images in the folder — new images will be appended and duplicates skipped."],[/ {2}\.\.\.đã tải (\d+) ảnh \(DICOM: (\d+)\)/g,"  ...downloaded $1 images (DICOM: $2)"],[/Đang mở trình duyệt ảo \(Chromium\)\.\.\./g,"Opening the virtual browser (Chromium)..."],[/Công cụ nền: (.+) \(dòng này chỉ báo trình duyệt tự động, không báo đăng nhập\)\./g,"Background tool: $1 (this line reports browser automation, not a new sign-in)."],[/\[(\d+)\/(\d+)\] Đang đọc series ngày (.+)\.\.\./g,"[$1/$2] Reading series for $3..."],[/>>> LỊCH SỬ: mở lại (.+)/g,">>> HISTORY: reopened $1"],[/Đang tải trang viewer \(không chỉnh sửa link\)\.\.\./g,"Loading the viewer page (link left unmodified)..."],[/ {2}Cảnh báo khi tải trang: (.+)/g,"  Warning while loading the page: $1"],[/!!! Link đã HẾT HẠN \(urlExpired\)\. Hãy lấy link mới từ trang xem rồi thử lại\./g,"!!! The link has EXPIRED (urlExpired). Get a new link from the viewer page and try again."],[/!!! Link đã HẾT HẠN \/ SESSION không còn hiệu lực \(server trả (.+)\)\. Hãy lấy LINK MỚI từ trang xem rồi tải lại NGAY \(loại link này sống rất ngắn\)\./g,"!!! The link has EXPIRED / the SESSION is no longer valid (server returned $1). Get a NEW link from the viewer page and retry IMMEDIATELY (these links are very short-lived)."],[/DICOMweb: (\d+) series\. Đang liệt kê ảnh\.\.\./g,"DICOMweb: $1 series. Listing images..."],[/DICOMweb: (\d+) series, (\d+) ảnh\. Đang tải trực tiếp \(6 luồng song song\)\.\.\./g,"DICOMweb: $1 series, $2 images. Downloading directly (6 parallel threads)..."],[/DICOMweb: (\d+) series ảnh đã chọn, (\d+) ảnh\. Đang tải trực tiếp \(6 luồng song song\)\.\.\./g,"DICOMweb: $1 selected image series, $2 images. Downloading directly (6 parallel threads)..."],[/DICOMweb: (\d+) series ảnh, (\d+) ảnh\. Đang tải trực tiếp \(6 luồng song song\)\.\.\./g,"DICOMweb: $1 image series, $2 images. Downloading directly (6 parallel threads)..."],[/ {2}Lỗi QIDO series \((.+)\) — bỏ qua\./g,"  QIDO series error ($1) — skipping."],[/ {2}Không tách được studyUID từ QIDO — bỏ qua\./g,"  Could not extract studyUID from QIDO — skipping."],[/Đang dò manifest của viewer\.\.\./g,"Scanning for the viewer manifest..."],[/✓ Có manifest → tải TRỰC TIẾP theo API \(không cần click\/cuộn\)\./g,"✓ Manifest found → downloading DIRECTLY via the API (no clicking or scrolling needed)."],[/Không thấy manifest → chế độ MÔ PHỎNG \(cuộn\/click\), chỉ xử lý xung ĐANG HIỂN THỊ\./g,"No manifest found → SIMULATION mode (scroll/click), processing only the VISIBLE series."],[/Chờ (\d+)s để bắt nốt ảnh còn lại\.\.\./g,"Waiting $1s to capture the remaining images..."],[/Tải xong\. Tổng ảnh: (\d+) \(DICOM (\d+), JPG (\d+), PNG (\d+), trùng bỏ (\d+)\)\./g,"Download complete. Total images: $1 (DICOM $2, JPG $3, PNG $4, $5 duplicates skipped)."],[/Manifest: (\d+) series, ~(\d+) ảnh\. Đang tải trực tiếp (\d+) ảnh \(6 luồng song song\)\.\.\./g,"Manifest: $1 series, ~$2 images. Downloading $3 images directly (6 parallel threads)..."],[/Manifest: (\d+) series đã chọn\/(\d+) series, ~(\d+) ảnh\. Đang tải trực tiếp (\d+) ảnh \(6 luồng song song\)\.\.\./g,"Manifest: $1 of $2 selected series, ~$3 images. Downloading $4 images directly (6 parallel threads)..."],[/ {6}Bước 1\/2: Tạo vé viewer tạm thời cho StudyUID đã chọn \(không tìm lại mã bệnh nhân\)\.\.\./g,"      Step 1/2: Creating a temporary viewer ticket for the selected StudyUID (the patient is not searched again)..."],[/ {6}Bước 2\/2: Đang đọc danh sách series từ viewer \(chưa tải file ảnh\)\.\.\./g,"      Step 2/2: Reading the series list from the viewer (no image files are being downloaded)..."],[/Đường nội bộ (.+) không khả dụng; tự chuyển sang cổng PACS công cộng\./g,"The internal endpoint $1 is unavailable; continuing through the public PACS gateway."],[/ {6}✓ Đã dùng lại phiên RIS; không đăng nhập lại\./g,"      ✓ Reused the existing RIS session; no new sign-in."],[/ {6}Phiên RIS cũ đã hết hạn; app đang tự đăng nhập lại một lần\./g,"      The old RIS session expired; the app is signing in again once."],[/ {6}Chưa có phiên RIS hợp lệ; app đang tự đăng nhập một lần\./g,"      There is no valid RIS session; the app is signing in once."],[/ {6}✓ Viewer mở trực tiếp; không cần đăng nhập RIS\./g,"      ✓ The viewer opened directly; no RIS sign-in was needed."],[/Đã quét (\d+) series; chưa tải file ảnh nào\./g,"Scanned $1 series; no image files were saved."],[/ {2}✓ Đã đủ theo manifest: (\d+)\/(\d+) ảnh\./g,"  ✓ Complete per manifest: $1/$2 images."],[/ {2}⚠ Tải được (\d+)\/(\d+) ảnh — thiếu (\d+) \(có thể do mạng\/timeout; chạy lại sẽ bù, ảnh trùng tự bỏ\)\./g,"  ⚠ Downloaded $1/$2 images — $3 missing (possibly network/timeout; a retry fills the gaps and skips duplicates)."],[/Chuyển đổi: tìm thấy (\d+) file DICOM\. Chất lượng JPG=(\d+)(.*), tương phản=(.+)\./g,"Conversion: found $1 DICOM files. JPG quality=$2$3, contrast=$4."],[/ {2}\.\.\.đã chuyển (\d+) ảnh/g,"  ...converted $1 images"],[/Chuyển đổi xong: (\d+) ảnh JPG(.*), bỏ qua (\d+), lỗi (\d+)\./g,"Conversion complete: $1 JPG images$2, $3 skipped, $4 errors."],[/Tóm tắt theo series:/g,"Summary by series:"],[/ {3}• (.+): (\d+) ảnh/g,"   • $1: $2 images"],[/ {3}Tổng: (\d+) ảnh, (\d+) series\./g,"   Total: $1 images, $2 series."],[/BƯỚC 1\/2: Tải ảnh từ viewer( \(THỬ LẠI — gộp vào folder cũ\))?/g,"STEP 1/2: Download images from the viewer$1"],[/ \(THỬ LẠI — gộp vào folder cũ\)/g," (RETRY — merging into the existing folder)"],[/Không tải được ảnh nào\. Kiểm tra lại link \(còn hạn không\) và thử tắt chế độ ẩn trình duyệt\./g,"No images were downloaded. Check whether the link has expired and try turning off headless mode."],[/BƯỚC 2\/2: Chuyển DICOM -> JPG chất lượng cao/g,"STEP 2/2: Convert DICOM -> high-quality JPG"],[/HOÀN TẤT\. Ảnh JPG nằm ở: (.+)/g,"COMPLETE. JPG images are in: $1"],[/Không thấy danh sách series \(có thể giao diện khác\)\. Vẫn thử cuộn ảnh hiện tại\./g,"No series list found (the UI may differ). Still trying to scroll the current images."],[/Phát hiện (\d+) series \(xung\) đang hiển thị để duyệt\./g,"Detected $1 visible series to browse."],[/Không tìm thấy thumbnail series theo class chuẩn; sẽ cuộn ảnh đang hiển thị\./g,"Could not find standard series thumbnails; will scroll the currently visible images."],[/\[Series (\d+)\/(\d+)\] (.*) {2}\(~(\d+) ảnh\) — đang nạp\.\.\./g,"[Series $1/$2] $3  (~$4 images) — loading..."],[/ {3}\(không bấm được thumbnail này, bỏ qua\)/g,"   (could not click this thumbnail, skipping)"],[/ {3}-> series này thêm (\d+) ảnh \(tổng (\d+)\)\./g,"   -> this series added $1 images (total $2)."],[/ {2}Lỗi file (.+): (.+)/g,"  File error $1: $2"],[/chuẩn lâm sàng \(VOI LUT\)/g,"clinical standard (VOI LUT)"],[/Đã nạp trình xem: (\d+) series, (\d+) ảnh từ (.+)/g,"Loaded viewer: $1 series, $2 images from $3"],[/Đang quét folder DICOM local và chuyển sang JPG chất lượng (\d+)…/g,"Scanning the local DICOM folder and converting to JPG at quality $1…"],[/Không tìm thấy folder cũ của link này; sẽ tải mới vào folder riêng\./g,"No previous folder found for this link; downloading into a new folder instead."],[/Đang yêu cầu dừng an toàn\.\.\./g,"Requesting a safe stop..."],[/Đã dừng\./g,"Stopped."],[/Hoàn tất\./g,"Complete."],[/Đang chuẩn bị\.\.\./g,"Preparing..."],[/Lỗi: (.+)/g,"Error: $1"],[/Đã khôi phục geometry DICOM cho (\d+) series JPG 2D cũ; crosslink dùng tọa độ bệnh nhân thật\./g,"Restored DICOM geometry for $1 legacy 2D JPG series; crosslink uses real patient coordinates."],[/Đang đọc metadata DICOM: (\d+)\/(\d+) file…/g,"Reading DICOM metadata: $1/$2 files..."],[/Bỏ qua (\d+) file nghi DICOM chưa hỗ trợ \(ảnh màu, metadata thiếu hoặc file hỏng\)\./g,"Skipped $1 files suspected to be unsupported DICOM (color images, missing metadata, or corrupted)."],[/Đã nhận diện (\d+) series DICOM, mở trực tiếp không chuyển JPG\./g,"Identified $1 DICOM series, opening directly without JPG conversion."],[/Đang quét thư mục phim: (\d+) thư mục…/g,"Scanning imaging folders: $1 folders..."],[/Bỏ qua thư mục không đọc được: (.+) \((.+)\)/g,"Skipping unreadable folder: $1 ($2)"],[/Đã quét (\d+) thư mục, tìm thấy (\d+) series ảnh\./g,"Scanned $1 folders, found $2 image series."],[/Không thể đổi tên thư mục: (.+)/g,"Could not rename directory: $1"],[/Không thể ghi metadata tải tiếp: (.+)/g,"Could not write resume metadata: $1"],[/❌ CHẶN GỘP CA (\d+) DO MÂU THUẪN ĐỊNH DANH: (.+)/g,"❌ BLOCKED MERGING STUDY $1 DUE TO AN IDENTITY CONFLICT: $2"],[/PatientID DICOM '(.+)' không khớp mã RIS '(.+)'\./g,"DICOM PatientID '$1' does not match RIS PatientID '$2'."],[/PatientName DICOM '(.+)' không khớp tên RIS '(.+)'\./g,"DICOM PatientName '$1' does not match the RIS patient name '$2'."],[/Ngày sinh DICOM '(.+)' không khớp hồ sơ '(.+)'\./g,"DICOM birth date '$1' does not match the patient record '$2'."],[/Giới DICOM '(.+)' không khớp hồ sơ '(.+)'\./g,"DICOM sex '$1' does not match the patient record '$2'."],[/DICOMweb chưa liệt kê đủ instance của mọi series ảnh; không đánh dấu ca là hoàn tất\. (.+)/g,"DICOMweb did not list every image instance; the study was not marked complete. $1"],[/(.+): tìm thấy (\d+)\/không rõ instance/g,"$1: found $2/unknown instances"],[/(.+): tìm thấy (\d+)\/(\d+) instance/g,"$1: found $2/$3 instances"]];function le(t){const e=String(t??"");return De==="vi"?e:si[e]?si[e]:Cs.reduce((n,[i,a])=>n.replace(i,a),e)}function l(t){return String(t??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;")}function We(){return{state:"unknown",kinds:[],where:"",since:"",stale:!1,expectedEnd:""}}function Et(){return{tumors:[],events:[]}}const x={loading:!1,saving:!1,error:"",loadedFor:"",record:Et(),stage:We(),label:"",vocabulary:null,editing:!1,draft:null,canWrite:!0,reason:""};function Is(){x.loading=!1,x.saving=!1,x.error="",x.loadedFor="",x.record=Et(),x.stage=We(),x.label="",x.editing=!1,x.draft=null,x.canWrite=!0,x.reason=""}const Ts={Xạ:"Đang xạ",Hoá:"Đang hoá","Đích/Miễn dịch":"Đang điều trị đích"},Ms={Xạ:"xạ",Hoá:"hoá","Đích/Miễn dịch":"đích"};function la(t){const e=t&&typeof t=="object"?t:We(),n=Array.isArray(e.kinds)?e.kinds:[],i=String(e.where||"").trim();let a="",r="";if(e.state==="relapse")a=s("Tái phát"),r="relapse";else if(e.state==="active"&&n.length){const[d,...u]=n,h=s(Ts[d]||d),p=u.map(f=>s(Ms[f]||f));a=[h,...p].join(" + "),r="active"}else if(e.state==="post-op")a=s("Hậu phẫu"),r="postop";else if(e.state==="followup")a=s("Theo dõi"),r="followup";else return null;e.stale&&(r="stale",a=`${a} · ${s("chưa cập nhật")}`);const c=[a];return i&&c.push(i),e.since&&c.push($("từ {}",hn(e.since))),{text:a,tone:r,where:i,title:c.join(" · ")}}function hn(t){const e=String(t||"").trim(),n=e.match(/^(\d{4})-(\d{2})-(\d{2})$/);return n?`${n[3]}/${n[2]}/${n[1]}`:e}function Ps(t){const e=hn(t?.start),n=hn(t?.end);return e&&n?e===n?e:`${e} – ${n}`:e?$("từ {}",e):n?$("đến {}",n):s("Chưa rõ ngày")}function Ns(t){const e=t||{},n=[];if(e.extent&&n.push(e.extent),e.technique&&n.push(e.technique),e.regimen&&n.push(e.regimen),Number.isFinite(e.doseGy)&&e.doseGy>0&&n.push(`${e.doseGy} Gy`),Number.isFinite(e.fractions)&&e.fractions>0&&n.push($("{} buổi",e.fractions)),Number.isFinite(e.cycles)&&e.cycles>0){const i=Number.isFinite(e.cyclesDone)?e.cyclesDone:null;n.push(i===null?$("{} chu kỳ",e.cycles):`${i}/${e.cycles}`)}return e.note&&n.push(e.note),n.join(" · ")}function ca(t){const e=t||{};return[[e.location,e.side].map(i=>String(i||"").trim()).filter(Boolean).join(" "),String(e.axis||"").trim()].filter(Boolean).join(" · ")}function Ds(t){const e=t||{},n=String(e.histology||"").trim(),i=String(e.grade||"").trim();return n&&i?$("{} (độ {})",n,i):n||(i?$("Độ {}",i):ca(e)||s("Khối u chưa mô tả"))}const Ls={Mổ:"Trước mổ",Xạ:"Trước xạ",Hoá:"Trước hoá","Đích/Miễn dịch":"Trước điều trị đích"},da={Xạ:"Trong đợt xạ",Hoá:"Trong đợt hoá","Đích/Miễn dịch":"Trong đợt điều trị đích"},Es={Mổ:"Sau mổ",Xạ:"Sau xạ",Hoá:"Sau hoá","Đích/Miễn dịch":"Sau điều trị đích","Tái phát/Tiến triển":"Sau khi ghi tái phát","Biến chứng":"Sau biến chứng","Theo dõi":"Sau lần khám"},Os=84;function Rs(t){const e=String(t||"").trim();return/^\d{8}$/.test(e)?`${e.slice(0,4)}-${e.slice(4,6)}-${e.slice(6,8)}`:""}function Yn(t,e){const n=Date.parse(`${t}T00:00:00Z`),i=Date.parse(`${e}T00:00:00Z`);return!Number.isFinite(n)||!Number.isFinite(i)?null:Math.round((i-n)/864e5)}function As(t){return t.end?{date:t.end,estimated:!1}:t.expectedEnd?{date:t.expectedEnd,estimated:!0}:{date:"",estimated:!1}}function Bs(t,e,{today:n=""}={}){const i=String(e||"").trim();if(!/^\d{4}-\d{2}-\d{2}$/.test(i))return null;const a=(Array.isArray(t)?t:[]).filter(h=>h&&typeof h=="object"&&h.start);if(!a.length)return null;const r=n||new Date().toISOString().slice(0,10),c=a.find(h=>{if(!da[h.kind]||h.start>i)return!1;const p=h.end||(h.expectedEnd&&h.expectedEnd<r?h.expectedEnd:"");return!p||p>=i});if(c)return{phase:"during",kind:c.kind,anchorDate:c.start,days:Yn(c.start,i),estimated:!1,pseudoprogression:!1};let d=null;for(const h of a){const{date:p,estimated:f}=As(h),y=p||h.start;y>i||(!d||y>d.when)&&(d={event:h,when:y,estimated:f})}if(d){const h=Yn(d.when,i);return{phase:"after",kind:d.event.kind,anchorDate:d.when,days:h,estimated:d.estimated,pseudoprogression:d.event.kind==="Xạ"&&h!==null&&h>=0&&h<=Os}}const u=a.reduce((h,p)=>h.start<=p.start?h:p);return{phase:"before",kind:u.kind,anchorDate:u.start,days:Yn(i,u.start),estimated:!1,pseudoprogression:!1}}function qs(t){const e=Number(t);return!Number.isFinite(e)||e<0?"":e===0?s("cùng ngày"):e<14?$("{} ngày",e):e<70?$("{} tuần",Math.round(e/7)):$("{} tháng",Math.round(e/30))}function Fs(t){if(!t||typeof t!="object")return null;const e=qs(t.days);let n="",i="";if(t.phase==="during")n=s(da[t.kind]||t.kind),i="during";else if(t.phase==="before")n=s(Ls[t.kind]||t.kind),i="before";else{const r=s(Es[t.kind]||t.kind);n=e?`${r} ${e}`:r,i="after"}const a=[];return t.estimated&&a.push(s("Ngày kết thúc là ước tính từ số buổi xạ, chưa ai xác nhận.")),t.pseudoprogression&&(i="pseudo",a.push(s("Nằm trong 12 tuần sau xạ — cân nhắc giả tiến triển trước khi kết luận tiến triển."))),{text:n,tone:i,title:[n,...a].join(" · "),estimated:!!t.estimated}}let Mo=0;function ua(t){return Mo+=1,`${t}-${Date.now().toString(36)}-${Mo}`}function ha(){return{id:ua("t"),compartment:"",location:"",side:"",axis:"",histology:"",grade:"",molecular:{},basis:"",confirmedAt:"",source:"",note:""}}function pa(t=""){return{id:ua("e"),kind:t,start:"",end:"",where:"",extent:"",technique:"",regimen:"",doseGy:null,fractions:null,cycles:null,cyclesDone:null,note:""}}function _s(t){const e=t&&typeof t=="object"?t:Et();return{tumors:(e.tumors||[]).map(n=>({...ha(),...n,molecular:{...n.molecular||{}}})),events:(e.events||[]).map(n=>({...pa(),...n}))}}function Li(){const t=x.vocabulary;return{compartments:t?.compartments||[],locations:t?.locations||{},axes:t?.axes||{},sides:t?.sides||[],histologies:t?.histologies||[],grades:t?.grades||[],molecularMarkers:t?.molecularMarkers||[],diagnosisBases:t?.diagnosisBases||[],eventKinds:t?.eventKinds||[],resectionExtents:t?.resectionExtents||[],radiotherapyTechniques:t?.radiotherapyTechniques||[],chemoRegimens:t?.chemoRegimens||[]}}function Ht(t,e){return`<datalist id="${l(t)}">${(e||[]).map(n=>`<option value="${l(n)}"></option>`).join("")}</datalist>`}function ie(t,e,n,i=""){return`<input class="dxf-input" type="text" data-clinical-field="${l(t)}"
+    list="${l(n)}" value="${l(e||"")}"
+    placeholder="${l(i)}" autocomplete="off">`}function ke(t,e,n,i){return`<select class="dxf-input" data-clinical-field="${l(t)}">
+    <option value=""${e?"":" selected"}>${l(i)}</option>
+    ${(n||[]).map(a=>`
+      <option value="${l(a)}"${a===e?" selected":""}>${l(a)}</option>
+    `).join("")}
+  </select>`}function li(t,e){return`<input class="dxf-input" type="date" data-clinical-field="${l(t)}"
+    value="${l(e||"")}">`}function Ze(t,e,n){const i=Number.isFinite(e)?String(e):"";return`<input class="dxf-input" type="number" min="0" data-clinical-field="${l(t)}"
+    value="${l(i)}" placeholder="${l(n)}">`}function Hs(t,e){const n=Object.entries(t.molecular||{});return`
+    <div class="dxf-molecular">
+      <span class="dxf-sub-label">${l(s("Dấu ấn phân tử"))}</span>
+      ${n.map(([i,a],r)=>`
+        <div class="dxf-molecular-row" data-molecular-index="${r}">
+          <input class="dxf-input dxf-marker" type="text" list="dx-markers"
+            data-clinical-field="molecularName" value="${l(i)}"
+            placeholder="${l(s("Tên dấu ấn"))}" autocomplete="off">
+          <input class="dxf-input" type="text" data-clinical-field="molecularValue"
+            value="${l(a)}" placeholder="${l(s("Kết quả"))}">
+          <button class="dxf-mini danger" type="button" data-action="clinical-remove-marker"
+            data-tumor-index="${e}" data-molecular-index="${r}"
+            title="${l(s("Xoá dấu ấn"))}">×</button>
+        </div>
+      `).join("")}
+      <button class="dxf-mini" type="button" data-action="clinical-add-marker" data-tumor-index="${e}">
+        + ${l(s("Thêm dấu ấn"))}
+      </button>
+    </div>
+  `}function Ws(t,e){const n=Li(),i=t.compartment||"",a=n.locations[i]||[],r=n.axes[i]||[];return`
+    <div class="dxf-block" data-tumor-index="${e}">
+      <div class="dxf-block-head">
+        <b>${l($("Khối u {}",e+1))}</b>
+        <button class="dxf-mini danger" type="button" data-action="clinical-remove-tumor"
+          data-tumor-index="${e}">${l(s("Xoá"))}</button>
+      </div>
+      <label class="dxf-field">
+        <span>${l(s("Khoang"))}</span>
+        ${ke("compartment",i,n.compartments,s("Chưa chọn"))}
+      </label>
+      <label class="dxf-field">
+        <span>${l(s("Vị trí"))}</span>
+        ${ie("location",t.location,`dx-loc-${e}`,s("Chọn hoặc gõ vị trí"))}
+      </label>
+      ${Ht(`dx-loc-${e}`,a)}
+      <div class="dxf-row">
+        <label class="dxf-field">
+          <span>${l(s("Bên"))}</span>
+          ${ke("side",t.side,n.sides,"—")}
+        </label>
+        <label class="dxf-field">
+          <span>${l(s("Trục"))}</span>
+          ${ie("axis",t.axis,`dx-axis-${e}`,s("Chọn hoặc gõ"))}
+        </label>
+        ${Ht(`dx-axis-${e}`,r)}
+      </div>
+      <label class="dxf-field dxf-wide">
+        <span>${l(s("Mô bệnh học"))}</span>
+        ${ie("histology",t.histology,"dx-histologies",s("Chọn hoặc gõ chẩn đoán"))}
+      </label>
+      <div class="dxf-row">
+        <label class="dxf-field">
+          <span>${l(s("Độ WHO"))}</span>
+          ${ke("grade",t.grade,n.grades,"—")}
+        </label>
+        <label class="dxf-field">
+          <span>${l(s("Căn cứ"))}</span>
+          ${ke("basis",t.basis,n.diagnosisBases,s("Chưa rõ"))}
+        </label>
+      </div>
+      <label class="dxf-field">
+        <span>${l(s("Ngày có kết quả"))}</span>
+        ${li("confirmedAt",t.confirmedAt)}
+      </label>
+      ${Hs(t,e)}
+      <label class="dxf-field dxf-wide">
+        <span>${l(s("Ghi chú khối u"))}</span>
+        <textarea class="dxf-input" rows="2" data-clinical-field="note"
+          placeholder="${l(s("Tuỳ chọn"))}">${l(t.note||"")}</textarea>
+      </label>
+    </div>
+  `}function Vs(t,e){const n=Li(),i=t.kind||"";return`
+    <div class="dxf-block" data-event-index="${e}">
+      <div class="dxf-block-head">
+        <b>${l($("Sự kiện {}",e+1))}</b>
+        <button class="dxf-mini danger" type="button" data-action="clinical-remove-event"
+          data-event-index="${e}">${l(s("Xoá"))}</button>
+      </div>
+      <label class="dxf-field">
+        <span>${l(s("Loại"))}</span>
+        ${ke("kind",i,n.eventKinds,s("Chưa chọn"))}
+      </label>
+      <div class="dxf-row">
+        <label class="dxf-field">
+          <span>${l(s("Bắt đầu"))}</span>
+          ${li("start",t.start)}
+        </label>
+        <label class="dxf-field">
+          <span>${l(s("Kết thúc"))}</span>
+          ${li("end",t.end)}
+        </label>
+      </div>
+      <p class="dxf-hint">${l(s("Để trống ngày kết thúc nghĩa là đang diễn ra."))}</p>
+      <label class="dxf-field">
+        <span>${l(s("Nơi thực hiện"))}</span>
+        <input class="dxf-input" type="text" data-clinical-field="where"
+          value="${l(t.where||"")}"
+          placeholder="${l(s("Bệnh viện, trung tâm"))}">
+      </label>
+      ${i==="Mổ"?`
+        <label class="dxf-field">
+          <span>${l(s("Mức độ lấy u"))}</span>
+          ${ie("extent",t.extent,"dx-extents",s("Chọn hoặc gõ"))}
+        </label>
+      `:""}
+      ${i==="Xạ"?`
+        <label class="dxf-field">
+          <span>${l(s("Kỹ thuật"))}</span>
+          ${ie("technique",t.technique,"dx-techniques",s("Chọn hoặc gõ"))}
+        </label>
+        <div class="dxf-row">
+          <label class="dxf-field">
+            <span>${l(s("Liều (Gy)"))}</span>
+            ${Ze("doseGy",t.doseGy,"60")}
+          </label>
+          <label class="dxf-field">
+            <span>${l(s("Số buổi"))}</span>
+            ${Ze("fractions",t.fractions,"30")}
+          </label>
+        </div>
+        <p class="dxf-hint">${l(s("Có số buổi thì app tự biết đợt xạ quá hạn cập nhật."))}</p>
+      `:""}
+      ${i==="Hoá"||i==="Đích/Miễn dịch"?`
+        <label class="dxf-field">
+          <span>${l(s("Phác đồ"))}</span>
+          ${ie("regimen",t.regimen,"dx-regimens",s("Chọn hoặc gõ"))}
+        </label>
+        <div class="dxf-row">
+          <label class="dxf-field">
+            <span>${l(s("Đã xong"))}</span>
+            ${Ze("cyclesDone",t.cyclesDone,"3")}
+          </label>
+          <label class="dxf-field">
+            <span>${l(s("Tổng chu kỳ"))}</span>
+            ${Ze("cycles",t.cycles,"6")}
+          </label>
+        </div>
+      `:""}
+      <label class="dxf-field dxf-wide">
+        <span>${l(s("Ghi chú"))}</span>
+        <textarea class="dxf-input" rows="2" data-clinical-field="note"
+          placeholder="${l(s("Tuỳ chọn"))}">${l(t.note||"")}</textarea>
+      </label>
+    </div>
+  `}function Gs(){const t=Li();return`
+    ${Ht("dx-histologies",t.histologies)}
+    ${Ht("dx-markers",t.molecularMarkers)}
+    ${Ht("dx-extents",t.resectionExtents)}
+    ${Ht("dx-techniques",t.radiotherapyTechniques)}
+    ${Ht("dx-regimens",t.chemoRegimens)}
+  `}function js(t){return`
+    <div class="dxf-section">
+      <div class="dxf-section-head">
+        <b>${l(s("Chẩn đoán"))}</b>
+        <button class="dxf-mini" type="button" data-action="clinical-add-tumor">
+          + ${l(s("Thêm khối u"))}
+        </button>
+      </div>
+      ${t.tumors.length?t.tumors.map(Ws).join(""):`<p class="dxf-empty">${l(s("Chưa có khối u nào được mô tả."))}</p>`}
+    </div>
+  `}function Us(t){return`
+    <div class="dxf-section">
+      <div class="dxf-section-head">
+        <b>${l(s("Điều trị"))}</b>
+        <button class="dxf-mini" type="button" data-action="clinical-add-event">
+          + ${l(s("Thêm sự kiện"))}
+        </button>
+      </div>
+      ${t.events.length?t.events.map(Vs).join(""):`<p class="dxf-empty">${l(s("Chưa có mốc điều trị nào."))}</p>`}
+    </div>
+  `}function fa(t={}){const e=x.draft||Et(),n=[t.patientName,t.patientId].map(i=>String(i||"").trim()).filter(Boolean).join(" · ");return`
+    <div class="dx-workspace">
+      ${Gs()}
+      <header class="dxw-bar">
+        <div class="dxw-title">
+          <b>${l(s("Hồ sơ lâm sàng"))}</b>
+          ${n?`<span class="dxw-patient">${l(n)}</span>`:""}
+        </div>
+        <div class="dxw-actions">
+          <button class="dxw-btn primary" type="button" data-action="save-clinical"
+            ${x.saving?"disabled":""}>${l(x.saving?s("Đang lưu…"):s("Lưu"))}</button>
+          <button class="dxw-btn" type="button" data-action="cancel-clinical"
+            >${l(s("Đóng"))}</button>
+        </div>
+      </header>
+      ${x.error?`
+        <p class="dxf-error" role="alert">${l(x.error)}</p>
+      `:""}
+      <div class="dxw-body">
+        <section class="dxw-col">${js(e)}</section>
+        <section class="dxw-col">${Us(e)}</section>
+      </div>
+    </div>
+  `}function zs(){const t=x.record||Et(),e=t.tumors||[],n=t.events||[];return!e.length&&!n.length?`<p class="dxf-empty">${l(s("Chưa ghi hồ sơ lâm sàng cho bệnh nhân này."))}</p>`:`
+    ${e.length?`
+      <ul class="dx-tumors">
+        ${e.map(i=>{const a=ca(i),r=Object.entries(i.molecular||{});return`
+            <li class="dx-tumor">
+              <b>${l(Ds(i))}</b>
+              ${a?`<small>${l(a)}</small>`:""}
+              ${r.length?`
+                <span class="dx-markers">
+                  ${r.map(([c,d])=>`
+                    <span class="dx-marker">${l(c)}: ${l(d)}</span>
+                  `).join("")}
+                </span>
+              `:""}
+              ${i.basis?`
+                <span class="dx-basis ${i.basis==="Mô bệnh học"?"confirmed":"imaging"}"
+                  title="${l($("Chẩn đoán dựa trên: {}",i.basis))}"
+                  >${l(i.basis)}${i.confirmedAt?` · ${l(hn(i.confirmedAt))}`:""}</span>
+              `:`
+                <span class="dx-basis unknown" title="${l(s("Chưa ghi chẩn đoán này dựa trên gì"))}"
+                  >${l(s("Chưa rõ căn cứ"))}</span>
+              `}
+              ${i.note?`<small class="dx-note">${l(i.note)}</small>`:""}
+            </li>
+          `}).join("")}
+      </ul>
+    `:""}
+    ${n.length?`
+      <ul class="dx-events">
+        ${n.map(i=>{const a=Ns(i);return`
+            <li class="dx-event${!i.end?" open":""}">
+              <span class="dx-event-kind">${l(i.kind)}</span>
+              <span class="dx-event-body">
+                <b>${l(Ps(i))}</b>
+                ${i.where?`<small>${l(i.where)}</small>`:""}
+                ${a?`<small>${l(a)}</small>`:""}
+              </span>
+            </li>
+          `}).join("")}
+      </ul>
+    `:""}
+  `}function ma(){const t=la(x.stage),e=x.editing,n=!!x.draft&&!e;return`
+    <div class="rec-card dx-card${e?" editing":""}">
+      <div class="rec-card-header">
+        <b>${l(s("Hồ sơ lâm sàng"))}</b>
+        <div class="rec-card-actions">
+          ${x.canWrite&&!e?`
+            <button class="mini-btn" type="button" data-action="edit-clinical"
+              title="${l(s("Sửa hồ sơ lâm sàng"))}">✎</button>
+          `:""}
+        </div>
+      </div>
+      ${e?`
+        <p class="dx-hint">${l(s("Đang sửa ở khung bên phải."))}</p>
+      `:""}
+      ${n?`
+        <p class="dx-hint pending">${l(s("Còn bản sửa chưa lưu."))}</p>
+      `:""}
+      ${t?`
+        <div class="dx-stage">
+          <span class="dx-stage-chip ${l(t.tone)}" title="${l(t.title)}"
+            >${l(t.text)}</span>
+          ${t.where?`<span class="dx-stage-where">${l(t.where)}</span>`:""}
+        </div>
+      `:""}
+      ${x.error&&!e?`
+        <p class="dxf-error" role="alert">${l(x.error)}</p>
+      `:""}
+      ${x.loading?`<p class="dxf-empty">${l(s("Đang tải hồ sơ lâm sàng…"))}</p>`:x.canWrite?zs():`<p class="dxf-empty">${l(x.reason||s("Thư mục này chưa có patient-index.json nên chưa ghi được hồ sơ lâm sàng."))}</p>`}
+    </div>
+  `}const Ks=new Set(["doseGy","fractions","cycles","cyclesDone"]);function Xs(t){const e=String(t??"").trim();if(!e)return null;const n=Number(e);return Number.isFinite(n)&&n>=0?Math.round(n):null}function Js(t){const e=x.draft;if(!e||!t)return!1;const n=t.dataset.clinicalField;if(!n)return!1;const i=t.closest("[data-tumor-index]"),a=t.closest("[data-molecular-index]"),r=t.closest("[data-event-index]");if(a&&i){const c=e.tumors[Number(i.dataset.tumorIndex)];if(!c)return!1;const d=Object.entries(c.molecular||{}),u=Number(a.dataset.molecularIndex);if(!d[u])return!1;const[h,p]=d[u];return d[u]=n==="molecularName"?[t.value.trim(),p]:[h,t.value.trim()],c.molecular=Object.fromEntries(d.filter(([f])=>f)),!1}if(i){const c=e.tumors[Number(i.dataset.tumorIndex)];return c?(c[n]=t.value,n==="compartment"):!1}if(r){const c=e.events[Number(r.dataset.eventIndex)];return c?(c[n]=Ks.has(n)?Xs(t.value):t.value,n==="kind"):!1}return!1}function Ys(){x.draft&&x.draft.tumors.push(ha())}function Zs(t){x.draft&&x.draft.tumors.splice(t,1)}function Qs(){x.draft&&x.draft.events.push(pa())}function tl(t){x.draft&&x.draft.events.splice(t,1)}function el(t){const e=x.draft?.tumors?.[t];if(!e)return;const n={...e.molecular||{}};let i=s("Dấu ấn mới"),a=2;for(;n[i]!==void 0;)i=`${s("Dấu ấn mới")} ${a}`,a+=1;n[i]="",e.molecular=n}function nl(t,e){const n=x.draft?.tumors?.[t];if(!n)return;const i=Object.entries(n.molecular||{});i.splice(e,1),n.molecular=Object.fromEntries(i)}function il(){const t=x.draft||Et();return{tumors:t.tumors.map(e=>({...e,molecular:Object.fromEntries(Object.entries(e.molecular||{}).filter(([n,i])=>n.trim()&&String(i).trim()))})),events:t.events}}function ol(t,e=!1){return(t||[]).map(n=>({...n,selected:!e&&n.selected!==void 0?!!n.selected:!e&&n.local_status!=="downloaded"}))}function ce(t){return(t||[]).filter(e=>e.selected===!0)}function Ei(t){return Object.fromEntries((t||[]).map(e=>[e.studyUid,(e.series||[]).filter(n=>n.selected!==!1).map(n=>n.id)]))}function pn(t,e={}){return{...e,...Ei(t)}}function ga(t,e={}){return(t||[]).map(n=>{const i=Object.prototype.hasOwnProperty.call(e,n.studyUid),a=new Set(e[n.studyUid]||[]);return{...n,series:(n.series||[]).map(r=>({...r,selected:i?a.has(r.id):!0}))}})}function ya(t,e){const n=Ei(e);return ce(t).filter(i=>{const a=String(i.study_uid||"").trim(),r=n[a];return!(Array.isArray(r)&&r.length>0)})}function al(t,e){return ce(t).length?ya(t,e).length===0:!1}const Oi="dcom-rendering-engine",ci="dcom-tools",Ri="dcomjpg",fn="cornerstoneStreamingImageVolume",rl=Object.freeze({maxImagesToPrefetch:8,minBefore:2,maxAfter:6,directionExtraImages:0,preserveExistingPool:!0}),nn=[Nn,Dn,se,na,Ti,Mi,Ln,En,_e,ue,xe,st,Zt,ia,en],mn={window:se.toolName,pan:Nn.toolName,zoom:Dn.toolName,length:Ti.toolName,angle:Mi.toolName,ellipse:Ln.toolName,freehand:En.toolName,text:_e.toolName,crosshair:ue.toolName,orbit3d:xe.toolName,magnify:ia.toolName},sl=new Set([Ti.toolName,Mi.toolName,Ln.toolName,En.toolName,_e.toolName]);let Po=!1,T=null,Ai=!1,A=null,gn=null,Dt=[],di="Nội dung ghi chú",ui="Thêm",hi="Bỏ";const On=Object.freeze({compare:2,compare3:3});let R=Da(),W="",yt=null,Z=null,j=[],dt="single",St="window",Bi="stack",Vt=!0,qi=!1,yn=!0,Se=null,Ee=0,zt=()=>{},pi=()=>{};const he=new Map,Mt=new Map,Oe=new Map;let at=null,on=!1,ll=0,Re="main",fi=null;const cl=Object.freeze({full:{lower:0,upper:255},soft:{lower:28,upper:205},contrast:{lower:62,upper:168}}),va=Object.freeze([{id:"ct-brain",label:"Não",width:80,center:40},{id:"ct-stroke",label:"Đột quỵ / hố sau",width:40,center:40},{id:"ct-subdural",label:"Máu tụ dưới màng cứng",width:215,center:75},{id:"ct-bone",label:"Xương",width:1800,center:400},{id:"ct-temporal",label:"Xương thái dương",width:4e3,center:700}]),dl=new Map(va.map(t=>[t.id,t])),ul=Object.freeze({full:1,soft:1.5,contrast:.6});function Rn(t){if(t?.sourceType!=="dicom"||t?.modality!=="CT")return!1;const e=t.pixelData||{};return Number.isFinite(e.rescaleSlope)&&e.rescaleSlope!==0&&Number.isFinite(e.rescaleIntercept)}function mi(t){const e=[{id:"full",label:t?.sourceType==="dicom"?"DICOM mặc định":"Toàn dải"},{id:"soft",label:t?.sourceType==="dicom"?"Cửa sổ rộng":"Mô mềm JPG"},{id:"contrast",label:t?.sourceType==="dicom"?"Cửa sổ hẹp":"Tương phản cao"}];return Rn(t)?[...va.map(n=>({id:n.id,label:n.label,detail:`W${n.width}/L${n.center}`})),...e]:e}function vn(t){return Rn(t)?"ct-brain":"full"}function hl(t){const e=t?.pixelData||{},n=Math.max(1,Math.min(Number(e.bitsStored)||16,32)),i=Number(e.pixelRepresentation)===1,a=i?-(2**(n-1)):0,r=i?2**(n-1)-1:2**n-1,c=Number.isFinite(e.rescaleSlope)&&e.rescaleSlope!==0?e.rescaleSlope:1,d=Number.isFinite(e.rescaleIntercept)?e.rescaleIntercept:0;return{lower:a*c+d,upper:r*c+d}}function ba(t,e=null){if(e?.sourceType!=="dicom")return cl[t]||null;const n=dl.get(t);if(n)return Rn(e)?{lower:n.center-n.width/2,upper:n.center+n.width/2}:null;const i=e.pixelData||{},a=hl(e),r=Number.isFinite(i.windowCenter)?i.windowCenter:(a.lower+a.upper)/2,c=Number.isFinite(i.windowWidth)&&i.windowWidth>0?i.windowWidth:Math.max(1,a.upper-a.lower),d=ul[t];if(!Number.isFinite(d))return null;const u=c*d;return!Number.isFinite(u)||u<=0?null:{lower:r-u/2,upper:r+u/2}}function wa(t){if(!t)return null;const e=Number(t.pixelData?.numberOfFrames||1);return t.sourceType==="dicom"&&e>1&&!t.geometry?{level:"warning",text:"DICOM multi-frame thiếu vị trí 3D theo khung: xem được từng khung, nhưng không có MPR/3D và không đồng bộ theo vị trí với series khác."}:t.sourceType==="dicom"?null:t.modality==="CT"?{level:"danger",text:"CT đã chuyển sang JPG 8-bit: chỉ dùng xem hình thái và đo hình học; không dùng mức xám để suy luận HU hay cửa sổ CT chẩn đoán."}:["MR","CT"].includes(t.modality)?null:{level:"warning",text:"Chưa xác định được modality của series JPG 8-bit; không dùng mức xám để định lượng tín hiệu hoặc đậm độ."}}function ka(t){const e=new RegExp(`^${Ri}:([a-f0-9]{20}):(\\d+)$`).exec(t);return e?{seriesId:e[1],index:Number(e[2])}:null}function pl(t,e){const n=ka(e);if(!n)return;const i=he.get(n.seriesId),a=Mt.get(n.seriesId);if(!i)return;const r=i.geometry;if(t==="generalSeriesModule")return{modality:i.modality==="CT"?"CT":i.modality==="MR"?"MR":"OT",seriesInstanceUID:n.seriesId};if(t==="generalImageModule")return{instanceNumber:n.index+1};if(t==="imagePixelModule"){const c=i.pixelData||{};return{samplesPerPixel:c.samplesPerPixel||1,photometricInterpretation:c.photometricInterpretation||"MONOCHROME2",rows:r?.rows||c.rows||1,columns:r?.columns||c.columns||1,bitsAllocated:c.bitsAllocated||8,bitsStored:c.bitsStored||8,highBit:c.highBit??7,pixelRepresentation:c.pixelRepresentation||0}}if(t==="modalityLutModule")return{rescaleIntercept:0,rescaleSlope:1,rescaleType:i.modality==="CT"?"HU":"US"};if(t==="voiLutModule"){const c=i.pixelData?.windowCenter,d=i.pixelData?.windowWidth;return{windowCenter:[Number.isFinite(c)?c:127.5],windowWidth:[Number.isFinite(d)&&d>0?d:255]}}if(t==="imagePlaneModule"&&r&&a){const c=a.ordered_slices?.[n.index];return c?{frameOfReferenceUID:r.frameOfReferenceUID||n.seriesId,rows:r.rows,columns:r.columns,imageOrientationPatient:r.orientation,rowCosines:r.orientation.slice(0,3),columnCosines:r.orientation.slice(3,6),imagePositionPatient:c.position,pixelSpacing:[...r.pixelSpacing],rowPixelSpacing:r.pixelSpacing[0],columnPixelSpacing:r.pixelSpacing[1],sliceThickness:r.sliceSpacing,spacingBetweenSlices:r.sliceSpacing,sliceLocation:c.distance}:void 0}}function fl(t,e){return`${Ri}:${t}:${e}`}function $a(t,e,n){const i=document.createElement("canvas");i.width=e,i.height=n;const a=i.getContext("2d"),r=a.createImageData(e,n);for(let c=0,d=0;c<t.length;c+=1,d+=4)r.data[d]=t[c],r.data[d+1]=t[c],r.data[d+2]=t[c],r.data[d+3]=255;return a.putImageData(r,0,0),i}async function ml(t){const e=await createImageBitmap(t),n=e.width,i=e.height,r=(typeof OffscreenCanvas=="function"?new OffscreenCanvas(n,i):Object.assign(document.createElement("canvas"),{width:n,height:i})).getContext("2d",{willReadFrequently:!0});if(!r)throw new Error("Không tạo được bộ giải mã ảnh.");r.drawImage(e,0,0),e.close();const c=r.getImageData(0,0,n,i).data,d=c.length;let u=!1;for(let p=0;p<d;p+=4){const f=c[p],y=c[p+1],C=c[p+2];if(Math.abs(f-y)>2||Math.abs(y-C)>2){u=!0;break}}if(Re="main",u){const p=new Uint8Array(n*i*3);for(let f=0,y=0;f<d;f+=4,y+=3)p[y]=c[f],p[y+1]=c[f+1],p[y+2]=c[f+2];return{pixels:p,width:n,height:i,isColor:!0}}const h=new Uint8Array(n*i);for(let p=0,f=0;f<h.length;p+=4,f+=1)h[f]=c[p];return{pixels:h,width:n,height:i,isColor:!1}}function xa(t){for(const e of Oe.values())e.reject(t);Oe.clear()}function gl(){if(on||typeof Worker!="function")return null;if(at)return at;try{return at=new Worker(new URL("/assets/image-worker-Bavxkbgc.js",import.meta.url),{type:"module"}),at.addEventListener("message",t=>{const{id:e,width:n,height:i,isColor:a,pixels:r,error:c}=t.data||{},d=Oe.get(e);if(!d)return;if(Oe.delete(e),c){d.reject(new Error(c));return}Re="worker";const u=new Uint8Array(r);d.resolve({pixels:u.slice(),width:n,height:i,isColor:!!a})}),at.addEventListener("error",t=>{const e=new Error(t.message||"Bộ giải mã ảnh nền gặp sự cố.");xa(e),at?.terminate(),at=null,on=!0}),at}catch{return on=!0,null}}async function yl(t){const e=gl();if(e)try{const n=++ll;return await new Promise((i,a)=>{Oe.set(n,{resolve:i,reject:a}),e.postMessage({id:n,blob:t})})}catch(n){/OffscreenCanvas|createImageBitmap|giải mã ảnh nền/i.test(n?.message||"")&&(on=!0,at?.terminate(),at=null)}return ml(t)}function vl(t,e){const i={uint8:Uint8Array,int8:Int8Array,uint16:Uint16Array,int16:Int16Array,uint32:Uint32Array,int32:Int32Array}[e];if(!i)throw new Error(`Kiểu pixel DICOM chưa được hỗ trợ: ${e}`);return new i(t)}function bl(t,e,n,i,a){if(e===1&&n===0)return{pixels:t,min:i,max:a};const r=Math.min(i*e+n,a*e+n),c=Math.max(i*e+n,a*e+n),d=Number.isInteger(e)&&Number.isInteger(n);let u=Float32Array;d&&(r>=-32768&&c<=32767?u=Int16Array:r>=-2147483648&&c<=2147483647&&(u=Int32Array));const h=new u(t.length);for(let p=0;p<t.length;p+=1)h[p]=t[p]*e+n;return{pixels:h,min:r,max:c}}function Sa({rgb:t,rows:e,columns:n}){const i=e*n*3;if(!t||t.length!==i)throw new Error(`Pixel màu DICOM không đầy đủ: ${t?.length??0}/${i}.`);return{minPixelValue:0,maxPixelValue:255,slope:1,intercept:0,windowCenter:127.5,windowWidth:255,getPixelData:()=>t,rows:e,columns:n,height:e,width:n,color:!0,rgba:!1,numberOfComponents:3,invert:!1,photometricInterpretation:"RGB",sizeInBytes:t.byteLength,dataType:"Uint8Array"}}function Ca(t,e,n){const i=document.createElement("canvas");i.width=e,i.height=n;const a=i.getContext("2d"),r=a.createImageData(e,n);for(let c=0,d=0;c<t.length;c+=3,d+=4)r.data[d]=t[c],r.data[d+1]=t[c+1],r.data[d+2]=t[c+2],r.data[d+3]=255;return a.putImageData(r,0,0),i}function wl(t,e,n,i,a,r){const c=new Uint8Array(t.length),d=Math.max(1,a-i);for(let u=0;u<t.length;u+=1){const h=Math.max(0,Math.min(255,Math.round((t[u]-i)/d*255)));c[u]=r?255-h:h}return $a(c,e,n)}async function kl(t,e,n){const i=await xs(ra(e.seriesId,e.index)),a=n?.geometry?.pixelSpacing||n?.pixelData?.pixelSpacing;if(i.samples===3){const f=new Uint8Array(i.buffer);return Re="dicom-color",{imageId:t,...Sa({rgb:f,rows:i.rows,columns:i.columns}),getCanvas:()=>Ca(f,i.columns,i.rows),columnPixelSpacing:a?.[1],rowPixelSpacing:a?.[0],imageQualityStatus:dn.FULL_RESOLUTION}}const r=vl(i.buffer,i.pixelType);if(r.length!==i.rows*i.columns)throw new Error(`Pixel DICOM không đầy đủ: ${r.length}/${i.rows*i.columns}.`);const{pixels:c,min:d,max:u}=bl(r,i.slope,i.intercept,i.min,i.max),h=n?.geometry?.pixelSpacing||n?.pixelData?.pixelSpacing,p=i.photometric==="MONOCHROME1";return Re="dicom-direct",{imageId:t,minPixelValue:d,maxPixelValue:u,slope:1,intercept:0,preScale:{enabled:!0,scaled:!0,scalingParameters:{modality:n?.modality,rescaleSlope:i.slope,rescaleIntercept:i.intercept}},windowCenter:i.windowCenter,windowWidth:i.windowWidth,getPixelData:()=>c,getCanvas:()=>wl(c,i.columns,i.rows,d,u,p),rows:i.rows,columns:i.columns,height:i.rows,width:i.columns,color:!1,rgba:!1,numberOfComponents:1,columnPixelSpacing:h?.[1],rowPixelSpacing:h?.[0],invert:p,photometricInterpretation:i.photometric,sizeInBytes:c.byteLength,dataType:c.constructor.name,imageQualityStatus:dn.FULL_RESOLUTION}}function $l(t){const e=ka(t);return{promise:(async()=>{if(!e)throw new Error("ImageId không hợp lệ.");const i=he.get(e.seriesId);if(i?.sourceType==="dicom")return kl(t,e,i);const a=await He(ra(e.seriesId,e.index)),{pixels:r,width:c,height:d,isColor:u}=await yl(a),h=i?.geometry?.pixelSpacing||i?.pixelData?.pixelSpacing;if(u)return{imageId:t,...Sa({rgb:r,rows:d,columns:c}),getCanvas:()=>Ca(r,c,d),columnPixelSpacing:h?.[1],rowPixelSpacing:h?.[0],imageQualityStatus:dn.FULL_RESOLUTION};if(!fi){let p=255,f=0,y=0;for(const C of r)p=Math.min(p,C),f=Math.max(f,C),C&&(y+=1);fi={width:c,height:d,min:p,max:f,nonZero:y}}return{imageId:t,minPixelValue:0,maxPixelValue:255,slope:1,intercept:0,windowCenter:127.5,windowWidth:255,getPixelData:()=>r,getCanvas:()=>$a(r,c,d),rows:d,columns:c,height:d,width:c,color:!1,rgba:!1,numberOfComponents:1,columnPixelSpacing:h?.[1],rowPixelSpacing:h?.[0],invert:!1,photometricInterpretation:"MONOCHROME2",sizeInBytes:r.byteLength,dataType:"Uint8Array",imageQualityStatus:dn.FULL_RESOLUTION}})()}}async function xl(t={}){if(zt=t.onStatus||zt,pi=t.onSlice||pi,!Po){await us(),await hs(),Pi.setConfiguration(rl),ws(Ri,$l),ps(pl,1e4);for(const e of nn)try{fs(e)}catch{}Po=!0}}function No(t=""){return new Promise(e=>{const n=document.createElement("div");n.className="text-prompt-backdrop";const i=document.createElement("form");i.className="text-prompt";const a=document.createElement("label");a.textContent=di;const r=document.createElement("input");r.type="text",r.maxLength=120,r.value=t;const c=document.createElement("div");c.className="text-prompt-actions";const d=document.createElement("button");d.type="button",d.textContent=hi;const u=document.createElement("button");u.type="submit",u.className="primary",u.textContent=ui;let h=!1;const p=f=>{h||(h=!0,n.remove(),e(f))};i.addEventListener("submit",f=>{f.preventDefault(),p(r.value.trim()||null)}),d.addEventListener("click",()=>p(null)),n.addEventListener("mousedown",f=>{f.target===n&&p(null)}),r.addEventListener("keydown",f=>{f.key==="Escape"&&p(null),f.stopPropagation()}),a.append(r),c.append(d,u),i.append(a,c),n.append(i),document.body.append(n),r.focus(),r.select()})}function Sl({label:t,confirm:e,cancel:n}){di=t||di,ui=e||ui,hi=n||hi}function Cl(t){t.setToolConfiguration(_e.toolName,{getTextCallback:e=>{No("").then(e)},changeTextCallback:(e,n,i)=>{No(e?.data?.text||"").then(i)}})}function Kt(t){he.set(t.id,t)}async function Fi(t){if(!Mt.has(t.id))try{Mt.set(t.id,await N(`/api/series/${t.id}/manifest`))}catch{Mt.set(t.id,{})}return Mt.get(t.id)}function z(){return!!T&&Ai}function Ve(){R=Da(),Ha(),Ee+=1,gn?.disconnect(),gn=null;for(const t of Dt)try{Pi.disable(t)}catch{}if(Pt.removeAllAnnotations(),A&&(aa(ci),A=null),Bi="stack",z())for(const t of T.getViewports()||[])try{T.disableElement(t.id)}catch{}Dt=[],W="",yt=null}function _i(){return z()||(T=new ms(Oi),Ai=!0),T}function Ce(){Ve()}function Il(){if(Ve(),z())try{T.destroy()}catch{}T=null,Ai=!1,Z=null,j=[],xa(new Error("Cửa sổ viewer đã đóng.")),at?.terminate(),at=null}function Hi(t,e="stack"){const n=e==="volume3d";if(aa(ci),A=ys(ci),!A)throw new Error("Không tạo được nhóm công cụ.");Bi=e;const i=Na(e);for(const a of i)A.addTool(a.toolName);i.includes(_e)&&Cl(A);for(const a of t)A.addViewport(a,Oi);A.setToolActive(Nn.toolName,{bindings:[{mouseButton:Wt.Auxiliary}]}),A.setToolActive(Dn.toolName,{bindings:[{mouseButton:Wt.Secondary}]}),n||A.setToolActive(na.toolName,{bindings:[{mouseButton:Wt.Wheel}]}),i.includes(se)&&A.setToolActive(se.toolName,{bindings:[{mouseButton:Wt.Primary,modifierKey:17}]}),i.includes(st)&&Vt&&(A.setToolEnabled(st.toolName),je()),Ra(),qn()}function Wi(t){gn=new ResizeObserver(()=>{try{T?.resize(!0,!0)}catch{}}),gn.observe(t)}async function Ia(){await new Promise(t=>requestAnimationFrame(()=>requestAnimationFrame(t))),z()&&(T.resize(!0,!0),T.render())}function ge(t){if(!t||t.length!==3)return"";const e=Math.abs(t[0]),n=Math.abs(t[1]),i=Math.abs(t[2]),a=Math.max(e,n,i);return a===e?t[0]<0?"R":"L":a===n?t[1]<0?"A":"P":a===i?t[2]<0?"I":"S":""}function Xt(t){const e=String(t||"").trim();if(!e||/^[\*\?\s]+$/.test(e))return"";const n=e.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-zA-Z0-9]+/g,"").toUpperCase();return["ANON","ANONYMOUS","ANONYMIZED","ANONYMISED","REDACTED","MASKED","REMOVED","HIDDEN","UNKNOWN","XXX","XXXX","KHONGROTEN","KHONGROID"].includes(n)?"":e}function ye(t,e=1){const n=Number(t);return Number.isFinite(n)?String(Number(n.toFixed(e))):""}function Tl(t,e){const n=t?.acquisition||e?.acquisition||{},i=String(t?.modality||e?.modality||"").toUpperCase(),a=[];if(i==="MR"||i==="MRI"){const u=ye(n.repetitionTime),h=ye(n.echoTime,2);(u||h)&&a.push(`TR/TE: ${u||"—"} / ${h||"—"} ms`)}const r=ye(n.kvp),c=ye(n.exposure,2);(r||c)&&a.push([r&&`kVp: ${r}`,c&&`mAs: ${c}`].filter(Boolean).join("  "));const d=ye(n.sliceThickness,2);return d&&a.push(`ST: ${d} mm`),a}function Ml(t,e,n,i,a,r,c,d,u){const h=T?.getViewport(t);if(!h)return;const p=he.get(h.element?.dataset?.seriesId);if(!p)return;const f=Mt.get(p.id)||{},y=Xt(f.patientName)||Xt(f.patient_name)||"",C=Xt(f.patientId)||Xt(f.patient_id)||"",b=Xt(f.patientBirthDate)||Xt(f.patient_birth_date)||"",g=b?`DOB: ${b}`:"",S=[y,C,g].filter(Boolean);e.innerText=S.length?S.join(`
+`):"— Hồ sơ không kèm thông tin định danh —";const q=p.modality||f.modality||"";let P=f.studyDate||f.study_date||p.studyDate||"";if(!P){const J=(p.studyGroup||"").split(" - ");J.length>0&&J[0]!=="Không rõ ca chụp"&&/^\d{4}-\d{2}-\d{2}/.test(J[0])&&(P=`${J[0]} (thư mục)`)}const G=p.acquisition||f.acquisition||{},X=f.institutionName||f.institution_name||G.institutionName||"",bt=p.description||f.series_description||"",wt=G.accessionNumber?`Acc: ${G.accessionNumber}`:"",Jn=p.sourceType==="dicom"?"DICOM":"JPG",ze=`${q} · ${Jn}`;n.innerText=[P,ze,bt,wt,X].filter(Boolean).join(`
+`);const V=Math.round((h.getZoom?.()||1)*100),it=(typeof h.getProperties=="function"?h.getProperties():{}).voiRange,Bt=it&&Number.isFinite(it.lower)&&Number.isFinite(it.upper)?`WW/WL: ${Math.round(it.upper-it.lower)} / ${Math.round((it.upper+it.lower)/2)}`:"";i.innerText=[`Zoom: ${V}%`,Bt,...Tl(p,f)].filter(Boolean).join(`
+`);let fe="";if(typeof h.getCurrentImageIdIndex=="function"){const J=h.getCurrentImageIdIndex(),nt=h.getImageIds?.().length||p.sliceCount||1;fe=`Im: ${J+1}/${nt}`}let me="";if(h.getCamera){const J=h.getCamera();if(J.viewPlaneNormal&&J.viewUp){const nt=J.viewPlaneNormal,Q=J.viewUp;r.innerText=ge(Q),c.innerText=ge([-Q[0],-Q[1],-Q[2]]);const ot=[Q[1]*nt[2]-Q[2]*nt[1],Q[2]*nt[0]-Q[0]*nt[2],Q[0]*nt[1]-Q[1]*nt[0]];u.innerText=ge(ot),d.innerText=ge([-ot[0],-ot[1],-ot[2]]);const kt=ge(nt);kt&&(me=kt==="S"||kt==="I"?"Axial":kt==="L"||kt==="R"?"Sagittal":"Coronal")}}a.innerText=[fe,me].filter(Boolean).join(`
+`)}function bn(t,e,n,i="",a=""){const r=document.createElement("section");r.className=`viewport-shell ${i}`.trim(),r.dataset.viewportId=e,r.dataset.seriesId=a;const c=document.createElement("div");c.className="viewport-label",c.textContent=n;const d=document.createElement("div");d.id=e,d.className="viewport",d.dataset.seriesId=a,d.oncontextmenu=P=>P.preventDefault();let u=null;d.addEventListener("pointerdown",P=>{Ae(e),P.button===2&&(u={x:P.clientX,y:P.clientY,time:Date.now()})}),d.addEventListener("pointerup",P=>{if(P.button!==2||!u)return;const G=P.clientX-u.x,X=P.clientY-u.y,bt=Math.hypot(G,X),wt=Date.now()-u.time;u=null,!(bt>4||wt>400)&&Nl(e,P.clientX,P.clientY)}),d.addEventListener("dblclick",()=>{yt&&yt!==e&&document.getElementById(yt)?.closest(".viewport-shell")?.classList.remove("viewport-maximized"),yt=r.classList.toggle("viewport-maximized")?e:null,setTimeout(()=>T?.resize(!0,!1),0)});const h=document.createElement("div");h.className="orientation-marker orientation-t";const p=document.createElement("div");p.className="orientation-marker orientation-b";const f=document.createElement("div");f.className="orientation-marker orientation-l";const y=document.createElement("div");y.className="orientation-marker orientation-r";const C=document.createElement("div");C.className="viewport-overlay overlay-tl";const b=document.createElement("div");b.className="viewport-overlay overlay-tr";const g=document.createElement("div");g.className="viewport-overlay overlay-bl";const S=document.createElement("div");S.className="viewport-overlay overlay-br";const q=()=>Ml(e,C,b,g,S,h,p,f,y);return d.addEventListener(Nt.IMAGE_RENDERED,q),d.addEventListener(Nt.CAMERA_MODIFIED,q),r.append(c,d,h,p,f,y,C,b,g,S),t.append(r),Dt.push(d),W||Ae(e),d}function Pl(t,e){const n=document.createElement("button");n.type="button",n.className="mpr-swap-button",n.textContent="⇄",n.title=`Đưa ${e} vào khung lớn`,n.setAttribute("aria-label",n.title),n.addEventListener("pointerdown",i=>{Ae(t.dataset.viewportId),i.stopPropagation()}),n.addEventListener("click",i=>{i.stopPropagation(),Ta(e)&&t.dispatchEvent(new CustomEvent("mprprimarychange",{bubbles:!0,detail:{plane:e}}))}),t.append(n)}function An({element:t,viewport:e,label:n,count:i,initialIndex:a,eventName:r,eventIndex:c,eventCount:d}){if(!Number.isFinite(i)||i<2)return;const u=t.closest(".viewport-shell");if(!u)return;const h=document.createElement("label");h.className="slice-control",h.innerHTML=`<button type="button" class="cine-btn" title="Chạy phim">▶</button>
+    <input type="range" min="0" max="${i-1}" step="1" aria-label="Lát ảnh ${n}">`;const p=h.querySelector("input"),f=h.querySelector(".cine-btn");let y=null;f.addEventListener("click",b=>{b.stopPropagation(),Ae(t.id),y?(clearInterval(y),y=null,f.textContent="▶",f.title="Chạy phim"):(f.textContent="■",f.title="Dừng phim",y=setInterval(()=>{const g=e.getImageIds?.().length||i;let q=((e.getCurrentImageIdIndex?.()??0)+1)%g;typeof e.setImageIdIndex=="function"&&(e.setImageIdIndex(q),e.render())},90))});const C=(b,g=i)=>{const S=Math.max(1,Number(g)||i),q=Math.max(0,Math.min(Number(b)||0,S-1));p.max=String(S-1),p.value=String(q),W===t.id&&pi({viewportId:t.id,label:n,index:q,count:S})};h.addEventListener("pointerdown",b=>{Ae(t.id),b.stopPropagation()}),p.addEventListener("input",()=>{const b=Number(p.value),g=e.getCurrentImageIdIndex?.()??e.getSliceIndex?.()??0,S=b-g;S&&e.scroll(S),e.render()}),t.addEventListener(r,b=>{C(c(b.detail),d?.(b.detail)||i)}),u.append(h),C(a,i)}function Ae(t){if(W!==t){W=t;for(const e of document.querySelectorAll("#workspace .viewport-shell"))e.classList.toggle("is-active",e.dataset.viewportId===t);je()}}function Nl(t,e,n){const i=T?.getViewport(t);if(!i)return;const a=i.element.getBoundingClientRect(),r=[e-a.left,n-a.top];let c;try{c=i.canvasToWorld(r)}catch{return}const d=A?.getToolInstance?.(ue.toolName);if(d?.setToolCenter)d.setToolCenter(c,!0),T?.render();else{const u=T?.getViewports()||[];let h=!1;for(const p of u){if(p.id===t||p.type!=="stack")continue;const f=vs(c,p);f!=null&&(p.setImageIdIndex(f),h=!0)}h&&T?.render()}}function Vi(){if(!z()||!W)return null;try{return T.getViewport(W)||null}catch{return null}}function Dl(t){const e=["axial","coronal","sagittal"];if(!e.includes(t))return null;const n=e.filter(i=>i!==t);return{[t]:"mpr-primary",[n[0]]:"mpr-secondary-top",[n[1]]:"mpr-secondary-bottom"}}function Ta(t,e=!0){const n=Dl(t);if(!n)return!1;for(const i of document.querySelectorAll(".mode-mpr .mpr-plane")){i.classList.remove("mpr-primary","mpr-secondary-top","mpr-secondary-bottom");const a=n[i.dataset.plane];a&&i.classList.add(a)}return e&&requestAnimationFrame(()=>{try{T?.resize(!0,!0),T?.render()}catch{}}),!0}function Ll(t=0,e=90){const n=Number.isFinite(Number(t))?Number(t):0,i=Number.isFinite(Number(e))?Number(e):0;return((n+i)%360+360)%360}function El(t){const e=Vi();if(!e||typeof e.getViewPresentation!="function"||typeof e.setViewPresentation!="function")return null;const n=e.getViewPresentation(),i=t(n||{});return e.setViewPresentation(i),e.render(),i}function Ol(){return El(t=>({...t,rotation:Ll(t.rotation,90)}))}function Ma(t){const e=Vi();if(!e||typeof e.getCamera!="function"||typeof e.setCamera!="function")return null;const n=e.getCamera()||{},i={[t]:!n[t]};return e.setCamera(i),e.render(),i}function Rl(){return Ma("flipHorizontal")}function Al(){return Ma("flipVertical")}function Bn(t){return Array.from({length:t.sliceCount},(e,n)=>fl(t.id,n))}function Pa(t,e,n=0,i=0){if(!Number.isInteger(t)||t<1)return[];if(!Number.isInteger(e)||e<1)return[];const a=Math.max(0,Math.min(n,e-1)),r=Math.max(0,Math.min(i,t-1)),c=Math.max(0,t-e),d=Math.max(0,Math.min(r-a,c));return Array.from({length:e},(u,h)=>Math.min(d+h,t-1))}function Gi(t,e){const n=t.classList.contains("busy");t.className=`workspace-grid mode-${e}`,n&&t.classList.add("busy")}async function Do(t,e,n=0,i=!0){const a=T.getStackViewport(t);await a.setStack(Bn(e),Math.max(0,Math.min(n,e.sliceCount-1))),a.resetCamera(),a.render();const r=document.getElementById(t);r.dataset.seriesId=e.id,r.closest(".viewport-shell").dataset.seriesId=e.id,An({element:r,viewport:a,label:e.name,count:e.sliceCount,initialIndex:n,eventName:Nt.STACK_NEW_IMAGE,eventIndex:c=>c.imageIdIndex}),i&&Pi.enable(r)}function wn(t){return t?.geometry?.ordered_slices?t.geometry.ordered_slices:Mt.get(t?.id)?.ordered_slices||null}function kn(t){return t?.geometry?.orientation?t.geometry.orientation:Mt.get(t?.id)?.image_orientation_patient||null}function $n(t){if(!Array.isArray(t)||t.length!==6)return null;const e=t.slice(0,3),n=t.slice(3,6),i=e[1]*n[2]-e[2]*n[1],a=e[2]*n[0]-e[0]*n[2],r=e[0]*n[1]-e[1]*n[0],c=Math.hypot(i,a,r);return c<1e-6?null:[i/c,a/c,r/c]}function ji(t,e,n){const i=t?.geometry?.frameOfReferenceUID,a=n?.geometry?.frameOfReferenceUID;if(i&&a&&i!==a)return null;const r=$n(kn(t)),c=$n(kn(n));return r&&c&&Math.abs(r[0]*c[0]+r[1]*c[1]+r[2]*c[2])<.9?null:Bl(t,e,n,r,c)}function Na(t="stack"){return t==="volume3d"?[xe,Nn,Dn]:t==="hybrid"?nn:t==="mpr"?nn.filter(e=>e!==xe):nn.filter(e=>e!==xe&&e!==ue)}function Ge(t,e){const n=t?.geometry,i=e?.geometry,a=wn(t),r=wn(e),c=$n(kn(t)),d=$n(kn(e));if(!n||!i)return"index";if(!c||!d||!a?.length||!r?.length)return"blocked";const u=n.frameOfReferenceUID,h=i.frameOfReferenceUID;return u&&h&&u!==h?"blocked":Math.abs(c[0]*d[0]+c[1]*d[1]+c[2]*d[2])<.9?"reference":"spatial"}function Bl(t,e,n,i,a){const r=wn(t),c=wn(n);if(!r?.[e]||!c?.length)return null;const d=r[e]?.position;if(!Array.isArray(d)||d.length!==3)return null;let u=0,h=1/0;if(a){const p=d[0]*a[0]+d[1]*a[1]+d[2]*a[2];let f=1/0,y=-1/0;for(let g=0;g<c.length;g+=1){const S=c[g]?.position;if(!Array.isArray(S)||S.length!==3)continue;const q=S[0]*a[0]+S[1]*a[1]+S[2]*a[2];q<f&&(f=q),q>y&&(y=q);const P=Math.abs(p-q);P<h&&(h=P,u=g)}const C=y-f;if(Math.max(0,f-p,p-y)>Math.max(C,50))return null}else{for(let p=0;p<c.length;p+=1){const f=c[p]?.position;if(!Array.isArray(f)||f.length!==3)continue;const y=Math.hypot(d[0]-f[0],d[1]-f[1],d[2]-f[2]);y<h&&(h=y,u=p)}if(h>50)return null}return u}function ql(t,e,n,i,a=[]){const r=a[e],c=n-(t[e]??0);return t.map((d,u)=>{if(u===e)return n;const h=a[u],p=Ge(r,h);if(p==="spatial"){const y=ji(r,n,h);return typeof y=="number"&&Number.isInteger(y)?y:d}if(p==="reference"||p==="blocked")return d;const f=Math.max(0,(i[u]||1)-1);return Math.max(0,Math.min(d+c,f))})}function Da(){return{enabled:!1,anchor:null,viewportIds:[],seriesList:[],sliceCounts:[],spatialMode:null}}function La(){return R.viewportIds.map(t=>T?.getStackViewport(t)?.getCurrentImageIdIndex()??0)}function Ea(t){const e=new Set;for(let n=0;n<t.length;n+=1)for(let i=n+1;i<t.length;i+=1){const a=t[n],r=t[i];e.add(Ge(a,r))}return e.size===1?[...e][0]:"mixed"}function Oa(t){if(!t||R.viewportIds.length<2)return R.enabled=!1,R.anchor=null,R.spatialMode=null,!1;const e=Ea(R.seriesList);return R.seriesList.some((i,a)=>R.seriesList.some((r,c)=>c>a&&["spatial","index"].includes(Ge(i,r))))?(R.anchor=La(),R.enabled=!0,R.spatialMode=e,!0):(R.enabled=!1,R.anchor=null,R.spatialMode=e,!1)}function Ui(){return{enabled:R.enabled,anchor:R.anchor?.slice()||null,spatialMode:R.spatialMode||null}}function Lo(t){return Vt=!!t,!A||!A.hasTool(st.toolName)||(Vt?(A.setToolEnabled(st.toolName),je()):A.setToolDisabled(st.toolName),T?.render()),Vt}function je(){if(!A||!A.hasTool(st.toolName)||!Vt||!W)return;const t=R.viewportIds.indexOf(W);if(!(t>=0?R.seriesList[t]:null)?.geometry){A.setToolDisabled(st.toolName);return}A.setToolEnabled(st.toolName),A.setToolConfiguration(st.toolName,{sourceViewportId:W,enforceSameFrameOfReference:!0})}function Be(t){const e=t?.geometry?.pixelSpacing||t?.pixelData?.pixelSpacing||null;return!Array.isArray(e)||e.length<2?!1:e.slice(0,2).every(n=>Number.isFinite(Number(n))&&Number(n)>0)}function Ra(){if(!A||!A.hasTool(en.toolName))return;const t=j.length?j.every(Be):Be(Z);qi&&t?A.setToolEnabled(en.toolName):A.setToolDisabled(en.toolName)}function Fl(t){return qi=!!t,Ra(),T?.render(),Aa()}function Aa(){return qi?j.length?j.every(Be):Be(Z):!1}function qn(){if(!(!A||!A.hasTool(Zt.toolName))){if(!yn||R.viewportIds.length<2){A.setToolDisabled(Zt.toolName);return}A.setToolConfiguration(Zt.toolName,{positionSync:!1,disableCursor:!1,displayThreshold:5}),A.setToolPassive(Zt.toolName)}}function Eo(t){return yn=!!t,qn(),T?.render(),yn}function _l(){if(!On[dt]||!W)return null;const t=R.viewportIds.indexOf(W);if(t<0)return null;const e=R.seriesList[t];return{paneIndex:t,viewportId:W,seriesId:e?.id||""}}async function Hl(){if(!yt||!On[dt])return;const t=T?.getViewport(yt);if(!t||!j.length)return;const e=t.element?.dataset?.seriesId,n=j.findIndex(a=>a.id===e);if(n<0)return;const i=j[(n+1)%j.length];if(i&&i.id!==e){const a=W;W=yt,await Ba(i),W=a}}async function Ba(t){if(!On[dt]||!W||!t)return null;const e=R.viewportIds.indexOf(W);if(e<0)return null;Kt(t),await Fi(t),R.seriesList[e]=t,R.sliceCounts[e]=t.sliceCount||1,j=[...new Map(R.seriesList.map(u=>[u.id,u])).values()];let n=Math.floor((t.sliceCount||1)/2);for(let u=0;u<R.viewportIds.length;u+=1){if(u===e)continue;const h=R.seriesList[u],f=T?.getStackViewport(R.viewportIds[u])?.getCurrentImageIdIndex()??0,y=ji(h,f,t);if(typeof y=="number"&&Number.isInteger(y)){n=y;break}}const i=W,a=document.getElementById(i),r=a?.closest(".viewport-shell");r?.querySelector(".slice-control")?.remove();const c=r?.querySelector(".viewport-label");c&&(c.textContent=t.name);const d=T?.getStackViewport(i);return await d.setStack(Bn(t),Math.max(0,Math.min(n,t.sliceCount-1))),d.resetCamera(),d.render(),a&&(a.dataset.seriesId=t.id),r&&(r.dataset.seriesId=t.id),An({element:a,viewport:d,label:t.name,count:t.sliceCount,initialIndex:n,eventName:Nt.STACK_NEW_IMAGE,eventIndex:u=>u.imageIdIndex}),R.enabled&&(R.anchor=La(),R.spatialMode=Ea(R.seriesList)),je(),qn(),T?.render(),{paneIndex:e,viewportId:i}}function Wl(t,e){R={enabled:!1,anchor:null,viewportIds:e,seriesList:t||[],sliceCounts:t.map(i=>i?.sliceCount||1),spatialMode:null};let n=!1;e.forEach((i,a)=>{const r=document.getElementById(i);r&&r.addEventListener(Nt.STACK_NEW_IMAGE,async c=>{if(!R.enabled||!R.anchor||n)return;const d=ql(R.anchor,a,c.detail.imageIdIndex,R.sliceCounts,R.seriesList);n=!0;try{await new Promise(u=>window.setTimeout(u,0)),await Promise.all(e.map(async(u,h)=>{if(h===a)return;const p=T?.getStackViewport(u);!p||p.getCurrentImageIdIndex()===d[h]||await p.setImageIdIndex(d[h])})),T?.renderViewports(e)}finally{n=!1}})})}function Vl(t,e){let n=!1;e.forEach((i,a)=>{document.getElementById(i).addEventListener(Nt.STACK_NEW_IMAGE,async c=>{if(n)return;const d=Pa(t.sliceCount,e.length,a,c.detail.imageIdIndex);n=!0;try{await new Promise(u=>window.setTimeout(u,0)),await Promise.all(e.map(async(u,h)=>{const p=T?.getStackViewport(u);!p||p.getCurrentImageIdIndex()===d[h]||await p.setImageIdIndex(d[h])})),T?.renderViewports(e)}finally{n=!1}})})}async function Gl(t,e,n,i=null,a=St){Ve(),Z=e;const r=On[n]||0,c=r?[e,...Array.isArray(i)?i:[i]].slice(0,r).map(h=>h||e):[e];for(;r&&c.length<r;)c.push(e);j=[...new Map(c.map(h=>[h.id,h])).values()],dt=n;for(const h of j)Kt(h);for(const h of j)await Fi(h);t.innerHTML="",Gi(t,n),_i();const d=[];if(r)c.forEach((h,p)=>{const f=`stack-${String.fromCharCode(97+p)}`;d.push({viewportId:f,type:It.STACK,element:bn(t,f,h.name,"",h.id)})});else{const h=n==="montage6"?6:n==="montage8"?8:1;for(let p=0;p<h;p+=1){const f=`stack-${p}`;d.push({viewportId:f,type:It.STACK,element:bn(t,f,`${e.name} · ${p+1}`,"",e.id)})}}if(T.setViewports(d),Hi(d.map(h=>h.viewportId)),r){const h=Math.floor((c[0].sliceCount||1)/2),p=c.map((f,y)=>{if(y===0)return h;const C=Ge(c[0],f);if(C==="spatial"){const b=ji(c[0],h,f);if(typeof b=="number"&&Number.isInteger(b))return b}return C==="index"?Math.min(h,(f.sliceCount||1)-1):Math.floor((f.sliceCount||1)/2)});await Promise.all(c.map((f,y)=>Do(d[y].viewportId,f,p[y]))),Wl(c,d.map(f=>f.viewportId)),Oa(!0),je(),qn()}else{const h=d.length,p=n==="single",f=h>1?Pa(e.sliceCount,h):[Math.floor(e.sliceCount/2)];await Promise.all(d.map((y,C)=>Do(y.viewportId,e,f[C],p))),h>1&&Vl(e,d.map(y=>y.viewportId))}Wi(t);const u=Fn(a);for(const h of j)await Ki(h);return zt(e.geometry?"Đo chiều dài/ROI theo mm. Chuột giữa: pan · chuột phải: zoom · lăn: đổi lát.":e?.sourceType==="dicom"?"Series DICOM này thiếu hình học: chỉ xem/zoom/pan; không dùng kết quả đo vật lý.":"Series JPG không có hình học: chỉ xem/zoom/pan; không dùng kết quả đo vật lý."),u}class qa extends Error{constructor(){super("Yêu cầu dựng volume đã bị thay thế."),this.name="SupersededError",this.superseded=!0}}async function jl(t,e,n=4){const i=Bn(t),a=i.filter(f=>!Tt.getImage(f));let r=i.length-a.length;const c=()=>{window.__volumeLoadState={volumeId:`${fn}:${t.id}`,loaded:r,processed:r,total:i.length,complete:r===i.length},zt(`Đang nạp volume: ${r}/${i.length} lát…`,{loaded:r,total:i.length})};c();let d=0;const u=[],h=async()=>{for(;d<a.length;){if(e!==Ee)return;const f=a[d];d+=1;try{await bs(f),r+=1,(r===i.length||r%10===0)&&c()}catch(y){u.push({imageId:f,error:y})}}};if(await Promise.all(Array.from({length:Math.min(Math.max(1,n),Math.max(1,a.length))},()=>h())),e!==Ee)throw new qa;const p=i.filter(f=>!Tt.getImage(f));if(u.length||p.length)throw window.__volumeLoadState={volumeId:`${fn}:${t.id}`,loaded:i.length-p.length,processed:i.length,total:i.length,complete:!1},new Error(`Không thể nạp đủ volume: thiếu ${p.length||u.length}/${i.length} lát.`);return r=i.length,c(),i}async function Fa(t){const e=Ee;await Fi(t);const n=`${fn}:${t.id}`;dc(t.id);const i=await jl(t,e);let a=Tt.getVolume(n);if(a?.loadStatus&&!a.loadStatus.loaded&&(Tt.removeVolumeLoadObject(n),a=null),a||(zt(`Đang dựng volume từ đủ ${t.sliceCount} lát…`),a=await gs(n,i)),e!==Ee)throw new qa;if(a.imageIds?.length!==t.sliceCount)throw new Error(`Volume không đầy đủ: ${a.imageIds?.length||0}/${t.sliceCount} lát.`);return{id:n,volume:a}}async function Ul(t,e,n="axial",i="crosshair"){if(!e.mprReady)throw new Error(e.mprReason);Ve(),Z=e,j=[e],dt="mpr",Kt(e),t.innerHTML="",Gi(t,"mpr");const a=[["mpr-axial","AXIAL","axial",ne.AXIAL],["mpr-coronal","CORONAL","coronal",ne.CORONAL],["mpr-sagittal","SAGITTAL","sagittal",ne.SAGITTAL]];_i();const r=a.map(([u,h,p,f])=>{const y=bn(t,u,h,"mpr-plane",e.id);return y.parentElement.dataset.plane=p,Pl(y.parentElement,p),{viewportId:u,type:It.ORTHOGRAPHIC,element:y,defaultOptions:{orientation:f,background:[.01,.015,.025]}}});Ta(n,!1),T.setViewports(r);const{id:c}=await Fa(e);await oa(T,[{volumeId:c}],a.map(u=>u[0]));for(const[u]of a){const h=T.getViewport(u);h.resetCamera(),h.render()}for(const[u,h]of a){const p=T.getViewport(u),f=p.getNumberOfSlices?.()||e.sliceCount;An({element:document.getElementById(u),viewport:p,label:h,count:f,initialIndex:p.getSliceIndex?.()||0,eventName:Nt.VOLUME_NEW_IMAGE,eventIndex:y=>y.imageIndex,eventCount:y=>y.numberOfSlices})}Hi(a.map(u=>u[0]),"mpr");const d=Fn(i);return Wi(t),await Ia(),await Ki(e),zt("MPR dùng hình học DICOM thật · R/L, A/P, S/I do Cornerstone suy ra từ tọa độ bệnh nhân."),d}function Oo(t,e){return Math.max(0,Math.min(t[1],e[1])-Math.max(t[0],e[0]))}function _a(t,e,n){const i=Array.isArray(n)&&n.length===2?n.map(Number):null,a=[e.lower,e.upper].sort((u,h)=>u-h);if(!i||!i.every(Number.isFinite))return a;const r=Number.isFinite(t?.pixelData?.rescaleSlope)&&t.pixelData.rescaleSlope!==0?t.pixelData.rescaleSlope:1,c=Number.isFinite(t?.pixelData?.rescaleIntercept)?t.pixelData.rescaleIntercept:0,d=[(e.lower-c)/r,(e.upper-c)/r].sort((u,h)=>u-h);return Oo(d,i)>Oo(a,i)?d:a}function zl(t){const i=t?.getDefaultActor?.()?.actor?.getMapper?.()?.getInputData?.()?.getPointData?.()?.getScalars?.()?.getRange?.();return Array.isArray(i)&&i.length===2?i:null}function Kl(t,e){const n=Array.isArray(e)&&e.length===2?e.map(Number):[0,255];if(t?.sourceType!=="dicom")return[0,255];const i=ba("full",t);if(!i)return n;const a=_a(t,i,n),r=Math.max(n[0],a[0]),c=Math.min(n[1],a[1]);return c>r?[r,c]:n}function Xl(t,e){const i=t.getDefaultActor?.()?.actor,a=i?.getProperty?.();if(!a)return;const r=i.getMapper?.().getInputData?.().getPointData?.().getScalars?.(),[c,d]=Kl(e,r?.getRange?.()),u=Math.max(1,d-c),h=y=>c+u*y,p=a.getRGBTransferFunction(0);p.removeAllPoints(),p.addRGBPoint(h(0),0,0,0),p.addRGBPoint(h(.2),.04,.025,.02),p.addRGBPoint(h(.42),.35,.22,.18),p.addRGBPoint(h(.67),.72,.58,.5),p.addRGBPoint(h(1),1,.94,.86);const f=a.getScalarOpacity(0);f.removeAllPoints(),f.addPoint(h(0),0),f.addPoint(h(.24),0),f.addPoint(h(.42),.03),f.addPoint(h(.64),.16),f.addPoint(h(.98),.46),f.addPoint(h(1),.72),a.setInterpolationTypeToLinear()}async function Jl(t,e,n="orbit3d"){if(!e.mprReady)throw new Error(e.mprReason);Ve(),Z=e,j=[e],dt="volume3d",Kt(e),t.innerHTML="",Gi(t,"volume3d"),_i();const i=[["volume-axial","AXIAL",It.ORTHOGRAPHIC,ne.AXIAL],["volume-coronal","CORONAL",It.ORTHOGRAPHIC,ne.CORONAL],["volume-sagittal","SAGITTAL",It.ORTHOGRAPHIC,ne.SAGITTAL],["volume-3d",`3D · ${e.description}`,It.VOLUME_3D,null]];T.setViewports(i.map(([d,u,h,p])=>({viewportId:d,type:h,element:bn(t,d,u,d==="volume-3d"?"volume-render-pane":"volume-mpr-pane",e.id),defaultOptions:{...p?{orientation:p}:{},background:[.01,.015,.025]}})));const{id:a}=await Fa(e),r=i.map(d=>d[0]);await oa(T,[{volumeId:a}],r),Xl(T.getViewport("volume-3d"),e);for(const d of r){const u=T.getViewport(d);u.resetCamera(),u.render()}for(const[d,u,h]of i){if(h===It.VOLUME_3D)continue;const p=T.getViewport(d),f=p.getNumberOfSlices?.()||e.sliceCount;An({element:document.getElementById(d),viewport:p,label:u,count:f,initialIndex:p.getSliceIndex?.()||0,eventName:Nt.VOLUME_NEW_IMAGE,eventIndex:y=>y.imageIndex,eventCount:y=>y.numberOfSlices})}Hi(r,"hybrid");const c=Fn(n);return Wi(t),await Ia(),await Ki(e),zt("Ba mặt phẳng MPR và mô hình 3D dùng chung một volume đã nạp đầy đủ."),c}function mt(){const t=A?.getToolInstance?.(st.toolName);return{mode:dt,sourceType:Z?.sourceType||"",engineId:z()?Oi:"",destroyed:!z(),activeViewportId:W,tool:St,decodePath:Re,lastDecodeStats:fi,referenceLines:{requested:Vt,toolMode:t?.mode||"",toolOptions:A?.toolOptions?.[st.toolName]||null,sourceViewportId:t?.configuration?.sourceViewportId||"",initialized:!!t?.editData?.annotation,pairModes:R.seriesList.map((e,n)=>R.seriesList.slice(n+1).map(i=>Ge(e,i))).flat()},referenceCursor:(()=>{const e=A?.getToolInstance?.(Zt.toolName);return{requested:yn,toolMode:e?.mode||"",positionSync:e?.configuration?.positionSync??null,displayThreshold:e?.configuration?.displayThreshold??null}})(),viewports:(z()?T.getViewports()||[]:[]).map(e=>{const n=e.getProperties?.()||{};return{id:e.id,actors:e.getActors?.().length||0,imageIndex:e.getCurrentImageIdIndex?.()??null,voiRange:n.voiRange||null,invert:!!n.invert,supportsInvert:"invert"in n}})}}function Yl(t,e=Dt.length,n=!1,i="stack"){if(!mn[t]||t==="crosshair"&&e<2||t==="orbit3d"&&!n)return"window";const a=mn[t];return Na(i).some(r=>r.toolName===a)?t:"window"}function Fn(t){const e=Dt.some(r=>r.id==="volume-3d"),n=Yl(t,Dt.length,e,Bi),i=mn[n];if(!A)return St=n,St;if(!i||!A.hasTool(i))return St="window",St;for(const r of Object.values(mn))if(r!==i&&A.hasTool(r))try{r===se.toolName?A.setToolActive(r,{bindings:[{mouseButton:Wt.Primary,modifierKey:17}]}):A.setToolPassive(r)}catch{}const a=[{mouseButton:Wt.Primary}];return i===se.toolName&&a.push({mouseButton:Wt.Primary,modifierKey:17}),A.setToolActive(i,{bindings:a}),St=n,St}function Zl(){if(!z()||!W)return;const t=T.getViewport(W);if(t&&(t.resetCamera(),typeof t.resetProperties=="function"&&t.resetProperties(),t.render(),(dt==="mpr"||dt==="volume3d")&&t.id!=="volume-3d")){const e=t.getCamera?.().focalPoint,n=A?.getToolInstance?.(ue.toolName);e&&n?.setToolCenter&&(n.setToolCenter([...e],!0),T.render())}}function Ql(){if(z()){for(const t of T.getViewports()||[])t.resetCamera(),typeof t.resetProperties=="function"&&t.resetProperties(),t.render();if(dt==="mpr"||dt==="volume3d"){const e=(T.getViewports()||[]).find(i=>i.id!=="volume-3d"&&i.getCamera?.().focalPoint)?.getCamera?.().focalPoint,n=A?.getToolInstance?.(ue.toolName);e&&n?.setToolCenter&&(n.setToolCenter([...e],!0),T.render())}}}async function qe(t){const e=ba(t,Z);if(!e||!z())return!1;const n=new Set((T.getStackViewports()||[]).map(i=>i.id));for(const i of T.getViewports()||[]){if(i.id==="volume-3d"||typeof i.setProperties!="function")continue;let a=e;if(!n.has(i.id)){const[r,c]=_a(Z,e,zl(i));a={lower:r,upper:c}}i.setProperties({voiRange:{...a}}),i.render()}return await new Promise(i=>requestAnimationFrame(()=>requestAnimationFrame(i))),!0}function tc(){if(!z())return 0;let t=0;for(const e of T.getViewports()||[]){if(typeof e.getProperties!="function"||typeof e.setProperties!="function")continue;const n=e.getProperties();if(!(!n||!("invert"in n)))try{e.setProperties({invert:!n.invert}),e.render(),t+=1}catch{}}return t}function Ro(t){const e=Vi()||(z()?T.getViewports()?.[0]:null);return!e||typeof e.scroll!="function"?!1:(e.scroll(t),!0)}function ec(t,e){if(Se)return Ha(),!1;if(!z())return!1;const n=yt||W||"stack-0",i=T.getStackViewport(n);if(!i||!i.getCurrentImageIdIndex||typeof i.setImageIdIndex!="function")return!1;const a=i.getImageIds?.().length||t?.sliceCount||1;return Se=window.setInterval(()=>{const r=(i.getCurrentImageIdIndex()+1)%a;i.setImageIdIndex(r),i.render()},90),!0}function Ha(){Se&&(window.clearInterval(Se),Se=null)}async function nc(){const t=document.getElementById(W)||Dt[0],e=t?.querySelector("canvas");if(!e)throw new Error("Chưa có ảnh để lưu.");const n=t.closest(".viewport-shell")?.querySelector(".viewport-label")?.textContent,i=await new Promise(c=>e.toBlob(c,"image/png"));if(!i)throw new Error("Không đọc được ảnh từ khung xem.");const a=URL.createObjectURL(i),r=document.createElement("a");return r.href=a,r.download=`DCom_${Date.now()}.png`,r.click(),window.setTimeout(()=>URL.revokeObjectURL(a),6e4),n||W}function _n(t,e){return!t||!e?!1:String(t.metadata?.referencedImageId||"").includes(e)||String(t.metadata?.volumeId||"").includes(e)?!0:Object.keys(t.data?.cachedStats||{}).some(n=>n.includes(e))}function Wa(t){return sl.has(t?.metadata?.toolName)}async function ic(){const t=new Set(j.map(n=>n.id));!t.size&&Z?.id&&t.add(Z.id);const e=Pt.getAllAnnotations().filter(n=>Wa(n)&&(!t.size||[...t].some(i=>_n(n,i))));for(const n of e)n.annotationUID&&Pt.removeAnnotation(n.annotationUID);return z()&&T.render(),await zi(),e.length}async function oc(){const t=new Set(j.map(n=>n.id));!t.size&&Z?.id&&t.add(Z.id);const e=Pt.getAllAnnotations().filter(n=>Wa(n)&&(!t.size||[...t].some(i=>_n(n,i))));if(e.length>0){const n=e[e.length-1];return n.annotationUID&&Pt.removeAnnotation(n.annotationUID),z()&&T.render(),await zi(),1}return 0}function Va(t){return Pt.getAllAnnotations().filter(e=>!t||_n(e,t)).map(e=>JSON.parse(JSON.stringify(e)))}async function Ga(t){const e=Va(t.id);return await N(`/api/series/${t.id}/annotations`,{method:"POST",body:JSON.stringify({annotations:e})}),e.length}async function zi(t=null){const e=t?[t]:j.length?j:Z?[Z]:[];let n=0;for(const i of e)n+=await Ga(i);return n}async function ac(){const t=j.filter(e=>Va(e.id).length);if(!t.length)return 0;try{let e=0;for(const n of t)e+=await Ga(n);return e}catch{return-1}}function Ao(t,e){if(!Array.isArray(t)||!Array.isArray(e)||t.length!==3||e.length!==3)return!1;const n=Math.hypot(...t),i=Math.hypot(...e);if(!n||!i)return!1;const a=t.reduce((r,c,d)=>r+c*e[d],0);return Math.abs(a/n/i)>=.999}function rc(t,e){if(!t||!Array.isArray(e)||!e.length)return"";const n=t.metadata?.viewPlaneNormal,i=String(t.metadata?.referencedImageId||"");if(i){const c=e.filter(u=>u.imageIds?.includes(i));if(c.length===1)return c[0].id;if(c.length>1&&Array.isArray(n)){const u=c.find(h=>Ao(n,h.viewPlaneNormal));if(u)return u.id}if(c.length)return c[0].id;const d=e.filter(u=>u.seriesId&&i.includes(u.seriesId));if(d.length)return d[0].id}const a=[t.metadata?.volumeId,...Object.keys(t.data?.cachedStats||{})].join(" "),r=a?e.filter(c=>!c.seriesId||a.includes(c.seriesId)):[...e];if(Array.isArray(n)){const c=r.find(d=>Ao(n,d.viewPlaneNormal));if(c)return c.id}return r.length===1?r[0].id:""}function sc(){return z()?Dt.map(t=>{let e=null;try{e=T.getViewport(t.id)}catch{}return{id:t.id,seriesId:t.dataset.seriesId||"",imageIds:e?.getImageIds?.()||[],viewPlaneNormal:e?.getCamera?.().viewPlaneNormal||null}}):[]}async function Ki(t){const e=await N(`/api/series/${t.id}/annotations`);if(!Array.isArray(e.annotations)||!e.annotations.length)return;const n=sc();for(const i of e.annotations){const a=rc(i,n),r=a?document.getElementById(a):null;if(r)try{Pt.addAnnotation(i,r)}catch{}}z()&&T.render()}function gi(t,e=0){if(!t||e>5)return null;if(typeof t.area=="number"&&Number.isFinite(t.area))return t.area;if(Array.isArray(t))for(const n of t){const i=gi(n,e+1);if(i!=null)return i}else if(typeof t=="object")for(const n of Object.values(t)){const i=gi(n,e+1);if(i!=null)return i}return null}function lc(t=Z){if(!t?.mprReady)throw new Error("Chỉ tính thể tích khi series có hình học DICOM hợp lệ.");const e=new Set([Ln.toolName,En.toolName]),n=t.geometry.orientation,i=n.slice(0,3),a=n.slice(3,6),r=[i[1]*a[2]-i[2]*a[1],i[2]*a[0]-i[0]*a[2],i[0]*a[1]-i[1]*a[0]],c=u=>{const h=u.metadata?.viewPlaneNormal;return!Array.isArray(h)||h.length!==3?!!u.metadata?.referencedImageId:Math.abs(h.reduce((f,y,C)=>f+y*r[C],0))>=.999},d=Pt.getAllAnnotations().filter(u=>_n(u,t.id)&&e.has(u.metadata?.toolName)&&c(u)).map(u=>gi(u.data?.cachedStats)).filter(u=>u!=null&&u>=0);if(!d.length)throw new Error("Chưa có ROI ellipse/freehand đủ dữ liệu trên các lát.");return d.reduce((u,h)=>u+h,0)*t.geometry.sliceSpacing/1e3}function cc(t){const e=he.get(t);if(!t||!e)return 0;const n=`${fn}:${t}`;try{Tt.getVolume(n)&&Tt.removeVolumeLoadObject(n)}catch{}let i=0;for(const a of Bn(e))if(Tt.getImage(a))try{Tt.removeImageLoadObject(a),i+=1}catch{}return i}function dc(t){for(const e of he.keys())e!==t&&cc(e)}function uc(){if(!z()||!W)return 0;try{const t=T.getViewport(W);if(t){if(typeof t.getCurrentImageIdIndex=="function"){const e=t.getCurrentImageIdIndex();if(typeof e=="number"&&!Number.isNaN(e))return Math.max(0,e)}if(typeof t.getSliceIndex=="function"){const e=t.getSliceIndex();if(typeof e=="number"&&!Number.isNaN(e))return Math.max(0,e)}}}catch{}return 0}const Hn=[{id:"select",shape:null,key:"V",icon:"cursor",label:"Chọn / di chuyển"},{id:"arrow",shape:"arrow",key:"A",icon:"arrow",label:"Mũi tên chỉ điểm"},{id:"line",shape:"line",key:"L",icon:"line",label:"Đường thẳng"},{id:"rect",shape:"rect",key:"R",icon:"rect",label:"Khung chữ nhật"},{id:"ellipse",shape:"ellipse",key:"E",icon:"ellipse",label:"Khung bầu dục"},{id:"pen",shape:"pen",key:"P",icon:"pen",label:"Bút vẽ tay"},{id:"text",shape:"text",key:"T",icon:"text",label:"Chèn chữ"},{id:"marker",shape:"marker",key:"N",icon:"marker",label:"Đánh số thứ tự"},{id:"highlight",shape:"highlight",key:"H",icon:"highlight",label:"Tô sáng vùng"},{id:"pixelate",shape:"pixelate",key:"B",icon:"pixelate",label:"Làm mờ vùng"},{id:"redact",shape:"redact",key:"X",icon:"redact",label:"Che kín danh tính"},{id:"crop",shape:null,key:"C",icon:"crop",label:"Cắt ảnh theo vùng chọn"}],Bo=new Map(Hn.map(t=>[t.id,t]));function Gt(t){return Bo.get(t)||Bo.get("select")}const hc=["#ff3b30","#ff9500","#ffcc00","#34c759","#00c7be","#0a84ff","#ffffff","#000000"],Ot=new Set(["rect","ellipse","highlight","pixelate","redact"]),Rt=new Set(["arrow","line"]);function pc(t,e){if(e==null)return!0;const n=t?.startS,i=t?.endS;return n==null||i===null||i===void 0?!0:e>=n&&e<=i}let qo=0;function fc(){return qo+=1,`sh_${qo}`}function mc(){return{color:"#ff3b30",strokeWidth:4,fontSize:28,opacity:1,filled:!1,textBackground:!0}}function gc(){return{shapes:[],past:[],future:[]}}function Xi(t){return t.map(e=>({...e,points:e.points?e.points.map(n=>({...n})):void 0}))}function $t(t){t&&(t.past.push(Xi(t.shapes)),t.past.length>100&&t.past.shift(),t.future.length=0)}function ja(t){return!!t?.past?.length}function Ua(t){return!!t?.future?.length}function yc(t){return ja(t)?(t.future.push(Xi(t.shapes)),t.shapes=t.past.pop(),!0):!1}function vc(t){return Ua(t)?(t.past.push(Xi(t.shapes)),t.shapes=t.future.pop(),!0):!1}function bc(t){const e=(t?.shapes||[]).filter(n=>n.kind==="marker").map(n=>Number(n.label)||0);return e.length?Math.max(...e)+1:1}function Zn(t,e,n,i={}){const a={id:fc(),kind:t,color:n.color,strokeWidth:n.strokeWidth,opacity:n.opacity,...i};return Rt.has(t)?{...a,x1:e.x,y1:e.y,x2:e.x,y2:e.y}:Ot.has(t)?{...a,x:e.x,y:e.y,width:0,height:0,filled:n.filled}:t==="pen"?{...a,points:[{x:e.x,y:e.y}]}:t==="text"?{...a,x:e.x,y:e.y,text:"",fontSize:n.fontSize,background:n.textBackground}:t==="marker"?{...a,x:e.x,y:e.y,fontSize:n.fontSize,label:i.label||1}:a}function wc(t,e,n={}){if(t){if(Rt.has(t.kind)){t.x2=e.x,t.y2=e.y;return}if(Ot.has(t.kind)){const i=t.originX??t.x,a=t.originY??t.y;let r=e.x-i,c=e.y-a;if(n.square){const d=Math.max(Math.abs(r),Math.abs(c));r=Math.sign(r||1)*d,c=Math.sign(c||1)*d}t.x=Math.min(i,i+r),t.y=Math.min(a,a+c),t.width=Math.abs(r),t.height=Math.abs(c);return}if(t.kind==="pen"){const i=t.points[t.points.length-1];(!i||Math.hypot(e.x-i.x,e.y-i.y)>=1)&&t.points.push({x:e.x,y:e.y})}}}function kc(t,e){Ot.has(t?.kind)&&(t.originX=e.x,t.originY=e.y)}function xn(t){return t?Rt.has(t.kind)?Math.hypot(t.x2-t.x1,t.y2-t.y1)>=4:Ot.has(t.kind)?t.width>=4&&t.height>=4:t.kind==="pen"?t.points.length>=2:t.kind==="text"?String(t.text||"").trim().length>0:t.kind==="marker":!1}function Ji(t,e=null){if(!t)return null;if(Rt.has(t.kind))return{x:Math.min(t.x1,t.x2),y:Math.min(t.y1,t.y2),width:Math.abs(t.x2-t.x1),height:Math.abs(t.y2-t.y1)};if(Ot.has(t.kind))return{x:t.x,y:t.y,width:t.width,height:t.height};if(t.kind==="pen"){const n=t.points.map(c=>c.x),i=t.points.map(c=>c.y),a=Math.min(...n),r=Math.min(...i);return{x:a,y:r,width:Math.max(...n)-a,height:Math.max(...i)-r}}if(t.kind==="text"){const n=e?e(t):{width:t.fontSize*6,height:t.fontSize};return{x:t.x,y:t.y,width:n.width,height:n.height}}if(t.kind==="marker"){const n=za(t);return{x:t.x-n,y:t.y-n,width:n*2,height:n*2}}return null}function za(t){return Math.max(12,(t.fontSize||28)*.75)}function Ka(t,e,n){if(t){if(Rt.has(t.kind)){t.x1+=e,t.y1+=n,t.x2+=e,t.y2+=n;return}if(t.kind==="pen"){t.points.forEach(i=>{i.x+=e,i.y+=n});return}t.x+=e,t.y+=n}}function $c(t,e,n){const i=Ji(t);if(!i)return;const a=Math.min(0,e-(i.x+i.width))-Math.min(0,i.x),r=Math.min(0,n-(i.y+i.height))-Math.min(0,i.y);(a||r)&&Ka(t,a,r)}function Xa(t){if(!t)return[];if(Rt.has(t.kind))return[{id:"p1",x:t.x1,y:t.y1},{id:"p2",x:t.x2,y:t.y2}];if(Ot.has(t.kind)){const{x:e,y:n,width:i,height:a}=t;return[{id:"nw",x:e,y:n},{id:"ne",x:e+i,y:n},{id:"se",x:e+i,y:n+a},{id:"sw",x:e,y:n+a}]}return[]}function xc(t,e,n){if(!t)return;if(e==="p1"){t.x1=n.x,t.y1=n.y;return}if(e==="p2"){t.x2=n.x,t.y2=n.y;return}if(!Ot.has(t.kind))return;const i=t.x+t.width,a=t.y+t.height,r=e==="nw"||e==="sw"?i:t.x,c=e==="nw"||e==="ne"?a:t.y;t.x=Math.min(r,n.x),t.y=Math.min(c,n.y),t.width=Math.abs(n.x-r),t.height=Math.abs(n.y-c)}function Fo(t,e,n,i,a){const r=i-e,c=a-n,d=r*r+c*c;if(!d)return Math.hypot(t.x-e,t.y-n);let u=((t.x-e)*r+(t.y-n)*c)/d;return u=Math.max(0,Math.min(1,u)),Math.hypot(t.x-(e+u*r),t.y-(n+u*c))}function Qn(t,e,n=6,i=null){for(let a=t.length-1;a>=0;a-=1)if(Sc(t[a],e,n,i))return t[a];return null}function Sc(t,e,n=6,i=null){if(!t)return!1;const a=Math.max(n,(t.strokeWidth||1)/2+n);if(Rt.has(t.kind))return Fo(e,t.x1,t.y1,t.x2,t.y2)<=a;if(t.kind==="pen"){for(let d=1;d<t.points.length;d+=1){const u=t.points[d-1],h=t.points[d];if(Fo(e,u.x,u.y,h.x,h.y)<=a)return!0}return!1}const r=Ji(t,i);if(!r||!(e.x>=r.x-a&&e.x<=r.x+r.width+a&&e.y>=r.y-a&&e.y<=r.y+r.height+a))return!1;if(t.kind==="rect"&&!t.filled){const d=e.x>=r.x+a&&e.x<=r.x+r.width-a,u=e.y>=r.y+a&&e.y<=r.y+r.height-a;return!(d&&u)}return!0}function Ja(t){const e=String(t||"").replace("#",""),n=e.length===3?e.split("").map(a=>a+a).join(""):e.padEnd(6,"0").slice(0,6),i=parseInt(n,16);return[i>>16&255,i>>8&255,i&255]}function Yi(t,e=1){return`600 ${Math.max(8,(t.fontSize||28)*e)}px "Segoe UI", Arial, sans-serif`}function Ya(t){return String(t.text||"").split(`
+`)}function Za(t,e){t.save(),t.font=Yi(e,1);const n=Ya(e),i=Math.max(...n.map(r=>t.measureText(r).width),1);t.restore();const a=(e.fontSize||28)*1.25;return{width:i,height:a*n.length}}function Cc(t,e,n){const i=n.scale||1,a=Math.max(1,(e.strokeWidth||1)*i);t.save(),t.globalAlpha=e.opacity??1,t.strokeStyle=e.color,t.fillStyle=e.color,t.lineWidth=a,t.lineCap="round",t.lineJoin="round";const r=c=>c*i;switch(e.kind){case"line":t.beginPath(),t.moveTo(r(e.x1),r(e.y1)),t.lineTo(r(e.x2),r(e.y2)),t.stroke();break;case"arrow":Ic(t,e,i);break;case"rect":e.filled?t.fillRect(r(e.x),r(e.y),r(e.width),r(e.height)):t.strokeRect(r(e.x),r(e.y),r(e.width),r(e.height));break;case"ellipse":t.beginPath(),t.ellipse(r(e.x+e.width/2),r(e.y+e.height/2),Math.max(1,r(e.width/2)),Math.max(1,r(e.height/2)),0,0,Math.PI*2),e.filled?t.fill():t.stroke();break;case"highlight":t.globalAlpha=(e.opacity??1)*.35,t.fillRect(r(e.x),r(e.y),r(e.width),r(e.height));break;case"redact":t.fillStyle="#000000",t.globalAlpha=1,t.fillRect(r(e.x),r(e.y),r(e.width),r(e.height));break;case"pixelate":Dc(t,e,n);break;case"pen":t.beginPath(),e.points.forEach((c,d)=>{d===0?t.moveTo(r(c.x),r(c.y)):t.lineTo(r(c.x),r(c.y))}),t.stroke();break;case"text":Tc(t,e,i);break;case"marker":Mc(t,e,i);break}t.restore()}function Ic(t,e,n){const i=f=>f*n,a=Math.max(1,(e.strokeWidth||1)*n),r=Math.atan2(e.y2-e.y1,e.x2-e.x1),c=Math.max(a*3.2,10),d=i(e.x2),u=i(e.y2),h=d-Math.cos(r)*c*.72,p=u-Math.sin(r)*c*.72;t.beginPath(),t.moveTo(i(e.x1),i(e.y1)),t.lineTo(h,p),t.stroke(),t.beginPath(),t.moveTo(d,u),t.lineTo(d-c*Math.cos(r-Math.PI/7),u-c*Math.sin(r-Math.PI/7)),t.lineTo(d-c*Math.cos(r+Math.PI/7),u-c*Math.sin(r+Math.PI/7)),t.closePath(),t.fill()}function Tc(t,e,n){const i=Ya(e),a=(e.fontSize||28)*n,r=a*1.25;t.font=Yi(e,n),t.textBaseline="top";const c=Math.max(...i.map(h=>t.measureText(h).width),1),d=e.x*n,u=e.y*n;if(e.background){const h=a*.22;t.fillStyle="rgba(0, 0, 0, 0.6)",t.fillRect(d-h,u-h,c+h*2,r*i.length+h*2)}t.fillStyle=e.color,i.forEach((h,p)=>t.fillText(h,d,u+p*r))}function Mc(t,e,n){const i=za(e)*n;t.beginPath(),t.arc(e.x*n,e.y*n,i,0,Math.PI*2),t.fillStyle=e.color,t.fill(),t.lineWidth=Math.max(1,i*.12),t.strokeStyle="rgba(255, 255, 255, 0.92)",t.stroke(),t.fillStyle=Pc(e.color),t.font=`700 ${i*1.15}px "Segoe UI", Arial, sans-serif`,t.textAlign="center",t.textBaseline="middle",t.fillText(String(e.label??1),e.x*n,e.y*n+i*.05),t.textAlign="start"}function Pc(t){const[e,n,i]=Ja(t);return(.299*e+.587*n+.114*i)/255>.6?"#111111":"#ffffff"}function Nc(t){return Math.max(4,Math.round((t.strokeWidth||4)*2.5))}function Dc(t,e,n){const i=n.scale||1,a=e.x*i,r=e.y*i,c=e.width*i,d=e.height*i,u=n.image;if(!u||!c||!d){t.fillStyle="rgba(20, 20, 20, 0.85)",t.fillRect(a,r,c,d);return}const h=Nc(e),p=Math.max(1,Math.round(e.width/h)),f=Math.max(1,Math.round(e.height/h)),y=n.buffer;if(!y)return;y.width=p,y.height=f;const C=y.getContext("2d");C.imageSmoothingEnabled=!0;try{C.drawImage(u,e.x,e.y,e.width,e.height,0,0,p,f)}catch{return}t.imageSmoothingEnabled=!1,t.drawImage(y,0,0,p,f,a,r,c,d),t.imageSmoothingEnabled=!0}function Lc(t,e,n,i,a=!0){const r=n.scale||1,c=Ji(e,i);if(!c)return;const d=4;t.save(),t.strokeStyle="#4da3ff",t.lineWidth=1,t.setLineDash([5,4]),t.strokeRect(c.x*r-d,c.y*r-d,c.width*r+d*2,c.height*r+d*2),t.setLineDash([]);for(const u of a?Xa(e):[])t.beginPath(),t.rect(u.x*r-4,u.y*r-4,8,8),t.fillStyle="#ffffff",t.fill(),t.strokeStyle="#1a73e8",t.stroke();t.restore()}function Ec(t,e,n,i=null,a={}){if(!t)return;const r=t.getContext("2d");if(!r)return;const c=n.dpr||1;r.setTransform(c,0,0,c,0,0),r.clearRect(0,0,t.width/c,t.height/c);const d=h=>Za(r,h);for(const h of e){if(h.editing)continue;!pc(h,a.time??null)&&(r.globalAlpha=.22),Cc(r,h,n),r.globalAlpha=1}const u=e.find(h=>h.id===i);u&&!u.editing&&Lc(r,u,n,d,a.handles!==!1)}function Oc(t){const e={kind:t.kind,color:Ja(t.color),stroke_width:Math.max(1,Math.round(t.strokeWidth||1)),opacity:Number(t.opacity??1)};Number.isFinite(t.startS)&&Number.isFinite(t.endS)&&(e.start_s=Number(t.startS),e.end_s=Number(t.endS));const n=i=>Math.round(Number(i)||0);return Rt.has(t.kind)?{...e,x1:n(t.x1),y1:n(t.y1),x2:n(t.x2),y2:n(t.y2)}:Ot.has(t.kind)?{...e,x:n(t.x),y:n(t.y),width:n(t.width),height:n(t.height),filled:!!t.filled}:t.kind==="pen"?{...e,points:t.points.map(i=>[n(i.x),n(i.y)])}:t.kind==="text"?{...e,x:n(t.x),y:n(t.y),text:String(t.text||""),font_size:Math.max(6,n(t.fontSize)),background:!!t.background}:t.kind==="marker"?{...e,x:n(t.x),y:n(t.y),label:String(t.label??1),font_size:Math.max(6,n(t.fontSize))}:e}function Qa(t){return t.filter(xn).map(Oc)}const Qe=9;let Ie=null;function U(){return Ie}function Zi(){Ie&&(Ie.destroy(),Ie=null)}function Rc(t){const{wrap:e,img:n,canvas:i,getLayer:a,getStyle:r,getTool:c,scroller:d}=t;if(!e||!n||!i)return null;Zi();const u=t.onChange||(()=>{}),h=t.onStatus||(()=>{}),p=t.onToolDone||(()=>{}),f=t.shapeExtras||(()=>({})),y=t.getTime||(()=>null),C=typeof document<"u"?document.createElement("canvas"):null,b={selectedId:null,crop:null,zoom:0,editor:null,destroyed:!1};let g=null,S=null,q=!1;function P(){return n.getBoundingClientRect()}function G(){const v=P();return{width:n.naturalWidth||n.videoWidth||v.width||1,height:n.naturalHeight||n.videoHeight||v.height||1}}b.naturalSize=G;function X(){const v=P();return v.width?v.width/G().width:1}function bt(v){const w=P(),I=X()||1;return{x:(v.clientX-w.left)/I,y:(v.clientY-w.top)/I}}function wt(v){const w=G();return{x:Math.max(0,Math.min(v.x,w.width)),y:Math.max(0,Math.min(v.y,w.height))}}function Jn(){return{scale:X(),dpr:typeof window<"u"&&window.devicePixelRatio||1,image:n,buffer:C}}function ze(){const v=P(),w=e.getBoundingClientRect(),I=typeof window<"u"&&window.devicePixelRatio||1,D=Math.max(1,Math.round(v.width)),_=Math.max(1,Math.round(v.height));i.style.left=`${v.left-w.left}px`,i.style.top=`${v.top-w.top}px`,i.style.width=`${D}px`,i.style.height=`${_}px`,(i.width!==Math.round(D*I)||i.height!==Math.round(_*I))&&(i.width=Math.round(D*I),i.height=Math.round(_*I))}function V(){if(b.destroyed)return;ze();const v=a(),w=v?v.shapes:[],I=g?.draft?[...w,g.draft]:w;Ec(i,I,Jn(),b.selectedId,{handles:Gt(c()).id==="select",time:y()}),b.crop&&wo(),Q()}b.repaint=V,b.syncSize=ze;function wo(){const v=i.getContext("2d");if(!v)return;const w=X(),I=typeof window<"u"&&window.devicePixelRatio||1,D=b.crop,_=i.width/I,Ye=i.height/I;v.save(),v.setTransform(I,0,0,I,0,0),v.fillStyle="rgba(0, 0, 0, 0.55)",v.beginPath(),v.rect(0,0,_,Ye),v.rect(D.x*w,D.y*w,D.width*w,D.height*w),v.fill("evenodd"),v.strokeStyle="#ffffff",v.lineWidth=1,v.setLineDash([6,4]),v.strokeRect(D.x*w,D.y*w,D.width*w,D.height*w),v.setLineDash([]),v.strokeStyle="rgba(255, 255, 255, 0.35)";for(let tt=1;tt<3;tt+=1){const qt=(D.x+D.width*tt/3)*w,To=(D.y+D.height*tt/3)*w;v.beginPath(),v.moveTo(qt,D.y*w),v.lineTo(qt,(D.y+D.height)*w),v.moveTo(D.x*w,To),v.lineTo((D.x+D.width)*w,To),v.stroke()}v.restore()}function it(){return a()?.shapes||[]}function Bt(){return it().find(v=>v.id===b.selectedId)||null}b.selectedShape=Bt;function fe(v){b.selectedId!==v&&(b.selectedId=v,u({reason:"select"}),V())}b.select=fe;function me(v){const w=Bt();if(!w)return null;const I=X()||1,D=Qe/I;return Xa(w).find(_=>Math.hypot(_.x-v.x,_.y-v.y)<=D)||null}function J(v){const w=i.getContext("2d");return w?Za(w,v):{width:0,height:0}}function nt(v){ot({keep:!0}),v.editing=!0;const w=document.createElement("textarea");w.className="photo-text-input",w.value=v.text||"",w.spellcheck=!1,w.setAttribute("aria-label",s("Nội dung ghi chú trên ảnh")),e.appendChild(w),S={element:w,shape:v},Q(),w.focus(),w.setSelectionRange(w.value.length,w.value.length),w.addEventListener("input",()=>{v.text=w.value,I(),V()}),w.addEventListener("keydown",D=>{D.stopPropagation(),D.key==="Escape"&&(D.preventDefault(),ot()),D.key==="Enter"&&!D.shiftKey&&(D.preventDefault(),ot())}),w.addEventListener("blur",()=>ot()),I(),V();function I(){const D=X()||1,_=J(v);w.style.width=`${Math.max(40,(_.width+v.fontSize)*D)}px`,w.style.height=`${Math.max(20,_.height*D+4)}px`}}b.openTextEditor=nt;function Q(){if(!S)return;const{element:v,shape:w}=S,I=X()||1,D=P(),_=e.getBoundingClientRect();v.style.left=`${D.left-_.left+w.x*I}px`,v.style.top=`${D.top-_.top+w.y*I}px`,v.style.font=Yi(w,I),v.style.color=w.color,v.style.background=w.background?"rgba(0, 0, 0, 0.6)":"transparent"}function ot({keep:v=!1}={}){if(!S)return;const{element:w,shape:I}=S;if(S=null,I.editing=!1,I.text=w.value,w.remove(),v)return;const D=a();xn(I)||(D&&(D.shapes=D.shapes.filter(_=>_.id!==I.id)),b.selectedId===I.id&&(b.selectedId=null)),u({reason:"text"}),V()}b.closeTextEditor=ot;function kt(v){if(d&&(v.button===1||q&&v.button===0)){v.preventDefault(),i.setPointerCapture?.(v.pointerId),g={mode:"pan",startX:v.clientX,startY:v.clientY,scrollLeft:d.scrollLeft,scrollTop:d.scrollTop},i.style.cursor="grabbing";return}if(v.button!==0)return;const w=Gt(c()),I=wt(bt(v));if(ot(),v.preventDefault(),i.setPointerCapture?.(v.pointerId),w.id==="crop"){b.crop={x:I.x,y:I.y,width:0,height:0,originX:I.x,originY:I.y},g={mode:"crop"},V();return}if(w.id==="select"){const tt=me(I);if(tt){$t(a()),g={mode:"handle",handleId:tt.id,shape:Bt()};return}const qt=Qn(it(),I,Qe/(X()||1),J);fe(qt?qt.id:null),qt&&($t(a()),g={mode:"move",shape:qt,last:I,moved:!1});return}const D=r(),_=a();if(!_)return;if(w.shape==="text"){$t(_);const tt=Zn("text",I,D,f("text"));_.shapes.push(tt),b.selectedId=tt.id,nt(tt),p(w.id);return}if(w.shape==="marker"){$t(_);const tt=Zn("marker",I,D,{label:bc(_),...f("marker")});_.shapes.push(tt),b.selectedId=tt.id,u({reason:"draw"}),p(w.id),V();return}if(!w.shape)return;const Ye=Zn(w.shape,I,D,f(w.shape));kc(Ye,I),g={mode:"draw",draft:Ye},V()}function ko(v){if(!g){as(v);return}if(g.mode==="pan"){d.scrollLeft=g.scrollLeft-(v.clientX-g.startX),d.scrollTop=g.scrollTop-(v.clientY-g.startY);return}const w=wt(bt(v));if(g.mode==="crop"){const I=b.crop,D=w.x-I.originX,_=w.y-I.originY;I.x=Math.min(I.originX,I.originX+D),I.y=Math.min(I.originY,I.originY+_),I.width=Math.abs(D),I.height=Math.abs(_),V();return}if(g.mode==="draw"){wc(g.draft,w,{square:v.shiftKey}),V();return}if(g.mode==="move"&&g.shape){Ka(g.shape,w.x-g.last.x,w.y-g.last.y),$c(g.shape,G().width,G().height),g.last=w,g.moved=!0,V();return}g.mode==="handle"&&g.shape&&(xc(g.shape,g.handleId,w),V())}function Ke(v){if(!g)return;const w=g.mode,I=g.draft,D=g.moved;if(g=null,i.releasePointerCapture?.(v.pointerId),w==="pan"){i.style.cursor=q?"grab":"";return}if(w==="crop"){!b.crop||b.crop.width<4||b.crop.height<4?(b.crop=null,h(s("Hãy kéo chuột để chọn vùng cần cắt."))):h($("Đã chọn vùng cắt {}×{} px. Bấm “Cắt ảnh” để áp dụng.",Math.round(b.crop.width),Math.round(b.crop.height))),u({reason:"crop"}),V();return}if(w==="draw"&&I){if(xn(I)){const _=a();$t(_),delete I.originX,delete I.originY,_.shapes.push(I),b.selectedId=I.id,u({reason:"draw"}),p(Gt(c()).id)}V();return}if(w==="move"&&D||w==="handle"){u({reason:"edit"}),V();return}if(w==="move"){const _=a();_?.past.length&&_.past.pop()}}function $o(v){const w=wt(bt(v)),I=Qn(it(),w,Qe/(X()||1),J);I?.kind==="text"&&(b.selectedId=I.id,nt(I))}function as(v){if(q){i.style.cursor="grab";return}const w=Gt(c());if(w.id!=="select"){i.style.cursor=(w.id==="crop","crosshair");return}const I=wt(bt(v));if(me(I)){i.style.cursor="nwse-resize";return}const D=Qn(it(),I,Qe/(X()||1),J);i.style.cursor=D?"move":"default"}function rs(){const v=a(),w=Bt();return!v||!w?!1:($t(v),v.shapes=v.shapes.filter(I=>I.id!==w.id),b.selectedId=null,u({reason:"delete"}),V(),!0)}b.deleteSelected=rs;function ss(){const v=a();return!v||!v.shapes.length?!1:($t(v),v.shapes=[],b.selectedId=null,u({reason:"clear"}),V(),!0)}b.clearShapes=ss;function ls(v){const w=Bt();return w?($t(a()),Object.assign(w,v),u({reason:"restyle"}),S?.shape===w&&Q(),V(),!0):!1}b.restyleSelected=ls;function cs(){b.crop=null,V()}b.clearCrop=cs;function ds(){if(!b.crop)return null;const v={x:Math.max(0,Math.round(b.crop.x)),y:Math.max(0,Math.round(b.crop.y)),width:Math.round(b.crop.width),height:Math.round(b.crop.height)},w=G();return v.width=Math.min(v.width,w.width-v.x),v.height=Math.min(v.height,w.height-v.y),v.width>0&&v.height>0?v:null}b.cropRect=ds;function xo(v){t.onZoomAt&&(v.preventDefault(),t.onZoomAt(v.deltaY<0?1.15:1/1.15,v.clientX,v.clientY))}function So(v){v.code!=="Space"||q||S||v.target?.closest?.("input, textarea, select")||(q=!0,i.style.cursor="grab")}function Co(v){v.code==="Space"&&(q=!1,g||(i.style.cursor=""))}i.addEventListener("wheel",xo,{passive:!1}),window.addEventListener("keydown",So),window.addEventListener("keyup",Co),i.addEventListener("pointerdown",kt),i.addEventListener("pointermove",ko),i.addEventListener("pointerup",Ke),i.addEventListener("pointercancel",Ke),i.addEventListener("dblclick",$o);const Xe=()=>{V(),u({reason:"ready"})};n.addEventListener("load",Xe),n.addEventListener("loadedmetadata",Xe);let Je=null;typeof ResizeObserver<"u"&&(Je=new ResizeObserver(()=>V()),Je.observe(e),Je.observe(n));const Io=()=>V();return window.addEventListener("resize",Io),b.destroy=()=>{b.destroyed=!0,ot({keep:!0}),i.removeEventListener("wheel",xo),window.removeEventListener("keydown",So),window.removeEventListener("keyup",Co),i.removeEventListener("pointerdown",kt),i.removeEventListener("pointermove",ko),i.removeEventListener("pointerup",Ke),i.removeEventListener("pointercancel",Ke),i.removeEventListener("dblclick",$o),n.removeEventListener("load",Xe),n.removeEventListener("loadedmetadata",Xe),window.removeEventListener("resize",Io),Je?.disconnect()},Ie=b,V(),b}var Ac={};const oe=new Map,Qi=[{id:"patient-id",kind:"patientId"},{id:"direct-url",kind:"url"}],tr="dcom_patient_rail_collapsed";function Bc(){try{if(typeof localStorage<"u")return localStorage.getItem(tr)==="1"}catch{}return!1}function qc(t){try{typeof localStorage<"u"&&localStorage.setItem(tr,t?"1":"0")}catch{}}let m=typeof document<"u"?document.querySelector("#app"):null;function to(){return typeof document>"u"||(!m||!m.isConnected)&&(m=document.querySelector("#app")),m}function O(){return typeof document>"u"?null:((!m||!m.isConnected)&&(m=document.querySelector("#app")),m&&m.isConnected?m:document)}const yi="dcom.sessionToken",Te=new URL(location.href);let ae=Te.searchParams.get("token")||"";try{ae?sessionStorage.setItem(yi,ae):ae=sessionStorage.getItem(yi)||""}catch{}ks(ae);const Fc=!!ae;ae="";Te.searchParams.delete("token");history.replaceState(history.state,"",`${Te.pathname}${Te.search}${Te.hash}`);function _c(){try{sessionStorage.removeItem(yi)}catch{}}const o={bootstrap:null,archive:{root:"",series:[]},selectedId:"",textDoc:null,photoLayers:{},photoTool:"select",photoStyle:mc(),photoZoom:0,videoIn:null,videoOut:null,videoDuration:0,videoShapeTiming:"span",compareIds:["",""],scrollSync:!0,referenceLines:!0,referenceCursor:!0,scaleOverlay:!1,mode:"single",tool:"window",downloadOpen:!0,patientRailCollapsed:Bc(),studies:[],patient:null,downloadAllFiles:!0,downloadAttachments:!0,seriesInventory:[],rememberedSeriesSelections:{},seriesGroupCache:{},status:"Đang khởi động...",isError:!1,busyViewer:!1,cine:!1,mprPrimary:"axial",windowPreset:"full",history:[],sourceFolders:[],editingPatientInfo:!1,lastDirectUrl:"",showManualInfo:!1,manualPatientName:"",manualPatientId:"",manualPatientDob:"",showLoginCard:!1,loginCardAction:null,showFileInfoModal:!1,fileInfoData:null,fileInfoLoading:!1,fileInfoError:"",fileInfoTagFilter:"",showConcatModal:!1,concatClips:[],concatTargetHeight:1080,concatTargetFps:30,mediaIndex:{},mediaEdits:{},photoWorkingPath:null,videoWorkingPath:null,tabs:[],activeTabId:"worklist",worklistSearch:"",worklistPatients:[],worklistLoaded:!1,worklistLoading:!1,worklistScannedAt:"",worklistRevision:"",worklistError:"",patientEditDraft:null,worklistSortColumn:"date",worklistSortOrder:"desc",worklistModality:"",worklistPeriod:"all",worklistRead:"all",worklistStage:"",worklistTab:"studies",job:null,windowMaximized:!1,zenMode:!1,showExportModal:!1,exportModalFolder:"",exportModalOptions:null,exportModalPatientName:"",showLogModal:!1,logModalContent:"",logModalLoading:!1,logModalFilename:"",logModalFolder:"",logModalFileList:[]};let ve=Promise.resolve(),Jt=0;const M={crosshair:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="22" x2="18" y1="12" y2="12"/><line x1="6" x2="2" y1="12" y2="12"/><line x1="12" x2="12" y1="6" y2="2"/><line x1="12" x2="12" y1="22" y2="18"/></svg>',folder:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>',info:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',copy:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',externalLink:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>',single:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>',compare:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 3v18"/></svg>',compare3:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>',scrollSync:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',referenceLines:'<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="3" y1="12" x2="21" y2="12"/><line x1="12" y1="3" x2="12" y2="21"/></svg>',referenceCursor:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>',montage6:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg>',montage8:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>',mpr:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>',volume3d:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>',window:"◐",pan:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M14 7.5a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M10 8a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M6 9a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M18 11v1a8 8 0 1 1-16 0v-2.5"/></svg>',zoom:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',magnify:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7"/><line x1="10" y1="7" x2="10" y2="13"/><line x1="7" y1="10" x2="13" y2="10"/><path d="m21 21-5.2-5.2"/></svg>',scaleBar:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 16h18"/><path d="M3 12v8"/><path d="M21 12v8"/><path d="M8 14v6"/><path d="M13 14v6"/><path d="M18 14v6"/></svg>',length:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></svg>',angle:"∠",ellipse:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/></svg>',freehand:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>',text:'<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/></svg>',flipHorizontal:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 21h8a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2Z"/><path d="M12 2v20"/></svg>',flipVertical:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v3"/><path d="M21 16v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3"/><path d="M4 12h16"/></svg>',rotateClockwise:`<svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path>
+    <path d="M21 3v5h-5"></path>
+    <rect x="8.5" y="8.5" width="7" height="7" rx="1" transform="rotate(45 12 12)"></rect>
+  </svg>`,reset:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',orbit3d:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.1 13A8 8 0 0 1 12 18"/><path d="M19.1 11A8 8 0 0 0 12 6"/><path d="M12 6a8 8 0 0 0-7.1 5"/><path d="M12 18a8 8 0 0 1-7.1-5"/></svg>',invert:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 18a6 6 0 0 0 0-12v12z"/></svg>',clearAnnotations:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>',capture:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>',save:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/></svg>',volume:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 2v7.527a2 2 0 0 1-.211.896L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.069-10.127A2 2 0 0 1 14 9.527V2"/><path d="M8.5 2h7"/><path d="M14 16H5.3"/></svg>',history:"🕘"};function B(){return o.archive.series.find(t=>t.id===o.selectedId)||null}const eo={compare:2,compare3:3};function Wn(t=o.mode){return!!eo[t]}function Hc(t=o.mode){const e=(eo[t]||1)-1;return Array.from({length:e},(n,i)=>o.archive.series.find(a=>a.id===o.compareIds[i])||null)}function er(t=o.mode){const e=(eo[t]||1)-1,n=[o.selectedId];for(let i=0;i<e;i+=1){const a=o.compareIds[i];if(a&&o.archive.series.some(d=>d.id===a)&&!n.includes(a)){n.push(a);continue}const c=o.archive.series.find(d=>!n.includes(d.id))||o.archive.series.find(d=>d.id!==o.selectedId)||o.archive.series[0];o.compareIds[i]=c?.id||o.selectedId,n.push(o.compareIds[i])}}function vi(t){if(!Wn())return t===o.selectedId?[0]:[];const e=[];t===o.selectedId&&e.push(0);for(let n=0;n<o.compareIds.length;n+=1)o.compareIds[n]===t&&e.push(n+1);return e}function _o(){for(const t of m.querySelectorAll(".series-card[data-series-id]")){const e=vi(t.dataset.seriesId);t.classList.toggle("active",e.length>0),e.length?t.dataset.pane=e.join(","):delete t.dataset.pane}for(const t of m.querySelectorAll(".tl-item[data-timeline-members]")){const e=t.dataset.timelineMembers.split(",").filter(Boolean);t.classList.toggle("on",e.some(n=>vi(n).length>0))}}function E(t,e,n,i=!1,a=!1,r=""){const c=/^(mode-|tool-)/.test(t)||["cine","scroll-sync","reference-lines","reference-cursor","scale-overlay"].includes(t);return`<button class="icon-button ${i?"active":""} ${r?"with-label":""}" data-action="${t}"
+    title="${l(n)}" aria-label="${l(n)}"
+    ${c?`aria-pressed="${i?"true":"false"}"`:""} ${a?"disabled":""}>
+    <span>${e}</span>${r?`<small>${l(r)}</small>`:""}
+  </button>`}function Wc(t){if(o.mode==="volume3d"){const d=[E("tool-orbit3d",M.orbit3d,s("Xoay khối 3D tự do"),o.tool==="orbit3d"),E("tool-crosshair",M.crosshair,s("Định vị MPR"),o.tool==="crosshair"),E("tool-pan",M.pan,s("Di chuyển"),o.tool==="pan"),E("tool-zoom",M.zoom,s("Thu/phóng"),o.tool==="zoom")].join(""),u=[E("rotate-clockwise",M.rotateClockwise,s("Xoay khung đang chọn 90° theo chiều kim đồng hồ")),E("flip-horizontal",M.flipHorizontal,s("Lật ngang khung đang chọn")),E("flip-vertical",M.flipVertical,s("Lật dọc khung đang chọn")),E("invert",M.invert,s("Đảo màu")),E("reset",M.reset,s("Đặt lại góc nhìn"))].join(""),h=[E("capture",M.capture,s("Lưu ảnh 3D")),E("file-info",M.info,s("Thông tin file & Link tải"))].join("");return[`<div class="tool-cluster nav-tools">${d}</div>`,'<span class="toolbar-divider"></span>',`<div class="tool-cluster orientation-tools">${u}</div>`,'<span class="toolbar-divider"></span>',`<div class="tool-cluster output-tools">${h}</div>`].join("")}const e=(o.mode==="mpr"?[E("tool-crosshair",M.crosshair,s("Định vị MPR"),o.tool==="crosshair"),E("tool-window",M.window,s("Sáng/tương phản"),o.tool==="window"),E("tool-pan",M.pan,s("Di chuyển"),o.tool==="pan"),E("tool-zoom",M.zoom,s("Thu/phóng"),o.tool==="zoom")]:[E("tool-window",M.window,s("Sáng/tương phản"),o.tool==="window"),E("tool-pan",M.pan,s("Di chuyển"),o.tool==="pan"),E("tool-zoom",M.zoom,s("Thu/phóng"),o.tool==="zoom")]).join(""),n=[E("tool-length",M.length,s(o.mode==="mpr"||t?.geometry?"Đo chiều dài (mm)":"Đo chiều dài (pixel)"),o.tool==="length"),E("tool-angle",M.angle,s("Đo góc"),o.tool==="angle"),E("tool-ellipse",M.ellipse,s("ROI ellipse"),o.tool==="ellipse"),E("tool-freehand",M.freehand,s("ROI tự do"),o.tool==="freehand"),E("tool-text",M.text,s("Ghi chú chữ lên ảnh"),o.tool==="text"),E("tool-magnify",M.magnify,s("Kính lúp"),o.tool==="magnify"),E("scale-overlay",M.scaleBar,s("Thước tỉ lệ (mm)"),o.scaleOverlay,!Be(t))].join(""),i=[E("rotate-clockwise",M.rotateClockwise,s("Xoay khung đang chọn 90° theo chiều kim đồng hồ")),E("flip-horizontal",M.flipHorizontal,s("Lật ngang khung đang chọn")),E("flip-vertical",M.flipVertical,s("Lật dọc khung đang chọn")),E("invert",M.invert,s("Đảo màu")),E("reset",M.reset,s(o.mode==="mpr"?"Đặt lại ba mặt phẳng":"Đặt lại hiển thị"))].join(""),a=[E("clear-annotations",M.clearAnnotations,s("Xóa mọi phép đo, ROI và ghi chú")),E("save-annotations",M.save,s("Lưu đo/ROI/ghi chú")),E("roi-volume",M.volume,s("Tính thể tích ROI"),!1,!t?.mprReady)].join(""),r=Wn()?['<span class="toolbar-divider"></span>',`<div class="tool-cluster compare-tools">
+          ${E("scroll-sync",M.scrollSync,s("Khoá cuộn theo vị trí"),o.scrollSync)}
+          ${E("reference-lines",M.referenceLines,s("Đường tham chiếu"),o.referenceLines)}
+          ${E("reference-cursor",M.referenceCursor,s("Con trỏ tham chiếu"),o.referenceCursor)}
+        </div>`]:[],c=[E("capture",M.capture,s("Lưu ảnh")),E("file-info",M.info,s("Thông tin file & Link tải"))].join("");return[`<div class="tool-cluster nav-tools">${e}</div>`,'<span class="toolbar-divider"></span>',`<div class="tool-cluster measure-tools">${n}</div>`,'<span class="toolbar-divider"></span>',`<div class="tool-cluster orientation-tools">${i}</div>`,'<span class="toolbar-divider"></span>',`<div class="tool-cluster markup-tools">${a}</div>`,...r,'<span class="toolbar-divider"></span>',`<div class="tool-cluster output-tools">${c}</div>`].join("")}function Vc(){if(!o.history.length)return`<option value="" disabled selected hidden>${M.history} ${l(s("Chưa có lịch sử"))}</option>`;const t=o.history.map((e,n)=>{const i=String(e.folder).split(/[\\/]/).filter(Boolean).pop()||e.folder,a=e.exists?"":` ${s("(thư mục không còn)")}`;return`<option value="${n}" ${e.exists?"":"disabled"}
+      title="${l(e.folder)}">${l(`${e.time}  •  ${i}${a}`)}</option>`}).join("");return`<option value="" disabled selected hidden>${M.history} ${l(s("Lịch sử"))}…</option>${t}`}function bi(t){if(!t)return s("Chưa rõ ngày");const e=String(t).replace(/\D/g,"");if(e.length===8){const n=e.slice(0,4),i=e.slice(4,6);return`${e.slice(6,8)}/${i}/${n}`}if(/^\d{4}-\d{2}-\d{2}$/.test(t)){const[n,i,a]=t.split("-");return`${a}/${i}/${n}`}return t}function nr(t){if(!Array.isArray(t)||!t.length)return[];const e=new Map;for(const a of t){let r="",c=a.studyDate||"";if(!c&&a.studyGroup){const f=a.studyGroup.split(" - ");(/^\d{4}-\d{2}-\d{2}/.test(f[0])||/^\d{8}/.test(f[0]))&&(c=f[0])}const d=String(c||"").replace(/\D/g,"");d.length>=8?r=`${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`:/^\d{4}-\d{2}-\d{2}/.test(c)?r=c.slice(0,10):r="0000-00-00",e.has(r)||e.set(r,new Map);const u=e.get(r),h=a.modality&&a.modality!=="UNKNOWN"?a.modality:"";let p=String(a.studyDescription||"").trim();if(!p){const f=String(a.studyGroup||"").trim().split(" - ");f.length>=2&&(/^\d{4}-\d{2}-\d{2}/.test(f[0])||/^\d{8}/.test(f[0]))&&f.shift(),p=f.join(" - ").trim()}p==="Không rõ ca chụp"&&(p=""),p&&h&&!p.toUpperCase().startsWith(h.toUpperCase())&&(p=`${h} · ${p}`),p||(p=h||s("Ca chụp chưa phân loại")),u.has(p)||u.set(p,[]),u.get(p).push(a)}const n=Array.from(e.keys()).sort((a,r)=>a==="0000-00-00"?1:r==="0000-00-00"?-1:r.localeCompare(a)),i=[];for(const a of n){const r=a==="0000-00-00"?s("Chưa rõ ngày chụp"):bi(a);for(const[c,d]of e.get(a).entries()){if(new Set(d.map(p=>p.timelineKey).filter(Boolean)).size<=1){i.push({dateKey:a,displayDate:r,studyTitle:c,items:d});continue}const h=new Map;for(const p of d){const f=p.timelineKey||"";h.has(f)||h.set(f,[]),h.get(f).push(p)}for(const p of h.values())i.push({dateKey:a,displayDate:r,studyTitle:c,items:p})}}return i}function ir(t){return t.description||t.name||s("Series")}function Gc(t,e){const n=nr(t.series);return n.length?n.map(i=>{const a=Le()==="en"?`📁 ${i.displayDate} (${i.studyTitle})`:`📁 Ngày ${i.displayDate} (${i.studyTitle})`,r=i.items.map(c=>`<option value="${c.id}" ${c.id===e?"selected":""}>
+        ${l(ir(c))} · ${l(Uc(c))}
+      </option>`).join("");return`<optgroup label="${l(a)}">${r}</optgroup>`}).join(""):""}function jc(t){const e=nr(t);if(!e.length)return"";const n=e.length>1;return e.map(i=>{const a=Le()==="en"?`${i.displayDate}`:`Ngày ${i.displayDate}`,r=n?`<div class="series-group-badge" data-date-key="${l(i.dateKey)}" title="${l(`${a} - ${i.studyTitle}`)}">
+          <span class="badge-date">📁 ${l(a)}</span>
+          <span class="badge-study">${l(i.studyTitle)}</span>
+         </div>`:"",c=i.items.map(d=>{const u=vi(d.id),h=u.length>0,p=ir(d),f=oe.get(d.id)||"";return`<button class="series-card ${h?"active":""}"
+              data-series-id="${d.id}" 
+              data-date-key="${l(i.dateKey)}"
+              title="${l(p)}"
+              ${h?`data-pane="${u.join(",")}"`:""}>
+              <div class="series-thumb-box">
+                <img class="series-card-thumb" data-thumb-id="${d.id}" ${f?`src="${f}"`:""} alt="" />
+                ${d.mprReady?'<span class="badge-3d">3D</span>':""}
+                <div class="series-thumb-overlay">
+                  <b class="series-thumb-title">${l(p)}</b>
+                  <span class="series-thumb-count">${d.sliceCount||0}</span>
+                </div>
+              </div>
+            </button>`}).join("");return r+c}).join("")}function Uc(t){const n=Number(t?.pixelData?.numberOfFrames||1)>1?s("khung"):s("lát");return`${t?.sliceCount||0} ${n}`}function or(t){return Rn(t)?"Cửa sổ Hounsfield (HU)":t?.sourceType==="dicom"?"Cửa sổ theo WC/WW trong file":"Preset thị giác 8-bit"}function zc(){const t=o.activeTabId==="worklist",e=o.tabs.map(n=>{const i=n.id===o.activeTabId,a=`${n.patientId?n.patientId+" - ":""}${n.patientName||"Bệnh nhân"}`;if(n.loading)return`<div class="winbar-tab loading${i?" active":""}" data-tab-id="${n.id}">
+      <span class="winbar-tab-title" title="${l(a)}">${l(a)} <span class="tab-fmt-badge pending">${l(s("Đang mở…"))}</span></span>
+      <button class="winbar-tab-close" data-action="close-tab" data-tab-id="${n.id}" title="${l(s("Đóng tab"))}">×</button>
+    </div>`;const r=n.archive?.series||[],c=r.some(p=>p.sourceType==="dicom"),d=c?"DICOM":"JPG",u=r[0]?.modality||"",h=r.length===0?"—":u?`${u} · ${d}`:d;return`<div class="winbar-tab${i?" active":""}" data-tab-id="${n.id}">
+      <span class="winbar-tab-title" title="${l(a)}">${l(a)} <span class="tab-fmt-badge ${r.length===0?"pending":c?"dicom":"jpg"}">${l(h)}</span></span>
+      <button class="winbar-tab-close" data-action="close-tab" data-tab-id="${n.id}" title="${l(s("Đóng tab"))}">×</button>
+    </div>`}).join("");return`<nav class="winbar">
+    <div class="winbar-tab${t?" active":""}" data-tab-id="worklist">
+      <span class="winbar-tab-title">Worklist</span>
+    </div>
+    ${e}
+    <button class="winbar-add-btn" data-action="choose-archive" title="${l(s("Mở folder DICOM hoặc JPG/PNG trong viewer"))}">+</button>
+  </nav>`}const Kc=new Set(["dicom","photo","video","doc","text","pdf"]),Xc=new Set(["KHONGROTEN","KHONGROID","ANON","ANONYMOUS","ANONYMIZED","ANONYMISED","UNKNOWN","NONE","NULL","REDACTED","REMOVED","HIDDEN","NOVALUE"]);function lt(t){const e=String(t??"").trim();if(!e)return"";const n=e.toUpperCase().normalize("NFD").replace(/[^A-Z0-9]/g,"");return!n||Xc.has(n)||/^[X?*]+$/.test(n)?"":e}function K(t){return t&&Kc.has(t.mediaType)?t.mediaType:"dicom"}function H(t){const e=Math.floor(Number(t)||0),n=Math.floor(e/60),i=e%60,a=String(n).padStart(2,"0"),r=String(i).padStart(2,"0");return`${a}:${r}`}function Lt(){const t=Number(o.videoIn),e=Number(o.videoOut);return!Number.isFinite(t)||!Number.isFinite(e)||e<=t?null:{start:t,end:e}}function Jc(){const t=Lt(),e=Number(o.videoDuration)||0;if(!t||!e)return"";const n=Math.max(0,Math.min(100,t.start/e*100)),i=Math.max(.5,Math.min(100-n,(t.end-t.start)/e*100));return`<span class="video-range-band" style="left:${n}%; width:${i}%"></span>`}function Sn(t){const e=o.videoBookmarks||[],n=[],i=[],a=t?.id,r=et(t);for(let d=0;d<e.length;d++){const u=e[d],h={...u,_globalIndex:d};!u.seriesId||u.seriesId===a&&(u.fileIndex===void 0||u.fileIndex===r)?n.push(h):i.push(h)}const c=(d,u)=>(Number(d.time)||0)-(Number(u.time)||0);return n.sort(c),i.sort(c),{current:n,others:i}}function ar(t){const e=Number(o.videoDuration)||0;if(!e)return"";const{current:n}=Sn(t);return n.map(i=>{const a=Math.max(0,Math.min(100,i.time/e*100)),r=i.text||s("Mốc phẫu thuật"),c=`${H(i.time)}: ${l(r)}`;return`
+      <div class="video-marker-pin" style="left:${a}%" data-action="seek-video" data-time="${i.time}"
+        role="button" tabindex="0"
+        aria-label="${l($("Tua đến {} — {}",H(i.time),r))}"
+        title="${c}">
+        <span class="video-marker-diamond"></span>
+        <div class="video-marker-tooltip">
+          <span class="video-marker-tooltip-time">⏱ ${H(i.time)}</span>
+          <span class="video-marker-tooltip-text">${l(i.text||s("Mốc phẫu thuật"))}</span>
+        </div>
+      </div>
+    `}).join("")}function rr(t,e){let n="";return t.length===0?n+=`
+      <div class="empty-state" style="padding:16px; font-size:12px; color:#89a3b8; text-align:center;">
+        ${l(s("Chưa có mốc nào trong clip này."))}
+        <div style="font-size:11px; margin-top:4px; opacity:0.8;">${l(s("Bấm “+ Thêm mốc” hoặc phím M khi đang xem"))}</div>
+      </div>
+    `:n+=t.map(i=>`
+      <div class="surgery-bookmark-card" data-action="seek-video" data-time="${i.time}"
+        role="button" tabindex="0"
+        aria-label="${l($("Tua đến {} — {}",H(i.time),i.text||s("Mốc phẫu thuật")))}"
+        title="${l(s("Bấm để tua video đến mốc này"))}">
+        <div class="surgery-bookmark-header">
+          <span class="surgery-bookmark-time">⏱ ${H(i.time)}</span>
+          <div class="surgery-bookmark-actions" onclick="event.stopPropagation()">
+            <button class="icon-tool-btn" data-action="edit-video-bookmark" data-idx="${i._globalIndex}" title="${l(s("Sửa tên mốc"))}">✏</button>
+            <button class="icon-tool-btn danger" data-action="delete-video-bookmark" data-idx="${i._globalIndex}" title="${l(s("Xoá mốc"))}">🗑</button>
+          </div>
+        </div>
+        <div class="surgery-bookmark-text" id="bm-text-${i._globalIndex}">${l(i.text||s("Mốc phẫu thuật"))}</div>
+      </div>
+    `).join(""),e&&e.length>0&&(n+=`
+      <div class="surgery-video-other-clips-section">
+        <div class="surgery-video-other-clips-header">
+          <span>🗂 ${l(s("Mốc từ clip khác trong ca mổ"))}</span>
+          <span class="badge" style="font-size:10px; padding:2px 6px;">${e.length}</span>
+        </div>
+        ${e.map(i=>`
+          <div class="surgery-bookmark-card other-clip" data-action="jump-other-clip-bookmark"
+            data-series-id="${l(i.seriesId||"")}"
+            data-file-index="${i.fileIndex??0}"
+            data-time="${i.time}"
+            role="button" tabindex="0"
+            title="${l(s("Chuyển sang clip này và tua đến mốc"))}">
+            <div class="surgery-bookmark-header">
+              <span class="surgery-bookmark-clip-badge">🎬 ${l(i.seriesName||s("Clip khác"))}${i.fileIndex!==void 0?` #${i.fileIndex+1}`:""}</span>
+              <span class="surgery-bookmark-time">⏱ ${H(i.time)}</span>
+            </div>
+            <div class="surgery-bookmark-text">${l(i.text||s("Mốc phẫu thuật"))}</div>
+          </div>
+        `).join("")}
+      </div>
+    `),n}function Ho(t){const e=Number(t?.time)||0;return`${t?.seriesId||""}|${t?.fileIndex??0}|${e.toFixed(3)}`}function Yc(t,e){const n=Array.isArray(t)?[...t]:[],i=new Set(n.map(Ho));for(const a of e){const r=Ho(a);i.has(r)||(i.add(r),n.push(a))}return n}function ti(t){const e=t||B();!e?.id||K(e)!=="video"||N(`/api/series/${e.id}/surgery-bookmarks`,{method:"POST",body:JSON.stringify({bookmarks:o.videoBookmarks||[]})}).catch(n=>{k($("Không lưu được mốc phẫu thuật: {}",ht(n)),!0)})}function Zc(t){const e=B();!e?.id||K(e)!=="video"||e._bookmarksLoaded||(e._bookmarksLoaded=!0,N(`/api/series/${e.id}/surgery-bookmarks`).then(n=>{const i=Array.isArray(n?.bookmarks)?n.bookmarks:[];i.length!==0&&(o.videoBookmarks=Yc(o.videoBookmarks,i),Qt(B()))}).catch(()=>{e._bookmarksLoaded=!1}))}function Qt(t){const e=O();if(!e)return;const n=t||B(),i=e.querySelector(".video-marker-pins-layer");i&&(i.innerHTML=ar(n),de(i));const a=e.querySelector(".surgery-video-bookmarks");if(a){const{current:d,others:u}=Sn(n);a.innerHTML=rr(d,u),de(a)}const r=e.querySelector("#video-bookmarks-count");if(r){const{current:d}=Sn(n);r.textContent=String(d.length)}const c=e.querySelector("#surgery-video-player");c&&sr(Number(c.currentTime)||0)}function sr(t){const e=O();if(!e)return;const n=Number(t)||0,i=.25;let a=null;for(const r of e.querySelectorAll("[data-action='seek-video'][data-time]")){const c=Number(r.dataset.time);!Number.isFinite(c)||c>n+i||(a===null||c>a)&&(a=c)}for(const r of e.querySelectorAll("[data-action='seek-video'][data-time]")){const c=Number(r.dataset.time);r.classList.toggle("active",a!==null&&c===a)}}function Cn(t){const e=O();if(!t||!e)return;const n=Number(t.duration)||Number(o.videoDuration)||0,i=e.querySelector("#video-time-display");i&&(i.textContent=`${H(t.currentTime)} / ${H(n)}`);const a=e.querySelector("#surgery-video-scrubber");a&&n&&(a.value=String((Number(t.currentTime)||0)/n*100)),sr(Number(t.currentTime)||0)}function an(){const t=O(),e=t?.querySelector(".video-scrubber-wrap");if(!e)return;const n=Lt(),i=Number(o.videoDuration)||0;let a=e.querySelector(".video-range-band");if(!n||!i)a?.remove();else{a||(a=document.createElement("span"),a.className="video-range-band",e.prepend(a));const u=Math.max(0,Math.min(100,n.start/i*100));a.style.left=`${u}%`,a.style.width=`${Math.max(.5,Math.min(100-u,(n.end-n.start)/i*100))}%`}const r=t.querySelector("#video-range-readout");r&&(r.textContent=n?`${H(n.start)} → ${H(n.end)}`:s("Chưa chọn đoạn"),n?r.classList.add("active"):r.classList.remove("active"));const c=t.querySelector("[data-action='video-clear-range']");c&&(c.disabled=!n);const d=t.querySelector("[data-action='video-tool-trim']");d&&(d.disabled=!n),ut()}function Qc(t){const e=t?.filesPlayable;return!Array.isArray(e)||!e.length||o.videoWorkingPath?!0:e[et(t)]!==!1}function td(t){if(!t)return`<div class="empty-state"><b>${l(s("Chưa có video nào"))}</b></div>`;const e=Gn(o.videoWorkingPath),{current:n,others:i}=Sn(t),a=o.videoFilmstrip||[],r=Lt(),c=pe(t);return`
+    <div class="surgery-video-studio">
+      <div class="photo-editor-toolbar">
+        ${no(t)}
+        ${wr(t)}
+        <span class="photo-props-divider"></span>
+        <button class="tool-btn" data-action="video-tool-trim" ${r?"":"disabled"}
+          title="${l(s("Cắt giữ lại đoạn đã đánh dấu"))}">✂ ${l(s("Cắt đoạn"))}</button>
+        <button class="tool-btn" data-action="video-tool-concat" title="${l(s("Ghép các clip video"))}">🔗 ${l(s("Ghép clips"))}</button>
+        <button class="tool-btn" data-action="video-tool-burn-text" title="${l(s("Đóng dấu / Chèn thông tin phẫu thuật"))}">🏷 ${l(s("Đóng dấu thông tin"))}</button>
+        <button class="tool-btn" data-action="video-tool-thumb" title="${l(s("Trích xuất ảnh đại diện Thumbnail"))}">🖼 ${l(s("Tạo Thumbnail"))}</button>
+        <button class="tool-btn" data-action="video-tool-filmstrip" title="${l(s("Tạo chuỗi ảnh Filmstrip"))}">🎞 ${l(s("Tạo Filmstrip"))}</button>
+        <button class="tool-btn" data-action="video-tool-transcode" title="${l(s("Tối ưu hoá mã hoá MP4 (H.264)"))}">⚡ ${l(s("Tối ưu MP4"))}</button>
+        <span style="flex:1;"></span>
+        <button class="tool-btn primary" data-action="video-apply-shapes" id="photo-apply-shapes"
+          ${c?"":"disabled"} title="${l(s("Ghi nét vẽ vĩnh viễn vào video"))}">
+          ${l(s("Áp dụng lên video"))}${c?` (${c})`:""}
+        </button>
+        <div id="video-meta-badge" class="badge" style="font-size:11px; padding:4px 8px; opacity:0.85;">🎬 ${l(t.patientName||"Video Phẫu Thuật")}</div>
+      </div>
+      ${cr(t)}
+      <div class="surgery-video-body">
+        <div class="surgery-video-main">
+          ${lr()}
+          <div class="surgery-video-stage">
+            <div class="photo-editor-canvas-wrap" id="photo-editor-canvas">
+              <video id="surgery-video-player" class="surgery-video-element" src="${l(sd(t,e))}" playsinline preload="metadata"></video>
+              <canvas id="photo-annotation-canvas" class="photo-annotation-canvas"></canvas>
+            </div>
+            ${Qc(t)?"":`
+              <div class="video-unplayable">
+                <b>${l(s("Trình duyệt không mở được định dạng này"))}</b>
+                <p>${l(s("File định dạng MPG/MPEG cần chuyển sang MP4 để xem, cắt và vẽ lên nó."))}</p>
+                <button class="control-btn primary" data-action="video-tool-transcode">
+                  ⚡ ${l(s("Chuyển sang MP4"))}
+                </button>
+              </div>
+            `}
+          </div>
+        </div>
+        <aside class="surgery-video-sidebar">
+          <div class="surgery-video-sidebar-header">
+            <span>📌 ${l(s("Mốc phẫu thuật"))} <span id="video-bookmarks-count" class="badge" style="font-size:10px; padding:2px 6px;">${n.length}</span></span>
+            <button class="control-btn primary" data-action="add-video-bookmark" title="${l(s("Thêm mốc tại thời điểm hiện tại (phím M)"))}">+ ${l(s("Thêm mốc"))}</button>
+          </div>
+          <div class="surgery-video-bookmarks">
+            ${rr(n,i)}
+          </div>
+        </aside>
+      </div>
+      ${a.length>0?`
+        <div class="surgery-video-filmstrip">
+          ${a.map((d,u)=>{const h=d.split(/[\\/]/).pop(),p=un(`/api/media/work-file?name=${encodeURIComponent(h)}`);return`<img src="${l(p)}" title="Frame ${u+1}" data-action="seek-filmstrip-idx" data-idx="${u}" data-total="${a.length}" />`}).join("")}
+        </div>
+      `:""}
+      ${dr(t)}
+      <div class="surgery-video-controls">
+        <!-- Tier 1: Full-width Scrubber & Timeline Strip -->
+        <div class="surgery-timeline-tier">
+          <span class="video-scrubber-wrap">
+            ${Jc()}
+            <div class="video-marker-pins-layer">
+              ${ar(t)}
+            </div>
+            <input type="range" id="surgery-video-scrubber" class="video-scrubber" min="0" max="100" step="0.1" value="0"
+              aria-label="${l(s("Thanh tua video"))}">
+          </span>
+        </div>
+
+        <!-- Tier 2: Streamlined 3-Zone Toolbar -->
+        <div class="surgery-actions-tier">
+          <!-- Zone 1: Playback Controls -->
+          <div class="video-control-group">
+            <button class="control-btn" data-action="video-play-pause" title="${l(s("Phát / Tạm dừng"))} (Space)">⏯</button>
+            <button class="control-btn icon-btn" data-action="video-rewind-5" title="${l(s("Tua lùi 5s"))}">-5s</button>
+            <button class="control-btn icon-btn" data-action="video-forward-5" title="${l(s("Tua tới 5s"))}">+5s</button>
+            <span id="video-time-display" class="video-time">00:00 / 00:00</span>
+          </div>
+
+          <span class="video-tier-divider"></span>
+
+          <!-- Zone 2: Trimming & Marker Actions -->
+          <div class="video-control-group">
+            <button class="control-btn icon-btn" data-action="video-set-in" title="${l(s("Đặt điểm đầu tại vị trí đang xem"))} (I)">[ In</button>
+            <button class="control-btn icon-btn" data-action="video-set-out" title="${l(s("Đặt điểm cuối tại vị trí đang xem"))} (O)">Out ]</button>
+            <span class="video-range-pill ${r?"active":""}" id="video-range-readout">${r?`${H(r.start)} → ${H(r.end)}`:l(s("Chưa chọn đoạn"))}</span>
+            <button class="control-btn icon-btn subtle" data-action="video-clear-range" ${r?"":"disabled"}
+              title="${l(s("Bỏ đoạn đã đánh dấu"))}">✕</button>
+            <button class="control-btn marker-btn" data-action="add-video-bookmark" title="${l(s("Thêm mốc tại thời điểm hiện tại"))} (M)">
+              📌 ${l(s("+ Mốc"))}
+            </button>
+          </div>
+
+          <span style="flex:1;"></span>
+
+          <!-- Zone 3: Utility Controls -->
+          <div class="video-control-group">
+            <select id="video-speed-select" class="control-btn" title="${l(s("Tốc độ"))}"
+              aria-label="${l(s("Tốc độ"))}">
+              <option value="0.5">0.5x</option>
+              <option value="1.0" selected>1.0x</option>
+              <option value="1.25">1.25x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2.0">2.0x</option>
+            </select>
+            <button class="control-btn" data-action="video-snapshot" title="${l(s("Chụp khung hình"))}">📸 ${l(s("Chụp"))}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `}function et(t){const e=Number(t?.sliceCount)||1,n=Number(o.mediaIndex?.[t?.id]??0);return Number.isFinite(n)?Math.max(0,Math.min(Math.trunc(n),e-1)):0}function ed(t,e){if(!t)return;const n=Number(t.sliceCount)||1,i=Math.max(0,Math.min(et(t)+e,n-1));i!==et(t)&&(o.mediaIndex={...o.mediaIndex||{},[t.id]:i},mr(t),o.photoRotation=0,o.videoFilmstrip=[],L(),Y())}function no(t){const e=Number(t?.sliceCount)||1;if(e<=1)return"";const n=et(t);return`
+    <span class="media-file-nav">
+      <button class="tool-btn" data-action="media-file-prev" ${n<=0?"disabled":""}>‹</button>
+      <span class="media-file-count">${n+1}/${e}</span>
+      <button class="tool-btn" data-action="media-file-next" ${n>=e-1?"disabled":""}>›</button>
+    </span>
+  `}const nd={cursor:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51z"/></svg>',arrow:'<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="19" y1="5" x2="5" y2="19"/><polyline points="19 13 19 5 11 5"/></svg>',line:'<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="5" y1="19" x2="19" y2="5"/></svg>',rect:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="1"/></svg>',ellipse:'<svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="12" rx="9" ry="7"/></svg>',pen:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.63l4.35-1.33a2 2 0 0 0 .83-.5z"/><path d="m15 5 4 4"/></svg>',text:'<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/></svg>',marker:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M10 9.5 12 8v8"/><path d="M10.5 16h3"/></svg>',highlight:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 11-6 6v3h3l6-6"/><path d="m14.5 5.5 4 4"/><path d="M13 3 21 11l-7.5 7.5-8-8z"/></svg>',pixelate:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="1"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></svg>',redact:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="10" rx="1" fill="currentColor"/></svg>',crop:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>'};function id(t){return`${t?.id||""}:${et(t)}`}function At(t){if(!t)return null;const e=o.photoLayers||(o.photoLayers={}),n=id(t);return e[n]||(e[n]=gc())}function od(t){return At(t)?.shapes||[]}function pe(t){return od(t).filter(xn).length}function lr(){return`
+    <div class="photo-tool-rail" role="toolbar" aria-label="${l(s("Công cụ vẽ"))}">
+      ${Hn.map(t=>{const e=o.photoTool===t.id,n=`${s(t.label)} (${t.key})`;return`<button class="photo-tool ${e?"active":""}" data-action="photo-pick-tool"
+          data-tool="${t.id}" title="${l(n)}" aria-label="${l(n)}"
+          aria-pressed="${e?"true":"false"}">${nd[t.icon]||""}</button>`}).join("")}
+    </div>
+  `}function cr(t){const e=o.photoStyle,n=pe(t);return`
+    <div class="photo-props" id="photo-props">
+      <span class="photo-props-label">${l(s("Màu"))}</span>
+      <span class="photo-swatches">
+        ${hc.map(i=>`
+          <button class="photo-swatch ${e.color.toLowerCase()===i?"active":""}"
+            data-action="photo-pick-color" data-color="${i}"
+            style="background:${i}" title="${i}" aria-label="${i}"></button>
+        `).join("")}
+        <input type="color" class="photo-color-input" data-field="photo-color"
+          value="${l(e.color)}" title="${l(s("Chọn màu tuỳ ý"))}"
+          aria-label="${l(s("Chọn màu tuỳ ý"))}">
+      </span>
+      <span class="photo-props-divider"></span>
+      <label class="photo-props-field">
+        <span>${l(s("Nét"))}</span>
+        <input type="range" min="1" max="32" step="1" value="${e.strokeWidth}" data-field="photo-stroke">
+        <b id="photo-stroke-value">${e.strokeWidth}</b>
+      </label>
+      <label class="photo-props-field" id="photo-font-field">
+        <span>${l(s("Cỡ chữ"))}</span>
+        <input type="range" min="10" max="160" step="2" value="${e.fontSize}" data-field="photo-font">
+        <b id="photo-font-value">${e.fontSize}</b>
+      </label>
+      <label class="photo-props-field">
+        <span>${l(s("Độ đậm"))}</span>
+        <input type="range" min="20" max="100" step="5" value="${Math.round(e.opacity*100)}" data-field="photo-opacity">
+        <b id="photo-opacity-value">${Math.round(e.opacity*100)}%</b>
+      </label>
+      <label class="photo-props-check">
+        <input type="checkbox" data-field="photo-fill" ${e.filled?"checked":""}>
+        <span>${l(s("Tô đặc"))}</span>
+      </label>
+      ${K(t)==="video"?ad():""}
+      <span class="photo-props-actions">
+        <button class="tool-btn" data-action="photo-apply-crop" id="photo-apply-crop" hidden>
+          ✂ ${l(s("Cắt theo vùng chọn"))}
+        </button>
+        <button class="tool-btn" data-action="photo-delete-shape" id="photo-delete-shape" disabled>
+          ${l(s("Xoá hình đang chọn"))}
+        </button>
+        <button class="tool-btn" data-action="photo-clear-shapes" ${n?"":"disabled"}>
+          ${l(s("Xoá hết nét vẽ"))}
+        </button>
+      </span>
+    </div>
+  `}function dr(t){const e=pe(t);return`
+    <div class="photo-editor-status">
+      <span id="photo-status-hint">${l(s(Gt(o.photoTool).label))}</span>
+      <span style="flex:1;"></span>
+      <span id="photo-status-size"></span>
+      <span id="photo-status-count">${e?$("{} nét chưa áp dụng",e):l(s("Chưa vẽ gì"))}</span>
+    </div>
+  `}function ad(){const t=Lt(),e=t?`${H(t.start)}→${H(t.end)}`:s("Chưa chọn đoạn"),n=(i,a,r)=>`
+    <button class="tool-btn ${o.videoShapeTiming===i&&!r?"active":""}"
+      data-action="video-timing" data-timing="${i}" ${r?"disabled":""}>${l(a)}</button>`;return`
+    <span class="photo-props-divider"></span>
+    <span class="photo-props-label">${l(s("Hiện"))}</span>
+    <span class="photo-timing-picker" id="photo-timing-picker">
+      ${n("all",s("Toàn bộ"),!1)}
+      ${n("span",e,!t)}
+    </span>
+  `}function rd(t){if(!t)return`<div class="empty-state"><b>${l(s("Chưa có ảnh nào"))}</b></div>`;const e=Gn(o.photoWorkingPath),n=e?`work:${e}`:`${t.id}:${et(t)}`,i=pe(t);return`
+    <div class="photo-editor-studio">
+      <div class="photo-editor-toolbar">
+        ${no(t)}
+        ${wr(t)}
+        <span class="photo-props-divider"></span>
+        <button class="tool-btn" data-action="photo-rotate-ccw" title="${l(s("Xoay trái 90°"))}">↺</button>
+        <button class="tool-btn" data-action="photo-rotate-cw" title="${l(s("Xoay phải 90°"))}">↻</button>
+        <span class="photo-props-divider"></span>
+        <button class="tool-btn" data-action="photo-zoom-out" title="${l(s("Thu nhỏ"))}">−</button>
+        <button class="tool-btn" data-action="photo-zoom-fit" id="photo-zoom-label"
+          title="${l(s("Vừa khung"))}">${o.photoZoom?`${Math.round(o.photoZoom*100)}%`:l(s("Vừa khung"))}</button>
+        <button class="tool-btn" data-action="photo-zoom-in" title="${l(s("Phóng to"))}">+</button>
+        <span style="flex:1;"></span>
+        <button class="tool-btn primary" data-action="photo-apply-shapes" id="photo-apply-shapes"
+          ${i?"":"disabled"} title="${l(s("Vẽ đè vĩnh viễn lên ảnh"))}">
+          ${l(s("Áp dụng lên ảnh"))}${i?` (${i})`:""}
+        </button>
+        <button class="tool-btn" data-action="photo-save-edit" ${o.photoWorkingPath?"":"disabled"}>💾 ${l(s("Lưu vào hồ sơ"))}</button>
+        <button class="tool-btn" data-action="photo-export-image">⬇ ${l(s("Tải ảnh về"))}</button>
+        <button class="tool-btn" data-action="photo-export-pdf">📄 ${l(s("Xuất file PDF"))}</button>
+      </div>
+      ${cr(t)}
+      <div class="photo-editor-body">
+        ${lr()}
+        <div class="photo-editor-stage" id="photo-editor-stage">
+          <div class="photo-editor-canvas-wrap" id="photo-editor-canvas">
+            <img id="photo-editor-img" class="photo-editor-image" data-media-src="${l(n)}" alt="${l(t.description||"")}">
+            <canvas id="photo-annotation-canvas" class="photo-annotation-canvas"></canvas>
+          </div>
+        </div>
+      </div>
+      ${dr(t)}
+    </div>
+  `}function io(t){return!t||!o.textDoc?null:o.textDoc.seriesId===t.id?o.textDoc:null}function ur(t){if(!t)return`<div class="empty-state"><b>${l(s("Chưa có văn bản nào"))}</b></div>`;const e=io(t),n=Number(t.sliceCount)||1,i=e?e.index:0;return`
+    <div class="text-viewer">
+      <div class="text-viewer-bar">
+        <span class="text-viewer-name">${l(e?.name||t.name||"")}</span>
+        ${n>1?`
+          <span class="text-viewer-nav">
+            <button class="tool-btn" data-action="text-prev" ${i<=0?"disabled":""}>‹</button>
+            <span class="text-viewer-count">${i+1}/${n}</span>
+            <button class="tool-btn" data-action="text-next" ${i>=n-1?"disabled":""}>›</button>
+          </span>
+        `:""}
+        <span style="flex:1;"></span>
+        ${e?.language==="json"?'<span class="text-viewer-badge">JSON</span>':""}
+        <button class="tool-btn" data-action="text-copy" ${e?"":"disabled"}>${l(s("Chép"))}</button>
+      </div>
+      <pre class="text-viewer-body" id="text-viewer-body">${l(e?e.text:s("Đang đọc file…"))}</pre>
+    </div>
+  `}async function oo(t,e){if(!(!t||!e))try{const n=new URL(e,window.location?.origin||"http://127.0.0.1"),i=n.pathname==="/api/media/work-file"?n.searchParams.get("name"):"",a=n.pathname.match(/^\/api\/series\/([a-f0-9]{20})\/image\/(\d+)$/),r=i?`work:${i}`:a?`${a[1]}:${a[2]}`:"";t.src=r?await hr(r):URL.createObjectURL(await He(e))}catch(n){k(ht(n),!0)}}const Me=new Map;function hr(t){const e=String(t);let n=Me.get(e);if(!n){const i=e.indexOf(":"),a=e.slice(0,i),r=e.slice(i+1),c=a==="work"?`/api/media/work-file?name=${encodeURIComponent(r)}`:`/api/series/${a}/image/${Number(r)||0}`;n=He(c).then(d=>URL.createObjectURL(d)),n.catch(()=>Me.delete(e)),Me.set(e,n)}return n}function sd(t,e=""){return un(e?`/api/media/work-file?name=${encodeURIComponent(e)}`:`/api/series/${t.id}/image/${et(t)}`)}function be(t,e){!t||!e||(t.src=un(e),t.load())}async function ei(t,e){const n=await He(t),i=URL.createObjectURL(n),a=document.createElement("a");a.href=i,a.download=e,a.click(),window.setTimeout(()=>URL.revokeObjectURL(i),6e4)}function pr(t=""){for(const[e,n]of[...Me])t&&e.startsWith(`${t}:`)||(Me.delete(e),Promise.resolve(n).then(i=>URL.revokeObjectURL(i)).catch(()=>{}))}function fr(t,e=0){const n=o.mediaEdits||(o.mediaEdits={}),i=`${t}:${Math.max(0,Number(e)||0)}`;return n[i]||(n[i]={steps:[],cursor:-1})}function Ue(t){return fr(t.id,et(t))}function Ct(t,e){if(!t||!e?.outputPath)return;const n=Ue(t);n.steps=n.steps.slice(0,n.cursor+1),n.steps.push({path:e.outputPath,url:e.url||""}),n.cursor=n.steps.length-1,br(t)}function ld(t){if(!t)return null;const e=Ue(t);return e.cursor>=0?e.steps[e.cursor]:null}function ao(t){return!!t&&Ue(t).cursor>=0}function ro(t){if(!t)return!1;const e=Ue(t);return e.cursor<e.steps.length-1}function cd(t,e){if(!t)return;const n=Ue(t),i=Math.max(-1,Math.min(n.cursor+e,n.steps.length-1));if(i===n.cursor)return;n.cursor=i;const a=i>=0?n.steps[i]:null;K(t)==="video"?o.videoWorkingPath=a?a.path:null:(o.photoWorkingPath=a?a.path:null,o.photoRotation=0),L(),Y(),k(a?$(e<0?"Đã hoàn tác đến bước {}/{}.":"Đã làm lại đến bước {}/{}.",i+1,n.steps.length):s("Đã quay lại file gốc trong hồ sơ."))}function mr(t){const e=ld(t);K(t)==="video"?(o.videoWorkingPath=e?.path||null,o.photoWorkingPath=null):(o.photoWorkingPath=e?.path||null,o.videoWorkingPath=null)}function gr(t){return ja(At(t))||ao(t)}function yr(t){return Ua(At(t))||ro(t)}function vr(t){return["photo","doc"].includes(K(t))}function Vn(t){return vr(t)||K(t)==="video"}function br(t){const e=O();if(!e)return;const n=Vn(t),i=e.querySelector("[data-action='media-edit-undo']"),a=e.querySelector("[data-action='media-edit-redo']");i&&(i.disabled=!(n?gr(t):ao(t))),a&&(a.disabled=!(n?yr(t):ro(t)));const r=e.querySelector("[data-action='photo-save-edit']");r&&(r.disabled=!o.photoWorkingPath)}function dd(t,e){const n=At(t);return(e<0?yc(n):vc(n))?(U()?.select(null),U()?.repaint(),ut(),k(s(e<0?"Đã hoàn tác nét vẽ.":"Đã vẽ lại nét vừa hoàn tác.")),!0):!1}function wr(t){const e=Vn(t),n=e?gr(t):ao(t),i=e?yr(t):ro(t);return`
+    <button class="tool-btn" data-action="media-edit-undo" ${n?"":"disabled"}
+      title="${l(s("Hoàn tác bước chỉnh sửa"))} (Ctrl+Z)">↶</button>
+    <button class="tool-btn" data-action="media-edit-redo" ${i?"":"disabled"}
+      title="${l(s("Làm lại bước vừa hoàn tác"))} (Ctrl+Y)">↷</button>
+  `}function Gn(t){return String(t||"").split(/[\\/]/).pop()||""}function kr(){const t=O();if(t)for(const e of t.querySelectorAll("[data-media-src]")){const n=String(e.dataset.mediaSrc);n.includes(":")&&hr(n).then(i=>{e.src=i}).catch(i=>k(ht(i),!0))}}function ud(t){if(!t)return`<div class="empty-state"><b>${l(s("Chưa có tài liệu nào"))}</b></div>`;const e=et(t);return`
+    <div class="pdf-viewer">
+      <div class="pdf-viewer-bar">
+        <span class="pdf-viewer-name">${l(t.description||t.name||"")}</span>
+        ${no(t)}
+      </div>
+      <embed class="pdf-viewer-frame" type="application/pdf"
+        data-media-src="${l(t.id)}:${e}">
+    </div>
+  `}function $r(t){if(x.editing)return fa(o.archive?.patient||{});switch(K(t)){case"video":return td(t);case"photo":case"doc":return rd(t);case"text":return ur(t);case"pdf":return ud(t)}if(o.archive.series.length)return`<div class="viewer-loading">${o.busyViewer?l(s("Đang dựng khung xem…")):""}</div>`;const e=o.tabs.find(n=>n.id===o.activeTabId);return e?.loadError?`<div class="empty-state error"><b>${l(s("Không mở được hồ sơ"))}</b>
+      <p>${l(e.loadError)}</p></div>`:e?.loading?`<div class="empty-state"><b>${l(s("Đang mở hồ sơ…"))}</b>
+      <p>${l(e.folder||"")}</p></div>`:`<div class="empty-state"><b>${l(s("Chưa mở hồ sơ nào"))}</b>
+      <p>${l(s("Mở folder hồ sơ; app tự phân loại phim DICOM, ảnh, video và văn bản bên trong."))}</p>
+      <div class="empty-actions">
+        <button class="primary" data-action="choose-archive">${l(s("Mở folder"))}</button>
+      </div></div>`}function hd(){return o.activeTabId==="worklist"&&o.downloadOpen}const pd={dicom:"Phim chụp",photo:"Ảnh",doc:"Bệnh án",video:"Video",text:"Văn bản",pdf:"Bệnh án PDF"};function fd(t){if(!t||typeof t!="string"||t.length!==8)return!1;const e=parseInt(t.slice(0,4),10),n=parseInt(t.slice(4,6),10),i=parseInt(t.slice(6,8),10);return!(isNaN(e)||isNaN(n)||isNaN(i)||e<1900||e>2099||n<1||n>12||i<1||i>31)}function md(t,e={}){const n=new Map;for(const r of t||[]){let c=r.studyDate||"";!c&&r.studyGroup&&(c=r.studyGroup.split(" - ")[0]);const d=String(c).replace(/\D/g,"");let u=d.length>=8?d.slice(0,8):"";u&&!fd(u)&&(u=""),n.has(u)||n.set(u,new Map);const h=K(r),p=r.studyGroup||r.studyDescription||(h==="dicom"?r.modality:r.id)||r.id,f=r.timelineKey||`legacy:${u}:${h}:${p}`,y=n.get(u);y.has(f)||y.set(f,{key:f,kind:h,series:[]}),y.get(f).series.push(r)}const i=[...n.entries()].sort((r,c)=>r[0]?c[0]?c[0].localeCompare(r[0]):-1:1).flatMap(([r,c])=>[...c.values()].map(d=>{const u=d.series[0]||{},h=String(u.modality||"").trim().toUpperCase(),p=d.kind==="dicom"&&h&&h!=="UNKNOWN"?h:s(pd[d.kind]||"Phim chụp"),f=r?`${r.slice(6,8)}/${r.slice(4,6)}/${r.slice(0,4)}`:s("Chưa rõ ngày chụp"),y=String(u.studyDescription||u.description||u.name||"").trim(),C=[...d.series].sort((P,G)=>+!!G.mprReady-+!!P.mprReady||Number(G.sliceCount||0)-Number(P.sliceCount||0))[0],b=r?f:y||f,g=d.series.some(P=>P.sourceType==="dicom"||String(P.sourceFormat||"").toUpperCase()==="DICOM");let S="";g?S="DICOM":u.sourceFormat?S=String(u.sourceFormat).toUpperCase():u.sourceType==="image"||d.kind==="photo"?S="JPG":d.kind==="video"?S="MP4":d.kind==="pdf"?S="PDF":d.kind==="doc"||d.kind==="text"?S="TXT":String(u.mediaType||"").toLowerCase()==="dicom"&&(S="DICOM");const q=S==="DICOM"?s("Dữ liệu gốc DICOM (Ưu tiên dựng từ DICOM)"):S==="JPG"?s("Dữ liệu ảnh chuyển đổi JPG"):S||s("Chưa rõ định dạng nguồn");return{...d,dateKey:r,dateLabel:f,badge:p,examName:y,sourceFormat:S||"—",sourceFormatClass:S.toLowerCase()||"unknown",sourceTitle:q,defaultTitle:`${p} - ${b}`,primaryId:C?.id||"",memberIds:d.series.map(P=>P.id)}})),a=new Map;for(const r of i)a.set(r.defaultTitle,(a.get(r.defaultTitle)||0)+1);for(const r of i)a.get(r.defaultTitle)>1&&r.examName&&(r.defaultTitle=`${r.badge} - ${r.dateLabel} · ${r.examName}`),r.title=String(e?.[r.key]||"").trim()||r.defaultTitle;return i}function xr(t={}){return{patientName:t.patientName||"",patientId:t.patientId||"",gender:t.gender||"",birthYear:t.birthYear||"",phone:t.phone||"",address:t.address||"",hospital:t.hospital||"",diagnosis:t.diagnosis||""}}function Sr(t){if(!t)return null;const e=new FormData(t);return{patientName:e.get("patientName")||"",patientId:e.get("patientId")||"",gender:e.get("gender")||"",birthYear:e.get("birthYear")||"",phone:e.get("phone")||"",address:e.get("address")||"",hospital:e.get("hospital")||"",diagnosis:e.get("diagnosis")||""}}function wi(){const t=m?.querySelector(".dx-card");t&&(t.outerHTML=ma(),so(),Cr())}function gd(){const t=m?.querySelector(".dx-workspace");t&&(t.outerHTML=fa(o.archive?.patient||{}),so())}function pt(){wi(),gd()}const Wo=new WeakSet;function so(){for(const t of[m?.querySelector(".dx-card"),m?.querySelector(".dx-workspace")])t&&yd(t)}function yd(t){t.querySelectorAll("[data-clinical-field]").forEach(e=>{if(Wo.has(e))return;Wo.add(e);const n=i=>{Js(i.target)&&pt()};e.addEventListener("input",n),e.addEventListener("change",n)}),de(t)}function Cr(){const t=x.record?.events;m.querySelectorAll(".tl-phase").forEach(e=>{const n=Fs(Bs(t,Rs(e.dataset.dateKey)));e.className=n?`tl-phase ${n.tone}`:"tl-phase",e.textContent=n?n.text:"",n?e.setAttribute("title",n.title):e.removeAttribute("title"),e.hidden=!n})}function vd(){return`${o.archive?.root||""}::${o.archive?.patient?.patientId||""}`}async function lo({force:t=!1}={}){const e=vd();if(o.archive?.root&&!(!t&&x.loadedFor===e)){Is(),x.loading=!0,x.loadedFor=e,wi();try{if(!x.vocabulary){const a=await N("/api/clinical/vocabulary");x.vocabulary=a?.vocabulary||null}const n=new URLSearchParams({archiveRoot:o.archive?.root||"",patientId:o.archive?.patient?.patientId||""}),i=await N(`/api/patient/clinical?${n.toString()}`);x.record=i?.record||Et(),x.stage=i?.stage||We(),x.label=String(i?.label||""),x.canWrite=i?.canWrite!==!1,x.reason=String(i?.reason||"")}catch(n){x.error=ht(n)}finally{x.loading=!1,wi()}}}function bd(){const t=o.archive?.patient||{},e=o.patientEditDraft||xr(t),n=o.archive?.series||[],i=d=>lt(d)||"—",a=[t.gender,t.birthYear,t.age?$("{} tuổi",t.age):""].map(d=>String(d||"").trim()).filter(Boolean).join(" · "),r=md(n,t.timelineLabels||{}),c=()=>o.editingPatientInfo?`
+        <div class="rec-card rec-info-card editing">
+          <div class="rec-card-header">
+            <b>${l(s("Sửa thông tin bệnh nhân"))}</b>
+            <div class="rec-card-actions">
+              <button class="mini-btn primary" type="button" data-action="save-patient-info" title="${l(s("Lưu thay đổi"))}">✓</button>
+              <button class="mini-btn" type="button" data-action="cancel-patient-info" title="${l(s("Hủy"))}">✕</button>
+            </div>
+          </div>
+          <form class="rec-edit-form" data-field="patient-edit-form" onsubmit="event.preventDefault();">
+            <label class="rec-form-field">
+              <span>${l(s("Họ và tên"))}</span>
+              <input name="patientName" maxlength="128" value="${l(e.patientName)}" placeholder="${l(s("Nhập họ tên"))}">
+            </label>
+            <label class="rec-form-field">
+              <span>${l(s("Mã bệnh nhân"))}</span>
+              <input name="patientId" maxlength="128" required value="${l(e.patientId)}" placeholder="${l(s("Nhập mã BN"))}">
+            </label>
+            <div class="rec-form-row">
+              <label class="rec-form-field" style="flex:1;">
+                <span>${l(s("Giới tính"))}</span>
+                <select name="gender">
+                  <option value="" ${e.gender?"":"selected"}>—</option>
+                  <option value="Nam" ${e.gender==="Nam"?"selected":""}>${l(s("Nam"))}</option>
+                  <option value="Nữ" ${e.gender==="Nữ"?"selected":""}>${l(s("Nữ"))}</option>
+                  <option value="Khác" ${e.gender&&e.gender!=="Nam"&&e.gender!=="Nữ"?"selected":""}>${l(s("Khác"))}</option>
+                </select>
+              </label>
+              <label class="rec-form-field" style="flex:1;">
+                <span>${l(s("Năm sinh"))}</span>
+                <input name="birthYear" type="number" min="1900" max="${new Date().getFullYear()}" value="${l(e.birthYear)}" placeholder="YYYY">
+              </label>
+            </div>
+            <label class="rec-form-field">
+              <span>${l(s("Số điện thoại"))}</span>
+              <input name="phone" type="tel" value="${l(e.phone)}" placeholder="${l(s("Nhập SĐT"))}">
+            </label>
+            <label class="rec-form-field">
+              <span>${l(s("Địa chỉ"))}</span>
+              <input name="address" value="${l(e.address)}" placeholder="${l(s("Nhập địa chỉ"))}">
+            </label>
+            <label class="rec-form-field">
+              <span>${l(s("Bệnh viện"))}</span>
+              <input name="hospital" value="${l(e.hospital)}" placeholder="${l(s("Tên bệnh viện"))}">
+            </label>
+            <label class="rec-form-field">
+              <span>${l(s("Chẩn đoán"))}</span>
+              <textarea name="diagnosis" rows="2" placeholder="${l(s("Chẩn đoán / Ghi chú"))}">${l(e.diagnosis)}</textarea>
+            </label>
+          </form>
+        </div>
+      `:`
+      <div class="rec-card rec-info-card">
+        <div class="rec-id">
+          <div class="rec-name-row">
+            <b>${l(i(t.patientName)==="—"?s("Chưa có tên bệnh nhân"):t.patientName)}</b>
+            <button class="rec-edit-btn" type="button" data-action="edit-patient-info"
+              title="${l(s("Chỉnh sửa thông tin bệnh nhân"))}">✎</button>
+          </div>
+          <small>${l(i(t.patientId))}${a?` · ${l(a)}`:""}</small>
+        </div>
+        <dl class="rec-facts">
+          <div class="rfact"><dt>${l(s("Mã BN"))}</dt><dd>${l(i(t.patientId))}</dd></div>
+          <div class="rfact"><dt>${l(s("Giới tính"))}</dt><dd>${l(i(t.gender))}</dd></div>
+          <div class="rfact"><dt>${l(s("Năm sinh"))}</dt><dd>${l(i(t.birthYear))}${t.age?` (${$("{} tuổi",t.age)})`:""}</dd></div>
+          <div class="rfact"><dt>${l(s("Điện thoại"))}</dt><dd>${l(i(t.phone))}</dd></div>
+          <div class="rfact"><dt>${l(s("Địa chỉ"))}</dt><dd>${l(i(t.address))}</dd></div>
+          <div class="rfact"><dt>${l(s("Bệnh viện"))}</dt><dd>${l(i(t.hospital))}</dd></div>
+          <div class="rfact">
+            <dt>${l(s("Chẩn đoán"))}</dt>
+            <dd><button class="rfact-edit" type="button" data-action="edit-diagnosis"
+              title="${l(s("Ghi chẩn đoán cho hồ sơ này"))}">${l(i(t.diagnosis))}</button></dd>
+          </div>
+        </dl>
+      </div>
+    `;return`
+    <aside class="rec-rail patient-history-rail">
+      <div class="rail-collapsed-strip" data-action="toggle-patient-rail" title="${l(s("Mở thông tin ca ( [ )"))}">
+        <button class="rail-expand-trigger" type="button" data-action="toggle-patient-rail"
+          ${o.patientRailCollapsed?"":"hidden"}
+          title="${l(s("Mở thông tin ca ( [ )"))}" aria-label="${l(s("Mở thông tin ca"))}">
+          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <span class="rail-vertical-title">${l(s("Thông tin ca"))}</span>
+      </div>
+      <div class="rec-rail-header">
+        <span class="rec-rail-title">${l(s("Thông tin ca"))}</span>
+        <button class="rail-toggle-btn" type="button" data-action="toggle-patient-rail"
+          title="${l(s("Thu gọn thông tin ca ( [ )"))}" aria-label="${l(s("Thu gọn thông tin ca"))}">
+          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      ${c()}
+      ${ma()}
+
+      <div class="rec-timeline-head"><b>${l(s("Lịch sử khám"))}</b></div>
+      <div class="tl">
+        ${r.length===0?`<div class="tl-empty">${l(s("Chưa có dữ liệu nào trong hồ sơ này."))}</div>`:r.map(d=>{const u=d.memberIds.includes(o.selectedId);return`
+              <div class="tl-item ${d.kind}${u?" on":""}"
+                data-timeline-key="${l(d.key)}"
+                data-timeline-members="${l(d.memberIds.join(","))}"
+                data-timeline-label="${l(d.title)}"
+                data-default-label="${l(d.defaultTitle)}"
+                title="${l(d.examName?`${d.title} · ${d.examName}`:d.title)}">
+                <div class="tl-row">
+                  <button class="tl-open" type="button" data-series-id="${l(d.primaryId)}">
+                    <div class="tl-card-header">
+                      <span class="tl-badge-pill">${l(d.badge)}</span>
+                      <span class="tl-date-text">${l(d.dateLabel)}</span>
+                      <span class="tl-source-pill ${l(d.sourceFormatClass)}" title="${l(d.sourceTitle)}">${l(d.sourceFormat)}</span>
+                    </div>
+                    <div class="tl-card-body">
+                      <span class="nm">${l(d.title!==d.defaultTitle?d.title:d.examName||d.title)}</span>
+                      <span class="tl-phase" data-date-key="${l(d.dateKey||"")}" hidden></span>
+                    </div>
+                  </button>
+                  <input class="tl-name-input" value="${l(d.title)}"
+                    maxlength="120" aria-label="${l(s("Tên hiển thị trên timeline"))}">
+                  <button class="tl-edit" type="button" data-action="edit-timeline-label"
+                    title="${l(s("Đổi tên lần chụp hoặc loại media"))}" aria-label="${l(s("Đổi tên lần chụp hoặc loại media"))}">✎</button>
+                  <button class="tl-edit-save" type="button" data-action="save-timeline-label"
+                    title="${l(s("Lưu tên"))}" aria-label="${l(s("Lưu tên"))}">✓</button>
+                  <button class="tl-edit-cancel" type="button" data-action="cancel-timeline-label"
+                    title="${l(s("Bỏ thay đổi tên"))}" aria-label="${l(s("Bỏ thay đổi tên"))}">×</button>
+                </div>
+              </div>
+            `}).join("")}
+      </div>
+    </aside>
+  `}function jn(){return(Array.isArray(o.worklistPatients)?o.worklistPatients:[]).filter(e=>e&&e.exists!==!1&&Array.isArray(e.studies)&&e.studies.length>0)}let rn=!1;async function rt({repaint:t=!0,silent:e=!1}={}){if(rn)return!1;rn=!0;let n=!1;e||(o.worklistLoading=!0),o.worklistError="",t&&!e&&jt();try{const i=await N("/api/worklist");o.worklistPatients=Array.isArray(i?.patients)?i.patients:[],o.worklistScannedAt=String(i?.scannedAt||""),o.worklistLoaded=!0,o.worklistRevision=String(i?.revision||o.worklistRevision||""),n=!0}catch(i){o.worklistError=ht(i)}finally{o.worklistLoading=!1,rn=!1}return t&&jt(),n}function Ir(){if(o.worklistLoading)return s("Đang tải danh sách bệnh nhân…");if(o.worklistError)return s("Không đồng bộ được danh sách");const t=wd(o.worklistScannedAt);return t?$("Danh sách lúc {}",t):s("Danh sách đã cập nhật")}function wd(t){const e=new Date(String(t||""));return Number.isNaN(e.getTime())?"":`${String(e.getHours()).padStart(2,"0")}:${String(e.getMinutes()).padStart(2,"0")}`}async function kd(){try{return String((await N("/api/worklist/revision"))?.revision||"")}catch{return o.worklistRevision}}let ni=null,ii=!1,Vo=0;const $d=9e4;function xd(){return String(o.job?.status||"")==="running"}function Sd(t=2e4){ni&&window.clearInterval(ni),ni=window.setInterval(async()=>{if(!(rn||ii||document.hidden)&&!xd()){ii=!0;try{const e=await kd();if(!e||e===o.worklistRevision||Date.now()-Vo<$d)return;await rt({silent:!0})&&(Vo=Date.now())}finally{ii=!1}}},t)}function jt(){if(o.activeTabId!=="worklist"||o.worklistTab==="activity")return;const t=O(),e=t?.querySelector(".worklist-tree");if(!e)return;const n=e.scrollTop,i=e.scrollLeft;e.innerHTML=Dr(),Nr(e),ho(e),e.scrollTop=n,e.scrollLeft=i;const a=t.querySelector(".worklist-filter-bar.secondary");a&&(a.outerHTML=Or(),Lr(t));const r=t.querySelector(".worklist-summary");r&&(r.innerHTML=Er());const c=t.querySelector(".worklist-tab[data-worklist-tab='studies'] .worklist-tab-count");c&&(c.textContent=String(Un().length));const d=t.querySelector(".worklist-sync-state");d&&(d.textContent=Ir(),d.classList.toggle("error",!!o.worklistError));const u=t.querySelector("[data-action='refresh-worklist']");u&&(u.disabled=o.worklistLoading)}function Fe(t){if(!t||typeof t!="string")return 0;const e=t.trim(),n=e.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})/);if(n){const r=Number(n[1]),c=Number(n[2]);let d=Number(n[3]);return d<100&&(d+=2e3),new Date(d,c-1,r).getTime()||0}const i=e.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);if(i){const r=Number(i[1]),c=Number(i[2]),d=Number(i[3]);return new Date(r,c-1,d).getTime()||0}const a=Date.parse(e);return Number.isNaN(a)?0:a}function Go(t){const e=t.studies||[];let n=0;for(const i of e){const a=Fe(i.studyDate);a>n&&(n=a)}return n}function Cd(t){const e=t.studies||[];if(!e.length)return"—";let n=0,i="";for(const a of e){const r=Fe(a.studyDate);r>=n&&a.studyDate&&(n=r,i=a.studyDate)}return i||e[0]?.studyDate||"—"}function Id(){const t={today:0,week:6,month:29}[o.worklistPeriod];if(t===void 0)return null;const e=new Date;return e.setHours(0,0,0,0),e.setDate(e.getDate()-t),e.getTime()}function Td(t){const e=(o.worklistModality||"").trim().toUpperCase();if(e&&String(t.modality||"").trim().toUpperCase()!==e||o.worklistRead==="unread"&&t.isRead||o.worklistRead==="read"&&!t.isRead)return!1;const n=Id();if(n!==null){const i=Fe(t.studyDate);if(Number.isFinite(i)&&i>0&&i<n)return!1}return!0}function Tr(){return!!((o.worklistStage||"").trim()||(o.worklistModality||"").trim()||o.worklistPeriod&&o.worklistPeriod!=="all"||o.worklistRead&&o.worklistRead!=="all")}function Un(){const t=(o.worklistSearch||"").toLowerCase().trim();let e=jn();Tr()&&(e=e.map(r=>({...r,studies:(r.studies||[]).filter(Td)})).filter(r=>r.studies.length>0));const n=o.worklistStage||"";n&&(e=e.filter(r=>((r.treatmentStage&&typeof r.treatmentStage=="object"?r.treatmentStage.state:"unknown")||"unknown")===n)),t&&(e=e.filter(r=>`${r.category||""} ${r.patientId||""} ${r.patientName||""} ${r.hospital||""} ${r.gender||""} ${r.birthYear||""} ${r.diagnosis||""}`.toLowerCase().includes(t)?!0:(r.studies||[]).some(d=>`${d.studyDate||""} ${d.studyName||""} ${d.modality||""} ${d.folder||""}`.toLowerCase().includes(t))));const i=o.worklistSortColumn,a=o.worklistSortOrder||"asc";return i?[...e].sort((r,c)=>{let d=0;if(i==="name"){const u=String(r.patientName||r.patientId||"").trim(),h=String(c.patientName||c.patientId||"").trim();d=u.localeCompare(h,"vi",{sensitivity:"base",numeric:!0})}else if(i==="id"){const u=String(r.patientId||"").trim(),h=String(c.patientId||"").trim();d=u.localeCompare(h,void 0,{numeric:!0,sensitivity:"base"})}else if(i==="date"){const u=Go(r),h=Go(c);d=u-h}else if(i==="created"){const u=String(r.folderCreatedAtSort||r.folderCreatedAt||""),h=String(c.folderCreatedAtSort||c.folderCreatedAt||"");d=u.localeCompare(h)}return a==="desc"?-d:d}):e}function Md(t){const e=[t.gender,t.birthYear?String(t.birthYear).toLowerCase().includes("t")?t.birthYear:`${t.birthYear}`:"",t.hospital].map(n=>String(n||"").trim()).filter(Boolean);return e.length?e.join(" · "):""}function Pd(t){const e=String(t?.diagnosis||"").trim();if(!e)return{text:"",fromFolder:!1,title:""};const n=String(t?.diagnosisSource||"")==="folder";return{text:e,fromFolder:n,title:$(n?"Chẩn đoán đọc từ tên thư mục: {}":"Chẩn đoán ghi trong hồ sơ: {}",e)}}function Nd(t){const e=[t.studyDate,t.studyName].map(n=>String(n||"").trim()).filter(Boolean);return e.length?e.join(" · "):s("Ca chụp chưa có mô tả")}function Dd(t){const e=[];return Number.isFinite(t.seriesCount)&&e.push($("{} series",t.seriesCount)),Number.isFinite(t.sliceCount)&&e.push($("{} lát",t.sliceCount)),e.length?e.join(" · "):s("Chưa đếm")}function Ld(t){const e=t.primaryMediaType||"";return e==="dicom"||t.mediaCounts?.dicom>0?`<span class="fmt-badge dicom" title="${l(s("File DICOM gốc (.dcm)"))}">DICOM</span>`:e==="photo"||t.mediaCounts?.photo>0?`<span class="fmt-badge jpg" title="${l(s("Ảnh JPG đã giải nén"))}">JPG</span>`:e==="video"||t.mediaCounts?.video>0?`<span class="fmt-badge video" title="${l(s("Video"))}">VIDEO</span>`:e==="doc"||t.mediaCounts?.doc>0?`<span class="fmt-badge doc" title="${l(s("Bệnh án / Văn bản"))}">BỆNH ÁN</span>`:`<span class="fmt-badge unknown" title="${l(s("Chưa rõ định dạng nguồn"))}">—</span>`}function Ed(t){const e=t.mediaSummary||{},n=[];if(e.dicom>0&&n.push('<span class="fmt-badge dicom">DICOM</span>'),e.photo>0&&n.push('<span class="fmt-badge jpg">JPG</span>'),e.video>0&&n.push('<span class="fmt-badge video">VIDEO</span>'),e.doc>0&&n.push('<span class="fmt-badge doc">DOC</span>'),n.length===0){const i=(t.studies||[]).some(a=>a.primaryMediaType==="dicom"||a.mediaCounts?.dicom>0);n.push(i?'<span class="fmt-badge dicom">DICOM</span>':`<span class="fmt-badge unknown" title="${l(s("Chưa rõ định dạng nguồn"))}">—</span>`)}return n.join(" ")}const Mr="worklist_column_widths",zn={c0:38,c1:210,c2:100,c3:95,c4:95,c5:120,c6:105,c7:240},co={c0:30,c1:140,c2:80,c3:80,c4:80,c5:90,c6:90,c7:240},uo={c0:72,c1:900,c2:240,c3:200,c4:200,c5:240,c6:280,c7:900},Pr=Object.keys(zn);function sn(t,e){const n=zn[t];return Number.isFinite(e)?Math.min(uo[t],Math.max(co[t],Math.round(e))):n}function In(t){const e=t&&typeof t=="object"&&!Array.isArray(t)?t:{};return Object.fromEntries(Pr.map(n=>[n,sn(n,e[n]??zn[n])]))}function Kn(){try{if(typeof localStorage<"u"){const t=localStorage.getItem(Mr);if(t){const e=JSON.parse(t);return In(e)}}}catch{}return In()}function oi(t){try{typeof localStorage<"u"&&localStorage.setItem(Mr,JSON.stringify(In(t)))}catch{}}function Nr(t,e){const n=In(e||Kn());return t&&Pr.forEach(i=>{t.style.setProperty(`--wl-${i}`,`${n[i]}px`),t.querySelector(`.col-resizer[data-col='${i}']`)?.setAttribute("aria-valuenow",String(n[i]))}),n}function Od(t){if(!t)return;const e=t.classList?.contains("worklist-tree")?t:t.closest?.(".worklist-tree")||t.querySelector?.(".worklist-tree")||O()?.querySelector(".worklist-tree");if(!e)return;const n=Nr(e,Kn());function i(r){const d=e.querySelector(`.col-resizer[data-col='${r}']`)?.closest(".plist-header > *")?.getBoundingClientRect().width||0;return d>0?d:n[r]}function a(r,c,d=null){let u=sn(r,c);if(r==="c7"&&d&&u<d.action){const h=u-d.action,p=sn("c1",d.name-h),f=d.name-p;u=sn("c7",d.action+f),n.c1=p,e.style.setProperty("--wl-c1",`${p}px`),e.querySelector(".col-resizer[data-col='c1']")?.setAttribute("aria-valuenow",String(p))}return n[r]=u,e.style.setProperty(`--wl-${r}`,`${u}px`),e.querySelector(`.col-resizer[data-col='${r}']`)?.setAttribute("aria-valuenow",String(u)),u}t.querySelectorAll(".col-resizer").forEach(r=>{r.addEventListener("pointerdown",c=>{c.preventDefault(),c.stopPropagation();const d=r.dataset.col;if(!d)return;const u=r.closest(".plist-header > *"),h=c.clientX,p=u?u.getBoundingClientRect().width:0,f=p>0?p:n[d]||100,y=d==="c7"?{action:f,name:i("c1")}:null;if(r.classList.add("resizing"),document.documentElement.classList.add("is-column-resizing"),typeof r.setPointerCapture=="function")try{r.setPointerCapture(c.pointerId)}catch{}function C(S){if(S.pointerId!==c.pointerId)return;const q=S.clientX-h;a(d,f+q,y)}function b(S){if(S.pointerId===c.pointerId){if(r.classList.remove("resizing"),document.documentElement.classList.remove("is-column-resizing"),typeof r.releasePointerCapture=="function")try{r.releasePointerCapture(S.pointerId)}catch{}window.removeEventListener("pointermove",C),window.removeEventListener("pointerup",b),window.removeEventListener("pointercancel",b),window.removeEventListener("blur",g),oi(n)}}function g(){b(c)}window.addEventListener("pointermove",C),window.addEventListener("pointerup",b),window.addEventListener("pointercancel",b),window.addEventListener("blur",g)}),r.addEventListener("keydown",c=>{const d=r.dataset.col;if(!d)return;const u=c.key==="ArrowLeft"?-1:c.key==="ArrowRight"?1:0;if(!u&&c.key!=="Home"&&c.key!=="End")return;c.preventDefault(),c.stopPropagation();const h=i(d),p=d==="c7"?{action:h,name:i("c1")}:null,f=c.key==="Home"?co[d]:c.key==="End"?uo[d]:h+u*(c.shiftKey?50:10);a(d,f,p),oi(n)}),r.addEventListener("dblclick",c=>{c.preventDefault(),c.stopPropagation();const d=r.dataset.col;if(!d)return;const u=i(d),h=d==="c7"?{action:u,name:i("c1")}:null;a(d,zn[d],h),oi(n)}),r.addEventListener("click",c=>{c.stopPropagation(),c.preventDefault()})})}function xt(t,e,n){const i=$("Đổi độ rộng cột {}",e);return`<span class="col-resizer" data-col="${t}"
+    role="separator" tabindex="0" aria-orientation="vertical"
+    aria-label="${l(i)}"
+    aria-valuemin="${co[t]}"
+    aria-valuemax="${uo[t]}"
+    aria-valuenow="${n[t]}"
+    title="${l(s("Kéo hoặc dùng phím mũi tên; nhấp đúp để đặt lại"))}"></span>`}function Dr(){const t=Un();if(o.worklistLoading&&!o.worklistLoaded&&t.length===0)return`<div class="worklist-loading" role="status"><i></i><span>${l(s("Đang tải danh sách bệnh nhân…"))}</span></div>`;if(t.length===0)return o.worklistError?`<div class="empty-state error">
+        <b>${l(s("Không tải được danh sách bệnh nhân"))}</b>
+        <span>${l(o.worklistError)}</span>
+        <button class="primary" data-action="refresh-worklist">${l(s("Thử quét lại"))}</button>
+      </div>`:`
+      <div class="empty-state">
+        <b>${l(s("Chưa có hồ sơ nào trong danh sách"))}</b>
+        <div class="empty-actions" style="margin-top: 10px;">
+          <button class="primary" data-action="choose-archive">${l(s("Mở folder bệnh nhân"))}</button>
+        </div>
+      </div>
+    `;o.expandedPatients=o.expandedPatients||{};const e=Kn();return`
+    ${o.worklistError?`<div class="worklist-scan-alert" role="status">
+      <span>${l(s("Đang hiển thị dữ liệu lần quét trước."))} ${l(o.worklistError)}</span>
+      <button class="soft-button" data-action="refresh-worklist">${l(s("Thử quét lại"))}</button>
+    </div>`:""}
+    <div class="worklist-table">
+      <div class="plist-header">
+      <span class="col-stt">${l(s("STT"))}${xt("c0",s("STT"),e)}</span>
+      <div class="col-who">
+        <button class="col-sort-btn col-who ${o.worklistSortColumn==="name"?"sorted "+o.worklistSortOrder:""}" type="button" data-action="sort-worklist" data-sort-col="name" title="${l(s("Sắp xếp theo Họ và tên"))}">
+          <span>${l(s("Họ và tên"))}</span>
+          <i class="sort-icon">${o.worklistSortColumn==="name"?o.worklistSortOrder==="desc"?"▼":"▲":"↕"}</i>
+        </button>
+        ${xt("c1",s("Họ và tên"),e)}
+      </div>
+      <div class="col-pid">
+        <button class="col-sort-btn col-pid ${o.worklistSortColumn==="id"?"sorted "+o.worklistSortOrder:""}" type="button" data-action="sort-worklist" data-sort-col="id" title="${l(s("Sắp xếp theo Mã BN"))}">
+          <span>${l(s("Mã BN"))}</span>
+          <i class="sort-icon">${o.worklistSortColumn==="id"?o.worklistSortOrder==="desc"?"▼":"▲":"↕"}</i>
+        </button>
+        ${xt("c2",s("Mã BN"),e)}
+      </div>
+      <div class="col-date">
+        <button class="col-sort-btn col-date ${o.worklistSortColumn==="date"?"sorted "+o.worklistSortOrder:""}" type="button" data-action="sort-worklist" data-sort-col="date" title="${l(s("Sắp xếp theo Ngày chụp"))}">
+          <span>${l(s("Ngày chụp"))}</span>
+          <i class="sort-icon">${o.worklistSortColumn==="date"?o.worklistSortOrder==="desc"?"▼":"▲":"↕"}</i>
+        </button>
+        ${xt("c3",s("Ngày chụp"),e)}
+      </div>
+      <div class="col-created">
+        <button class="col-sort-btn col-created ${o.worklistSortColumn==="created"?"sorted "+o.worklistSortOrder:""}" type="button" data-action="sort-worklist" data-sort-col="created" title="${l(s("Sắp xếp theo Ngày thêm"))}">
+          <span>${l(s("Ngày thêm"))}</span>
+          <i class="sort-icon">${o.worklistSortColumn==="created"?o.worklistSortOrder==="desc"?"▼":"▲":"↕"}</i>
+        </button>
+        ${xt("c4",s("Ngày thêm"),e)}
+      </div>
+      <span class="col-format">${l(s("Định dạng"))}${xt("c5",s("Định dạng"),e)}</span>
+      <span class="col-status">${l(s("Trạng thái"))}${xt("c6",s("Trạng thái"),e)}</span>
+      <span class="col-acts">${l(s("Action"))}${xt("c7",s("Action"),e)}</span>
+    </div>
+    <div class="plist">
+      ${t.map((n,i)=>{const a=o.expandedPatients[n.id]!==!1,r=n.studies||[],c=r.length,d=Md(n),u=Pd(n),h=r.slice().sort((g,S)=>{if(o.worklistSortColumn==="date"){const q=Fe(g.studyDate),P=Fe(S.studyDate);return o.worklistSortOrder==="desc"?P-q:q-P}return 0}),p=lt(n.patientName)||lt(n.patientId)||s("Chưa rõ tên BN"),f=lt(n.patientId),y=Cd(n),C=n.folderCreatedAt||"—",b=`worklist-patient-${i}-studies`;return`
+          <div class="prow" data-patient-id="${l(n.id)}" data-expanded="${a}">
+            <button class="stt-cell twist-btn" type="button" aria-expanded="${a}" aria-controls="${b}" data-toggle-patient="${l(n.id)}" aria-label="${l($("Mở rộng hoặc thu gọn bệnh nhân {}",p))}"><i class="twist">▶</i><span class="stt-num">${i+1}</span></button>
+            <span class="who copyable-cell" title="${l(p)}">
+              <span class="who-main">
+                <b>${l(p)}</b>
+                ${n.category?`
+                  <span class="badge-category" title="${l($("Nhóm: {}",n.category))}"
+                    >📁 ${l(n.category)}</span>
+                `:""}
+                ${(()=>{const g=la(n.treatmentStage);return g?`
+                    <span class="badge-stage ${l(g.tone)}" title="${l(g.title)}"
+                      >${l(g.text)}</span>
+                  `:""})()}
+                ${lt(n.patientName)||lt(n.patientId)?`
+                  <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                    data-copy-text="${l(lt(n.patientName)||lt(n.patientId))}"
+                    title="${l(s("Sao chép tên bệnh nhân"))}">${M.copy}</button>
+                `:""}
+              </span>
+              ${u.text?`
+                <small class="dx-line${u.fromFolder?" from-folder":""}"
+                  title="${l(u.title)}">${l(u.text)}</small>
+              `:""}
+              ${d?`<small>${l(d)}</small>`:""}
+            </span>
+            <span class="meta pid-col copyable-cell" title="${l(f||"—")}">
+              <b>${l(f||"—")}</b>
+              ${f?`
+                <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                  data-copy-text="${l(f)}"
+                  title="${l(s("Sao chép mã BN"))}">${M.copy}</button>
+              `:""}
+            </span>
+            <span class="meta date-col copyable-cell" title="${l(y)}">
+              <span>${l(y)}</span>
+              ${y&&y!=="—"?`
+                <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                  data-copy-text="${l(y)}"
+                  title="${l(s("Sao chép ngày chụp"))}">${M.copy}</button>
+              `:""}
+            </span>
+            <span class="meta created-col copyable-cell" title="${l(C)}">
+              <span>${l(C)}</span>
+              ${C!=="—"?`
+                <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                  data-copy-text="${l(C)}"
+                  title="${l(s("Sao chép ngày thêm"))}">${M.copy}</button>
+              `:""}
+            </span>
+            <span class="meta format-col">${Ed(n)}</span>
+            <span class="meta status-col count">${l($("{} đợt khám",c))}</span>
+            <span class="rowacts">
+              <button class="soft-button" type="button" data-action="open-patient-record" data-patient-id="${l(n.id)}">
+                ${l(s("Mở hồ sơ"))}
+              </button>
+              <button class="soft-button" type="button" data-action="export-patient-record"
+                data-folder="${l(n.folder||"")}"
+                title="${l(s("Xuất ảnh JPG kèm trang index.html để bệnh nhân mở bằng trình duyệt"))}">
+                ${l(s("Xuất hồ sơ"))}
+              </button>
+            </span>
+          </div>
+
+          <div class="studies${a?" on":""}" id="${b}" data-studies="${l(n.id)}">
+            ${h.map((g,S)=>{const q=Nd(g),P=g.studyDate||"—";return`
+                <div class="srow${g.isRead?" read":" unread"}">
+                  <span class="stt-cell"><span class="rail"></span><span class="stt-subnum">${i+1}.${S+1}</span></span>
+                  <span class="who copyable-cell" title="${l(q)}">
+                    <span class="who-main">
+                      <b>${l(q)}</b>
+                      <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                        data-copy-text="${l(q)}"
+                        title="${l(s("Sao chép tên ca chụp"))}">${M.copy}</button>
+                    </span>
+                    <small>${l(Dd(g))}</small>
+                  </span>
+                  <span class="meta pid-col sub copyable-cell" title="${l(lt(n.patientId)||"—")}">
+                    <span>—</span>
+                    ${lt(n.patientId)?`
+                      <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                        data-copy-text="${l(lt(n.patientId))}"
+                        title="${l(s("Sao chép mã BN"))}">${M.copy}</button>
+                    `:""}
+                  </span>
+                  <span class="meta date-col copyable-cell" title="${l(P)}">
+                    <span>${l(P)}</span>
+                    ${g.studyDate&&g.studyDate!=="—"?`
+                      <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                        data-copy-text="${l(g.studyDate)}"
+                        title="${l(s("Sao chép ngày chụp"))}">${M.copy}</button>
+                    `:""}
+                  </span>
+                  <span class="meta created-col sub copyable-cell" title="${l(C)}">
+                    <span>—</span>
+                    ${C!=="—"?`
+                      <button class="cell-copy-btn" type="button" data-action="copy-cell"
+                        data-copy-text="${l(C)}"
+                        title="${l(s("Sao chép ngày thêm"))}">${M.copy}</button>
+                    `:""}
+                  </span>
+                  <span class="meta format-col">${Ld(g)}</span>
+                  <span class="badge status-col ${g.status||"done"}">${l(s(g.statusLabel||"Đã tải"))}</span>
+                  <span class="rowacts">
+                    ${g.status==="part"&&g.viewerUrl?`
+                      <button class="soft-button" type="button" data-action="resume-study-download" data-url="${l(g.viewerUrl)}">
+                        ${l(s("Tải tiếp"))}
+                      </button>
+                    `:""}
+                    <button class="soft-button primary" type="button" data-action="open-study-viewer" data-folder="${l(g.folder||"")}" ${["miss","busy"].includes(g.status)?"disabled":""} title="${l(g.status==="busy"?s("Ca chụp đang được tải, mở lúc này sẽ thiếu lát cắt"):"")}">
+                      ${l(s("Mở viewer"))}
+                    </button>
+                    <button class="soft-button" type="button" data-action="reveal-study-folder" data-folder="${l(g.folder||"")}" ${g.status==="miss"?"disabled":""}>
+                      ${l(s("Thư mục"))}
+                    </button>
+                    <button class="soft-button read-toggle${g.isRead?" on":""}" type="button"
+                      data-action="toggle-study-read"
+                      data-folder="${l(g.folder||"")}"
+                      data-read="${g.isRead?"1":"0"}"
+                      title="${l(g.isRead?s("Bỏ đánh dấu đã đọc"):s("Đánh dấu đã đọc"))}">
+                      ${g.isRead?"✓":"○"}
+                    </button>
+                  </span>
+                </div>
+              `}).join("")}
+          </div>
+        `}).join("")}
+    </div>
+    </div>
+  `}const Rd=new Set(["sort-worklist","copy-cell","open-study-viewer","open-patient-record","reveal-study-folder","open-worklist-item","resume-study-download","toggle-study-read","clear-worklist-filters","export-patient-record"]),Ad=[["","Tất cả"],["active","Đang điều trị"],["post-op","Hậu phẫu"],["followup","Theo dõi"],["relapse","Tái phát"],["unknown","Chưa ghi"]];function Lr(t){t&&([["worklist-modality","worklistModality"],["worklist-period","worklistPeriod"],["worklist-read","worklistRead"],["worklist-stage","worklistStage"]].forEach(([e,n])=>{t.querySelector(`[data-field='${e}']`)?.addEventListener("change",i=>{o[n]=i.target.value,jt()})}),t.querySelector("[data-action='clear-worklist-filters']")?.addEventListener("click",()=>{F("clear-worklist-filters",null)}))}function ho(t){t&&(t.querySelectorAll("[data-action='sort-worklist']").forEach(e=>{e.addEventListener("click",n=>{n.stopPropagation(),F("sort-worklist",e)})}),t.querySelectorAll("[data-action='copy-cell']").forEach(e=>{e.addEventListener("click",n=>{n.stopPropagation(),F("copy-cell",e)})}),t.querySelectorAll(".copyable-cell").forEach(e=>{e.addEventListener("dblclick",n=>{if(n.target.closest("button"))return;n.stopPropagation();const a=e.querySelector(".cell-copy-btn")?.dataset?.copyText||e.querySelector("b, span")?.textContent?.trim();a&&a!=="—"&&ee(a,`${s("Đã sao chép")}: ${a.length>25?a.slice(0,22)+"...":a}`)})}),t.querySelectorAll(".prow").forEach(e=>{e.addEventListener("click",n=>{const i=n.target.closest("button, a, input, .cell-copy-btn");if(i&&!i.classList.contains("twist-btn"))return;const a=window.getSelection();if(a&&a.toString().trim().length>0)return;const r=e.dataset.patientId||e.dataset.togglePatient;if(!r)return;o.expandedPatients=o.expandedPatients||{},o.expandedPatients[r]=o.expandedPatients[r]===!1;const c=o.expandedPatients[r],d=t.querySelector(`[data-studies='${r}']`);d&&d.classList.toggle("on",c),e.dataset.expanded=String(c);const u=e.querySelector(".twist-btn");u&&u.setAttribute("aria-expanded",String(c))})}),t.querySelectorAll("[data-action='open-study-viewer']").forEach(e=>{e.addEventListener("click",n=>{n.stopPropagation();const i=e.dataset.folder;i&&ln({folder:i})})}),t.querySelectorAll("[data-action='open-patient-record']").forEach(e=>{e.addEventListener("click",n=>{n.stopPropagation();const i=e.dataset.patientId,a=jn().find(c=>c.id===i);if(!a)return;const r=a.folder||a.studies?.[0]?.folder;r&&ln({folder:r})})}),t.querySelectorAll("[data-action='export-patient-record']").forEach(e=>{e.addEventListener("click",n=>{n.stopPropagation(),F("export-patient-record",e)})}),t.querySelectorAll("[data-action='toggle-study-read']").forEach(e=>{e.addEventListener("click",n=>{n.stopPropagation(),F("toggle-study-read",e)})}),t.querySelectorAll("[data-action='reveal-study-folder']").forEach(e=>{e.addEventListener("click",async n=>{n.stopPropagation();const i=e.dataset.folder;if(i)try{await N("/api/worklist/reveal-folder",{method:"POST",body:JSON.stringify({folder:i})})}catch(a){k(s("Không thể mở thư mục: ")+a.message,!0)}})}),t.querySelectorAll("[data-action='open-worklist-item']").forEach(e=>{e.addEventListener("click",()=>{const n=e.dataset.folder;n&&ln({folder:n})})}),t.querySelectorAll("[data-action='resume-study-download']").forEach(e=>{e.addEventListener("click",n=>{n.stopPropagation(),Bd(e.dataset.url||"")})}),Od(t))}function Bd(t){if(!t){k(s("Ca chụp này không lưu link viewer để tải tiếp."),!0);return}o.lastDirectUrl=t,o.showManualInfo=!0,o.downloadOpen=!0,L();const e=O()?.querySelector("#direct-url");e&&(e.value=t,e.focus()),k(s("Đã nạp link của ca chụp. Quét series rồi bấm Thử lại để tải tiếp."))}function qd(t){const e=Number(t)||0;if(e<=0)return"0 B";const n=["B","KB","MB","GB","TB"],i=Math.min(Math.floor(Math.log(e)/Math.log(1024)),n.length-1);return`${(e/Math.pow(1024,i)).toFixed(i===0?0:1)} ${n[i]}`}function Er(){const t=Un(),e=t.flatMap(d=>d.studies||[]),n=e.reduce((d,u)=>d+(Number.isFinite(u.sliceCount)?u.sliceCount:0),0),i=t.reduce((d,u)=>d+(Number(u.totalSizeBytes)||0),0),a=e.reduce((d,u)=>d+(Number.isFinite(u.durationSeconds)?u.durationSeconds:0),0),r=e.filter(d=>d.status==="part"||d.status==="miss").length,c=[{value:t.length,label:s("bệnh nhân")},{value:e.length,label:s("hồ sơ")},{value:n.toLocaleString("vi-VN"),label:s("ảnh & lát")}];if(a>0){const d=String(Math.floor(a/60)).padStart(2,"0"),u=String(Math.round(a%60)).padStart(2,"0");c.push({value:`${d}:${u}`,label:s("phút video")})}return i>0&&c.push({value:qd(i),label:s("trên đĩa")}),r>0&&c.push({value:r,label:s("cần xử lý"),alert:!0}),c.map(d=>`
+    <div class="activity-stat${d.alert?" alert":""}">
+      <b>${l(String(d.value))}</b>
+      <small>${l(d.label)}</small>
+    </div>
+  `).join("")}function Fd(){const t=new Map;return jn().forEach(e=>{(e.studies||[]).forEach(n=>{const i=String(n.modality||"").trim();i&&!t.has(i.toUpperCase())&&t.set(i.toUpperCase(),i)})}),[...t.values()].sort((e,n)=>e.localeCompare(n,"vi"))}function Or(){const t=Fd(),e=jn().reduce((r,c)=>r+(c.studies||[]).filter(d=>!d.isRead).length,0),n=[["all",s("Mọi thời điểm")],["today",s("Hôm nay")],["week",s("7 ngày")],["month",s("30 ngày")]],i=[["all",s("Tất cả")],["unread",s("Chưa đọc")],["read",s("Đã đọc")]],a=([r,c],d)=>`<option value="${l(r)}"${r===d?" selected":""}>${l(c)}</option>`;return`
+    <div class="worklist-filter-bar secondary">
+      <label class="worklist-filter">
+        <span>${l(s("Loại chụp"))}</span>
+        <select data-field="worklist-modality">
+          <option value=""${o.worklistModality?"":" selected"}>${l(s("Tất cả"))}</option>
+          ${t.map(r=>a([r,r],o.worklistModality)).join("")}
+        </select>
+      </label>
+      <label class="worklist-filter">
+        <span>${l(s("Ngày chụp"))}</span>
+        <select data-field="worklist-period">
+          ${n.map(r=>a(r,o.worklistPeriod)).join("")}
+        </select>
+      </label>
+      <label class="worklist-filter">
+        <span>${l(s("Trạng thái đọc"))}</span>
+        <select data-field="worklist-read">
+          ${i.map(r=>a(r,o.worklistRead)).join("")}
+        </select>
+      </label>
+      <label class="worklist-filter">
+        <span>${l(s("Giai đoạn"))}</span>
+        <select data-field="worklist-stage">
+          ${Ad.map(r=>a([r[0],s(r[1])],o.worklistStage)).join("")}
+        </select>
+      </label>
+      <span class="worklist-unread-count">${l($("{} ca chưa đọc",e))}</span>
+      ${Tr()?`<button class="soft-button" type="button" data-action="clear-worklist-filters">${l(s("Bỏ lọc"))}</button>`:""}
+    </div>
+  `}function _d(){const t=Kn(),e=Object.entries(t).map(([n,i])=>`--wl-${n}: ${i}px;`).join(" ");return`
+    <div class="worklist-filter-bar filters">
+      <input type="search" data-field="worklist-search" placeholder="${l(s("Tìm theo tên hoặc mã bệnh nhân, đợt khám…"))}" value="${l(o.worklistSearch||"")}">
+      <span class="worklist-sync-state${o.worklistError?" error":""}" role="status">${l(Ir())}</span>
+      <button class="soft-button" data-action="refresh-worklist" ${o.worklistLoading?"disabled":""}>${l(s("Quét lại"))}</button>
+    </div>
+
+    ${Or()}
+
+    <div class="worklist-tree" style="${e}">${Dr()}</div>
+  `}const Hd={download:"Tải ca theo mã bệnh nhân","direct-download":"Tải theo link viewer","local-import":"Nhập thư mục từ đĩa",archive:"Quét lại kho",search:"Tìm ca chụp","series-discovery":"Dò danh sách series",export:"Xuất hồ sơ cho bệnh nhân"};function Rr(){const t=o.job||o.bootstrap?.job||{},e=t.status==="running",n=o.history||[],i=o.sourceFolders?.length?o.sourceFolders:o.bootstrap?.sourceFolders||(o.bootstrap?.outputRoot?[{folder:o.bootstrap.outputRoot,exists:!0,isDefault:!0}]:[]);return`
+    <div class="activity-head">${l(s("Tổng quan kho & dữ liệu"))}</div>
+    <div class="activity-summary">
+      ${Er()}
+    </div>
+
+    <div class="activity-head-row">
+      <div class="activity-head">${l(s("Thư mục nguồn bệnh nhân"))}</div>
+      <button class="mini-btn primary source-add-btn" type="button" data-action="add-source-folder" title="${l(s("Thêm thư mục nguồn"))}">
+        ➕ ${l(s("Thêm thư mục"))}
+      </button>
+    </div>
+    <div class="activity-source-folders">
+      ${i.length===0?`
+        <div class="activity-idle">${l(s("Chưa có thư mục nguồn nào được cấu hình."))}</div>
+      `:i.map(a=>`
+        <div class="activity-folder-row ${a.exists?"":"missing"}">
+          <span class="folder-icon">📁</span>
+          <span class="folder-path" title="${l(a.folder||"")}">
+            ${l(a.folder||"")}
+            ${a.isDefault?`<span class="folder-badge default">${l(s("Mặc định"))}</span>`:""}
+            ${a.exists?"":`<span class="folder-badge missing">${l(s("Không tồn tại"))}</span>`}
+          </span>
+          <span class="folder-actions">
+            <button class="mini-btn icon-btn" type="button" data-action="open-folder-explorer" data-folder="${l(a.folder||"")}" title="${l(s("Mở trong Explorer"))}">📂</button>
+            ${a.isDefault?"":`
+              <button class="mini-btn danger icon-btn" type="button" data-action="remove-source-folder" data-folder="${l(a.folder||"")}" title="${l(s("Xóa thư mục khỏi danh sách"))}">🗑️</button>
+            `}
+          </span>
+        </div>
+      `).join("")}
+    </div>
+
+    <div class="activity-head">${l(s("Đang xử lý"))}</div>
+    ${e?`
+      <div class="activity-job">
+        <b>${l(s(Hd[t.kind]||"Tác vụ nền"))}</b>
+        <button class="soft-button danger" data-action="stop-job">${l(s("Dừng"))}</button>
+        <div class="activity-bar indeterminate"><i></i></div>
+        <small class="activity-job-msg">${l(le(t.message||"")||s("Đang chạy..."))}</small>
+      </div>
+    `:`
+      <div class="activity-idle">${l(s("Không có tác vụ nào đang chạy."))}</div>
+    `}
+
+    <div class="activity-head">${l(s("Gần đây"))}</div>
+    <div class="activity-history">
+      ${n.length===0?`
+        <div class="activity-idle">${l(s("Chưa có thư mục nào được mở hoặc tải."))}</div>
+      `:n.map(a=>`
+        <div class="activity-hrow">
+          <span class="activity-time">${l(a.time||"")}</span>
+          <span class="activity-path" title="${l(a.folder||"")}">${l(a.folder||"")}</span>
+          <span class="activity-acts">
+            <button class="soft-button" data-action="open-worklist-item" data-folder="${l(a.folder||"")}">${l(s("Mở"))}</button>
+          </span>
+        </div>
+      `).join("")}
+    </div>
+
+    <div class="activity-head-row">
+      <div class="activity-head">${l(s("Nhật ký phiên làm việc (Logs)"))}</div>
+      <button class="mini-btn primary" type="button" data-action="open-logs">
+        ${l(s("Mở thư mục Log"))}
+      </button>
+    </div>
+    <div class="activity-source-folders">
+      <div class="activity-folder-row">
+        <span class="folder-icon">📝</span>
+        <span class="folder-path" title="${l(s("Ghi log tự động mỗi lần khởi chạy — lưu tại thư mục logs/"))}">
+          ${l(s("Ghi log tự động mỗi lần khởi chạy — lưu tại thư mục logs/"))}
+        </span>
+        <span class="folder-actions">
+          <button class="mini-btn icon-btn" type="button" data-action="open-logs" title="${l(s("Mở thư mục Log trong Explorer"))}">📂</button>
+        </span>
+      </div>
+    </div>
+  `}function Wd(){if(o.activeTabId!=="worklist"||o.worklistTab!=="activity")return;const t=O()?.querySelector("#activity-panel");t&&(t.innerHTML=Rr(),ho(t),t.querySelectorAll("[data-action]").forEach(e=>{e.addEventListener("click",()=>F(e.dataset.action,e))}))}function Vd(){const t=o.worklistTab==="activity"?"activity":"studies",n=(o.job||o.bootstrap?.job||{}).status==="running"?1:0;return`
+    <main class="worklist-view">
+      <div class="worklist-tabs" role="tablist">
+        <button class="worklist-tab${t==="studies"?" active":""}" role="tab"
+          aria-selected="${t==="studies"}"
+          data-action="worklist-tab" data-worklist-tab="studies">
+          ${l(s("Danh sách bệnh nhân"))}
+          <span class="worklist-tab-count">${Un().length}</span>
+        </button>
+        <button class="worklist-tab${t==="activity"?" active":""}" role="tab"
+          aria-selected="${t==="activity"}"
+          data-action="worklist-tab" data-worklist-tab="activity">
+          ${l(s("Hoạt động & hàng đợi"))}
+          ${n?`<span class="worklist-tab-count running">${n}</span>`:""}
+        </button>
+      </div>
+
+      ${t==="studies"?_d():`<div id="activity-panel" class="activity-panel">${Rr()}</div>`}
+    </main>
+  `}function te(){return typeof window<"u"?window.pywebview?.api:void 0}function jo(t){return!!t?.closest?.("button, select, input, textarea, a, [data-no-drag]")}function Gd(){const t=l(s("Thu nhỏ cửa sổ")),e=l(s("Phóng to / Khôi phục")),n=l(s("Đóng ứng dụng"));return`
+    <div class="window-controls">
+      <button class="win-btn win-min" type="button" data-action="window-minimize"
+        title="${t}" aria-label="${t}">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10"/></svg>
+      </button>
+      <button class="win-btn win-max" type="button" data-action="window-maximize"
+        title="${e}" aria-label="${e}">
+        <svg class="glyph-maximize" viewBox="0 0 10 10" aria-hidden="true">
+          <rect x="0.5" y="0.5" width="9" height="9" rx="1"/></svg>
+        <svg class="glyph-restore" viewBox="0 0 10 10" aria-hidden="true">
+          <path d="M2.5 2.5V1.5a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-1"/>
+          <rect x="0.5" y="2.5" width="7" height="7" rx="1"/></svg>
+      </button>
+      <button class="win-btn win-close" type="button" data-action="window-close"
+        title="${n}" aria-label="${n}">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0.5 0.5l9 9M9.5 0.5l-9 9"/></svg>
+      </button>
+    </div>`}const Uo=3;function jd(){const t=O()?.querySelector(".app-header");t&&(t.addEventListener("mousedown",e=>{if(e.button!==0||jo(e.target))return;const n=te();if(!n?.window_begin_drag)return;const i={x:e.screenX,y:e.screenY},a=()=>{window.removeEventListener("mousemove",r,!0),window.removeEventListener("mouseup",a,!0)};function r(c){if(!(c.buttons&1))return a();Math.abs(c.screenX-i.x)<Uo&&Math.abs(c.screenY-i.y)<Uo||(a(),Promise.resolve(n.window_begin_drag()).then(ki).catch(()=>{}))}window.addEventListener("mousemove",r,!0),window.addEventListener("mouseup",a,!0)}),t.addEventListener("dblclick",e=>{jo(e.target)||F("window-maximize")}))}let we=null;function ki(){const t=te();return t?.window_state?we||(we=Promise.resolve(t.window_state()).then(e=>{o.windowMaximized=!!e?.maximized,o.zenMode=!!e?.fullscreen,$i()}).catch(()=>{}).finally(()=>{we=null}),we):Promise.resolve()}function $i(){const t=O()?.querySelector(".app-shell");t&&(t.classList.toggle("window-maximized",o.windowMaximized),t.classList.toggle("zen-mode",o.zenMode))}function Ud(){let t=!1;window.addEventListener("resize",()=>{t||(t=!0,requestAnimationFrame(()=>{t=!1,ki()}))}),ki()}function L(){const t=B();mi(t).some(g=>g.id===o.windowPreset)||(o.windowPreset=vn(t));const e=K(t)==="dicom",n=e?wa(t):null,i=!t?.mprReady;if(!to())return;const a=m.querySelector(".series-strip"),r=a?a.scrollTop:null,c=a?a.scrollLeft:null,d=m.querySelector(".patient-history-rail"),u=d?d.scrollTop:null,h=m.querySelector("#series-picker"),p=h?h.scrollTop:null,f=m.querySelector(".study-list"),y=f?f.scrollTop:null,C=m.querySelector(".worklist-table-container, .worklist-view"),b=C?C.scrollTop:null;if(m.innerHTML=`
+    <div class="app-shell ${hd()?"":"download-collapsed"} ${o.activeTabId==="worklist"?"worklist-active":"viewer-active"}${o.windowMaximized?" window-maximized":""}${o.zenMode?" zen-mode":""}">
+      <header class="app-header">
+        <div class="header-left">
+          <div class="brand">
+            <span class="brand-mark">D</span>
+            <div class="brand-text">
+              <b>DICOM/JPG Downloader & Viewer</b>
+              <small>OFFLINE · v1.1</small>
+            </div>
+          </div>
+        </div>
+
+        <div class="header-center">
+          ${o.activeTabId!=="worklist"&&o.archive?.series?.length?`
+          <div class="series-selects">
+            <label>${l(s("Series"))}
+              <select data-field="series">${Gc(o.archive,o.selectedId)}</select>
+            </label>
+          </div>
+          `:'<div class="header-center-spacer"></div>'}
+        </div>
+
+        <div class="header-right">
+          <div class="header-actions">
+            ${o.activeTabId==="worklist"?E("toggle-download",o.downloadOpen?"⇤":"⇥",s(o.downloadOpen?"Thu gọn khu tải phim":"Mở khu tải phim"),o.downloadOpen,!1,s("Tải phim")):""}
+            ${E("choose-archive",M.folder,s("Mở folder hồ sơ: phim, ảnh, video và văn bản đều được nhận diện"))}
+            ${E("refresh-archive","⟳",s("Quét lại thư mục hiện tại"),!1,!o.archive.root)}
+            <button class="soft-button" data-action="open-logs">Log</button>
+            <button class="soft-button" data-action="toggle-language"
+              title="${l(s("Chuyển sang tiếng Anh"))}">${Le()==="en"?"VI":"EN"}</button>
+          </div>
+          ${Gd()}
+        </div>
+      </header>
+
+      ${zc()}
+
+      ${o.activeTabId==="worklist"?`
+      <aside class="download-panel">
+        <div class="rail-collapsed-strip" data-action="toggle-download" title="${l(s("Mở khu tải phim"))}">
+          <button class="download-expand-trigger" type="button" data-action="toggle-download"
+            ${o.downloadOpen?"hidden":""}
+            title="${l(s("Mở khu tải phim"))}" aria-label="${l(s("Mở khu tải phim"))}">
+            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <span class="rail-vertical-title">${l(s("Tải ca chụp"))}</span>
+        </div>
+        <div class="panel-title"><b>${l(s("TẢI MRI / CT"))}</b>
+          <button class="panel-toggle-btn" data-action="toggle-download" title="${l(s("Thu gọn khu tải phim"))}" aria-label="${l(s("Thu gọn khu tải phim"))}"><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+        <section class="dicom-source-card">
+          <button data-action="import-dicom-folder"
+            title="${l(s("Tính năng xuất JPG riêng; không dùng để mở DICOM trong viewer."))}">${l(s("Chuyển Dcom → JPG"))}</button>
+        </section>
+        <div class="hospital-row">
+          ${(o.bootstrap?.hospitals||[]).map((g,S)=>`<label><input type="radio" name="hospital" value="${g.id}"
+          ${o.patient?.hospitalKey?g.id===o.patient.hospitalKey?"checked":"":g.isDefault??S===0?"checked":""}>
+              ${l(g.name)}</label>`).join("")}
+        </div>
+        <div class="field-row">
+          <fieldset class="boxed-field">
+            <legend>${l(s("Mã bệnh nhân"))}</legend>
+            <span class="clearable">
+              <input id="patient-id" autocomplete="off" value="${l(o.patient?.patientId||"")}">
+              <button class="clear-field" data-action="clear-patient-id" tabindex="-1"
+                title="${l(s("Xóa mã bệnh nhân"))}" aria-label="${l(s("Xóa mã bệnh nhân"))}">×</button>
+            </span>
+          </fieldset>
+          <button data-action="search"
+            title="${l(s("Tìm các ca MRI/CT của mã bệnh nhân này trên RIS"))}">${l(s("Tìm ca"))}</button>
+        </div>
+        <div class="patient-status">${Kr()}</div>
+        <div class="study-list">${Wr()}</div>
+        <div class="download-actions">
+          <button class="primary" data-action="download-selected"
+            title="${l(s("Tải các ca đang tích ở danh sách trên"))}"
+            ${o.studies.some(g=>g.local_status!=="downloaded")&&!o.patient?.nameConflict?"":"disabled"}>${l(s("Tải ca đã chọn"))}</button>
+          <button class="danger" data-action="stop-job"
+            title="${l(s("Dừng an toàn tác vụ đang chạy"))}">${l(s("Dừng"))}</button>
+        </div>
+        <small class="download-hint" hidden></small>
+        <fieldset class="boxed-field">
+          <legend>${l(s("Link viewer"))}</legend>
+          <span class="clearable">
+            <input id="direct-url" type="text" spellcheck="false" value="${l(o.lastDirectUrl)}">
+            <button class="clear-field" data-action="clear-direct-url" tabindex="-1"
+              title="${l(s("Xóa link viewer"))}" aria-label="${l(s("Xóa link viewer"))}">×</button>
+          </span>
+        </fieldset>
+        <div class="link-actions">
+          <button data-action="download-direct"
+            title="${l(s("Tải mới từ link đã dán vào một folder riêng"))}">${l(s("Tải link"))}</button>
+          <button data-action="download-retry"
+            title="${l(s("Thử lại link vừa dán và gộp vào folder cũ, bỏ qua ảnh đã có"))}">${l(s("Thử lại"))}</button>
+        </div>
+        <div class="manual-info-toggle">
+          <label><input type="checkbox" id="manual-info-toggle" ${o.showManualInfo?"checked":""}> ${l(s("Bổ sung thông tin bệnh nhân"))}</label>
+        </div>
+        <div id="manual-info-container">
+          ${Vr()}
+        </div>
+        <div class="download-options">
+          <label title="${l(s("Chất lượng JPG (70-100)"))}">JPG
+            <input id="quality" type="number" min="70" max="100" value="100"></label>
+          <label><input id="download-all-files" type="checkbox" ${o.downloadAllFiles?"checked":""}>
+            ${l(s("Tải tất cả file"))}</label>
+          <label><input id="show-browser" type="checkbox"> ${l(s("Hiện trình duyệt tải"))}</label>
+        </div>
+        <div id="series-picker" class="series-picker ${o.downloadAllFiles?"hidden":""}">
+          ${zr()}
+        </div>
+        <label class="field">${l(s("Thư mục lưu"))}
+          <div class="inline-field"><input id="output-root" value="${l(o.bootstrap?.outputRoot||"")}" readonly>
+            <button data-action="choose-output" title="${l(s("Đổi thư mục lưu"))}">…</button></div>
+        </label>
+        <div class="job-log-wrap">
+          <pre class="job-log" id="job-log-pre">${l((o.bootstrap?.job?.logs||[]).map(le).join(`
+`))}</pre>
+          <div class="job-log-floating-actions">
+            <button type="button" class="job-log-icon-btn btn-clear-log" data-action="clear-job-log" title="${l(s("Xoá hiển thị"))}">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+            <button type="button" class="job-log-icon-btn btn-copy-log" data-action="copy-job-log" title="${l(s("Sao chép toàn bộ nhật ký"))}">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            </button>
+          </div>
+        </div>
+        <div class="panel-credit">Superkent.bui@gmail.com</div>
+      </aside>
+      `:""}
+
+      ${o.activeTabId==="worklist"?Vd():`
+      <main class="viewer-main ${o.patientRailCollapsed?"rail-collapsed":""}">
+        ${bd()}
+        ${e?`
+        <nav class="toolbar mode-${o.mode}">
+          <div class="tool-cluster layout-tools">
+            ${E("mode-single",M.single,s("Một khung ảnh"),o.mode==="single")}
+            ${E("mode-compare",M.compare,s("So sánh hai series cạnh nhau"),o.mode==="compare",!1,"2")}
+            ${E("mode-compare3",M.compare3,s("So sánh ba series cạnh nhau"),o.mode==="compare3",!1,"3")}
+            ${E("mode-montage6",M.montage6,s("Xem tuần tự 6 lát"),o.mode==="montage6",!1,"6")}
+            ${E("mode-montage8",M.montage8,s("Xem tuần tự 8 lát"),o.mode==="montage8",!1,"8")}
+            ${E("mode-mpr",M.mpr,i?t?.mprReason||s("Series không đủ MPR"):s("MPR ba mặt phẳng"),o.mode==="mpr",i)}
+            ${E("mode-volume3d",M.volume3d,i?t?.mprReason||s("Series không đủ 3D"):s("Dựng volume 3D toàn màn hình"),o.mode==="volume3d",i,"3D")}
+          </div>
+          ${o.mode!=="volume3d"?`<div class="window-preset-control">
+            <select data-field="window-preset" aria-label="${l(s("Cài đặt hiển thị"))}" title="${l(s(or(t)))}">
+              ${mi(t).map(g=>`<option value="${g.id}" ${o.windowPreset===g.id?"selected":""}>${l(g.detail?`${s(g.label)} · ${g.detail}`:s(g.label))}</option>`).join("")}
+            </select>
+          </div>`:""}
+          <span class="toolbar-divider"></span>
+          ${Wc(t)}
+        </nav>
+        `:""}
+
+        <div class="series-strip">
+          ${jc(o.archive.series)}
+        </div>
+
+        <div class="safety-notice ${n?.level||""}" ${n?"":"hidden"}>
+          <b>${l(s("An toàn hiển thị"))}</b><span>${l(n?s(n.text):"")}</span>
+        </div>
+        <section id="workspace" class="workspace-grid ${x.editing?"clinical-mode":K(t)!=="dicom"?"media-mode":""}">
+          ${$r(t)}
+        </section>
+        <footer class="status-bar ${o.isError?"error":""}">
+          <span class="status-dot ${o.busyViewer?"busy":""}"></span>
+          <span class="status-text">${l(o.status||"")}</span>
+          <span class="status-root" title="${l(o.archive.root||"")}">${l(o.archive.root||"")}</span>
+        </footer>
+      </main>
+      `}
+      ${zd()}
+      ${Kd()}
+      ${Xd()}
+      ${Jd()}
+      ${qr()}
+    </div>
+  `,nu(),so(),Cr(),tu(),re(),r!==null||c!==null){const g=m.querySelector(".series-strip");g&&(r!==null&&(g.scrollTop=r),c!==null&&(g.scrollLeft=c))}if(u!==null){const g=m.querySelector(".patient-history-rail");g&&(g.scrollTop=u)}if(p!==null){const g=m.querySelector("#series-picker");g&&(g.scrollTop=p)}if(y!==null){const g=m.querySelector(".study-list");g&&(g.scrollTop=y)}if(b!==null){const g=m.querySelector(".worklist-table-container, .worklist-view");g&&(g.scrollTop=b)}}function zd(){return o.showLoginCard?`
+    <div class="modal-overlay">
+      <div class="login-card">
+        <h3>${l(s("Đăng nhập RIS thất bại"))}</h3>
+        <p>${l(s("Vui lòng nhập tài khoản RIS dự phòng:"))}</p>
+        <label class="field">${l(s("Tài khoản"))}
+          <input id="custom-ris-user" type="text" autocomplete="off" autofocus>
+        </label>
+        <label class="field">${l(s("Mật khẩu"))}
+          <input id="custom-ris-pass" type="password">
+        </label>
+        <div class="login-card-actions">
+          <button data-action="cancel-login">${l(s("Huỷ"))}</button>
+          <button class="primary" data-action="retry-login">${l(s("Đăng nhập & Thử lại"))}</button>
+        </div>
+      </div>
+    </div>
+  `:""}function Ar(){const t=o.fileInfoData?.dicomTags||[],e=(o.fileInfoTagFilter||"").toLowerCase().trim();return e?t.filter(n=>(n.tag||"").toLowerCase().includes(e)||(n.name||"").toLowerCase().includes(e)||(n.value||"").toLowerCase().includes(e)):t}function Br(t){return t.length?t.map(e=>`
+    <tr>
+      <td class="dicom-tag-col-tag">${l(e.tag)}</td>
+      <td class="dicom-tag-col-vr">${l(e.vr)}</td>
+      <td class="dicom-tag-col-name">${l(e.name)}</td>
+      <td class="dicom-tag-col-val">${l(e.value)}</td>
+    </tr>
+  `).join(""):`<tr><td colspan="4" class="dicom-tags-empty">${l(s("Không tìm thấy thẻ phù hợp"))}</td></tr>`}function Kd(){if(!o.showFileInfoModal)return"";const t=o.fileInfoData,e=o.fileInfoLoading,n=o.fileInfoError;if(e)return`
+      <div class="file-info-overlay">
+        <div class="file-info-dialog">
+          <header class="file-info-header">
+            <div class="file-info-title-wrap">
+              <h3 class="file-info-title">ℹ ${l(s("Chi tiết file & Thẻ DICOM"))}</h3>
+            </div>
+            <button class="file-info-close-btn" data-action="close-file-info">✕</button>
+          </header>
+          <div class="file-info-body">
+            <div class="viewer-loading">${l(s("Đang đọc thông tin file..."))}</div>
+          </div>
+        </div>
+      </div>
+    `;if(n)return`
+      <div class="file-info-overlay">
+        <div class="file-info-dialog">
+          <header class="file-info-header">
+            <div class="file-info-title-wrap">
+              <h3 class="file-info-title">ℹ ${l(s("Chi tiết file & Thẻ DICOM"))}</h3>
+            </div>
+            <button class="file-info-close-btn" data-action="close-file-info">✕</button>
+          </header>
+          <div class="file-info-body">
+            <div class="safety-notice high">
+              <b>${l(s("Lỗi"))}</b>
+              <span>${l(n)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;if(!t)return"";const i=t.file||{},a=t.provenance||{},r=t.demographics||{},c=t.study||{},d=t.series||{},u=Ar(),h=a.downloadUrl||a.viewerUrl||"";return`
+    <div class="file-info-overlay">
+      <div class="file-info-dialog">
+        <header class="file-info-header">
+          <div class="file-info-title-wrap">
+            <h3 class="file-info-title">ℹ ${l(s("Chi tiết file & Thẻ DICOM"))}</h3>
+            <span class="file-info-subtitle">${l(i.fileName||d.seriesDescription||"")} (${l(i.sliceIndexDisplay||"1/1")})</span>
+          </div>
+          <button class="file-info-close-btn" data-action="close-file-info" title="${l(s("Đóng"))}">✕</button>
+        </header>
+
+        <div class="file-info-body">
+          <!-- Provenance / Download Link Card -->
+          <div class="provenance-card">
+            <div class="provenance-card-title">
+              <span>🌐</span> ${l(s("Nguồn gốc & Link tải"))}
+            </div>
+            ${h?`
+              <div class="provenance-link-row">
+                <span class="provenance-url-text" title="${l(h)}">${l(h)}</span>
+                <button class="provenance-action-btn" data-action="copy-download-url" data-url="${l(h)}">
+                  ${M.copy} ${l(s("Sao chép link"))}
+                </button>
+                <button class="provenance-action-btn secondary" data-action="open-download-url" data-url="${l(h)}">
+                  ${M.externalLink} ${l(s("Mở liên kết"))}
+                </button>
+              </div>
+            `:`
+              <span class="muted">${l(s("Chưa có thông tin link tải cho file này."))}</span>
+            `}
+            <div class="provenance-badges-grid">
+              ${a.patientCode?`
+                <div class="provenance-badge-item">
+                  <span class="provenance-badge-label">${l(s("Mã bệnh nhân"))}</span>
+                  <span class="provenance-badge-value">${l(a.patientCode)}</span>
+                </div>
+              `:""}
+              ${a.accessionNumber?`
+                <div class="provenance-badge-item">
+                  <span class="provenance-badge-label">${l(s("Mã ca chụp (Accession No)"))}</span>
+                  <span class="provenance-badge-value">${l(a.accessionNumber)}</span>
+                </div>
+              `:""}
+              ${a.hospitalName?`
+                <div class="provenance-badge-item">
+                  <span class="provenance-badge-label">${l(s("Bệnh viện / Cơ sở"))}</span>
+                  <span class="provenance-badge-value">${l(a.hospitalName)}</span>
+                </div>
+              `:""}
+              ${c.studyDate?`
+                <div class="provenance-badge-item">
+                  <span class="provenance-badge-label">${l(s("Ngày chụp"))}</span>
+                  <span class="provenance-badge-value">${l(bi(c.studyDate))}</span>
+                </div>
+              `:""}
+            </div>
+          </div>
+
+          <!-- Demographics & Study Info -->
+          <div class="info-section">
+            <h4 class="info-section-title">${l(s("Thông tin ca chụp"))}</h4>
+            <div class="info-grid">
+              <div class="info-cell">
+                <span class="info-cell-label">${l(s("Tên bệnh nhân"))}</span>
+                <span class="info-cell-value">${l(r.patientName||"—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${l(s("Mã BN (ID)"))}</span>
+                <span class="info-cell-value">${l(r.patientId||a.patientCode||"—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${l(s("Năm sinh / Ngày sinh"))}</span>
+                <span class="info-cell-value">${l(r.patientBirthDate?bi(r.patientBirthDate):"—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${l(s("Giới tính"))}</span>
+                <span class="info-cell-value">${l(r.patientSex||"—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${l(s("Modality"))}</span>
+                <span class="info-cell-value">${l(c.modality||"—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${l(s("Mô tả ca"))}</span>
+                <span class="info-cell-value">${l(c.studyDescription||"—")}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- File & Image Parameters -->
+          <div class="info-section">
+            <h4 class="info-section-title">${l(s("Thông số ảnh"))}</h4>
+            <div class="info-grid">
+              <div class="info-cell">
+                <span class="info-cell-label">${l(s("Đường dẫn file"))}</span>
+                <span class="info-cell-value" title="${l(i.filePath||"")}">${l(i.filePath||"—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${l(s("Kích thước file"))}</span>
+                <span class="info-cell-value">${l(i.fileSizeFormatted||"—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${l(s("Lát cắt hiện tại"))}</span>
+                <span class="info-cell-value">${l(i.sliceIndexDisplay||"—")}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${l(s("Độ phân giải"))}</span>
+                <span class="info-cell-value">${d.columns&&d.rows?`${d.columns} × ${d.rows}`:"—"}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${l(s("Pixel Spacing"))}</span>
+                <span class="info-cell-value">${Array.isArray(d.pixelSpacing)?d.pixelSpacing.map(p=>Number(p).toFixed(3)).join(" × ")+" mm":"—"}</span>
+              </div>
+              <div class="info-cell">
+                <span class="info-cell-label">${l(s("Khoảng cách lát cắt"))}</span>
+                <span class="info-cell-value">${d.sliceSpacing?`${Number(d.sliceSpacing).toFixed(2)} mm`:"—"}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- DICOM Header Tags Table -->
+          <div class="info-section">
+            <h4 class="info-section-title">${l(s("Bảng thẻ DICOM Header"))} (<span data-field="dicom-tag-count">${u.length}</span>)</h4>
+            <div class="dicom-tags-container">
+              <div class="dicom-tag-filter-row">
+                <input class="dicom-tag-search-input" id="dicom-tag-filter" type="text"
+                  placeholder="${l(s("Tìm kiếm thẻ (Tag, Tên, Giá trị)..."))}"
+                  value="${l(o.fileInfoTagFilter||"")}">
+              </div>
+              <div class="dicom-tags-table-wrap">
+                <table class="dicom-tags-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 110px;">${l(s("Tag"))}</th>
+                      <th style="width: 50px;">${l(s("VR"))}</th>
+                      <th style="width: 220px;">${l(s("Tên thẻ"))}</th>
+                      <th>${l(s("Giá trị"))}</th>
+                    </tr>
+                  </thead>
+                  <tbody>${Br(u)}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `}function Xd(){if(!o.showConcatModal)return"";const t=o.concatClips||[],e=t.filter(n=>n.selected).length;return`
+    <div class="modal-overlay concat-modal-overlay">
+      <div class="concat-modal-card">
+        <div class="concat-modal-header">
+          <h3>🔗 ${l(s("Ghép & Sắp xếp thứ tự clip phẫu thuật"))}</h3>
+          <button class="icon-button" data-action="close-concat-modal" title="${l(s("Đóng"))}">✕</button>
+        </div>
+        <p style="margin:0; font-size:12px; color:var(--label-muted,#7890a2);">${l(s("Chọn các clip và sử dụng nút ▲/▼ để sắp xếp thứ tự ghép nối theo trình tự phẫu thuật:"))}</p>
+        <div class="concat-clip-list">
+          ${t.length===0?`<div class="empty-state" style="padding:20px;"><b>${l(s("Không tìm thấy clip video nào trong ca mổ"))}</b></div>`:t.map((n,i)=>`
+            <div class="concat-clip-item ${n.selected?"":"disabled"}" data-clip-id="${l(`${n.seriesId}:${n.index??0}`)}">
+              <input type="checkbox" class="concat-clip-checkbox" data-action="toggle-concat-clip" data-clip-idx="${i}" ${n.selected?"checked":""} style="cursor:pointer;" title="${l(s("Bật/tắt clip này"))}">
+              <span class="concat-clip-order">#${i+1}</span>
+              <div class="concat-clip-info">
+                <div class="concat-clip-title">${l(n.name)}</div>
+                <div class="concat-clip-meta">⏱ ${n.duration?H(n.duration):s("Không rõ thời lượng")}</div>
+              </div>
+              <div class="concat-clip-reorder">
+                <button class="concat-reorder-btn" data-action="move-concat-clip-up" data-clip-idx="${i}" ${i===0?"disabled":""} title="${l(s("Di chuyển lên trước"))}">▲</button>
+                <button class="concat-reorder-btn" data-action="move-concat-clip-down" data-clip-idx="${i}" ${i===t.length-1?"disabled":""} title="${l(s("Di chuyển xuống sau"))}">▼</button>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+        <div class="concat-settings">
+          <label>
+            <span>${l(s("Độ phân giải:"))}</span>
+            <select id="concat-resolution-select" data-field="concat-resolution">
+              <option value="1080" ${o.concatTargetHeight===1080?"selected":""}>1080p (Full HD)</option>
+              <option value="720" ${o.concatTargetHeight===720?"selected":""}>720p (HD)</option>
+              <option value="480" ${o.concatTargetHeight===480?"selected":""}>480p (SD)</option>
+            </select>
+          </label>
+          <label>
+            <span>${l(s("Tốc độ khung hình:"))}</span>
+            <select id="concat-fps-select" data-field="concat-fps">
+              <option value="30" ${o.concatTargetFps===30?"selected":""}>30 fps (${l(s("Tiêu chuẩn"))})</option>
+              <option value="60" ${o.concatTargetFps===60?"selected":""}>60 fps (${l(s("Mượt"))})</option>
+            </select>
+          </label>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:4px;">
+          <button class="control-btn" data-action="close-concat-modal">${l(s("Hủy"))}</button>
+          <button class="control-btn primary" data-action="start-concat-video" ${e<2?"disabled":""}>
+            🔗 ${l($("Bắt đầu ghép ({} clip)",e))}
+          </button>
+        </div>
+      </div>
+    </div>
+  `}function Jd(){if(!o.showExportModal)return"";const t=o.exportModalOptions||{jpgCount:0,dicomCount:0},e=o.exportModalFolder||"",n=o.exportModalPatientName||s("Bệnh nhân");return`
+    <div class="export-modal-overlay">
+      <div class="export-modal-dialog">
+        <header class="export-modal-header">
+          <div class="export-modal-title-wrap">
+            <h3 class="export-modal-title">📦 ${l(s("Tùy chọn xuất hồ sơ"))}</h3>
+            <span class="export-modal-subtitle">${l(n)}</span>
+          </div>
+          <button class="file-info-close-btn" data-action="close-export-modal" title="${l(s("Đóng"))}">✕</button>
+        </header>
+        <div class="export-modal-body">
+          <p class="export-modal-desc">${l(s("Hồ sơ này có cả ảnh JPG và file gốc DICOM. Vui lòng chọn định dạng muốn xuất ra USB / thư mục:"))}</p>
+
+          <div class="export-options-grid">
+            <!-- Option 1: Web Viewer (JPG) -->
+            <div class="export-option-card" data-action="confirm-export-choice" data-mode="viewer" data-folder="${l(e)}">
+              <div class="export-card-icon">🌐</div>
+              <div class="export-card-content">
+                <div class="export-card-title">
+                  <b>${l(s("Web PACS Viewer (Ảnh JPG)"))}</b>
+                  <span class="export-card-badge recommended">${l(s("Khuyên dùng"))}</span>
+                </div>
+                <div class="export-card-desc">
+                  ${l(s("Tạo trang web tự động chạy offline trên mọi trình duyệt. Có thanh cuộn lát cắt, đổi chuỗi xung, phóng to/thu nhỏ, tương phản W/L và so sánh 2 xung song song."))}
+                </div>
+                <div class="export-card-meta">
+                  <span>🖼 ${t.jpgCount||0} ${l(s("ảnh JPG"))}</span>
+                  <span>⚡ ${l(s("Nhẹ, mở tức thì trên mọi máy tính"))}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Option 2: DICOM Originals -->
+            <div class="export-option-card" data-action="confirm-export-choice" data-mode="dicom" data-folder="${l(e)}">
+              <div class="export-card-icon">💾</div>
+              <div class="export-card-content">
+                <div class="export-card-title">
+                  <b>${l(s("File gốc DICOM"))}</b>
+                  <span class="export-card-badge">${l(s("Máy trạm PACS"))}</span>
+                </div>
+                <div class="export-card-desc">
+                  ${l(s("Xuất toàn bộ file chụp gốc DICOM tiêu chuẩn y khoa chất lượng cao nhất, kèm file hướng dẫn mở bằng RadiAnt, Weasis, MicroDicom, Horos..."))}
+                </div>
+                <div class="export-card-meta">
+                  <span>📁 ${t.dicomCount||0} ${l(s("file DICOM"))}</span>
+                  <span>🔬 ${l(s("Dành cho bác sĩ CĐHA chuyên sâu"))}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Option 3: Both -->
+            <div class="export-option-card" data-action="confirm-export-choice" data-mode="both" data-folder="${l(e)}">
+              <div class="export-card-icon">📦</div>
+              <div class="export-card-content">
+                <div class="export-card-title">
+                  <b>${l(s("Xuất đầy đủ (Cả Web Viewer + DICOM)"))}</b>
+                  <span class="export-card-badge">${l(s("Tất cả định dạng"))}</span>
+                </div>
+                <div class="export-card-desc">
+                  ${l(s("Bao gồm cả Web PACS Viewer xem nhanh trên trình duyệt lẫn thư mục file gốc DICOM đầy đủ cho máy trạm."))}
+                </div>
+                <div class="export-card-meta">
+                  <span>🌐 ${t.jpgCount||0} JPG + 📁 ${t.dicomCount||0} DICOM</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <footer class="export-modal-footer">
+          <button class="tool-btn" data-action="close-export-modal">${l(s("Hủy bỏ"))}</button>
+        </footer>
+      </div>
+    </div>
+  `}function qr(){return o.showLogModal?`
+    <div class="file-info-overlay log-modal-overlay">
+      <div class="file-info-dialog log-modal-dialog">
+        <header class="file-info-header">
+          <div class="file-info-title-wrap">
+            <h3 class="file-info-title log-modal-title">${l(s("Nhật ký phiên làm việc"))}</h3>
+            ${o.logModalFileList&&o.logModalFileList.length>1?`
+              <select class="log-file-select" data-field="log-file-select" aria-label="${l(s("Chọn file nhật ký"))}">
+                ${o.logModalFileList.map(t=>`
+                  <option value="${l(t)}" ${t===o.logModalFilename?"selected":""}>
+                    ${l(t)}${t===o.logModalFileList[0]?" ("+l(s("Hiện tại"))+")":""}
+                  </option>
+                `).join("")}
+              </select>
+            `:o.logModalFilename?`<span class="file-info-subtitle">${l(o.logModalFilename)}</span>`:""}
+          </div>
+          <div class="log-modal-header-actions">
+            <button type="button" class="soft-button" data-action="reveal-logs-folder">
+              ${l(s("Thư mục"))}
+            </button>
+            <button type="button" class="soft-button" data-action="copy-modal-logs">
+              ${l(s("Sao chép"))}
+            </button>
+            <button type="button" class="file-info-close-btn" data-action="close-log-modal">✕</button>
+          </div>
+        </header>
+        <div class="file-info-body log-modal-body">
+          <pre class="modal-log-pre ${o.logModalLoading?"loading":""}">${l(o.logModalContent||(o.logModalLoading?s("Đang tải nhật ký..."):s("Chưa có nhật ký phát sinh.")))}</pre>
+        </div>
+      </div>
+    </div>
+  `:""}async function Yd(t){const e=t.target,n=e?.value;if(!n)return;const a=(e.closest(".log-modal-dialog")||document.querySelector(".log-modal-dialog")||m)?.querySelector(".modal-log-pre");a&&a.classList.add("loading");try{const r=await N(`/api/logs/content?file=${encodeURIComponent(n)}`);o.logModalContent=r?.content||"",o.logModalFilename=r?.filename||n,o.logModalFolder=r?.folder||"",r?.fileList&&(o.logModalFileList=r.fileList),a&&(a.textContent=o.logModalContent||s("Chưa có nhật ký phát sinh."),a.scrollTop=a.scrollHeight)}catch(r){const c=s("Không thể đọc nhật ký: ")+(r?.message||"");o.logModalContent=c,a&&(a.textContent=c)}finally{a&&a.classList.remove("loading")}}function Fr(t){t&&(t.addEventListener("click",e=>{e.target===t&&(o.showLogModal=!1,t.remove())}),t.querySelector("[data-field='log-file-select']")?.addEventListener("change",Yd))}function xi(t=s("Đã sao chép vào clipboard!")){const e=document.querySelector(".copy-toast");e&&e.remove();const n=document.createElement("div");n.className="copy-toast",n.textContent=t,document.body.appendChild(n),setTimeout(()=>{n.remove()},2500)}async function ee(t,e){if(t)try{if(navigator.clipboard&&window.isSecureContext)await navigator.clipboard.writeText(t);else{const n=document.createElement("textarea");n.value=t,n.style.position="fixed",n.style.opacity="0",document.body.appendChild(n),n.focus(),n.select(),document.execCommand("copy"),n.remove()}xi(e||s("Đã sao chép vào clipboard!"))}catch{xi(s("Không thể sao chép"))}}async function Zd(){if(o.selectedId){o.showFileInfoModal=!0,o.fileInfoLoading=!0,o.fileInfoError="",o.fileInfoTagFilter="",L();try{const t=uc(),e=await N(`/api/series/${o.selectedId}/file-info?index=${t}`);o.fileInfoData=e,o.fileInfoLoading=!1}catch(t){o.fileInfoLoading=!1,o.fileInfoError=t.message||s("Không tải được thông tin file")}L()}}function _r(){o.showFileInfoModal=!1,o.fileInfoData=null,o.fileInfoError="",L()}async function Si(t,e=0){if(!t)return;try{const i=await N(`/api/series/${t.id}/text?index=${Number(e)||0}`);o.textDoc={seriesId:t.id,...i}}catch(i){o.textDoc={seriesId:t.id,index:Number(e)||0,name:t.name||"",language:"text",text:ht(i)}}const n=O()?.querySelector(".text-viewer");n&&(n.outerHTML=ur(t),Hr(O()),k(s("Sẵn sàng.")))}function Hr(t){if(!t)return;const e=B();if(!e)return;const n=Number(e.sliceCount)||1,i=io(e)?.index||0;t.querySelector("[data-action='text-prev']")?.addEventListener("click",()=>{i>0&&Si(e,i-1)}),t.querySelector("[data-action='text-next']")?.addEventListener("click",()=>{i<n-1&&Si(e,i+1)}),t.querySelector("[data-action='text-copy']")?.addEventListener("click",()=>{o.textDoc?.text&&ee(o.textDoc.text)})}const Pe=new Map;function Qd(t){let e=Pe.get(t);return e||(e=He(Ss(t)).then(n=>{const i=URL.createObjectURL(n);return oe.set(t,i),i}),e.catch(()=>{Pe.delete(t),oe.delete(t)}),Pe.set(t,e)),e}function tu(){const t=new Set(o.archive.series.map(e=>e.id));for(const[e,n]of Pe){if(t.has(e))continue;Pe.delete(e);const i=oe.get(e);i&&URL.revokeObjectURL(i),oe.delete(e),n.then(a=>URL.revokeObjectURL(a)).catch(()=>{})}for(const e of m.querySelectorAll(".series-card-thumb[data-thumb-id]")){const n=e.dataset.thumbId,i=oe.get(n);if(i){e.getAttribute("src")!==i&&(e.src=i);continue}Qd(n).then(a=>{e.isConnected&&e.getAttribute("src")!==a&&(e.src=a)}).catch(()=>{e.remove()})}}function Wr(){return o.studies.length?o.studies.map((t,e)=>`
+    <label class="study-item">
+      <input type="checkbox" data-study-index="${e}"
+        ${t.selected&&!o.patient?.nameConflict?"checked":""}
+        ${o.patient?.nameConflict?"disabled":""}>
+      <span><b>${l(t.modality)} · ${l(t.date)}</b>
+        <small>${l(t.desc||t.study_uid)}</small>
+        <em class="study-state ${l(t.local_status||"new")}">${l(s({downloaded:"Đã tải",incomplete:"Tải chưa hoàn tất",new:"Phim mới"}[t.local_status]||"Phim mới"))}</em></span>
+    </label>`).join(""):`<span class="muted">${l(s("Chưa tìm ca chụp."))}</span>`}function Vr(){return o.showManualInfo?`
+    <div class="manual-info-panel">
+      <label>${l(s("Tên bệnh nhân"))} <input id="manual-patient-name" type="text" value="${l(o.manualPatientName)}" autocomplete="off"></label>
+      <label>${l(s("Mã BN (ID)"))} <input id="manual-patient-id" type="text" value="${l(o.manualPatientId)}" autocomplete="off"></label>
+      <label>${l(s("Năm sinh / Ngày sinh"))} <input id="manual-patient-dob" type="text" value="${l(o.manualPatientDob)}" autocomplete="off" placeholder="DD/MM/YYYY hoặc YYYY"></label>
+    </div>
+  `:""}function Gr(){return o.seriesInventory.flatMap(t=>t.attachments||[])}function eu(){const t=Gr();return t.length?`
+    <div class="attachment-notification-card">
+      <div class="attachment-header">
+        <div class="attachment-title-wrap">
+          <span class="attachment-icon">📎</span>
+          <div>
+            <strong>${l(s("Phát hiện tài liệu & Báo cáo đính kèm"))} (${t.length})</strong>
+            <small>${l(s("Các tệp này sẽ được tải riêng vào thư mục DOCUMENTS"))}</small>
+          </div>
+        </div>
+        <label class="attachment-toggle-label">
+          <input type="checkbox" id="attachment-download-toggle" ${o.downloadAttachments?"checked":""}>
+          <span>${l(s("Tải kèm"))}</span>
+        </label>
+      </div>
+      <div class="attachment-file-list">
+        ${t.map(e=>`
+          <div class="attachment-item-chip" title="${l(e.url||"")}">
+            <span class="attachment-chip-icon">${e.type==="pdf"?"📄":e.type==="text"?"📝":"📁"}</span>
+            <span class="attachment-chip-name">${l(e.name||s("Tài liệu"))}</span>
+            <span class="attachment-chip-badge">${l((e.type||"DOC").toUpperCase())}</span>
+          </div>
+        `).join("")}
+      </div>
+    </div>`:""}function jr(){const t=m.querySelector("#manual-info-container");t&&(t.innerHTML=Vr(),Ur())}function Ur(){m.querySelector("#manual-patient-name")?.addEventListener("input",t=>{o.manualPatientName=t.target.value}),m.querySelector("#manual-patient-id")?.addEventListener("input",t=>{o.manualPatientId=t.target.value}),m.querySelector("#manual-patient-dob")?.addEventListener("input",t=>{o.manualPatientDob=t.target.value})}function Xn(t){const e=!!String(t||"").trim();if(o.showManualInfo!==e){o.showManualInfo=e;const n=m.querySelector("#manual-info-toggle");n&&(n.checked=o.showManualInfo),jr()}}function zr(){const t=eu(),e=`
+    <div class="series-picker-actions">
+      <button data-action="discover-series">${l(s("Quét danh sách series"))}</button>
+      ${o.seriesInventory.length?`
+        <button data-action="select-series-all">${l(s("Chọn tất cả series"))}</button>
+        <button data-action="deselect-series-all">${l(s("Bỏ chọn tất cả series"))}</button>`:""}
+    </div>`;return o.seriesInventory.length?`${t}${e}${o.seriesInventory.map((n,i)=>`
+    <section class="series-choice-group">
+      <b>${l([n.studyDate,n.studyDescription].filter(Boolean).join(" · ")||s("Link viewer"))}</b>
+      ${(n.series||[]).map((a,r)=>`
+        <label class="series-choice">
+          <input type="checkbox" data-series-group="${i}" data-series-choice="${r}"
+            ${a.selected===!1?"":"checked"}>
+          <span>
+            ${a.sequenceHint?`<strong>${l(a.sequenceHint)}</strong>`:""}
+            <b>${l(a.description||a.id)}</b>
+            <small>${l([a.number?`#${a.number}`:"",a.imageCount?`${a.imageCount} ${s("ảnh")}`:""].filter(Boolean).join(" · "))}</small>
+          </span>
+        </label>`).join("")}
+    </section>`).join("")}`:`${e}<small class="series-picker-hint">${l(s("Bỏ chế độ tải tất cả, sau đó quét để chọn T1, T2, FLAIR hoặc series cụ thể."))}</small>`}function Kr(){const t=o.patient;if(!t)return"";if(t.nameConflict)return`<div class="patient-alert danger"><b>${l(s("Không tự động gộp bệnh nhân"))}</b>
+      <span>${l($("Mã {} đã lưu tên “{}”, nhưng RIS trả “{}”. Hãy kiểm tra lại.",t.patientId,t.storedPatientName,t.patientName))}</span></div>`;const e=[t.patientId,t.patientName,t.hospitalName].filter(Boolean).map(l).join(" · "),n=t.exists?$("Đã có trong kho · {} ca đã tải · {} ca mới · {} ca chưa hoàn tất",t.downloadedStudies,t.newStudies,t.incompleteStudies):$("{} ca chưa có trong kho; app sẽ tạo một folder bệnh nhân.",t.newStudies),i=t.legacyStudiesDetected?` · ${$("Đã nhận diện {} ca từ folder Classic cũ",t.legacyStudiesDetected)}`:"";return`<div class="patient-alert ${t.exists?"existing":"new"}">
+    <b>${e}</b><span>${n}${i}</span>
+    ${t.folder?`<small>${l(t.folder)}</small>`:""}</div>`}const zo=new WeakSet;function de(t){if(t)for(const e of t.querySelectorAll("[data-action]"))Rd.has(e.dataset.action)||zo.has(e)||(zo.add(e),e.addEventListener("click",n=>{n.stopPropagation(),F(e.dataset.action,e)}),e.getAttribute("role")==="button"&&e.addEventListener("keydown",n=>{n.key!=="Enter"&&n.key!==" "||(n.preventDefault(),n.stopPropagation(),F(e.dataset.action,e))}))}function nu(){if(!to())return;de(m);const t=m.querySelector(".file-info-overlay");t?.addEventListener("click",a=>{a.target===t&&_r()});const e=m.querySelector(".concat-modal-overlay");e?.addEventListener("click",a=>{a.target===e&&(o.showConcatModal=!1,L())});const n=m.querySelector(".export-modal-overlay");n?.addEventListener("click",a=>{a.target===n&&(o.showExportModal=!1,L())});const i=m.querySelector(".log-modal-overlay");Fr(i),m.querySelector("[data-field='concat-resolution']")?.addEventListener("change",a=>{o.concatTargetHeight=Number(a.target.value)||1080}),m.querySelector("[data-field='concat-fps']")?.addEventListener("change",a=>{o.concatTargetFps=Number(a.target.value)||30}),m.querySelector("#dicom-tag-filter")?.addEventListener("input",a=>{o.fileInfoTagFilter=a.target.value;const r=Ar(),c=m.querySelector(".dicom-tags-table tbody");c&&(c.innerHTML=Br(r));const d=m.querySelector("[data-field='dicom-tag-count']");d&&(d.textContent=String(r.length))}),jd(),m.querySelector(".app-header [data-action='toggle-download']")?.setAttribute("aria-expanded",o.downloadOpen?"true":"false"),m.querySelector("[data-field='series']")?.addEventListener("change",a=>{o.selectedId=a.target.value;const r=B();(o.mode==="mpr"||o.mode==="volume3d")&&!r?.mprReady&&(o.mode="single",o.tool="window"),L(),Y()}),m.querySelector("[data-field='history']")?.addEventListener("change",a=>{const r=o.history[Number(a.target.value)];a.target.selectedIndex=0,r&&ln(r)}),m.querySelector("[data-field='window-preset']")?.addEventListener("change",async a=>{o.windowPreset=a.target.value,await qe(o.windowPreset),window.__viewerDiagnostics=mt()}),$u(),m.querySelectorAll(".winbar-tab").forEach(a=>{a.addEventListener("click",r=>{if(r.target.closest(".winbar-tab-close"))return;const c=a.dataset.tabId;c&&vo(c)})}),m.querySelectorAll(".winbar-tab-close").forEach(a=>{a.addEventListener("click",r=>{r.stopPropagation();const c=a.dataset.tabId;c&&pu(c)})}),ho(m),Hr(m),Lr(m),m.querySelector("[data-field='worklist-search']")?.addEventListener("input",a=>{o.worklistSearch=a.target.value,jt()}),m.querySelectorAll("[data-series-id]").forEach(a=>{a.addEventListener("click",async()=>{const r=a.dataset.seriesId,c=o.archive.series.find(y=>y.id===r);if(!c)return;if(a.classList.contains("tl-open")||a.closest(".tl-item")){const y=m.querySelector(`.series-card[data-series-id="${r}"]`);if(y){const C=y.dataset.dateKey;((C?m.querySelector(`.series-group-badge[data-date-key="${C}"]`):null)||y).scrollIntoView({behavior:"smooth",block:"start"})}return}if(x.editing){x.editing=!1,o.selectedId=r,L(),await Y();return}if(Wn()){const y=_l();if(!y)return;y.paneIndex===0?o.selectedId=r:o.compareIds[y.paneIndex-1]=r,await Ba(c),_o(),o.windowPreset!=="full"&&await qe(o.windowPreset),window.__viewerDiagnostics=mt(),o.scrollSync=Ui().enabled;const C=m.querySelector("[data-action='scroll-sync']");C&&(C.classList.toggle("active",o.scrollSync),C.setAttribute("aria-pressed",o.scrollSync?"true":"false"));return}const d=B(),u=K(d),h=K(c);o.selectedId=r;const p=B();let f=!1;if((o.mode==="mpr"||o.mode==="volume3d")&&!p?.mprReady?(o.mode="single",o.tool="window",f=!0):u!==h&&(f=!0),f)L(),Y();else{_o();const y=m.querySelector("[data-field='series']");y&&(y.value=r);const C=m.querySelector("[data-field='window-preset']");C&&(C.innerHTML=mi(p).map(S=>`<option value="${S.id}" ${o.windowPreset===S.id?"selected":""}>${l(S.detail?`${s(S.label)} · ${S.detail}`:s(S.label))}</option>`).join(""),C.setAttribute("title",l(s(or(p)))));const b=wa(p),g=m.querySelector(".safety-notice");if(g){g.hidden=!b,g.className=`safety-notice ${b?.level||""}`;const S=g.querySelector("span");S&&(S.textContent=b?s(b.text):"")}if(h!=="dicom"){const S=m.querySelector("#workspace");S&&(S.innerHTML=$r(p),re())}else Y()}})}),m.querySelectorAll(".tl-name-input").forEach(a=>{a.addEventListener("keydown",r=>{r.key==="Enter"?(r.preventDefault(),a.closest(".tl-item")?.querySelector("[data-action='save-timeline-label']")?.click()):r.key==="Escape"&&(r.preventDefault(),a.closest(".tl-item")?.querySelector("[data-action='cancel-timeline-label']")?.click())})}),m.querySelectorAll("[data-study-index]").forEach(a=>{a.addEventListener("change",()=>Yr(a))}),m.querySelector("#download-all-files")?.addEventListener("change",a=>{o.downloadAllFiles=a.target.checked,m.querySelector("#series-picker")?.classList.toggle("hidden",o.downloadAllFiles),vt()}),m.querySelector("#direct-url")?.addEventListener("input",a=>{o.lastDirectUrl=a.target.value,Xn(a.target.value),o.seriesInventory.some(r=>r.studyUid==="direct")&&(o.seriesInventory=[],delete o.rememberedSeriesSelections.direct,gt())}),m.querySelectorAll("input[name='hospital']").forEach(a=>{a.addEventListener("change",()=>{o.seriesInventory=[],o.rememberedSeriesSelections={},o.seriesGroupCache={},gt(),vt()})}),m.querySelector("#manual-info-toggle")?.addEventListener("change",a=>{o.showManualInfo=a.target.checked,jr()}),Ur(),Xr(),vt()}function Xr(){m.querySelector("#attachment-download-toggle")?.addEventListener("change",t=>{o.downloadAttachments=t.target.checked}),m.querySelectorAll("[data-series-group][data-series-choice]").forEach(t=>{t.addEventListener("change",()=>{const e=o.seriesInventory[Number(t.dataset.seriesGroup)]?.series?.[Number(t.dataset.seriesChoice)];e&&(e.selected=t.checked),o.rememberedSeriesSelections=pn(o.seriesInventory,o.rememberedSeriesSelections),vt()})})}function gt(){const t=m.querySelector("#series-picker");t&&(t.classList.toggle("hidden",o.downloadAllFiles),t.innerHTML=zr(),t.querySelectorAll("[data-action]").forEach(e=>{e.addEventListener("click",()=>F(e.dataset.action))}),Xr())}function ai(){return Ei(o.seriesInventory)}function po(t){return String(t?.study_uid||"").trim()}function iu(t){return[t?.modality,t?.date].filter(Boolean).join(" · ")||po(t)}function Jr(t){(t||[]).forEach(e=>{const n=String(e.studyUid||"").trim();n&&n!=="direct"&&(o.seriesGroupCache[n]=e)})}function ou(){o.rememberedSeriesSelections=pn(o.seriesInventory,o.rememberedSeriesSelections),Jr(o.seriesInventory);const t=o.seriesInventory.filter(n=>n.studyUid==="direct"),e=ce(o.studies).map(n=>o.seriesGroupCache[po(n)]).filter(Boolean);o.seriesInventory=ga([...t,...e],o.rememberedSeriesSelections)}function Yr(t){const e=o.studies[Number(t.dataset.studyIndex)];e&&(e.selected=t.checked,ou(),gt(),vt())}function au(){if(o.patient?.nameConflict)return s("Tên bệnh nhân không khớp; app đã chặn tự động gộp.");if(!o.studies.length)return s("Chưa tìm ca chụp.");if(!ce(o.studies).length)return s("Hãy tích ít nhất một ngày chụp để tải.");if(o.downloadAllFiles||al(o.studies,o.seriesInventory))return"";const t=ya(o.studies,o.seriesInventory);if(t.length>2)return $("Còn {} ca đang tích chưa chọn được series nào.",t.length);const e=t.map(iu).join(", ");return t.every(n=>!o.seriesGroupCache[po(n)])?$("Chưa quét series cho ca {}; hãy bấm Quét danh sách series.",e):$("Ca {} chưa tích series nào.",e)}function vt(){const t=au(),e=m.querySelector("[data-action='download-selected']");e&&(e.disabled=!!t);const n=m.querySelector(".download-hint");if(n){const i=!!t&&o.studies.length>0;n.textContent=i?t:"",n.hidden=!i}}function fo(t,e){const n=a=>String(a||"").replace(/[\\/]+$/,"").replace(/\\/g,"/").toLowerCase(),i=n(t);return!!i&&i===n(e)}async function ln(t){const e=t.folder||"",n=o.tabs.find(c=>fo(c.folder,e));if(n){await vo(n.id);return}o.lastDirectUrl=t.url||"";const i=O()?.querySelector("#direct-url");i&&(i.value=o.lastDirectUrl),Xn(o.lastDirectUrl);const a=o.tabs.find(c=>c.id===o.activeTabId);a&&go(a),yo(),o.editingPatientInfo=!1,o.patientEditDraft=null;const r=bo({folder:e,loading:!0,patientName:e.split(/[\\/]/).filter(Boolean).pop()||"",status:s("Đang mở hồ sơ…")});o.tabs.push(r),o.activeTabId=r.id,o.archive={root:"",series:[]},o.selectedId="",o.compareIds=["",""],Ne(""),Ce(),L(),k(s("Đang mở hồ sơ…"));try{const c=await N("/api/sessions/create",{method:"POST",body:JSON.stringify({path:e})});if(!Mn(r.id,c.archive,c.sessionId||"",e)){c.sessionId&&N("/api/sessions/close",{method:"POST",body:JSON.stringify({sessionId:c.sessionId})}).catch(()=>{});return}$e(),o.activeTabId===r.id&&k(s("Sẵn sàng."))}catch(c){const d=ht(c),u=o.tabs.find(h=>h.id===r.id);u&&(u.loading=!1,u.loadError=d,u.status=d),o.activeTabId===r.id&&k(d,!0),L()}}async function $e(){try{const t=await N("/api/history");o.history=Array.isArray(t?.history)?t.history:[],(m?.querySelectorAll("[data-field='history']")||[]).forEach(n=>{n.innerHTML=Vc(),n.disabled=!o.history.length})}catch{}}function ru(){const t=O(),e=t?.querySelector("#photo-editor-canvas"),n=t?.querySelector("#photo-editor-img, #surgery-video-player"),i=t?.querySelector("#photo-annotation-canvas");if(!e||!n||!i){Zi();return}Rc({wrap:e,img:n,canvas:i,scroller:t.querySelector("#photo-editor-stage"),onZoomAt:(a,r,c)=>Qr(a,r,c),shapeExtras:()=>K(B())==="video"?Zr():{},getTime:()=>{const a=O()?.querySelector("#surgery-video-player");return a?a.currentTime:null},getLayer:()=>At(B()),getStyle:()=>o.photoStyle,getTool:()=>o.photoTool,onStatus:a=>k(a),onChange:()=>ut(),onToolDone:a=>{(a==="text"||a==="marker")&&Tn("select")}}),mo(),ut()}function Zr(){if(o.videoShapeTiming!=="span")return{};const t=Lt();return t?{startS:t.start,endS:t.end}:{}}function Tn(t){const e=Gt(t);o.photoTool=e.id;const n=U();e.id!=="crop"&&n?.clearCrop(),e.id!=="select"&&n?.select(null),ut(),k(s(e.label))}function mo(){const t=O()?.querySelector("#photo-editor-img");if(!t)return;const e=Number(o.photoZoom)||0;e>0&&t.naturalWidth?(t.style.maxWidth="none",t.style.maxHeight="none",t.style.width=`${Math.round(t.naturalWidth*e)}px`,t.style.height="auto"):(t.style.maxWidth="100%",t.style.maxHeight="100%",t.style.width="",t.style.height="");const n=O()?.querySelector("#photo-zoom-label");n&&(n.textContent=e?`${Math.round(e*100)}%`:s("Vừa khung")),U()?.repaint()}function Qr(t,e,n){const i=O(),a=i?.querySelector("#photo-editor-stage"),r=i?.querySelector("#photo-editor-img");if(!a||!r?.naturalWidth)return;const c=r.getBoundingClientRect();if(!c.width)return;const d=(e-c.left)/c.width,u=(n-c.top)/c.height,h=o.photoZoom||c.width/r.naturalWidth,p=Math.max(.05,Math.min(8,h*t));if(p===o.photoZoom)return;o.photoZoom=p,mo();const f=r.getBoundingClientRect();a.scrollLeft+=f.left+d*f.width-e,a.scrollTop+=f.top+u*f.height-n,U()?.repaint()}function Ko(t){const e=O()?.querySelector("#photo-editor-stage");if(!e)return;const n=e.getBoundingClientRect();Qr(t,n.left+n.width/2,n.top+n.height/2)}function ut(){const t=O();if(!t)return;const e=B();At(e);const n=U(),i=n?.selectedShape()||null,a=pe(e);t.querySelectorAll("[data-action='photo-pick-tool']").forEach(P=>{const G=P.dataset.tool===o.photoTool;P.classList.toggle("active",G),P.setAttribute("aria-pressed",G?"true":"false")});const r=i||o.photoStyle,c=String(r.color||"").toLowerCase();t.querySelectorAll("[data-action='photo-pick-color']").forEach(P=>{P.classList.toggle("active",P.dataset.color===c)}),tn(t,"[data-field='photo-color']",r.color),tn(t,"[data-field='photo-stroke']",r.strokeWidth),tn(t,"[data-field='photo-font']",r.fontSize??o.photoStyle.fontSize),tn(t,"[data-field='photo-opacity']",Math.round((r.opacity??1)*100));const d=t.querySelector("[data-field='photo-fill']");d&&(d.checked=!!r.filled),Ft(t,"#photo-stroke-value",r.strokeWidth),Ft(t,"#photo-font-value",r.fontSize??o.photoStyle.fontSize),Ft(t,"#photo-opacity-value",`${Math.round((r.opacity??1)*100)}%`);const u=["text","marker"].includes(o.photoTool)||["text","marker"].includes(i?.kind),h=t.querySelector("#photo-font-field");h&&h.classList.toggle("muted",!u),Ft(t,"#photo-status-hint",i?$("Đang chọn: {}",s(Ci(i.kind))):s(Gt(o.photoTool).label));const p=Lt();if(t.querySelectorAll("[data-action='video-timing']").forEach(P=>{const G=P.dataset.timing,X=G!=="span"||!!p;P.disabled=!X,P.classList.toggle("active",o.videoShapeTiming===G&&X),G==="span"&&(P.textContent=p?`${H(p.start)}→${H(p.end)}`:s("Chưa chọn đoạn"))}),i&&K(e)==="video"){const P=Number.isFinite(i.startS)&&Number.isFinite(i.endS)?`${H(i.startS)}→${H(i.endS)}`:s("Toàn bộ");Ft(t,"#photo-status-hint",`${$("Đang chọn: {}",s(Ci(i.kind)))} · ${P}`)}const f=t.querySelector("#photo-apply-crop");f&&(f.hidden=o.photoTool!=="crop",f.disabled=!n?.cropRect());const y=t.querySelector("#photo-delete-shape");y&&(y.disabled=!i);const C=t.querySelector("[data-action='photo-clear-shapes']");C&&(C.disabled=!a);const b=t.querySelector("#photo-apply-shapes");if(b){const P=K(e)==="video"?s("Áp dụng lên video"):s("Áp dụng lên ảnh");b.disabled=!a,b.textContent=a?`${P} (${a})`:P}Ft(t,"#photo-status-count",a?$("{} nét chưa áp dụng",a):s("Chưa vẽ gì"));const g=t.querySelector("#photo-editor-img, #surgery-video-player"),S=g?.naturalWidth||g?.videoWidth,q=g?.naturalHeight||g?.videoHeight;S&&q&&Ft(t,"#photo-status-size",`${S}×${q} px`),br(e)}function tn(t,e,n){const i=t.querySelector(e);i&&n!==void 0&&n!==null&&(i.value=String(n))}function Ft(t,e,n){const i=t.querySelector(e);i&&(i.textContent=String(n))}function Ci(t){const e=Hn.find(n=>n.shape===t);return e?e.label:t}function Yt(t){Object.assign(o.photoStyle,t),U()?.restyleSelected(t),ut()}async function cn(t,{silent:e=!1}={}){const n=await cu(t);if(!n)throw new Error(s("Không tìm thấy đường dẫn ảnh gốc."));const i=At(t),a=Qa(i?.shapes||[]);if(!a.length)return n;e||k($("Đang vẽ {} chi tiết lên ảnh...",a.length));const r=await N("/api/media/photo/shapes",{method:"POST",body:JSON.stringify({path:n,shapes:a})});return o.photoWorkingPath=r.outputPath,Ct(t,r),i.shapes=[],i.past=[],i.future=[],U()?.select(null),oo(O()?.querySelector("#photo-editor-img"),r.url),ut(),r.outputPath}function su(){const e=O()?.querySelector("#photo-props");if(!e)return;const n=(i,a)=>{const r=e.querySelector(i);r&&(r.oninput=()=>a(r))};n("[data-field='photo-color']",i=>Yt({color:i.value})),n("[data-field='photo-stroke']",i=>Yt({strokeWidth:Number(i.value)||1})),n("[data-field='photo-font']",i=>Yt({fontSize:Number(i.value)||28})),n("[data-field='photo-opacity']",i=>Yt({opacity:Math.max(.05,(Number(i.value)||100)/100)})),n("[data-field='photo-fill']",i=>Yt({filled:i.checked}))}async function Xo(t){const e=B();if(!e)return;const n=await cn(e,{silent:!0});k(s("Đang xoay ảnh 90°..."));const i=await N("/api/media/photo/rotate",{method:"POST",body:JSON.stringify({path:n,degrees:t})});o.photoWorkingPath=i.outputPath,Ct(e,i),oo(O()?.querySelector("#photo-editor-img"),i.url),k(s("Đã xoay ảnh 90° thành công."))}function re(){de(O()?.querySelector("#workspace")||O()),Zc(),kr(),ru(),su();const t=m.querySelector("#surgery-video-player");if(t){const e=m.querySelector("#surgery-video-scrubber"),n=m.querySelector("#video-speed-select");t.ontimeupdate=()=>Cn(t),t.onerror=()=>{const r=(Gn(o.videoWorkingPath)||String(B()?.name||"")).toLowerCase(),c=r.includes(".")?r.slice(r.lastIndexOf(".")):"";k($("Trình duyệt không phát được định dạng {} — bấm “Tối ưu MP4” để chuyển đổi rồi xem.",c||"này"),!0)},t.onloadedmetadata=()=>{o.videoDuration=Number(t.duration)||0,an(),Qt(B()),o._pendingVideoSeek!==void 0&&o._pendingVideoSeek!==null&&(t.currentTime=o._pendingVideoSeek,o._pendingVideoSeek=null),Cn(t),U()?.repaint()},t.readyState>=1&&t.onloadedmetadata(),e&&(e.oninput=()=>{t.duration&&(t.currentTime=Number(e.value)/100*t.duration)}),n&&(n.onchange=()=>{t.playbackRate=Number(n.value)||1}),typeof window<"u"&&!window._videoShortcutsBound&&(window._videoShortcutsBound=!0,window.addEventListener("keydown",r=>{const c=r.target;c&&(c.tagName==="INPUT"||c.tagName==="TEXTAREA"||c.isContentEditable)||!(typeof m<"u"&&m?m:typeof document<"u"?document:null)?.querySelector("#surgery-video-player")||(r.key==="m"||r.key==="M"?(r.preventDefault(),F("add-video-bookmark")):r.key==="i"||r.key==="I"?(r.preventDefault(),F("video-set-in")):r.key==="o"||r.key==="O"?(r.preventDefault(),F("video-set-out")):r.key===" "&&!r.repeat&&(r.preventDefault(),F("video-play-pause")))}));const i=(m||document).querySelector("#video-meta-badge"),a=B();i&&a&&!a._videoInfoLoaded&&_t(a).then(r=>{if(r)return N("/api/media/video/info",{method:"POST",body:JSON.stringify({path:r})}).then(c=>{const d=c?.info;if(d){a._videoInfoLoaded=!0;const u=d.width&&d.height?`${d.width}x${d.height}`:"",h=d.fps?`${Math.round(d.fps)}fps`:"",p=d.codec||"",f=d.durationSeconds?H(d.durationSeconds):"",y=[u,h,p,f].filter(Boolean).join(" · ");y&&(i.textContent=`🎬 ${a.patientName||"Video Phẫu Thuật"} (${y})`)}})}).catch(()=>null)}}async function lu(){const t=[];for(const e of o.archive?.series||[]){if(K(e)!=="video")continue;const i=((await N(`/api/series/${e.id}/file-paths`).catch(()=>null))?.images||[]).filter(Boolean);i.forEach((a,r)=>{t.push({seriesId:e.id,index:r,path:a,name:String(a).split(/[\\/]/).pop()||e.description||e.name,duration:i.length===1&&e.durationSeconds||0,selected:!0})})}return t}async function _t(t){if(!t)return null;if(o.videoWorkingPath&&(!o.selectedId||t.id===o.selectedId))return o.videoWorkingPath;const n=(await N(`/api/series/${t.id}/file-paths`).catch(()=>null))?.images||[];return n[et(t)]||n[0]||null}async function cu(t){if(!t)return null;if(o.photoWorkingPath&&(!o.selectedId||t.id===o.selectedId))return o.photoWorkingPath;const n=(await N(`/api/series/${t.id}/file-paths`).catch(()=>null))?.images||[];return n[et(t)]||n[0]||null}async function Jo(t,e="viewer"){if(t)if(window.pywebview?.api?.choose_export_folder){const n=await window.pywebview.api.choose_export_folder(t,e);n&&(o.bootstrap.job=n,k(s("Đang xuất hồ sơ sang thư mục đã chọn…")),ft())}else{const n=window.prompt(s("Nhập đường dẫn thư mục xuất:"));if(!n||!n.trim())return;const i=await N("/api/worklist/export",{method:"POST",body:JSON.stringify({folder:t,destination:n.trim(),mode:e})});i&&(o.bootstrap.job=i,k(s("Đang xuất hồ sơ sang thư mục đã chọn…")),ft())}}async function F(t,e=null){try{if(t==="cancel-login"){o.showLoginCard=!1,o.loginCardAction=null,L();return}if(t==="retry-login"){const n=m.querySelector("#custom-ris-user")?.value.trim(),i=m.querySelector("#custom-ris-pass")?.value;if(!n)throw new Error("Chưa nhập tài khoản dự phòng.");const a=o.loginCardAction;return o.showLoginCard=!1,o.loginCardAction=null,L(),o.customRisUser=n,o.customRisPass=i,F(a)}if(t==="window-minimize"){await te()?.window_minimize?.();return}if(t==="window-maximize"){const n=te()?.window_toggle_maximize;if(!n)return;o.windowMaximized=!!await n(),$i();return}if(t==="window-close"){const n=te()?.window_close;n?await n():window.close();return}if(t==="window-fullscreen"){const n=te()?.window_toggle_fullscreen;if(!n)return;o.zenMode=!!await n(),$i();return}if(t==="toggle-download"){o.downloadOpen=!o.downloadOpen,m.querySelector(".app-shell")?.classList.toggle("download-collapsed",!o.downloadOpen);const n=m.querySelector(".app-header [data-action='toggle-download']");if(n){n.classList.toggle("active",o.downloadOpen),n.setAttribute("aria-expanded",o.downloadOpen?"true":"false"),n.title=s(o.downloadOpen?"Thu gọn khu tải phim":"Mở khu tải phim");const a=n.querySelector("span");a&&(a.textContent=o.downloadOpen?"⇤":"⇥")}const i=m.querySelector(".download-expand-trigger");i&&(i.hidden=o.downloadOpen);return}if(t==="toggle-patient-rail"){o.patientRailCollapsed=!o.patientRailCollapsed,qc(o.patientRailCollapsed);const n=m.querySelector(".viewer-main");if(n){n.classList.toggle("rail-collapsed",o.patientRailCollapsed);const i=n.querySelector(".rail-expand-trigger");i&&(i.hidden=!o.patientRailCollapsed)}else L();return}if(t==="toggle-language"){const n=m.querySelector("#direct-url")?.value??o.lastDirectUrl,i=m.querySelector("#patient-id")?.value??"",a=m.querySelector("#quality")?.value??"100",r=m.querySelector("#show-browser")?.checked??!1;sa(Le()==="en"?"vi":"en"),os(),o.lastDirectUrl=n,L();const c=m.querySelector("#patient-id");c&&(c.value=i);const d=m.querySelector("#quality");d&&(d.value=a);const u=m.querySelector("#show-browser");u&&(u.checked=r),k(o.status),await N("/api/settings/language",{method:"POST",body:JSON.stringify({language:Le()})}),await Y();return}if(t==="clear-patient-id"||t==="clear-direct-url"){const n=Qi.find(a=>t===`clear-${a.id}`),i=n&&m.querySelector(`#${n.id}`);i&&await wu(i,n.kind),n?.kind==="url"&&(o.seriesInventory=o.seriesInventory.filter(a=>a.studyUid!=="direct"),delete o.rememberedSeriesSelections.direct,gt());return}if(t==="worklist-tab"){const n=e?.dataset?.worklistTab==="activity"?"activity":"studies";if(n===o.worklistTab)return;o.worklistTab=n,L(),n==="studies"&&rt();return}if(t==="refresh-worklist"){await rt();return}if(t==="open-logs"){o.logModalLoading=!0;try{const r=await N("/api/logs/content");o.logModalContent=r?.content||"",o.logModalFilename=r?.filename||"",o.logModalFolder=r?.folder||"",o.logModalFileList=r?.fileList||[]}catch(r){o.logModalContent=s("Không thể đọc nhật ký: ")+(r?.message||"")}finally{o.logModalLoading=!1}o.showLogModal=!0;const n=(m||document).querySelector(".log-modal-overlay");n&&n.remove();const i=to()?m:document.querySelector("#app");if(i&&i.children.length>0){const r=document.createElement("div");r.innerHTML=qr();const c=r.firstElementChild;if(c){i.appendChild(c),de(c),Fr(c);const d=c.querySelector(".modal-log-pre");d&&(d.scrollTop=d.scrollHeight);return}}L();const a=(m||document).querySelector(".modal-log-pre");a&&(a.scrollTop=a.scrollHeight);return}if(t==="close-log-modal"){o.showLogModal=!1;const n=(m||document).querySelector(".log-modal-overlay");n?n.remove():L();return}if(t==="reveal-logs-folder"){try{window.pywebview?.api?.reveal_logs?await window.pywebview.api.reveal_logs():await N("/api/logs/reveal",{method:"POST"})}catch(n){k(s("Không thể mở thư mục: ")+(n?.message||""),!0)}return}if(t==="copy-modal-logs"){const n=o.logModalContent||"";n&&await ee(n,s("Đã sao chép toàn bộ nhật ký!"));return}if(t==="export-patient-record"){const n=e?.dataset?.folder;if(!n)throw new Error(s("Hồ sơ này chưa có thư mục trên đĩa."));const a=(o.worklistPatients||[]).find(d=>d.folder===n)?.patientName||o.archive?.patient?.patientName||"";let r=null;try{window.pywebview?.api?.get_export_options?r=await window.pywebview.api.get_export_options(n):r=await N("/api/worklist/export-options",{method:"POST",body:JSON.stringify({folder:n})})}catch{r={hasJpg:!0,hasDicom:!1}}if(r?.hasJpg&&r?.hasDicom){o.showExportModal=!0,o.exportModalFolder=n,o.exportModalOptions=r,o.exportModalPatientName=a,L();return}const c=r?.hasDicom&&!r?.hasJpg?"dicom":"viewer";await Jo(n,c);return}if(t==="close-export-modal"){o.showExportModal=!1,o.exportModalFolder="",o.exportModalOptions=null,L();return}if(t==="confirm-export-choice"){const n=e?.dataset?.folder||o.exportModalFolder,i=e?.dataset?.mode||"viewer";o.showExportModal=!1,o.exportModalFolder="",o.exportModalOptions=null,L(),await Jo(n,i);return}if(t==="clear-worklist-filters"){o.worklistModality="",o.worklistPeriod="all",o.worklistRead="all",o.worklistStage="",jt();return}if(t==="toggle-study-read"){const n=e?.dataset?.folder;if(!n)return;const i=e.dataset.read!=="1",a=await N("/api/worklist/read",{method:"POST",body:JSON.stringify({folder:n,read:i})});(o.worklistPatients||[]).forEach(r=>{(r.studies||[]).forEach(c=>{c.folder===n&&(c.isRead=!!a?.isRead,c.readAt=String(a?.readAt||""))})}),jt();return}if(t==="sort-worklist"){const n=e?.dataset?.sortCol;if(!n)return;o.worklistSortColumn===n?o.worklistSortOrder=o.worklistSortOrder==="asc"?"desc":"asc":(o.worklistSortColumn=n,o.worklistSortOrder=n==="date"?"desc":"asc"),jt();return}if(t==="choose-archive"){if(!window.pywebview?.api)throw new Error(s("Chọn thư mục cần chạy trong ứng dụng WebView2."));const n=await window.pywebview.api.choose_archive();n&&(o.bootstrap.job=n,k(s("Đang nhận diện DICOM hoặc JPG/PNG trong folder…")),ft());return}if(t==="photo-save-edit"){const n=B();if(!n)return;if(!o.photoWorkingPath)throw new Error(s("Chưa có chỉnh sửa nào để lưu."));const i=et(n),a=await N("/api/media/save",{method:"POST",body:JSON.stringify({path:o.photoWorkingPath,seriesId:n.id,mediaIndex:i})}),r=await N("/api/archive/open",{method:"POST",body:JSON.stringify({path:o.archive.root})}).catch(()=>null);if(r?.series&&is(r,$s(),o.archive.root),B()?.id===n.id){const u=((await N(`/api/series/${n.id}/file-paths`).catch(()=>null))?.images||[]).findIndex(p=>fo(p,a.savedPath));u>=0&&(o.mediaIndex={...o.mediaIndex||{},[n.id]:u});const h=fr(n.id,i);h.steps=[],h.cursor=-1,o.photoWorkingPath=null,L(),Y()}k($("Đã lưu vào hồ sơ: {}",a.name));return}if(t==="media-edit-undo"||t==="media-edit-redo"){const n=B(),i=t==="media-edit-redo"?1:-1;if(Vn(n)&&dd(n,i))return;cd(n,i);return}if(t==="media-file-prev"||t==="media-file-next"){ed(B(),t==="media-file-next"?1:-1);return}if(t==="edit-patient-info"){o.editingPatientInfo=!0,o.patientEditDraft=xr(o.archive?.patient||{});const n=o.tabs.find(i=>i.id===o.activeTabId);n&&(n.editingPatientInfo=!0,n.patientEditDraft={...o.patientEditDraft}),L();return}if(t==="cancel-patient-info"){o.editingPatientInfo=!1,o.patientEditDraft=null;const n=o.tabs.find(i=>i.id===o.activeTabId);n&&(n.editingPatientInfo=!1,n.patientEditDraft=null),L();return}if(t==="save-patient-info"){const n=m.querySelector("[data-field='patient-edit-form']");if(!n)return;const i=Sr(n),a=o.activeTabId,r=o.tabs.find(h=>h.id===a),c=r?.archive||o.archive,d=c?.patient?.patientId||"",u=c?.root||"";o.patientEditDraft={...i},r&&(r.patientEditDraft={...i});try{const h=await N("/api/patient/update",{method:"POST",body:JSON.stringify({info:i,archiveRoot:u,patientId:d})});if(h?.patient){c.patient=h.patient,r&&(r.archive=c,r.patientName=h.patient.patientName||"",r.patientId=h.patient.patientId||"",r.editingPatientInfo=!1,r.patientEditDraft=null);const p=y=>String(y||"").replace(/[\\/]+$/,"").toLowerCase();let f=o.worklistPatients.find(y=>u&&p(y.folder)===p(u));if(!f&&d){const y=o.worklistPatients.filter(C=>C.patientId===d);y.length===1&&([f]=y)}if(f)for(const y of["patientName","patientId","gender","birthYear","hospital"])f[y]=h.patient[y]||""}o.activeTabId===a?(o.archive=c,o.editingPatientInfo=!1,o.patientEditDraft=null,L(),k(s("Đã lưu thông tin bệnh nhân."))):r&&(r.status=s("Đã lưu thông tin bệnh nhân."))}catch(h){const p=`${s("Lỗi:")} ${h.message||h}`;o.activeTabId===a?k(p,!0):r&&(r.status=p)}return}if(t==="edit-diagnosis"){const n=o.archive?.patient?.diagnosis||"",i=window.prompt(s("Chẩn đoán của hồ sơ này:"),n);if(i===null||i.trim()===n.trim())return;const a=await N("/api/patient/diagnosis",{method:"POST",body:JSON.stringify({diagnosis:i,archiveRoot:o.archive?.root||"",patientId:o.archive?.patient?.patientId||""})});o.archive.patient=a.patient||o.archive.patient,L(),k(s("Đã lưu chẩn đoán vào hồ sơ bệnh nhân."));return}if(t==="edit-clinical"){x.draft=x.draft||_s(x.record),x.editing=!0,x.error="",L(),await Y();return}if(t==="cancel-clinical"){x.draft=null,x.editing=!1,x.error="",L(),await Y();return}if(t==="clinical-add-tumor"){Ys(),pt();return}if(t==="clinical-remove-tumor"){Zs(Number(e?.dataset?.tumorIndex)),pt();return}if(t==="clinical-add-event"){Qs(),pt();return}if(t==="clinical-remove-event"){tl(Number(e?.dataset?.eventIndex)),pt();return}if(t==="clinical-add-marker"){el(Number(e?.dataset?.tumorIndex)),pt();return}if(t==="clinical-remove-marker"){nl(Number(e?.dataset?.tumorIndex),Number(e?.dataset?.molecularIndex)),pt();return}if(t==="save-clinical"){x.saving=!0,x.error="",pt();try{const n=await N("/api/patient/clinical",{method:"POST",body:JSON.stringify({record:il(),archiveRoot:o.archive?.root||"",patientId:o.archive?.patient?.patientId||""})});x.record=n?.record||Et(),x.stage=n?.stage||We(),x.label=String(n?.label||""),x.draft=null,x.editing=!1,k(s("Đã lưu hồ sơ lâm sàng.")),rt({silent:!0})}catch(n){x.error=ht(n)}finally{x.saving=!1,x.editing?pt():(L(),await Y())}return}if(t==="edit-timeline-label"){const n=e?.closest(".tl-item"),i=n?.querySelector(".tl-name-input");if(!n||!i)return;n.classList.add("editing"),i.value=n.dataset.timelineLabel||n.dataset.defaultLabel||"",i.focus(),i.select();return}if(t==="cancel-timeline-label"){const n=e?.closest(".tl-item"),i=n?.querySelector(".tl-name-input");if(!n)return;i&&(i.value=n.dataset.timelineLabel||n.dataset.defaultLabel||""),n.classList.remove("editing");return}if(t==="save-timeline-label"){const n=e?.closest(".tl-item"),i=n?.querySelector(".tl-name-input"),a=n?.dataset.timelineKey||"";if(!n||!i||!a)return;const r=i.value.trim(),c=n.dataset.timelineLabel||n.dataset.defaultLabel||"";if(r===c){n.classList.remove("editing");return}const d=await N("/api/patient/timeline-label",{method:"POST",body:JSON.stringify({timelineKey:a,label:r,archiveRoot:o.archive?.root||"",patientId:o.archive?.patient?.patientId||""})});o.archive.patient=d.patient||o.archive.patient;const u=d.label||n.dataset.defaultLabel||s("Chưa có mô tả");n.dataset.timelineLabel=u,n.querySelector(".nm").textContent=u,i.value=u,n.classList.remove("editing"),k(s("Đã lưu tên hiển thị trên timeline."));return}if(t==="file-info"){await Zd();return}if(t==="close-file-info"){_r();return}if(t==="copy-cell"){const n=e?.dataset?.copyText;n&&n!=="—"&&await ee(n,`${s("Đã sao chép")}: ${n.length>25?n.slice(0,22)+"...":n}`);return}if(t==="copy-download-url"){const n=e?.dataset?.url;n&&await ee(n,s("Đã sao chép link tải vào clipboard!"));return}if(t==="open-download-url"){const n=e?.dataset?.url;n&&window.open(n,"_blank");return}if(t==="copy-job-log"){const n=m.querySelector(".job-log"),i=(o.bootstrap?.job?.logs||[]).map(le).join(`
+`)||n?.textContent||"";if(!i.trim()){k(s("Chưa có nội dung nhật ký để sao chép."));return}await ee(i),xi(s("Đã sao chép toàn bộ nhật ký (log)!"));const a=m.querySelector(".btn-copy-log");a&&(a.classList.add("copied"),setTimeout(()=>{a.classList.remove("copied")},2e3));return}if(t==="clear-job-log"){o.bootstrap?.job&&(o.bootstrap.job.logs=[]),o.job&&(o.job.logs=[]);const n=m.querySelector(".job-log");n&&(n.textContent=""),k(s("Đã xoá hiển thị nhật ký."));return}if(t==="import-dicom-folder"){if(!window.pywebview?.api)throw new Error(s("Nhập DICOM local cần chạy trong ứng dụng WebView2."));const n=await window.pywebview.api.choose_dicom_folder(ri());n&&(o.bootstrap.job=n,k(s("Đang đọc và chuyển folder DICOM local…")),ft());return}if(t==="choose-output"){const n=await window.pywebview?.api?.choose_output();if(n){o.bootstrap.outputRoot=n.outputRoot,n.sourceFolders&&(o.sourceFolders=n.sourceFolders),o.studies=[],o.patient=null,o.seriesInventory=[],o.rememberedSeriesSelections={},o.seriesGroupCache={};const i=m.querySelector("#output-root");i&&(i.value=n.outputRoot),Ii(),gt(),rt(),k(s("Đã đổi kho lưu; hãy tìm lại mã bệnh nhân để đối chiếu phim cũ/mới."))}return}if(t==="add-source-folder"){if(window.pywebview?.api?.choose_source_folder){const a=await window.pywebview.api.choose_source_folder();a?.sourceFolders&&(o.sourceFolders=a.sourceFolders,L(),rt(),k(s("Đã thêm thư mục nguồn thành công.")));return}const n=window.prompt(s("Nhập đường dẫn thư mục nguồn:"));if(!n||!n.trim())return;const i=await N("/api/source-folders/add",{method:"POST",body:JSON.stringify({folder:n.trim()})});i?.sourceFolders&&(o.sourceFolders=i.sourceFolders,L(),rt(),k($("Đã thêm thư mục nguồn: {}",n.trim())));return}if(t==="remove-source-folder"){const n=e?.dataset?.folder;if(!n)return;const i=await N("/api/source-folders/remove",{method:"POST",body:JSON.stringify({folder:n})});i?.sourceFolders&&(o.sourceFolders=i.sourceFolders,L(),rt(),k($("Đã xóa thư mục nguồn: {}",n)));return}if(t==="open-folder-explorer"){const n=e?.dataset?.folder;if(!n)return;await N("/api/worklist/reveal-folder",{method:"POST",body:JSON.stringify({folder:n})});return}if(t==="refresh-archive"){o.bootstrap.job=await N("/api/archive/scan",{method:"POST",body:JSON.stringify({path:o.archive.root})}),k(s("Đang quét lại thư mục phim trong nền…")),ft();return}if(t==="search"){const n=m.querySelector("#patient-id").value.trim(),i=m.querySelector("input[name='hospital']:checked")?.value;o.studies=[],o.patient=null,o.seriesInventory=[],o.rememberedSeriesSelections={},o.seriesGroupCache={},Ii(),gt(),await N("/api/search",{method:"POST",body:JSON.stringify({patientId:n,hospital:i,customUsername:o.customRisUser,customPassword:o.customRisPass})}),ft();return}if(t==="select-series-all"||t==="deselect-series-all"){const n=t==="select-series-all";o.seriesInventory.forEach(i=>{(i.series||[]).forEach(a=>{a.selected=n})}),o.rememberedSeriesSelections=pn(o.seriesInventory,o.rememberedSeriesSelections),gt(),vt();return}if(t==="discover-series"){const n=ce(o.studies),i=m.querySelector("#direct-url")?.value.trim()||"";if(o.studies.length&&!n.length)throw new Error(s("Hãy tích ít nhất một ngày chụp trước khi quét series."));if(!o.studies.length&&!i)throw new Error(s("Hãy chọn ca chụp hoặc nhập link viewer trước khi quét series."));o.rememberedSeriesSelections=pn(o.seriesInventory,o.rememberedSeriesSelections),o.seriesInventory=[],gt(),vt(),await N("/api/series/discover",{method:"POST",body:JSON.stringify({studies:n,url:n.length?"":i,hospital:o.patient?.hospitalKey||m.querySelector("input[name='hospital']:checked")?.value,showBrowser:m.querySelector("#show-browser").checked,customUsername:o.customRisUser,customPassword:o.customRisPass})}),k(s("Đang quét danh sách series; chưa tải file ảnh…")),ft();return}if(t==="download-selected"){if(o.patient?.nameConflict)throw new Error(s("Tên bệnh nhân không khớp; app đã chặn tự động gộp."));const n=ce(o.studies);if(!n.length)throw new Error(s("Không có phim mới/chưa hoàn tất được chọn để tải."));await N("/api/download",{method:"POST",body:JSON.stringify({studies:n,patientId:o.patient?.patientId,patientName:o.patient?.patientName,hospital:o.patient?.hospitalKey,allStudies:o.studies,seriesSelections:o.downloadAllFiles?void 0:ai(),...ri()})}),ft();return}if(t==="download-direct"||t==="download-retry"){const n=m.querySelector("#direct-url").value.trim();if(!n)throw new Error(s("Chưa có link viewer để tải."));if(!o.downloadAllFiles&&!(ai().direct||[]).length)throw new Error(s("Chưa quét hoặc chưa chọn series cho link viewer."));o.lastDirectUrl=n,await N("/api/download/direct",{method:"POST",body:JSON.stringify({url:n,resume:t==="download-retry",selectedSeriesIds:o.downloadAllFiles?void 0:ai().direct||[],...ri()})}),ft();return}if(t==="stop-job"){await N("/api/job/stop",{method:"POST",body:"{}"});return}if(t?.startsWith("mode-")){const n=t.slice(5);if(n===o.mode)return;o.mode=n,o.tool=du(n,o.tool),o.cine=!1,Wn()&&(er(),o.scrollSync=!0,Lo(o.referenceLines),Eo(o.referenceCursor)),L(),await Y();return}if(t==="scale-overlay"){o.scaleOverlay=Fl(!o.scaleOverlay);const n=m.querySelector("[data-action='scale-overlay']");n&&(n.classList.toggle("active",o.scaleOverlay),n.setAttribute("aria-pressed",o.scaleOverlay?"true":"false"));return}if(t?.startsWith("tool-")){o.tool=Fn(t.slice(5)),ts();return}if(t==="scroll-sync"){o.scrollSync=Oa(!o.scrollSync);const n=m.querySelector("[data-action='scroll-sync']");n&&(n.classList.toggle("active",o.scrollSync),n.setAttribute("aria-pressed",o.scrollSync?"true":"false"));const{anchor:i,spatialMode:a}=Ui();if(o.scrollSync){const r=(i||[]).map(d=>d+1).join(" · "),c=s(a==="spatial"?"đồng bộ theo vị trí 3D":a==="index"?"⚠ đồng bộ theo số thứ tự lát (không có đồng bộ không gian)":"chỉ đồng bộ các cặp tương thích; mặt phẳng khác hướng giữ lát độc lập");k($("Đã khoá cuộn: {} — {}.",r,c))}else["reference","blocked"].includes(a)?k(s(a==="reference"?"Hai mặt phẳng giữ lát độc lập; đường tham chiếu biểu diễn giao tuyến 3D.":"Không khoá cuộn vì hai series khác hệ tọa độ (Frame of Reference).")):k(s("Đã bỏ khoá: mỗi khung cuộn riêng."));return}if(t==="reference-lines"){o.referenceLines=Lo(!o.referenceLines);const n=m.querySelector("[data-action='reference-lines']");n&&(n.classList.toggle("active",o.referenceLines),n.setAttribute("aria-pressed",o.referenceLines?"true":"false")),k(s(o.referenceLines?"Đường tham chiếu đã bật.":"Đường tham chiếu đã tắt."));return}if(t==="reference-cursor"){o.referenceCursor=Eo(!o.referenceCursor);const n=m.querySelector("[data-action='reference-cursor']");n&&(n.classList.toggle("active",o.referenceCursor),n.setAttribute("aria-pressed",o.referenceCursor?"true":"false")),k(s(o.referenceCursor?"Con trỏ tham chiếu đã bật.":"Con trỏ tham chiếu đã tắt."));return}if(t==="reset"){o.windowPreset=vn(B()),Zl(),await qe(o.windowPreset),window.__viewerDiagnostics=mt();const n=m.querySelector("[data-field='window-preset']");n&&(n.value=o.windowPreset)}if(t==="reset-all"){o.windowPreset=vn(B()),Ql(),await qe(o.windowPreset),window.__viewerDiagnostics=mt();const n=m.querySelector("[data-field='window-preset']");n&&(n.value=o.windowPreset)}if(t==="undo-annotation"&&oc(),t==="clear-annotations"){const n=await ic();k(n?$("Đã xóa {} phép đo/ROI.",n):s("Khung xem hiện tại không có phép đo/ROI để xóa."))}if(t==="rotate-clockwise"){if(!Ol())throw new Error(s("Chưa chọn khung ảnh để xoay."));window.__viewerDiagnostics=mt()}if(t==="flip-horizontal"){if(!Rl())throw new Error(s("Chưa chọn khung ảnh để lật."));window.__viewerDiagnostics=mt()}if(t==="flip-vertical"){if(!Al())throw new Error(s("Chưa chọn khung ảnh để lật."));window.__viewerDiagnostics=mt()}if(t==="invert"){const n=tc();if(window.__viewerDiagnostics=mt(),!n)throw new Error(s("Khung đang xem không đảo màu được."))}if(t==="cine"){o.cine=ec(B()),k(s(o.cine?"Đang chạy phim — nhấn Space để dừng.":"Đã dừng chạy phim."));return}if(t==="capture"){const n=await nc();k($('Đã lưu ảnh PNG của khung "{}".',n))}if(t==="save-annotations"){const n=await zi();k($("Đã lưu {} phép đo/ROI.",n))}if(t==="roi-volume"){const n=lc();k($("Thể tích ROI thủ công: {} mL (tổng diện tích lát × khoảng cách lát).",n.toFixed(2)))}if(t==="video-play-pause"){const n=m.querySelector("#surgery-video-player");n&&(n.paused?n.play():n.pause());return}if(t==="video-rewind-5"){const i=O()?.querySelector("#surgery-video-player");i&&(i.currentTime=Math.max(0,i.currentTime-5));return}if(t==="video-forward-5"){const i=O()?.querySelector("#surgery-video-player");i&&(i.currentTime=Math.min(i.duration||0,i.currentTime+5));return}if(t==="add-video-bookmark"){const i=O()?.querySelector("#surgery-video-player"),a=i?i.currentTime:0,r=B();let c="";typeof window<"u"&&typeof window.prompt=="function"&&(window.prompt._isMockFunction||window.prompt.mock!==void 0)&&(c=window.prompt(s("Nhập ghi chú / mốc phẫu thuật:"))||""),c||(c=$("Mốc {}",H(a))),o.videoBookmarks||(o.videoBookmarks=[]);const d={time:a,text:c};r?.id&&(d.seriesId=r.id,d.seriesName=r.name||r.patientName||"",d.fileIndex=et(r),d.createdAt=Date.now()),o.videoBookmarks.push(d),Qt(r),ti(r),k($("Đã đánh dấu mốc tại {}.",H(a)));return}if(t==="delete-video-bookmark"){const n=Number(e?.dataset?.idx);Number.isFinite(n)&&o.videoBookmarks&&o.videoBookmarks[n]&&(o.videoBookmarks.splice(n,1),Qt(B()),ti(),k(s("Đã xoá mốc phẫu thuật.")));return}if(t==="edit-video-bookmark"){const n=Number(e?.dataset?.idx);if(Number.isFinite(n)&&o.videoBookmarks&&o.videoBookmarks[n]){const i=o.videoBookmarks[n],r=O()?.querySelector(`#bm-text-${n}`);if(r&&!r.querySelector("input")){const c=i.text||"";r.innerHTML=`<input type="text" class="bookmark-inline-input" value="${l(c)}" />`;const d=r.querySelector("input");d.focus(),d.select();const u=()=>{const h=d.value.trim();i.text=h||s("Mốc phẫu thuật"),Qt(B()),ti()};d.onkeydown=h=>{h.key==="Enter"?(h.preventDefault(),u()):h.key==="Escape"&&Qt(B())},d.onblur=u}}return}if(t==="jump-other-clip-bookmark"){const n=e?.dataset?.seriesId,i=Number(e?.dataset?.fileIndex||0),a=Number(e?.dataset?.time||0);if(n&&o.archive?.series){const r=o.archive.series.find(c=>c.id===n);if(r){o.selectedId=n,i>0&&(o.mediaIndex={...o.mediaIndex||{},[n]:i}),o.videoWorkingPath=null,o._pendingVideoSeek=a,L(),re();const c=O()?.querySelector("#surgery-video-player");c&&(c.currentTime=a),k($("Đã chuyển sang clip: {} tại {}.",r.name||r.patientName,H(a)))}}return}if(t==="seek-video"){const n=Number(e?.dataset?.time||0),a=O()?.querySelector("#surgery-video-player");if(!a)return;Number.isFinite(Number(a.duration))&&Number(a.duration)>0||(o._pendingVideoSeek=n),a.currentTime=n,Cn(a),k($("Đã tua đến {}.",H(n)));return}if(t==="video-snapshot"){const i=O()?.querySelector("#surgery-video-player");if(i){const a=document.createElement("canvas");a.width=i.videoWidth||1280,a.height=i.videoHeight||720,a.getContext("2d").drawImage(i,0,0,a.width,a.height);const c=document.createElement("a");c.download=`snapshot_${Math.floor(i.currentTime)}s.png`,c.href=a.toDataURL("image/png"),c.click(),k(s("Đã lưu khung hình snapshot PNG."))}return}if(t==="seek-filmstrip-idx"){const n=Number(e?.dataset?.idx||0),i=Number(e?.dataset?.total||1),r=O()?.querySelector("#surgery-video-player");r&&r.duration&&(r.currentTime=n/i*r.duration,Cn(r));return}if(t==="video-set-in"||t==="video-set-out"){const n=O()?.querySelector("#surgery-video-player"),i=Number(n?.currentTime)||0;if(t==="video-set-in")o.videoIn=i,o.videoOut!==null&&o.videoOut<=i&&(o.videoOut=null);else{if(o.videoIn===null||i<=o.videoIn)throw new Error(s("Hãy đặt điểm đầu trước, ở vị trí sớm hơn điểm cuối."));o.videoOut=i}an(),k(t==="video-set-in"?$("Đã đặt điểm đầu tại {}.",H(i)):$("Đã chọn đoạn {} → {}.",H(o.videoIn),H(i)));return}if(t==="video-timing"){const n=e?.dataset?.timing==="span"?"span":"all";o.videoShapeTiming=n;const i=n==="span"?Zr():{startS:null,endS:null},a=U()?.selectedShape()||null,r=!!a&&U()?.restyleSelected(i);ut(),U()?.repaint();const c=n==="span"?Lt():null,d=c?`${H(c.start)} → ${H(c.end)}`:s("suốt video");k(r?$("Đã đổi “{}” sang hiện {}. Nét vẽ mới cũng vậy.",s(Ci(a.kind)),d):$("Nét vẽ mới sẽ hiện {}.",d));return}if(t==="video-clear-range"){o.videoIn=null,o.videoOut=null,an(),k(s("Đã bỏ đoạn đã đánh dấu."));return}if(t==="video-apply-shapes"){const n=B();if(!n)return;const i=At(n),a=Qa(i?.shapes||[]);if(!a.length)throw new Error(s("Chưa vẽ gì trên video để áp dụng."));const r=await _t(n);if(!r)throw new Error(s("Không tìm thấy đường dẫn video gốc."));const c=a.filter(u=>u.start_s!==void 0).length;k(c?$("Đang ghi {} nét vẽ vào video ({} nét theo mốc thời gian)...",a.length,c):$("Đang ghi {} nét vẽ vào toàn bộ video...",a.length));const d=await N("/api/media/video/burn-overlay",{method:"POST",body:JSON.stringify({path:r,shapes:a})});o.videoWorkingPath=d.outputPath,Ct(n,d),i.shapes=[],i.past=[],i.future=[],U()?.select(null),be(O()?.querySelector("#surgery-video-player"),d.url),ut(),k($("Đã ghi {} nét vẽ vào video.",a.length));return}if(t==="video-tool-trim"){const n=B();if(!n)return;const i=Lt();if(!i)throw new Error(s("Hãy đánh dấu điểm đầu (I) và điểm cuối (O) trên thanh tua trước."));k(s("Đang cắt video bằng FFmpeg..."));const a=await _t(n);if(!a)throw new Error(s("Không tìm thấy đường dẫn video gốc."));const r=await N("/api/media/video/trim",{method:"POST",body:JSON.stringify({path:a,startSeconds:i.start,endSeconds:i.end,reencode:!1})});o.videoWorkingPath=r.outputPath,Ct(n,r),o.videoIn=null,o.videoOut=null,be(O()?.querySelector("#surgery-video-player"),r.url),an(),k($("Đã cắt đoạn video ({:.1f}s - {:.1f}s) thành công.",i.start,i.end));return}if(t==="video-tool-burn-text"){const n=B();if(!n)return;const a=(typeof m<"u"&&m?m:typeof document<"u"?document:null)?.querySelector("#surgery-video-player"),r=`${n.patientName||"BN"} - ${new Date().toLocaleDateString()}`;k(s("Đang đóng dấu thông tin lên video..."));const c=await _t(n);if(!c)throw new Error(s("Không tìm thấy đường dẫn video gốc."));const d=await N("/api/media/video/burn-text",{method:"POST",body:JSON.stringify({path:c,overlays:[{text:r,x:24,y:24,fontSize:24,color:"yellow",box:!0}]})});o.videoWorkingPath=d.outputPath,Ct(n,d),a&&be(a,d.url),k(s("Đã đóng dấu thông tin lên video thành công."));return}if(t==="video-tool-filmstrip"){const n=B();if(!n)return;k(s("Đang trích xuất chuỗi khung hình filmstrip..."));const i=await _t(n);if(!i)throw new Error(s("Không tìm thấy đường dẫn video gốc."));const a=await N("/api/media/video/filmstrip",{method:"POST",body:JSON.stringify({path:i,count:6,maxWidth:160})});o.videoFilmstrip=a.frames||[],L(),re(),k($("Đã trích xuất {} khung hình filmstrip.",o.videoFilmstrip.length));return}if(t==="video-tool-transcode"){const n=B();if(!n)return;k(s("Đang tối ưu hoá mã hoá video MP4 (H.264)..."));const i=await _t(n);if(!i)throw new Error(s("Không tìm thấy đường dẫn video gốc."));const a=await N("/api/media/video/transcode",{method:"POST",body:JSON.stringify({path:i,crf:23,use_hw:!0})});o.videoWorkingPath=a.outputPath,Ct(n,a),L(),re();const c=(typeof m<"u"&&m?m:typeof document<"u"?document:null)?.querySelector("#surgery-video-player");c&&be(c,a.url),k(s("Đã tối ưu hoá và xuất video MP4 thành công."));return}if(t==="video-tool-concat"){const n=await lu();if(n.length<2)throw new Error(s("Cần ít nhất 2 clip video trong ca mổ để ghép."));o.concatClips=n,o.showConcatModal=!0,L();return}if(t==="close-concat-modal"){o.showConcatModal=!1,L();return}if(t==="toggle-concat-clip"){const n=Number(e?.dataset?.clipIdx);o.concatClips&&o.concatClips[n]&&(o.concatClips[n].selected=!o.concatClips[n].selected,L());return}if(t==="move-concat-clip-up"){const n=Number(e?.dataset?.clipIdx);if(o.concatClips&&n>0){const i=o.concatClips[n];o.concatClips[n]=o.concatClips[n-1],o.concatClips[n-1]=i,L()}return}if(t==="move-concat-clip-down"){const n=Number(e?.dataset?.clipIdx);if(o.concatClips&&n<o.concatClips.length-1){const i=o.concatClips[n];o.concatClips[n]=o.concatClips[n+1],o.concatClips[n+1]=i,L()}return}if(t==="start-concat-video"){const n=B();if(!n)return;const i=(o.concatClips||[]).filter(u=>u.selected);if(i.length<2)throw new Error(s("Cần chọn ít nhất 2 clip video để ghép."));k($("Đang chuẩn bị ghép {} clip video...",i.length));const a=i.map(u=>u.path).filter(Boolean);if(a.length<2)throw new Error(s("Không đủ số lượng file video hợp lệ để ghép."));o.showConcatModal=!1,L(),k($("Đang ghép {} clip video bằng FFmpeg...",a.length));const r=await N("/api/media/video/concat",{method:"POST",body:JSON.stringify({sources:a,targetHeight:o.concatTargetHeight||1080,targetFps:o.concatTargetFps||30})});o.videoWorkingPath=r.outputPath,Ct(n,r);const d=O()?.querySelector("#surgery-video-player");d&&be(d,r.url),k($("Đã ghép thành công {} đoạn video clip.",a.length));return}if(t==="video-tool-thumb"){const n=B();if(!n)return;const a=O()?.querySelector("#surgery-video-player"),r=a?a.currentTime:0;k($("Đang tạo ảnh đại diện thumbnail tại {:.1f}s...",r));const c=await _t(n);if(!c)throw new Error(s("Không tìm thấy đường dẫn video gốc."));const d=await N("/api/media/video/thumbnail",{method:"POST",body:JSON.stringify({path:c,atSeconds:r,maxWidth:480})});await ei(d.url,`thumb_${Math.floor(r)}s.jpg`),k($("Đã tạo ảnh đại diện thumbnail thành công ({:.1f}s).",r));return}if(t==="photo-rotate-cw"){await Xo(90);return}if(t==="photo-rotate-ccw"){await Xo(-90);return}if(t==="photo-pick-tool"){Tn(e?.dataset?.tool||"select");return}if(t==="photo-pick-color"){Yt({color:String(e?.dataset?.color||"#ff3b30")});return}if(t==="photo-delete-shape"){U()?.deleteSelected();return}if(t==="photo-clear-shapes"){U()?.clearShapes(),k(s("Đã xoá các nét vẽ chưa áp dụng."));return}if(t==="photo-zoom-in"){Ko(1.25);return}if(t==="photo-zoom-out"){Ko(.8);return}if(t==="photo-zoom-fit"){o.photoZoom=0,mo();return}if(t==="photo-apply-shapes"){const n=B();if(!n)return;const i=pe(n);if(!i)throw new Error(s("Chưa vẽ gì trên ảnh để áp dụng."));await cn(n),k($("Đã vẽ {} chi tiết lên ảnh.",i));return}if(t==="photo-apply-crop"){const n=B();if(!n)return;const i=U()?.cropRect();if(!i)throw new Error(s("Hãy kéo chuột trên ảnh để chọn vùng cần cắt."));const a=await cn(n,{silent:!0});k(s("Đang cắt ảnh..."));const r=await N("/api/media/photo/crop",{method:"POST",body:JSON.stringify({path:a,rect:i})});o.photoWorkingPath=r.outputPath,Ct(n,r),U()?.clearCrop(),oo(O()?.querySelector("#photo-editor-img"),r.url),Tn("select"),k($("Đã cắt ảnh còn {}×{} px.",i.width,i.height));return}if(t==="photo-export-image"){const n=B();if(!n)return;await cn(n,{silent:!0});const i=o.photoWorkingPath;if(!i)throw new Error(s("Ảnh chưa có chỉnh sửa nào; hãy mở file gốc trong thư mục hồ sơ."));const a=Gn(i);await ei(`/api/media/work-file?name=${encodeURIComponent(a)}`,`${n.patientName||"anh"}_${Date.now()}.jpg`),k(s("Đã tải ảnh đã chỉnh sửa về máy."));return}if(t==="photo-export-pdf"){const n=B();if(!n)return;k(s("Đang xuất file PDF..."));const i=o.photoWorkingPath?{sources:[o.photoWorkingPath]}:{seriesId:n.id},a=await N("/api/media/photo/export-pdf",{method:"POST",body:JSON.stringify(i)});await ei(a.url,`patient_document_${Date.now()}.pdf`),k($("Đã xuất PDF thành công: {}",a.outputPath));return}}catch(n){const i=String(n?.message||n);if(i.includes("Không đăng nhập được RIS")||i.includes("Không thể đăng nhập vào RIS")){o.showLoginCard=!0,o.loginCardAction=t,L();return}k(ht(n),!0)}}const Yo={volume3d:"orbit3d",mpr:"crosshair"};function du(t,e){return Yo[t]?Yo[t]:e==="orbit3d"||e==="crosshair"?"window":e}function ts(t=m||(typeof document<"u"?document:null)){t?.querySelectorAll('.toolbar .icon-button[data-action^="tool-"]').forEach(e=>{const n=e.dataset.action===`tool-${o.tool}`;e.classList.toggle("active",n),e.setAttribute("aria-pressed",n?"true":"false")})}const uu=[[/cachedSizeExceeded|Cache size|cacheSize/i,"Hết bộ đệm ảnh. Hãy đóng series khác hoặc chọn series ít lát hơn rồi thử lại."],[/Failed to fetch|NetworkError|load failed/i,"Mất kết nối tới dịch vụ nội bộ của ứng dụng. Hãy khởi động lại ứng dụng."],[/WebGL|GPU|context lost/i,"Trình kết xuất GPU gặp sự cố. Hãy khởi động lại ứng dụng; nếu lặp lại, cập nhật driver card đồ họa."]];function ht(t){const e=le(t?.message||String(t)),n=uu.find(([i])=>i.test(e));return n?`${s(n[1])} (${s("chi tiết")}: ${e})`:e}function hu(){const t={};return o.seriesInventory.forEach(e=>{e.studyUid&&e.studyUid!=="direct"&&e.attachments?.length&&(t[e.studyUid]=e.attachments)}),t}function ri(){const t={outputRoot:o.bootstrap.outputRoot,quality:Number(m.querySelector("#quality").value||100),showBrowser:m.querySelector("#show-browser").checked,downloadAllFiles:o.downloadAllFiles,downloadAttachments:!!o.downloadAttachments,attachments:Gr(),attachmentsByStudy:hu(),customUsername:o.customRisUser,customPassword:o.customRisPass};return o.showManualInfo&&(t.manualInfo={patientName:o.manualPatientName,patientId:o.manualPatientId,patientDob:o.manualPatientDob}),t}function go(t){t&&(t.mediaIndex=o.mediaIndex||{},t.mediaEdits=o.mediaEdits||{},t.photoLayers=o.photoLayers||{},t.videoIn=o.videoIn,t.videoOut=o.videoOut,t.photoWorkingPath=o.photoWorkingPath||null,t.videoWorkingPath=o.videoWorkingPath||null,t.videoBookmarks=o.videoBookmarks||[],t.videoFilmstrip=o.videoFilmstrip||[],t.lastMediaSeriesId=o._lastPhotoSeriesId||"",t.textDoc=o.textDoc||null)}function es(t){o.mediaIndex=t?.mediaIndex||{},o.mediaEdits=t?.mediaEdits||{},o.photoWorkingPath=t?.photoWorkingPath||null,o.videoWorkingPath=t?.videoWorkingPath||null,o.videoBookmarks=t?.videoBookmarks||[],o.videoFilmstrip=t?.videoFilmstrip||[],o._lastPhotoSeriesId=t?.lastMediaSeriesId||"",o.textDoc=t?.textDoc||null,o.photoLayers=t?.photoLayers||{},o.videoIn=t?.videoIn??null,o.videoOut=t?.videoOut??null,o.videoDuration=0,o.photoTool="select",o.photoZoom=0,Zi(),o.showConcatModal=!1,o.concatClips=[]}function yo(){es(null)}async function vo(t){if(o.activeTabId===t)return;const e=o.tabs.find(i=>i.id===o.activeTabId);if(e&&(e.archive=o.archive,e.selectedId=o.selectedId,e.compareIds=[...o.compareIds],e.mode=o.mode,e.tool=o.tool,e.windowPreset=o.windowPreset,e.mprPrimary=o.mprPrimary,e.status=o.status,e.editingPatientInfo=!!o.editingPatientInfo,o.editingPatientInfo?e.patientEditDraft=Sr(m?.querySelector("[data-field='patient-edit-form']"))||o.patientEditDraft:e.patientEditDraft=null,go(e)),Ce(),o.activeTabId=t,t==="worklist"){o.editingPatientInfo=!1,o.patientEditDraft=null,Ne(""),L();return}const n=o.tabs.find(i=>i.id===t);if(n){Ne(n.sessionId||""),o.archive=n.archive,lo(),o.selectedId=n.selectedId,o.compareIds=[...n.compareIds],o.mode=n.mode,o.tool=n.tool,o.windowPreset=n.windowPreset,o.mprPrimary=n.mprPrimary,o.status=n.status,o.editingPatientInfo=!!n.editingPatientInfo,o.patientEditDraft=n.patientEditDraft?{...n.patientEditDraft}:null,es(n);for(const i of o.archive.series)Kt(i)}L(),await Y()}async function pu(t){const e=o.tabs.findIndex(i=>i.id===t);if(e===-1)return;const n=o.tabs[e];if(n.sessionId&&N("/api/sessions/close",{method:"POST",body:JSON.stringify({sessionId:n.sessionId})}).catch(()=>{}),o.tabs.splice(e,1),pr(o.activeTabId===t?"":o.selectedId),o.activeTabId===t){const i=o.tabs[e]||o.tabs[e-1],a=i?i.id:"worklist";await vo(a)}else L()}const fu=/screen\s*save|dose\s*report|scout|localiz|survey|patient\s*protocol|summary/i;function ns(t){const e=(t||[]).filter(Boolean);if(e.length===0)return"";const n=e.filter(u=>(u.mediaType||"dicom")==="dicom"),i=n.length?n:e,a=i.reduce((u,h)=>{const p=String(h.studyDate||"");return p>u?p:u},""),r=a?i.filter(u=>String(u.studyDate||"")===a):i,c=u=>fu.test(String(u.description||u.name||""))?1:0;return[...r].sort((u,h)=>{const p=c(u)-c(h);return p!==0?p:(Number(h.sliceCount)||0)-(Number(u.sliceCount)||0)})[0]?.id||e[0].id}let Zo=0;function bo(t={}){return Zo+=1,{id:`tab-${Date.now()}-${Zo}`,sessionId:"",folder:"",patientId:"",patientName:"",archive:{root:"",series:[]},loading:!1,loadError:"",selectedId:"",compareIds:["",""],mode:"single",tool:"window",windowPreset:null,mprPrimary:"axial",scrollLinked:!1,status:s("Sẵn sàng."),editingPatientInfo:!1,patientEditDraft:null,mediaIndex:o.mediaIndex,mediaEdits:o.mediaEdits,photoLayers:{},videoIn:null,videoOut:null,photoWorkingPath:null,videoWorkingPath:null,videoBookmarks:[],videoFilmstrip:[],lastMediaSeriesId:"",textDoc:null,...t}}function Mn(t,e,n="",i=""){const a=o.tabs.find(u=>u.id===t);if(!a)return!1;const r=e||{root:"",series:[]},c=r.series||[];for(const u of c)Kt(u);const d=c.some(u=>u.id===a.selectedId)?a.selectedId:ns(c);return a.archive=r,a.loading=!1,a.loadError="",n&&(a.sessionId=n),a.folder=i||r.root||a.folder||"",a.patientId=r.patient?.patientId||a.patientId||"",a.patientName=r.patient?.patientName||a.patientName||(r.root?r.root.split(/[\\/]/).pop():""),a.selectedId=d,a.mode="single",a.tool="window",a.windowPreset=vn(c.find(u=>u.id===d)),a.status=s("Sẵn sàng."),o.activeTabId!==t?(L(),!0):(Ne(a.sessionId||""),o.archive=r,lo(),o.selectedId=d,o.mode=a.mode,o.tool=a.tool,o.windowPreset=a.windowPreset,er("compare3"),a.compareIds=[...o.compareIds],L(),Y(),!0)}function is(t,e="",n=""){const i=o.tabs.find(a=>a.id===o.activeTabId);if(!i||o.activeTabId==="worklist"){yo(),o.editingPatientInfo=!1,o.patientEditDraft=null;const a=bo({sessionId:e||"",folder:n||t?.root||""});return o.tabs.push(a),o.activeTabId=a.id,Mn(a.id,t,e,n),a.id}return Mn(i.id,t,e,n),i.id}function Y(){if(o.activeTabId==="worklist"||x.editing)return Promise.resolve();const t=B();if(!t)return ve;const e=K(t);if(e==="text")return Ce(),o.busyViewer=!1,m.querySelector(".status-dot")?.classList.remove("busy"),Si(t,io(t)?.index||0),Promise.resolve();if(e==="pdf")return Ce(),o.busyViewer=!1,O()?.querySelector(".status-dot")?.classList.remove("busy"),kr(),k(s("Sẵn sàng.")),Promise.resolve();if(e==="video"||e==="photo"||e==="doc"){o._lastPhotoSeriesId!==t.id&&(o._lastPhotoSeriesId=t.id,pr(t.id),mr(t),o.photoRotation=0,o.videoFilmstrip=[],o._videoInfoLoaded=!1),Ce(),o.busyViewer=!1;const u=document.querySelector("#workspace");return u&&(u.classList.remove("busy"),delete u.dataset.loadingText),m.querySelector(".status-dot")?.classList.remove("busy"),k(s("Sẵn sàng.")),re(),Promise.resolve()}const n=o.mode,i=Hc(),a=++Jt,r=document.querySelector("#workspace");if(!r)return ve;const c=n==="mpr"?$("Đang dựng MPR từ {} lát…",t.sliceCount):n==="volume3d"?$("Đang dựng mô hình 3D từ {} lát…",t.sliceCount):s("Đang mở ảnh…");o.busyViewer=!0,window.__viewerReadyMode="",r.dataset.loadingText=c,r.classList.add("busy"),m.querySelector(".status-dot")?.classList.add("busy"),k(c);const d=async()=>{const u=r;if(a!==Jt||!u.isConnected){u.classList.remove("busy"),delete u.dataset.loadingText;return}o.busyViewer=!0,window.__viewerReadyMode="";const h=n==="mpr"?$("Đang dựng MPR từ {} lát…",t.sliceCount):n==="volume3d"?$("Đang dựng mô hình 3D từ {} lát…",t.sliceCount):s("Đang mở ảnh…");u.dataset.loadingText=h,u.classList.add("busy"),m.querySelector(".status-dot")?.classList.add("busy"),k(h);try{if(await ac()===-1&&k(s("Không lưu được phép đo trước khi đổi khung xem."),!0),await new Promise(C=>requestAnimationFrame(()=>requestAnimationFrame(C))),a!==Jt||!u.isConnected)return;let f=o.tool;if(n==="mpr"?f=await Ul(u,t,o.mprPrimary,o.tool):n==="volume3d"?f=await Jl(u,t,o.tool):f=await Gl(u,t,n,i,o.tool),a!==Jt||!u.isConnected)return;f&&f!==o.tool&&(o.tool=f,ts());const y=Aa();if(y!==o.scaleOverlay){o.scaleOverlay=y;const C=m.querySelector("[data-action='scale-overlay']");C&&(C.classList.toggle("active",y),C.setAttribute("aria-pressed",y?"true":"false"))}if(n==="compare"||n==="compare3"){const C=Ui();o.scrollSync=C.enabled;const b=m.querySelector("[data-action='scroll-sync']");b&&(b.classList.toggle("active",o.scrollSync),b.setAttribute("aria-pressed",o.scrollSync?"true":"false"),b.title=s(o.scrollSync?"Đang khoá cuộn theo vị trí — bấm để cuộn từng khung riêng":"Cuộn từng khung riêng — bấm để khoá theo độ lệch hiện tại"))}n!=="volume3d"&&o.windowPreset!=="full"&&await qe(o.windowPreset),window.__lastViewerError=null,window.__viewerReadyMode=n,window.__viewerDiagnostics=mt()}catch(p){if(p?.superseded||a!==Jt||!u.isConnected)return;const f=ht(p);window.__lastViewerError={message:p?.message||String(p),stack:p?.stack||""},u.innerHTML=`<div class="empty-state error"><b>${l(s("Không mở được khung xem"))}</b>
+        <span>${l(f)}</span>
+        <button class="primary" data-action="retry-viewer">${l(s("Thử lại"))}</button></div>`,u.querySelector("[data-action='retry-viewer']")?.addEventListener("click",()=>Y()),k(f,!0)}finally{u.classList.remove("busy"),delete u.dataset.loadingText,a===Jt&&(o.busyViewer=!1,m.querySelector(".status-dot")?.classList.remove("busy"))}};return ve=ve.catch(()=>{}).then(d),ve}function k(t,e=!1){o.status=t,o.isError=!!e;const i=(m||(typeof document<"u"?document.querySelector("#app"):null))?.querySelector(".status-bar");if(i){i.classList.toggle("error",o.isError);const a=i.querySelector(".status-text");a&&(a.textContent=t)}}const Qo={1:"window",2:"pan",3:"zoom",4:"length",5:"angle",6:"ellipse",7:"freehand",8:"text"};function mu(t){return!!t?.closest?.("input, textarea, select")}function gu(t){const e=B();if(!Vn(e)||!U())return!1;if(t.ctrlKey||t.metaKey){const i=t.key.toLowerCase();return i==="z"?(t.preventDefault(),F(t.shiftKey?"media-edit-redo":"media-edit-undo"),!0):i==="y"?(t.preventDefault(),F("media-edit-redo"),!0):t.key==="Enter"?(t.preventDefault(),F("photo-apply-shapes"),!0):!1}if(t.altKey)return!1;if(t.key==="Delete"||t.key==="Backspace")return t.preventDefault(),F("photo-delete-shape"),!0;if(t.key==="Escape")return U()?.clearCrop(),U()?.select(null),ut(),!0;if(t.key==="+"||t.key==="=")return F("photo-zoom-in"),!0;if(t.key==="-"||t.key==="_")return F("photo-zoom-out"),!0;if(t.key==="0")return F("photo-zoom-fit"),!0;if(t.key===" "&&vr(e))return t.preventDefault(),!0;if(K(e)==="video"){if(t.key.toLowerCase()==="i")return F("video-set-in"),!0;if(t.key.toLowerCase()==="o")return F("video-set-out"),!0;if(t.key===" ")return t.preventDefault(),F("video-play-pause"),!0}const n=Hn.find(i=>i.key.toLowerCase()===t.key.toLowerCase());return n?(Tn(n.id),!0):!1}function yu(){window.addEventListener("keydown",t=>{if(t.key==="F11"){t.preventDefault(),F("window-fullscreen");return}if(t.key==="Escape"&&document.querySelector(".app-shell.zen-mode")){t.preventDefault(),F("window-fullscreen");return}if(mu(t.target))return;if(t.key==="["&&!t.ctrlKey&&!t.altKey&&!t.metaKey&&o.activeTabId!=="worklist"){t.preventDefault(),F("toggle-patient-rail");return}if(gu(t))return;if(t.key==="Tab"&&!t.ctrlKey&&!t.altKey&&!t.metaKey&&!t.shiftKey&&document.querySelector(".viewport-maximized")){t.preventDefault(),Hl();return}if(t.ctrlKey&&t.key.toLowerCase()==="z"){t.preventDefault(),F("undo-annotation");return}if(t.ctrlKey||t.altKey||t.metaKey||o.busyViewer||!o.archive.series.length)return;const e={ArrowLeft:-1,ArrowUp:-1,PageUp:-5,ArrowRight:1,ArrowDown:1,PageDown:5};if(t.key in e){Ro(e[t.key])&&t.preventDefault();return}if(t.key==="Home"||t.key==="End"){const i=B();i&&Ro(t.key==="Home"?-i.sliceCount:i.sliceCount)&&t.preventDefault();return}if(Qo[t.key]){F(`tool-${Qo[t.key]}`);return}if(t.key==="R"){F("reset-all");return}const n=t.key.toLowerCase();n==="c"?F("tool-crosshair"):n==="r"?F("reset"):n==="i"?F("invert"):n==="s"?F("save-annotations"):n==="p"?F("capture"):t.key===" "&&(t.preventDefault(),F("cine"))})}let ct=null;function ft(){ct&&window.clearInterval(ct),ct=window.setInterval(ta,1e3),ta()}function Ii(){const t=m.querySelector(".study-list");t&&(t.innerHTML=Wr());const e=m.querySelector(".patient-status");e&&(e.innerHTML=Kr()),m.querySelectorAll("[data-study-index]").forEach(n=>{n.addEventListener("change",()=>Yr(n))}),vt()}async function ta(){const t=await N("/api/job");if(o.bootstrap.job=t,o.job=t,Wd(),t.kind==="search"&&t.status==="complete"){const n=Array.isArray(t.result)?t.result:t.result?.studies||[];o.patient=Array.isArray(t.result)?null:t.result?.patient||null,o.studies=ol(n,!!o.patient?.nameConflict),Ii()}if(t.kind==="series-discovery"&&t.status==="complete"){const n=Array.isArray(t.result?.groups)?t.result.groups:[];o.seriesInventory=ga(n,o.rememberedSeriesSelections),Jr(o.seriesInventory),window.clearInterval(ct),ct=null,gt(),vt(),k($("Đã quét {} nhóm series; hãy bỏ tích những series không muốn tải.",o.seriesInventory.length));return}if(["download","direct-download","local-import"].includes(t.kind)&&t.status==="complete"){const n=t.result?.archive;if(t.result?.patient&&(o.patient=t.result.patient),Array.isArray(t.result?.studies)){const i=new Map(t.result.studies.map(a=>[a.study_uid,a.local_status]));o.studies.forEach(a=>{i.has(a.study_uid)&&(a.local_status=i.get(a.study_uid))})}if(n){window.clearInterval(ct),ct=null;const i=t.result?.patientFolder||t.result?.output||n.root||"",a=t.result?.sessionId||"";if(!a){k(s("Không tạo được phiên riêng cho hồ sơ vừa tải."),!0),$e(),rt();return}const r=o.tabs.find(d=>fo(d.folder,i));let c=r?r.id:"";if(!r){const d=o.activeTabId==="worklist";d&&(yo(),o.editingPatientInfo=!1,o.patientEditDraft=null);const u=bo({folder:i});o.tabs.push(u),d&&(o.activeTabId=u.id),c=u.id}Mn(c,n,a,i),$e(),rt({silent:!0});return}}if(t.kind==="archive"&&t.status==="complete"){window.clearInterval(ct),ct=null,is(t.result||{root:"",series:[]}),$e();return}const e=m.querySelector(".job-log");if(e){const n=e.scrollHeight-e.scrollTop-e.clientHeight<=35,i=e.scrollTop;e.textContent=(t.logs||[]).map(le).join(`
+`),n?e.scrollTop=e.scrollHeight:e.scrollTop=i}if(o.busyViewer||k(le(t.message||t.status)),["complete","error","stopped"].includes(t.status)){if(window.clearInterval(ct),ct=null,t.status==="error"&&(String(t.message).includes("Không đăng nhập được RIS")||String(t.message).includes("Không thể đăng nhập vào RIS"))){o.showLoginCard=!0,o.loginCardAction=t.kind==="search"?"search":t.kind==="series-discovery"?"discover-series":"download-selected",L();return}$e(),rt()}}async function vu(t){if(!window.pywebview?.api?.read_clipboard)return"";try{return(await window.pywebview.api.read_clipboard())?.[t]||""}catch{return""}}function Pn(t){const e=m.querySelector(`[data-action="clear-${t.id}"]`);e&&(e.hidden=!t.value)}async function bu(t,e){const n=await vu(e);return!n||n===t.value.trim()?!1:(t.value=n,e==="url"&&(o.lastDirectUrl=n,Xn(n)),Pn(t),!0)}async function wu(t,e){t.value="",e==="url"&&(o.lastDirectUrl="",Xn("")),Pn(t),t.focus()}function ku(t,e){t.addEventListener("input",()=>{e==="url"&&(o.lastDirectUrl=t.value),Pn(t)}),Pn(t)}function $u(){for(const{id:t,kind:e}of Qi){const n=m.querySelector(`#${t}`);n&&ku(n,e)}}async function ea(){for(const{id:t,kind:e}of Qi){const n=m.querySelector(`#${t}`);n&&await bu(n,e)}}function os(){Sl({label:s("Nội dung ghi chú"),confirm:s("Thêm"),cancel:s("Bỏ")})}async function xu(){if(!m)return;if(!Fc)throw new Error(s("Thiếu token phiên local."));o.bootstrap=await N("/api/bootstrap"),sa(o.bootstrap.language||"en"),os(),o.history=Array.isArray(o.bootstrap.history)?o.bootstrap.history:[],o.sourceFolders=Array.isArray(o.bootstrap.sourceFolders)?o.bootstrap.sourceFolders:[];const t=o.bootstrap.worklist||{};o.worklistPatients=Array.isArray(t.patients)?t.patients:[],o.worklistLoaded=!t.deferred||o.worklistPatients.length>0,o.worklistScannedAt=String(t.scannedAt||""),o.worklistRevision=String(o.bootstrap.worklistRevision||""),o.worklistLoading=!1,o.worklistError="",o.lastDirectUrl=o.bootstrap.lastDirectUrl||"",o.showManualInfo=!!o.lastDirectUrl.trim(),o.status="Đang khởi động...",o.archive=o.bootstrap.archive;const e=o.bootstrap.archiveSessionId||"";if(e&&Ne(e),lo(),o.selectedId=ns(o.archive.series),o.compareIds=[o.archive.series[1]?.id||o.selectedId,o.archive.series[2]?.id||o.archive.series[1]?.id||o.selectedId],o.archive.series&&o.archive.series.length>0){const n=o.archive.root?o.archive.root.split(/[\\/]/).pop():o.archive.patient?.patientName||"Bệnh nhân 1",i={id:"tab-init",sessionId:e,folder:o.archive.root||"",patientId:o.archive.patient?.patientId||"",patientName:o.archive.patient?.patientName||n,archive:o.archive,selectedId:o.selectedId,compareIds:[...o.compareIds],mode:o.mode,tool:o.tool,windowPreset:o.windowPreset,mprPrimary:"axial",scrollLinked:!1,status:"Sẵn sàng.",editingPatientInfo:!1,patientEditDraft:null};go(i),o.tabs.push(i),o.activeTabId=i.id}else o.activeTabId="worklist";for(const n of o.archive.series)Kt(n);await xl({onStatus:(n,i)=>{k(n);const a=document.querySelector("#workspace.busy");a&&i&&(a.dataset.loadingText=`${n} (${i.loaded}/${i.total})`)}}),m.addEventListener("mprprimarychange",n=>{n.detail?.plane&&(o.mprPrimary=n.detail.plane)}),yu(),Ud(),window.addEventListener("pagehide",Il),window.addEventListener("focus",ea),o.status=s("Sẵn sàng. Nhấn ⌨ trên thanh công cụ để xem phím tắt."),L(),ea(),rt({silent:o.worklistPatients.length>0}),Sd(),await Y()}const Su=typeof globalThis.process<"u"&&!!Ac?.VITEST||typeof import.meta<"u"&&!1;Su||xu().catch(t=>{/\b(401|403)\b/.test(String(t?.message||""))&&_c(),m.innerHTML=`<div class="fatal-error"><b>${l(s("Không khởi động được DICOM/JPG Downloader & Viewer"))}</b>
+      <pre>${l(t.stack||t.message)}</pre>
+      <button class="primary" id="fatal-reload">${l(s("Tải lại"))}</button></div>`,document.querySelector("#fatal-reload")?.addEventListener("click",()=>location.reload())});

@@ -546,7 +546,7 @@ function renderTumorForm(tumor, index) {
         </label>
         ${datalist(`dx-axis-${index}`, axes)}
       </div>
-      <label class="dxf-field">
+      <label class="dxf-field dxf-wide">
         <span>${escapeHtml(t("Mô bệnh học"))}</span>
         ${combo("histology", tumor.histology, "dx-histologies", t("Chọn hoặc gõ chẩn đoán"))}
       </label>
@@ -565,7 +565,7 @@ function renderTumorForm(tumor, index) {
         ${dateField("confirmedAt", tumor.confirmedAt)}
       </label>
       ${renderMolecular(tumor, index)}
-      <label class="dxf-field">
+      <label class="dxf-field dxf-wide">
         <span>${escapeHtml(t("Ghi chú khối u"))}</span>
         <textarea class="dxf-input" rows="2" data-clinical-field="note"
           placeholder="${escapeHtml(t("Tuỳ chọn"))}">${escapeHtml(tumor.note || "")}</textarea>
@@ -644,7 +644,7 @@ function renderEventForm(event, index) {
           </label>
         </div>
       ` : ""}
-      <label class="dxf-field">
+      <label class="dxf-field dxf-wide">
         <span>${escapeHtml(t("Ghi chú"))}</span>
         <textarea class="dxf-input" rows="2" data-clinical-field="note"
           placeholder="${escapeHtml(t("Tuỳ chọn"))}">${escapeHtml(event.note || "")}</textarea>
@@ -653,15 +653,21 @@ function renderEventForm(event, index) {
   `;
 }
 
-function renderEditor() {
+/** The lists every combo box in the form reads from. */
+function formDatalists() {
   const lists = vocab();
-  const draft = clinicalState.draft || emptyRecord();
   return `
     ${datalist("dx-histologies", lists.histologies)}
     ${datalist("dx-markers", lists.molecularMarkers)}
     ${datalist("dx-extents", lists.resectionExtents)}
     ${datalist("dx-techniques", lists.radiotherapyTechniques)}
     ${datalist("dx-regimens", lists.chemoRegimens)}
+  `;
+}
+
+/** What the tumour is: one block per tumour described. */
+function renderDiagnosisSection(draft) {
+  return `
     <div class="dxf-section">
       <div class="dxf-section-head">
         <b>${escapeHtml(t("Chẩn đoán"))}</b>
@@ -673,6 +679,12 @@ function renderEditor() {
         ? draft.tumors.map(renderTumorForm).join("")
         : `<p class="dxf-empty">${escapeHtml(t("Chưa có khối u nào được mô tả."))}</p>`}
     </div>
+  `;
+}
+
+/** Where treatment has got to: one block per course or operation. */
+function renderTreatmentSection(draft) {
+  return `
     <div class="dxf-section">
       <div class="dxf-section-head">
         <b>${escapeHtml(t("Điều trị"))}</b>
@@ -683,6 +695,49 @@ function renderEditor() {
       ${draft.events.length
         ? draft.events.map(renderEventForm).join("")
         : `<p class="dxf-empty">${escapeHtml(t("Chưa có mốc điều trị nào."))}</p>`}
+    </div>
+  `;
+}
+
+/**
+ * The form, filling the reading pane beside the images.
+ *
+ * It used to live inside the rail card, and it did not fit: one tumour and one
+ * course of treatment came to roughly 870px of form in a 246px-wide card that
+ * the rail squashed to 390px. `.rec-card` hides its overflow, so the fields
+ * below that line were not merely off-screen, they were unreachable — the rail
+ * had nothing left to scroll. Out here the fields get the width of the pane
+ * and the form scrolls on its own, while the rail keeps the summary.
+ */
+export function renderClinicalWorkspace(patient = {}) {
+  const draft = clinicalState.draft || emptyRecord();
+  const identity = [patient.patientName, patient.patientId]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join(" · ");
+  return `
+    <div class="dx-workspace">
+      ${formDatalists()}
+      <header class="dxw-bar">
+        <div class="dxw-title">
+          <b>${escapeHtml(t("Hồ sơ lâm sàng"))}</b>
+          ${identity ? `<span class="dxw-patient">${escapeHtml(identity)}</span>` : ""}
+        </div>
+        <div class="dxw-actions">
+          <button class="dxw-btn primary" type="button" data-action="save-clinical"
+            ${clinicalState.saving ? "disabled" : ""}>${escapeHtml(
+              clinicalState.saving ? t("Đang lưu…") : t("Lưu"))}</button>
+          <button class="dxw-btn" type="button" data-action="cancel-clinical"
+            >${escapeHtml(t("Đóng"))}</button>
+        </div>
+      </header>
+      ${clinicalState.error ? `
+        <p class="dxf-error" role="alert">${escapeHtml(clinicalState.error)}</p>
+      ` : ""}
+      <div class="dxw-body">
+        <section class="dxw-col">${renderDiagnosisSection(draft)}</section>
+        <section class="dxw-col">${renderTreatmentSection(draft)}</section>
+      </div>
     </div>
   `;
 }
@@ -746,35 +801,46 @@ function renderReader() {
   `;
 }
 
-/** The whole card, in whichever of its two modes is showing. */
+/**
+ * The record as it stands, in the patient rail.
+ *
+ * Reading only: the pencil opens the form in the reading pane rather than
+ * unfolding it here, where it never fitted. What is on screen is always the
+ * record on disk, so a draft being typed next door cannot be mistaken for
+ * something already saved.
+ */
 export function renderClinicalCard() {
   const chip = stageChip(clinicalState.stage);
   const editing = clinicalState.editing;
+  // A draft with the form closed: the doctor opened a study while part-way
+  // through. Nothing typed is lost, and the card says so rather than showing
+  // the old record as though the edit had been abandoned.
+  const pendingDraft = Boolean(clinicalState.draft) && !editing;
   return `
     <div class="rec-card dx-card${editing ? " editing" : ""}">
       <div class="rec-card-header">
         <b>${escapeHtml(t("Hồ sơ lâm sàng"))}</b>
         <div class="rec-card-actions">
-          ${editing ? `
-            <button class="mini-btn primary" type="button" data-action="save-clinical"
-              ${clinicalState.saving ? "disabled" : ""}
-              title="${escapeHtml(t("Lưu hồ sơ lâm sàng"))}">✓</button>
-            <button class="mini-btn" type="button" data-action="cancel-clinical"
-              title="${escapeHtml(t("Hủy"))}">✕</button>
-          ` : clinicalState.canWrite ? `
+          ${clinicalState.canWrite && !editing ? `
             <button class="mini-btn" type="button" data-action="edit-clinical"
               title="${escapeHtml(t("Sửa hồ sơ lâm sàng"))}">✎</button>
           ` : ""}
         </div>
       </div>
-      ${chip && !editing ? `
+      ${editing ? `
+        <p class="dx-hint">${escapeHtml(t("Đang sửa ở khung bên phải."))}</p>
+      ` : ""}
+      ${pendingDraft ? `
+        <p class="dx-hint pending">${escapeHtml(t("Còn bản sửa chưa lưu."))}</p>
+      ` : ""}
+      ${chip ? `
         <div class="dx-stage">
           <span class="dx-stage-chip ${escapeHtml(chip.tone)}" title="${escapeHtml(chip.title)}"
             >${escapeHtml(chip.text)}</span>
           ${chip.where ? `<span class="dx-stage-where">${escapeHtml(chip.where)}</span>` : ""}
         </div>
       ` : ""}
-      ${clinicalState.error ? `
+      ${clinicalState.error && !editing ? `
         <p class="dxf-error" role="alert">${escapeHtml(clinicalState.error)}</p>
       ` : ""}
       ${clinicalState.loading
@@ -783,7 +849,7 @@ export function renderClinicalCard() {
           ? `<p class="dxf-empty">${escapeHtml(
               clinicalState.reason
               || t("Thư mục này chưa có patient-index.json nên chưa ghi được hồ sơ lâm sàng."))}</p>`
-          : editing ? renderEditor() : renderReader()}
+          : renderReader()}
     </div>
   `;
 }

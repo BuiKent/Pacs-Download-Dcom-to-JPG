@@ -16,10 +16,8 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { setLanguage } from "./i18n.js";
 import {
   state,
-  bindEvents,
-  bindClinicalCard,
   refreshTimelinePhases,
-  renderPatientRail,
+  render,
   renderWorklistTreeInner,
   filteredPatientList,
 } from "./main.js";
@@ -40,16 +38,32 @@ import {
 
 const originalFetch = global.fetch;
 
-/** Put the rail on screen and wire it the way `render()` does. */
-function mountRail() {
-  document.body.innerHTML = `<div id="app">${renderPatientRail()}</div>`;
-  bindEvents();
-  bindClinicalCard();
+/**
+ * Put the whole shell on screen, the way the app does.
+ *
+ * Not the rail alone any more: the form opens in the reading pane, so a test
+ * that mounted only the rail would be driving a card whose pencil leads
+ * somewhere that does not exist.
+ */
+function mountApp() {
+  if (!document.querySelector("#app")) document.body.innerHTML = '<div id="app"></div>';
+  render();
   return document.querySelector("#app");
 }
 
+/** The summary in the patient rail. */
 function card() {
   return document.querySelector("#app .dx-card");
+}
+
+/** The form, in the pane where the images otherwise are. */
+function form() {
+  return document.querySelector("#app #workspace .dx-workspace");
+}
+
+/** Let every repaint the press set off finish. */
+async function settle() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 /** Press a button the way a person does, then let the repaint settle. */
@@ -57,7 +71,7 @@ async function press(selector) {
   const button = document.querySelector(selector);
   expect(button, `no button matched ${selector}`).not.toBeNull();
   button.click();
-  await Promise.resolve();
+  await settle();
   return button;
 }
 
@@ -111,7 +125,7 @@ describe("Clinical record card", () => {
   });
 
   it("says nothing has been recorded rather than showing an empty form", () => {
-    mountRail();
+    mountApp();
     expect(card()).not.toBeNull();
     expect(card().textContent).toContain("Chưa ghi hồ sơ lâm sàng cho bệnh nhân này");
     // No stage chip at all: a patient nobody has recorded anything about is not
@@ -119,19 +133,38 @@ describe("Clinical record card", () => {
     expect(card().querySelector(".dx-stage-chip")).toBeNull();
   });
 
-  it("opens the form when the pencil is clicked", async () => {
-    mountRail();
+  it("opens the form in the reading pane, not inside the rail card", async () => {
+    // The rail column is 246px wide and `.rec-card` hides its overflow, so a
+    // form unfolded in there was squashed by the flex column with nothing left
+    // to scroll — the fields below the fold could not be reached at all.
+    mountApp();
     await press("[data-action='edit-clinical']");
 
     expect(clinicalState.editing).toBe(true);
-    expect(card().querySelector("[data-action='clinical-add-tumor']")).not.toBeNull();
-    expect(card().querySelector("[data-action='save-clinical']")).not.toBeNull();
+    expect(form()).not.toBeNull();
+    expect(form().querySelector("[data-action='clinical-add-tumor']")).not.toBeNull();
+    expect(form().querySelector("[data-action='save-clinical']")).not.toBeNull();
+    // Nothing to type into in the rail: the card is the summary.
+    expect(card().querySelector("[data-clinical-field]")).toBeNull();
+    expect(card().textContent).toContain("Đang sửa ở khung bên phải");
+  });
+
+  it("gives the reading pane back when the form is closed", async () => {
+    mountApp();
+    await press("[data-action='edit-clinical']");
+    expect(form()).not.toBeNull();
+
+    await press("[data-action='cancel-clinical']");
+
+    expect(clinicalState.editing).toBe(false);
+    expect(form()).toBeNull();
+    expect(card().querySelector("[data-action='edit-clinical']")).not.toBeNull();
   });
 
   it("keeps its buttons alive after the card repaints itself", async () => {
     // The card replaces its own markup with `outerHTML` on every structural
     // change. A binder that runs once would leave the second press dead.
-    mountRail();
+    mountApp();
     await press("[data-action='edit-clinical']");
     await press("[data-action='clinical-add-tumor']");
     await press("[data-action='clinical-add-tumor']");
@@ -139,13 +172,13 @@ describe("Clinical record card", () => {
     expect(clinicalState.draft.tumors).toHaveLength(2);
     // Scoped to the blocks: the "Xoá" and "Thêm dấu ấn" buttons inside each
     // one carry the same index attribute.
-    expect(card().querySelectorAll(".dxf-block[data-tumor-index]")).toHaveLength(2);
+    expect(form().querySelectorAll(".dxf-block[data-tumor-index]")).toHaveLength(2);
   });
 
   it("presses a button once per click and not twice", async () => {
-    // `bindEvents` sweeps every [data-action] in the shell and the card binds
+    // `bindEvents` sweeps every [data-action] in the shell and the form binds
     // its own; without the shared WeakSet one press added two tumours.
-    mountRail();
+    mountApp();
     await press("[data-action='edit-clinical']");
     await press("[data-action='clinical-add-tumor']");
 
@@ -153,11 +186,11 @@ describe("Clinical record card", () => {
   });
 
   it("offers a list and still takes a diagnosis typed in full", async () => {
-    mountRail();
+    mountApp();
     await press("[data-action='edit-clinical']");
     await press("[data-action='clinical-add-tumor']");
 
-    const histology = card().querySelector("[data-clinical-field='histology']");
+    const histology = form().querySelector("[data-clinical-field='histology']");
     // A combobox, not a select: the list is on the element, and the value is
     // whatever the person leaves in it.
     expect(histology.tagName).toBe("INPUT");
@@ -169,13 +202,13 @@ describe("Clinical record card", () => {
   });
 
   it("swaps the location list when the compartment changes", async () => {
-    mountRail();
+    mountApp();
     await press("[data-action='edit-clinical']");
     await press("[data-action='clinical-add-tumor']");
 
-    type(card().querySelector("[data-clinical-field='compartment']"), "Tuỷ sống");
+    type(form().querySelector("[data-clinical-field='compartment']"), "Tuỷ sống");
 
-    const listId = card().querySelector("[data-clinical-field='location']").getAttribute("list");
+    const listId = form().querySelector("[data-clinical-field='location']").getAttribute("list");
     const options = [...document.getElementById(listId).querySelectorAll("option")]
       .map((option) => option.value);
     expect(options).toContain("Nón tuỷ");
@@ -183,17 +216,17 @@ describe("Clinical record card", () => {
   });
 
   it("asks about fractions for radiotherapy and about cycles for chemotherapy", async () => {
-    mountRail();
+    mountApp();
     await press("[data-action='edit-clinical']");
     await press("[data-action='clinical-add-event']");
 
-    type(card().querySelector("[data-clinical-field='kind']"), "Xạ");
-    expect(card().querySelector("[data-clinical-field='fractions']")).not.toBeNull();
-    expect(card().querySelector("[data-clinical-field='cycles']")).toBeNull();
+    type(form().querySelector("[data-clinical-field='kind']"), "Xạ");
+    expect(form().querySelector("[data-clinical-field='fractions']")).not.toBeNull();
+    expect(form().querySelector("[data-clinical-field='cycles']")).toBeNull();
 
-    type(card().querySelector("[data-clinical-field='kind']"), "Hoá");
-    expect(card().querySelector("[data-clinical-field='cycles']")).not.toBeNull();
-    expect(card().querySelector("[data-clinical-field='fractions']")).toBeNull();
+    type(form().querySelector("[data-clinical-field='kind']"), "Hoá");
+    expect(form().querySelector("[data-clinical-field='cycles']")).not.toBeNull();
+    expect(form().querySelector("[data-clinical-field='fractions']")).toBeNull();
   });
 
   it("sends what was typed, and shows what came back", async () => {
@@ -226,12 +259,12 @@ describe("Clinical record card", () => {
       };
     });
 
-    mountRail();
+    mountApp();
     await press("[data-action='edit-clinical']");
     await press("[data-action='clinical-add-tumor']");
-    type(card().querySelector("[data-clinical-field='histology']"),
+    type(form().querySelector("[data-clinical-field='histology']"),
       "U nguyên bào thần kinh đệm, IDH tự nhiên");
-    type(card().querySelector("[data-clinical-field='grade']"), "4");
+    type(form().querySelector("[data-clinical-field='grade']"), "4");
     await press("[data-action='save-clinical']");
     await Promise.resolve();
     await Promise.resolve();
@@ -252,9 +285,9 @@ describe("Clinical record card", () => {
       tumors: [{ id: "t1", histology: "U màng não", grade: "1", molecular: {} }],
       events: [],
     };
-    mountRail();
+    mountApp();
     await press("[data-action='edit-clinical']");
-    type(card().querySelector("[data-clinical-field='histology']"), "Nhập nhầm rồi");
+    type(form().querySelector("[data-clinical-field='histology']"), "Nhập nhầm rồi");
     await press("[data-action='cancel-clinical']");
 
     expect(clinicalState.draft).toBeNull();
@@ -264,13 +297,13 @@ describe("Clinical record card", () => {
   });
 
   it("drops a marker nobody put a result against", async () => {
-    mountRail();
+    mountApp();
     await press("[data-action='edit-clinical']");
     await press("[data-action='clinical-add-tumor']");
-    type(card().querySelector("[data-clinical-field='histology']"), "U màng não");
+    type(form().querySelector("[data-clinical-field='histology']"), "U màng não");
     await press("[data-action='clinical-add-marker']");
 
-    type(card().querySelector("[data-clinical-field='molecularName']"), "MGMT");
+    type(form().querySelector("[data-clinical-field='molecularName']"), "MGMT");
     // The result field is left empty on purpose: naming a test is not the same
     // as having its answer, and the record must not imply the second.
     let sent = null;
@@ -291,13 +324,42 @@ describe("Clinical record card", () => {
     // backend would refuse.
     clinicalState.canWrite = false;
     clinicalState.reason = "Hồ sơ này chưa có patient-index.json nên chưa xem hồ sơ lâm sàng được.";
-    mountRail();
+    mountApp();
 
     expect(card().querySelector("[data-action='edit-clinical']")).toBeNull();
     expect(card().textContent).toContain("patient-index.json");
   });
 
-  it("says a save failed in the card rather than over the images", async () => {
+  it("keeps what was typed when a study is opened mid-entry", async () => {
+    // Glancing at a film should not cost the doctor the half-filled form. The
+    // pane goes back to the images and the draft waits behind the pencil.
+    state.archive.series = [{
+      id: "s1", timelineKey: "mr", studyDate: "20260806", mediaType: "dicom",
+      modality: "MR", studyDescription: "MR sọ não", sliceCount: 20,
+    }];
+    state.selectedId = "s1";
+    mountApp();
+    await press("[data-action='edit-clinical']");
+    await press("[data-action='clinical-add-tumor']");
+    type(form().querySelector("[data-clinical-field='histology']"), "U màng não");
+
+    const strip = document.querySelector("#app .series-card[data-series-id='s1']");
+    expect(strip, "no series card to click").not.toBeNull();
+    strip.click();
+    await settle();
+
+    expect(clinicalState.editing).toBe(false);
+    expect(form()).toBeNull();
+    expect(clinicalState.draft.tumors[0].histology).toBe("U màng não");
+    expect(card().textContent).toContain("Còn bản sửa chưa lưu");
+
+    // Reopening resumes the draft rather than starting again from the record.
+    await press("[data-action='edit-clinical']");
+    expect(form().querySelector("[data-clinical-field='histology']").value)
+      .toBe("U màng não");
+  });
+
+  it("says a save failed in the form rather than over the images", async () => {
     global.fetch = vi.fn(async () => ({
       ok: false,
       status: 400,
@@ -305,13 +367,13 @@ describe("Clinical record card", () => {
       json: async () => ({ error: "Từ chối ghi: hồ sơ trên màn hình là X" }),
     }));
 
-    mountRail();
+    mountApp();
     await press("[data-action='edit-clinical']");
     await press("[data-action='save-clinical']");
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(card().querySelector(".dxf-error").textContent).toContain("Từ chối ghi");
+    expect(form().querySelector(".dxf-error").textContent).toContain("Từ chối ghi");
     // Still in the form, so nothing typed is lost to a failed write.
     expect(clinicalState.editing).toBe(true);
   });
@@ -545,7 +607,7 @@ describe("The phase on a timeline row", () => {
         { id: "e2", kind: "Mổ", start: "2026-07-10", end: "2026-07-10" },
       ],
     };
-    mountRail();
+    mountApp();
     refreshTimelinePhases();
 
     const chips = [...document.querySelectorAll(".tl-phase")]
@@ -557,7 +619,7 @@ describe("The phase on a timeline row", () => {
   });
 
   it("leaves every chip hidden while nothing has been recorded", () => {
-    mountRail();
+    mountApp();
     refreshTimelinePhases();
 
     const shown = [...document.querySelectorAll(".tl-phase")].filter((node) => !node.hidden);
@@ -571,7 +633,7 @@ describe("The phase on a timeline row", () => {
       tumors: [],
       events: [{ id: "e1", kind: "Mổ", start: "2026-07-10", end: "2026-07-10" }],
     };
-    mountRail();
+    mountApp();
     refreshTimelinePhases();
 
     expect(document.querySelectorAll(".tl-item .tl-open[data-series-id]").length).toBe(2);

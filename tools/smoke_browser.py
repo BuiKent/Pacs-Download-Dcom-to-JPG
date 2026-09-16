@@ -507,44 +507,94 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                 page.wait_for_selector("#surgery-video-player", timeout=5000)
                 print("   Studio remounted on the patient tab.")
 
-                # 4b. The clinical record card. It repaints itself with
-                #     `outerHTML` on every structural change, which is exactly
-                #     how a listener goes missing: the button stays on screen,
-                #     the click lands, and nothing happens. Judged by what
-                #     appears after each press, never by the press itself.
+                # 4b. The clinical record. The form opens in the reading pane
+                #     and repaints itself with `outerHTML` on every structural
+                #     change, which is exactly how a listener goes missing: the
+                #     button stays on screen, the click lands, and nothing
+                #     happens. Every press below is judged by what appears
+                #     afterwards, never by the press having been dispatched.
                 print("4b. Filling in the clinical record...")
                 require(page, ".dx-card", "thẻ hồ sơ lâm sàng")
                 require(page, ".dx-card [data-action='edit-clinical']", "nút sửa").click()
+                require(page, "#workspace .dx-workspace", "khung hồ sơ lâm sàng")
+                if page.query_selector(".dx-card [data-clinical-field]") is not None:
+                    raise AssertionError(
+                        "Gate 3: form phải mở ở khung xem, không nhồi vào thẻ bên rail."
+                    )
                 require(
-                    page, ".dx-card [data-action='clinical-add-tumor']", "nút thêm khối u",
+                    page, ".dx-workspace [data-action='clinical-add-tumor']",
+                    "nút thêm khối u",
                 ).click()
                 page.wait_for_selector(
-                    ".dx-card [data-clinical-field='histology']", timeout=5000)
+                    ".dx-workspace [data-clinical-field='histology']", timeout=5000)
                 page.fill(
-                    ".dx-card [data-clinical-field='histology']",
+                    ".dx-workspace [data-clinical-field='histology']",
                     "U nguyên bào thần kinh đệm, IDH tự nhiên",
                 )
-                page.select_option(".dx-card [data-clinical-field='grade']", "4")
-                page.select_option(".dx-card [data-clinical-field='compartment']", "Nội sọ")
-                # The location list belongs to the compartment, so the card has
+                page.select_option(".dx-workspace [data-clinical-field='grade']", "4")
+                page.select_option(
+                    ".dx-workspace [data-clinical-field='compartment']", "Nội sọ")
+                # The location list belongs to the compartment, so the form has
                 # just redrawn itself; the field below must still be wired.
                 page.wait_for_selector(
-                    ".dx-card [data-clinical-field='location']", timeout=5000)
-                page.fill(".dx-card [data-clinical-field='location']", "Thuỳ chẩm")
+                    ".dx-workspace [data-clinical-field='location']", timeout=5000)
+                page.fill(".dx-workspace [data-clinical-field='location']", "Thuỳ chẩm")
 
                 require(
-                    page, ".dx-card [data-action='clinical-add-event']", "nút thêm sự kiện",
+                    page, ".dx-workspace [data-action='clinical-add-event']",
+                    "nút thêm sự kiện",
                 ).click()
-                page.wait_for_selector(".dx-card [data-clinical-field='kind']", timeout=5000)
-                page.select_option(".dx-card [data-clinical-field='kind']", "Xạ")
+                page.wait_for_selector(
+                    ".dx-workspace [data-clinical-field='kind']", timeout=5000)
+                page.select_option(".dx-workspace [data-clinical-field='kind']", "Xạ")
                 # Selecting the kind swaps in the fields that kind asks about.
                 page.wait_for_selector(
-                    ".dx-card [data-clinical-field='fractions']", timeout=5000)
-                page.fill(".dx-card [data-clinical-field='start']", "2026-08-20")
-                page.fill(".dx-card [data-clinical-field='where']", "BV K Tân Triều")
-                page.fill(".dx-card [data-clinical-field='fractions']", "30")
+                    ".dx-workspace [data-clinical-field='fractions']", timeout=5000)
+                page.fill(".dx-workspace [data-clinical-field='start']", "2026-08-20")
+                page.fill(".dx-workspace [data-clinical-field='where']", "BV K Tân Triều")
+                page.fill(".dx-workspace [data-clinical-field='fractions']", "30")
 
-                require(page, ".dx-card [data-action='save-clinical']", "nút lưu").click()
+                # Every field has to be reachable, not merely present — and
+                # the window that proves it is the small one. On a short window
+                # the form is taller than the pane, which is exactly where the
+                # old layout failed: in the rail the card was squashed by the
+                # flex column and there was nothing left to scroll.
+                page.set_viewport_size({"width": 900, "height": 600})
+                page.wait_for_timeout(200)
+                reach = page.evaluate(
+                    """() => {
+                      const body = document.querySelector('.dxw-body');
+                      const fields = [...document.querySelectorAll('.dx-workspace [data-clinical-field]')];
+                      const last = fields[fields.length - 1];
+                      if (!body || !last) return null;
+                      body.scrollTop = body.scrollHeight;
+                      const box = body.getBoundingClientRect();
+                      const seen = last.getBoundingClientRect();
+                      return {
+                        fields: fields.length,
+                        scrollable: body.scrollHeight - body.clientHeight,
+                        scrolled: Math.round(body.scrollTop),
+                        lastReachable: seen.bottom <= box.bottom + 1 && seen.top >= box.top - 1,
+                      };
+                    }"""
+                )
+                if not reach or not reach["lastReachable"]:
+                    raise AssertionError(
+                        f"Gate 3: trường cuối của form không cuộn tới được: {reach}"
+                    )
+                if reach["scrollable"] <= 0:
+                    raise AssertionError(
+                        "Gate 3: cửa sổ 900x600 mà form không có gì để cuộn —"
+                        f" nhiều khả năng nó đang bị bóp lại: {reach}"
+                    )
+                print(
+                    f"   {reach['fields']} trường ở cửa sổ 900x600: cuộn được"
+                    f" {reach['scrollable']}px, tới được trường cuối."
+                )
+                page.set_viewport_size({"width": 1280, "height": 800})
+                page.wait_for_timeout(200)
+
+                require(page, ".dx-workspace [data-action='save-clinical']", "nút lưu").click()
                 page.wait_for_selector(".dx-card .dx-stage-chip", timeout=8000)
                 chip = page.inner_text(".dx-card .dx-stage-chip").strip()
                 if "Đang xạ" not in chip:
@@ -555,6 +605,11 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                 if "độ 4" not in heading:
                     raise AssertionError(
                         f"Gate 3: chẩn đoán phải kèm độ WHO, đang là {heading!r}."
+                    )
+                # Saving hands the pane back to the images.
+                if page.query_selector("#workspace .dx-workspace") is not None:
+                    raise AssertionError(
+                        "Gate 3: lưu xong mà form vẫn chiếm khung xem phim."
                     )
                 print(f"   Saved and read back: {heading} · {chip}")
 

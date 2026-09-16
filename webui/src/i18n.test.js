@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { getLanguage, setLanguage, t, tf, translateLog } from "./i18n.js";
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { EN, getLanguage, setLanguage, t, tf, translateLog } from "./i18n.js";
 
 afterEach(() => setLanguage("en"));
 
@@ -115,5 +117,35 @@ describe("pipeline log translation", () => {
 
   it("survives a null message", () => {
     expect(translateLog(null)).toBe("");
+  });
+});
+
+describe("English coverage", () => {
+  /**
+   * Every literal `t("…")` and `tf("…")` in the source, with the escapes the
+   * file needed resolved back to the string the app really passes.
+   */
+  function keysInSource() {
+    const dir = resolve(process.cwd(), "src");
+    const found = new Map();
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith(".js") || file.endsWith(".test.js") || file === "i18n.js") continue;
+      const source = readFileSync(resolve(dir, file), "utf8");
+      for (const match of source.matchAll(/\b(?:t|tf)\(\s*(["'])((?:\\.|(?!\1).)*?)\1/g)) {
+        found.set(match[2].replace(/\\(["'\\])/g, "$1"), file);
+      }
+    }
+    return found;
+  }
+
+  it("has an English line for every string the interface asks for", () => {
+    // Vietnamese is the lookup key here, so a missing entry is silent: the
+    // screen simply keeps that one sentence in Vietnamese while everything
+    // around it turns English. 112 strings had drifted out that way before
+    // this check existed.
+    const missing = [...keysInSource()]
+      .filter(([key]) => !(key in EN))
+      .map(([key, file]) => `${file}: ${key}`);
+    expect(missing).toEqual([]);
   });
 });

@@ -1692,6 +1692,14 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   gap: 2px;
 }
 
+/* Each card keeps the height its own content needs, and the rail is what
+   scrolls. Without this the column squashes them instead: `.rec-card` hides
+   its overflow to keep its rounded corners, and a flex item that hides its
+   overflow has an automatic minimum size of zero, so a tall card was clipped
+   to whatever was left over — with the rail showing nothing to scroll, the
+   fields below that line could not be reached at all. */
+.rec-rail > * { flex-shrink: 0; }
+
 /* Patient Rail Header & Toggle */
 .rec-rail-header {
   display: flex;
@@ -5827,3 +5835,154 @@ button.stt-cell.twist-btn:focus-visible {
 /* The one that is a warning rather than a fact: a scan inside the window where
    an enlarging enhancement may still be treatment effect. */
 .tl-phase.pseudo { background: #2e2413; color: #f0c47a; }
+
+/* ---------------------------------------------------------------------------
+   The clinical record, filling the reading pane
+
+   Dark for the reason the whole diagnostic area is: this pane occupies the
+   place the images occupy, and a bright surface there shifts how the study
+   opened next is read.
+   --------------------------------------------------------------------------- */
+
+.workspace-grid.clinical-mode { grid-template: 1fr / 1fr; }
+
+.dx-workspace {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #0b1119;
+  color: #d7dde3;
+  font-size: 12.5px;
+}
+
+.dxw-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #0f1620;
+  border-bottom: 1px solid #1c2a36;
+}
+
+.dxw-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dxw-title b {
+  color: #e6ebf0;
+  font-size: 13.5px;
+}
+
+.dxw-patient {
+  color: #9bacba;
+  font-size: 12px;
+}
+
+.dxw-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.dxw-btn {
+  padding: 6px 16px;
+  border: 1px solid #253341;
+  border-radius: 5px;
+  background: #1b2229;
+  color: #d7dde3;
+  font: inherit;
+  cursor: pointer;
+}
+
+.dxw-btn:hover {
+  background: #24303a;
+  color: #ffffff;
+}
+
+.dxw-btn.primary {
+  background: #1f6f8b;
+  border-color: #2f8fb0;
+  color: #ffffff;
+}
+
+.dxw-btn.primary:hover {
+  background: #2a87a8;
+}
+
+.dxw-btn[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Two columns where the pane is wide enough for them, one where it is not:
+   diagnosis and treatment are read together, and a reader comparing what the
+   tumour is with where treatment has got to should not have to scroll between
+   them. */
+.dxw-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  align-content: start;
+  gap: 0 16px;
+  min-height: 0;
+  padding: 0 8px 16px;
+  overflow-y: auto;
+}
+
+.dxw-col {
+  min-width: 0;
+}
+
+/* The same fields as in the rail, given the room the pane has: short ones sit
+   side by side rather than stacking down a 246px column. */
+.dx-workspace .dxf-section {
+  padding: 12px 6px;
+  border-top: none;
+}
+
+.dx-workspace .dxf-section-head b {
+  font-size: 12px;
+}
+
+.dx-workspace .dxf-block {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 2px 10px;
+  padding: 10px 12px;
+}
+
+.dx-workspace .dxf-block-head,
+.dx-workspace .dxf-row,
+.dx-workspace .dxf-molecular,
+.dx-workspace .dxf-hint,
+.dx-workspace .dxf-wide {
+  grid-column: 1 / -1;
+}
+
+.dx-workspace .dxf-input {
+  padding: 5px 7px;
+  font-size: 12.5px;
+}
+
+.dx-workspace .dxf-field > span,
+.dx-workspace .dxf-sub-label {
+  font-size: 11.5px;
+}
+
+/* A line in the rail card about where the form is, or about work not yet
+   saved. */
+.dx-hint {
+  margin: 0;
+  padding: 8px 10px 0;
+  color: #9bacba;
+  font-size: 11px;
+}
+
+.dx-hint.pending {
+  color: #ddc98c;
+}

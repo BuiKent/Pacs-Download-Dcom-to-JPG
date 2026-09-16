@@ -1922,6 +1922,12 @@ function renderPdfViewer(series) {
  * shell markup.
  */
 function renderWorkspacePane(series) {
+  // The clinical form, while it is open, is what the pane is showing. It is
+  // the reader's own record rather than a file in the archive, so it is asked
+  // for before the media type is consulted.
+  if (clinical.clinicalState.editing) {
+    return clinical.renderClinicalWorkspace(state.archive?.patient || {});
+  }
   switch (getSeriesMediaType(series)) {
     case "video":
       return renderSurgeryVideoStudio(series);
@@ -2156,11 +2162,32 @@ function patientInfoFromForm(form) {
  * typed field and the next.
  */
 function refreshClinicalCard() {
-  const host = app.querySelector(".dx-card");
+  const host = app?.querySelector(".dx-card");
   if (!host) return;
   host.outerHTML = clinical.renderClinicalCard();
   bindClinicalCard();
   refreshTimelinePhases();
+}
+
+/**
+ * Repaint the open form alone.
+ *
+ * Another tumour, a different compartment, a kind of treatment that asks
+ * different questions — each changes the shape of the form. Redrawing the form
+ * rather than the shell keeps the series strip, the rail and the scroll
+ * position where they were.
+ */
+function refreshClinicalEditor() {
+  const pane = app?.querySelector(".dx-workspace");
+  if (!pane) return;
+  pane.outerHTML = clinical.renderClinicalWorkspace(state.archive?.patient || {});
+  bindClinicalCard();
+}
+
+/** Repaint both places the record shows: the rail summary and the form. */
+function refreshClinicalSurfaces() {
+  refreshClinicalCard();
+  refreshClinicalEditor();
 }
 
 /**
@@ -2172,14 +2199,22 @@ function refreshClinicalCard() {
 const boundClinicalFields = new WeakSet();
 
 /**
- * Wire the clinical card's own controls.
+ * Wire the clinical record's controls, wherever they are on screen.
  *
- * Re-bound after every repaint of the card, because replacing its markup drops
- * every listener that was on it.
+ * Re-run after every repaint, because replacing markup drops every listener
+ * that was on it.
  */
 function bindClinicalCard() {
-  const card = app.querySelector(".dx-card");
-  if (!card) return;
+  // Two surfaces carry the record: the summary in the rail and, while it is
+  // open, the form in the reading pane. Both are replaced wholesale by their
+  // own repaints, so both are swept here.
+  for (const host of [app?.querySelector(".dx-card"), app?.querySelector(".dx-workspace")]) {
+    if (host) bindClinicalHost(host);
+  }
+}
+
+/** Wire one surface: its fields, and its buttons through the shared binder. */
+function bindClinicalHost(card) {
   card.querySelectorAll("[data-clinical-field]").forEach((input) => {
     if (boundClinicalFields.has(input)) return;
     boundClinicalFields.add(input);
@@ -2187,7 +2222,7 @@ function bindClinicalCard() {
     // dropdown or a date set by the picker; both write into the same draft.
     const handle = (event) => {
       const needsRedraw = clinical.applyFieldEdit(event.target);
-      if (needsRedraw) refreshClinicalCard();
+      if (needsRedraw) refreshClinicalSurfaces();
     };
     input.addEventListener("input", handle);
     input.addEventListener("change", handle);
@@ -4171,7 +4206,9 @@ function render() {
         <div class="safety-notice ${safety?.level || ""}" ${safety ? "" : "hidden"}>
           <b>${escapeHtml(t("An toàn hiển thị"))}</b><span>${escapeHtml(safety ? t(safety.text) : "")}</span>
         </div>
-        <section id="workspace" class="workspace-grid ${getSeriesMediaType(series) !== "dicom" ? "media-mode" : ""}">
+        <section id="workspace" class="workspace-grid ${clinical.clinicalState.editing
+          ? "clinical-mode"
+          : getSeriesMediaType(series) !== "dicom" ? "media-mode" : ""}">
           ${renderWorkspacePane(series)}
         </section>
         <footer class="status-bar ${state.isError ? "error" : ""}">
@@ -5159,6 +5196,18 @@ function bindEvents() {
           const targetToScroll = groupBadge || targetCard;
           targetToScroll.scrollIntoView({ behavior: "smooth", block: "start" });
         }
+        return;
+      }
+
+      // The form is holding the reading pane, and this click is a request to
+      // look at a study. The form steps aside and keeps its draft: the pencil
+      // reopens it with everything typed still in it, so nothing is lost by
+      // glancing at a film mid-entry.
+      if (clinical.clinicalState.editing) {
+        clinical.clinicalState.editing = false;
+        state.selectedId = seriesId;
+        render();
+        await renderViewer();
         return;
       }
 
@@ -6536,10 +6585,14 @@ async function action(name, element = null) {
       return;
     }
     if (name === "edit-clinical") {
-      clinical.clinicalState.draft = clinical.draftFrom(clinical.clinicalState.record);
+      // A draft left behind by a study opened mid-edit is picked back up; only
+      // a fresh start copies the record again.
+      clinical.clinicalState.draft
+        = clinical.clinicalState.draft || clinical.draftFrom(clinical.clinicalState.record);
       clinical.clinicalState.editing = true;
       clinical.clinicalState.error = "";
-      refreshClinicalCard();
+      render();
+      await renderViewer();
       return;
     }
     if (name === "cancel-clinical") {
@@ -6548,32 +6601,33 @@ async function action(name, element = null) {
       clinical.clinicalState.draft = null;
       clinical.clinicalState.editing = false;
       clinical.clinicalState.error = "";
-      refreshClinicalCard();
+      render();
+      await renderViewer();
       return;
     }
     if (name === "clinical-add-tumor") {
       clinical.addTumor();
-      refreshClinicalCard();
+      refreshClinicalSurfaces();
       return;
     }
     if (name === "clinical-remove-tumor") {
       clinical.removeTumor(Number(element?.dataset?.tumorIndex));
-      refreshClinicalCard();
+      refreshClinicalSurfaces();
       return;
     }
     if (name === "clinical-add-event") {
       clinical.addEvent();
-      refreshClinicalCard();
+      refreshClinicalSurfaces();
       return;
     }
     if (name === "clinical-remove-event") {
       clinical.removeEvent(Number(element?.dataset?.eventIndex));
-      refreshClinicalCard();
+      refreshClinicalSurfaces();
       return;
     }
     if (name === "clinical-add-marker") {
       clinical.addMarker(Number(element?.dataset?.tumorIndex));
-      refreshClinicalCard();
+      refreshClinicalSurfaces();
       return;
     }
     if (name === "clinical-remove-marker") {
@@ -6581,13 +6635,13 @@ async function action(name, element = null) {
         Number(element?.dataset?.tumorIndex),
         Number(element?.dataset?.molecularIndex),
       );
-      refreshClinicalCard();
+      refreshClinicalSurfaces();
       return;
     }
     if (name === "save-clinical") {
       clinical.clinicalState.saving = true;
       clinical.clinicalState.error = "";
-      refreshClinicalCard();
+      refreshClinicalSurfaces();
       try {
         // Name the record this tab is showing. The backend refuses to write
         // when the folder belongs to a different patient, so a diagnosis typed
@@ -6613,7 +6667,14 @@ async function action(name, element = null) {
         clinical.clinicalState.error = humanError(error);
       } finally {
         clinical.clinicalState.saving = false;
-        refreshClinicalCard();
+        if (clinical.clinicalState.editing) {
+          // The save was refused. The form stays open, with what was typed
+          // still in it and the reason above the fields.
+          refreshClinicalSurfaces();
+        } else {
+          render();
+          await renderViewer();
+        }
       }
       return;
     }
@@ -7997,6 +8058,10 @@ function applyArchive(archive, sessionId = "", folder = "") {
 
 function renderViewer() {
   if (state.activeTabId === "worklist") return Promise.resolve();
+  // The clinical form owns the reading pane while it is open, and this is the
+  // function that fills that pane with a slice. Letting it run would wipe the
+  // form, mid-edit, on any repaint that happens to touch the viewer.
+  if (clinical.clinicalState.editing) return Promise.resolve();
   const series = selectedSeries();
   if (!series) return viewerQueue;
   const mediaType = getSeriesMediaType(series);
