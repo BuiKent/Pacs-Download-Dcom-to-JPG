@@ -173,7 +173,15 @@
     .badge.warn { background: rgba(217,119,6,0.12); color: var(--amber); }
     .badge.error { background: rgba(220,38,38,0.12); color: var(--red); }
     .badge.success { background: rgba(22,163,74,0.12); color: var(--green); }
-    .badge.category { background: rgba(127,127,127,0.1); color: var(--muted); }
+    .badge.category {
+      background: rgba(127,127,127,0.1);
+      color: var(--muted);
+    }
+    .badge.site {
+      background: rgba(14, 165, 233, 0.15);
+      color: #0284c7;
+      border: 1px solid rgba(14, 165, 233, 0.3);
+    }
     .log-msg {
       flex: 1;
       word-break: break-word;
@@ -207,6 +215,9 @@
     </div>
     <div class="filter-bar">
       <input id="searchInput" type="search" placeholder="🔍 Tìm kiếm trong log (tên bệnh nhân, URL, lỗi, mã SOP...)" />
+      <select id="siteFilter">
+        <option value="ALL">🌐 Tất cả trang PACS</option>
+      </select>
       <select id="levelFilter">
         <option value="ALL">Tất cả mức độ</option>
         <option value="INFO">Chỉ INFO</option>

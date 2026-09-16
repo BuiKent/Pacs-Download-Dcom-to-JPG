@@ -1,12 +1,23 @@
 'use strict';
 
 export const LOG_STORAGE_KEY = 'pacs6_activity_logs';
-export const MAX_LOG_ENTRIES = 1500;
+export const MAX_LOG_ENTRIES = 3000;
 
 let logBuffer = null;
 let loadPromise = null;
 let logGeneration = 0;
 let flushTimer = null;
+
+export function extractPacsSite(rawUrl) {
+  if (!rawUrl) return '';
+  try {
+    const u = new URL(rawUrl);
+    return u.host || '';
+  } catch {
+    const m = String(rawUrl).match(/^(?:https?:\/\/)?([^/?#]+)/i);
+    return m ? m[1] : '';
+  }
+}
 
 /**
  * Strip patient identity out of a log line.
@@ -43,23 +54,28 @@ export function redactIdentifiers(text) {
 
 function sanitizeDetails(details) {
   if (details == null) return '';
-  if (typeof details === 'string') return details.slice(0, 600);
+  if (typeof details === 'string') return details.slice(0, 1000);
   if (typeof details === 'number' || typeof details === 'boolean') return String(details);
   try {
     const str = JSON.stringify(details);
-    return str.length > 600 ? str.slice(0, 597) + '...' : str;
+    return str.length > 1000 ? str.slice(0, 997) + '...' : str;
   } catch {
-    return String(details).slice(0, 600);
+    return String(details).slice(0, 1000);
   }
 }
 
 export function createLogEntry(levelOrObj, category, message, details = null) {
   let level = levelOrObj, cat = category, msg = message, det = details;
+  let tabId = null, pacsSite = '', url = '', studyUid = '';
   if (levelOrObj && typeof levelOrObj === 'object') {
     level = levelOrObj.level;
     cat = levelOrObj.category;
     msg = levelOrObj.message;
     det = levelOrObj.details;
+    tabId = levelOrObj.tabId != null ? Number(levelOrObj.tabId) : null;
+    url = levelOrObj.url ? redactIdentifiers(levelOrObj.url) : '';
+    pacsSite = levelOrObj.pacsSite || extractPacsSite(levelOrObj.url);
+    studyUid = levelOrObj.studyUid ? String(levelOrObj.studyUid) : '';
   }
   const now = new Date();
   return {
@@ -69,16 +85,25 @@ export function createLogEntry(levelOrObj, category, message, details = null) {
     level: String(level || 'INFO').toUpperCase(),
     category: String(cat || 'SYSTEM').toUpperCase(),
     message: redactIdentifiers(msg),
-    details: redactIdentifiers(sanitizeDetails(det))
+    details: redactIdentifiers(sanitizeDetails(det)),
+    pacsSite: String(pacsSite || ''),
+    tabId: tabId != null && !Number.isNaN(tabId) ? tabId : null,
+    url: url || '',
+    studyUid: studyUid || ''
   };
 }
 
 function sanitizeStoredEntry(entry) {
   if (!entry || typeof entry !== 'object') return null;
+  const site = entry.pacsSite || extractPacsSite(entry.url);
   return {
     ...entry,
     message: redactIdentifiers(entry.message),
     details: redactIdentifiers(sanitizeDetails(entry.details)),
+    pacsSite: String(site || ''),
+    tabId: entry.tabId != null && !Number.isNaN(Number(entry.tabId)) ? Number(entry.tabId) : null,
+    url: entry.url ? redactIdentifiers(entry.url) : '',
+    studyUid: entry.studyUid ? String(entry.studyUid) : ''
   };
 }
 
@@ -160,8 +185,9 @@ export function formatLogsAsText(logs = [], extensionVersion = '') {
     const ts = safe.timestamp || safe.timeFormatted || '';
     const lvl = `[${safe.level || 'INFO'}]`.padEnd(9, ' ');
     const cat = `[${safe.category || 'SYSTEM'}]`.padEnd(14, ' ');
+    const site = safe.pacsSite ? `[${safe.pacsSite}] ` : '';
     const det = safe.details ? ` | Chi tiết: ${safe.details}` : '';
-    lines.push(`${ts} ${lvl} ${cat} ${safe.message || ''}${det}`);
+    lines.push(`${ts} ${lvl} ${cat} ${site}${safe.message || ''}${det}`);
   }
 
   return lines.join('\r\n');

@@ -3,6 +3,7 @@ import { formatLogsAsText } from './lib/logger.js';
 
 const logContainer = document.getElementById('logContainer');
 const searchInput = document.getElementById('searchInput');
+const siteFilter = document.getElementById('siteFilter');
 const levelFilter = document.getElementById('levelFilter');
 const categoryFilter = document.getElementById('categoryFilter');
 const btnRefresh = document.getElementById('btnRefresh');
@@ -12,10 +13,29 @@ const btnClear = document.getElementById('btnClear');
 
 let currentLogs = [];
 
+function updateSiteOptions() {
+  if (!siteFilter) return;
+  const currentVal = siteFilter.value;
+  const sites = new Set();
+  for (const log of currentLogs) {
+    if (log?.pacsSite) sites.add(log.pacsSite);
+  }
+  const sortedSites = [...sites].sort();
+  siteFilter.innerHTML = '<option value="ALL">🌐 Tất cả trang PACS</option>';
+  for (const s of sortedSites) {
+    const opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = `🏥 ${s}`;
+    if (s === currentVal) opt.selected = true;
+    siteFilter.appendChild(opt);
+  }
+}
+
 async function loadLogs() {
   try {
     const res = await chrome.runtime.sendMessage({ type: 'GET_LOGS' });
     currentLogs = Array.isArray(res?.logs) ? res.logs : [];
+    updateSiteOptions();
     renderLogs();
   } catch (err) {
     logContainer.innerHTML = `<div class="empty-state">Không thể tải nhật ký: ${err?.message || err}</div>`;
@@ -24,14 +44,16 @@ async function loadLogs() {
 
 function renderLogs() {
   const query = (searchInput.value || '').trim().toLowerCase();
+  const selectedSite = siteFilter ? siteFilter.value : 'ALL';
   const level = levelFilter.value;
   const category = categoryFilter.value;
 
   const filtered = currentLogs.filter(item => {
+    if (selectedSite !== 'ALL' && (item.pacsSite || '') !== selectedSite) return false;
     if (level !== 'ALL' && item.level !== level) return false;
     if (category !== 'ALL' && item.category !== category) return false;
     if (query) {
-      const target = `${item.timeFormatted || ''} ${item.level || ''} ${item.category || ''} ${item.message || ''} ${item.details || ''}`.toLowerCase();
+      const target = `${item.timeFormatted || ''} ${item.pacsSite || ''} ${item.level || ''} ${item.category || ''} ${item.message || ''} ${item.details || ''} ${item.url || ''}`.toLowerCase();
       if (!target.includes(query)) return false;
     }
     return true;
@@ -62,6 +84,16 @@ function renderLogs() {
     catBadge.className = 'badge category';
     catBadge.textContent = item.category || 'SYSTEM';
 
+    const badges = [timeEl, lvlBadge, catBadge];
+
+    if (item.pacsSite) {
+      const siteBadge = document.createElement('span');
+      siteBadge.className = 'badge site';
+      siteBadge.textContent = item.tabId ? `${item.pacsSite} (Tab ${item.tabId})` : item.pacsSite;
+      siteBadge.title = item.url || item.pacsSite;
+      badges.push(siteBadge);
+    }
+
     const msgBox = document.createElement('div');
     msgBox.className = 'log-msg';
     msgBox.textContent = item.message || '';
@@ -73,12 +105,13 @@ function renderLogs() {
       msgBox.appendChild(detailsEl);
     }
 
-    row.append(timeEl, lvlBadge, catBadge, msgBox);
+    row.append(...badges, msgBox);
     logContainer.appendChild(row);
   }
 }
 
 searchInput.addEventListener('input', renderLogs);
+if (siteFilter) siteFilter.addEventListener('change', renderLogs);
 levelFilter.addEventListener('change', renderLogs);
 categoryFilter.addEventListener('change', renderLogs);
 

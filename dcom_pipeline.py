@@ -2961,7 +2961,8 @@ def _ready_adapter(cap: ViewerCapture, url: str = "") -> Optional[PacsAdapter]:
 
 def _log_discovery_failure(cap: ViewerCapture, log: LogFn) -> None:
     """Log diagnostic report when no adapter recognizes the viewer link."""
-    log("!!! Chưa dòng PACS nào nhận ra link này — báo cáo để đối chiếu:")
+    host_str = f" tại máy chủ '{cap.host}'" if cap.host else ""
+    log(f"!!! Chưa adapter nào nhận diện được link viewer này{host_str} — Báo cáo chẩn đoán chi tiết:")
     for adapter in sorted(PACS_ADAPTERS, key=lambda a: a.priority, reverse=True):
         try:
             reason = adapter.why_not_ready(cap)
@@ -2969,11 +2970,13 @@ def _log_discovery_failure(cap: ViewerCapture, log: LogFn) -> None:
             reason = f"lỗi khi kiểm tra ({exc})"
         log(f"      • {adapter.name}: {reason or 'không rõ'}")
     if cap.seen_urls:
-        log(f"      Viewer đã gọi {len(cap.seen_urls)} endpoint (đã ẩn giá trị query):")
-        for entry in cap.seen_urls:
+        log(f"      Viewer đã gọi {len(cap.seen_urls)} endpoint mạng (đã ẩn token/key):")
+        for entry in cap.seen_urls[:12]:
             log(f"        - {entry}")
+        if len(cap.seen_urls) > 12:
+            log(f"        ... và {len(cap.seen_urls) - 12} endpoint khác.")
     else:
-        log("      Không bắt được endpoint nào — nhiều khả năng trang chưa tải được.")
+        log("      Không bắt được endpoint mạng nào — nhiều khả năng trang chưa tải được hoặc bị chặn kết nối.")
     log("      → Chuyển sang mô phỏng thao tác trên giao diện để ép viewer tự tải ảnh.")
 
 # ---------------------------------------------------------------------------
@@ -3737,15 +3740,23 @@ def download_all(
             page = context.new_page()
             page.on("response", on_response)
 
-            log("Đang tải trang viewer (không chỉnh sửa link)...")
+            from urllib.parse import urlparse as _urlparse
+            parsed_u = _urlparse(url)
+            log(f"Đang mở trang viewer: {url} (Máy chủ PACS: {parsed_u.netloc or 'không rõ'})...")
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                page_title = ""
+                try:
+                    page_title = page.title()
+                except Exception:
+                    pass
+                log(f"  Đã tải xong trang viewer (Tiêu đề: '{page_title.strip() or 'Không tiêu đề'}' | Trang đích: {page.url})")
             except Exception as e:
                 log(f"  Cảnh báo khi tải trang: {e}")
 
             try:
                 if "urlExpired" in page.url or "Message/Error" in page.url:
-                    log("!!! Link đã HẾT HẠN (urlExpired). Hãy lấy link mới từ trang xem rồi thử lại.")
+                    log(f"!!! Link đã HẾT HẠN hoặc báo lỗi (Trang đích: {page.url}). Hãy lấy link mới từ trang xem rồi thử lại.")
                     return stats
             except Exception:
                 pass
@@ -4235,8 +4246,15 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
                      passes: int = 3) -> None:
     """Execute parallel download tasks with multi-pass retries for failed tasks."""
     from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+    import threading
+
+    task_errors: dict[Any, str] = {}
+    done_count = 0
+    progress_lock = threading.Lock()
+    original_count = len(tasks)
 
     def attempt(task) -> bool:
+        nonlocal done_count
         if stop():
             if tracker is not None:
                 tracker.interrupt_all()
@@ -4249,15 +4267,24 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
             ok = bool(fetch(task))
             if ok and budget is not None:
                 budget.touch()
-            return ok
-        except (InterruptedError, ConnectionResetError, OSError):
+            if ok:
+                with progress_lock:
+                    done_count += 1
+                    if original_count > 25 and (done_count % 25 == 0 or done_count == original_count):
+                        pct = int(done_count * 100 / original_count)
+                        log(f"    ...Tiến độ tải: {done_count}/{original_count} ảnh ({pct}%)")
+                return True
+            task_errors[task] = "dữ liệu rỗng hoặc không đúng chuẩn DICOM"
+            return False
+        except (InterruptedError, ConnectionResetError, OSError) as exc:
             if stop() and tracker is not None:
                 tracker.interrupt_all()
+            task_errors[task] = str(exc)
             return False
-        except Exception:
+        except Exception as exc:
+            task_errors[task] = str(exc)
             return False
 
-    original_count = len(tasks)
     pending = list(tasks)
     for round_no in range(1, max(1, passes) + 1):
         if not pending or stop() or (budget is not None and budget.is_expired()):
@@ -4265,7 +4292,9 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
                 tracker.interrupt_all()
             break
         if round_no > 1:
-            log(f"  ↻ Tải lại {len(pending)} ảnh bị hỏng (lượt {round_no}/{passes})...")
+            sample_reasons = list(dict.fromkeys(task_errors.values()))[:2]
+            reason_str = f" (lỗi trước đó: {', '.join(sample_reasons)})" if sample_reasons else ""
+            log(f"  ↻ Tải lại {len(pending)} ảnh bị hỏng (lượt {round_no}/{passes}){reason_str}...")
             for _ in range(15):
                 if stop() or (budget is not None and budget.is_expired()):
                     if tracker is not None:
@@ -4310,6 +4339,9 @@ def _run_fetch_tasks(tasks, fetch, stats: DownloadStats, log: LogFn,
         if tracker is not None:
             tracker.interrupt_all()
         stats.cancelled = True
+    elif pending and task_errors:
+        sample_reasons = list(dict.fromkeys(task_errors.values()))[:3]
+        log(f"  ⚠ Có {len(pending)} ảnh không thể tải về sau {passes} lượt thử (Lỗi: {', '.join(sample_reasons)}).")
     stats.failed = 0 if stop() else len(pending)
     stats.completed_tasks = max(stats.completed_tasks, original_count - len(pending))
 

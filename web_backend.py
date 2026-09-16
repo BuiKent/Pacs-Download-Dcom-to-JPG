@@ -4914,7 +4914,7 @@ class WebController:
         except Exception as exc:
             return {"error": str(exc), "logDir": "logs", "recentLogs": []}
 
-    def get_logs_content(self, filename: str = "", max_lines: int = 500) -> dict:
+    def get_logs_content(self, filename: str = "", max_lines: int = 1500) -> dict:
         """Return the content of current or specified log file for viewer display."""
         try:
             import app_logging
@@ -5799,6 +5799,7 @@ class WebController:
                         "viewerStudyUid": str(inventory.get("studyUid") or ""),
                     })
             else:
+                self.job.log(f"Bắt đầu quét cấu trúc series từ link viewer: {direct_url}")
                 inventory = dcom_pipeline.discover_viewer_series(
                     direct_url,
                     log=self.job.log,
@@ -5874,6 +5875,8 @@ class WebController:
                 raise ValueError("Danh sách tải chứa study không cùng bệnh nhân/bệnh viện.")
 
         def target() -> dict:
+            self.job.log(f"Bắt đầu tải ca chụp RIS cho bệnh nhân: {patient_name} ({patient_id}) - Bệnh viện: {hospital_name}")
+            self.job.log(f"  → Số ca chụp: {len(studies)} | Thư mục đích: {output_root}")
             total = dcom_pipeline.download_studies_list(
                 studies=studies,
                 out_base=output_root,
@@ -6057,6 +6060,8 @@ class WebController:
 
         def target() -> dict:
             direct_root, resumed = self._direct_download_root(output_root, url, requested_resume)
+            self.job.log(f"Bắt đầu tải từ link viewer: {url}")
+            self.job.log(f"  → Máy chủ PACS: {parsed.netloc or 'không rõ'} | Thư mục: {direct_root.name} ({'Tải tiếp/bù' if resumed else 'Tải mới'})")
             if requested_resume and not resumed:
                 self.job.log(
                     "Không tìm thấy folder cũ của link này; sẽ tải mới vào folder riêng."
@@ -6710,11 +6715,16 @@ class LocalApiServer:
                     return owner.controller.get_logs_info()
                 if path == "/api/logs/content":
                     fn = ""
+                    lines_count = 1500
                     if query:
                         from urllib.parse import parse_qs
                         qs = parse_qs(query)
                         fn = qs.get("file", [""])[0]
-                    return owner.controller.get_logs_content(filename=fn)
+                        try:
+                            lines_count = int(qs.get("lines", ["1500"])[0])
+                        except Exception:
+                            lines_count = 1500
+                    return owner.controller.get_logs_content(filename=fn, max_lines=lines_count)
                 if path == "/api/logs/reveal":
                     return owner.controller.reveal_logs_folder()
                 if path == "/api/media/video/status":
@@ -6852,7 +6862,11 @@ class LocalApiServer:
                     return owner.controller.reveal_folder(str(payload.get("folder") or ""))
                 if path == "/api/logs/content":
                     fn = str(payload.get("file") or "")
-                    return owner.controller.get_logs_content(filename=fn)
+                    try:
+                        lines_count = int(payload.get("lines", 1500))
+                    except Exception:
+                        lines_count = 1500
+                    return owner.controller.get_logs_content(filename=fn, max_lines=lines_count)
                 if path == "/api/logs/reveal":
                     return owner.controller.reveal_logs_folder()
                 if path == "/api/source-folders/add":

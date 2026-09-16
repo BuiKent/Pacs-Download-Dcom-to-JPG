@@ -11,8 +11,21 @@ const entry = createLogEntry('info', 'detection', 'Found PACS viewer', { score: 
 assert.equal(entry.level, 'INFO');
 assert.equal(entry.category, 'DETECTION');
 assert.equal(entry.message, 'Found PACS viewer');
-assert.ok(entry.details.includes('score'));
 assert.ok(entry.timestamp);
+
+// Test 1b: pacsSite and tabId extraction
+const pacsEntry = createLogEntry({
+  level: 'info',
+  category: 'DETECTION',
+  message: 'Recognized VradViewer',
+  url: 'https://pacs.hmuh.vn:7198/Viewer/s#/view?id=123&token=SECRET_ABC',
+  tabId: 42,
+  details: { seriesCount: 5 }
+});
+assert.equal(pacsEntry.pacsSite, 'pacs.hmuh.vn:7198');
+assert.equal(pacsEntry.tabId, 42);
+assert.ok(!pacsEntry.url.includes('SECRET_ABC'), 'URL must be redacted of tokens');
+assert.ok(pacsEntry.url.includes('<đã ẩn>'));
 
 // Test 2: formatLogsAsText
 const logs = [

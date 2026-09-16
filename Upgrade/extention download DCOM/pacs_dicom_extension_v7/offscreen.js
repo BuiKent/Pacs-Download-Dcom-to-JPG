@@ -124,6 +124,20 @@ async function commit(job,task,got){
   job.completed++;job.bytesWritten+=got.bytes.byteLength;
   if(got.provenance==='reconstructed')job.reconstructed++;else job.original++;
   if(sopUid&&job.completedSopUids)job.completedSopUids.add(sopUid);
+  if(job.completed>0&&(job.completed%50===0||job.completed===job.total)){
+    chrome.runtime.sendMessage({
+      type:'LOG_EVENT',
+      entry:{
+        level:'INFO',
+        category:'DOWNLOAD',
+        message:`Tiến trình tải tab ${job.tabId}: đã lưu ${job.completed}/${job.total} ảnh`,
+        details:{completed:job.completed,total:job.total,failed:job.failed,tabId:job.tabId},
+        tabId:job.tabId,
+        url:job.sourceUrl||'',
+        studyUid:job.studyUid||''
+      }
+    }).catch(()=>{});
+  }
   if(!job.sidecarStarted){
     job.sidecarStarted=true;
     // Queued, not fired and forgotten: these must land in the order they were
@@ -132,7 +146,24 @@ async function commit(job,task,got){
   }
   return true;
 }
-function failTask(job,relativePath,message){job.failed++;job.errors.push(`${relativePath}: ${message}`);if(job.errors.length>80)job.errors.splice(0,job.errors.length-80);emit(job,true);}
+function failTask(job,relativePath,message){
+  job.failed++;
+  job.errors.push(`${relativePath}: ${message}`);
+  if(job.errors.length>80)job.errors.splice(0,job.errors.length-80);
+  chrome.runtime.sendMessage({
+    type:'LOG_EVENT',
+    entry:{
+      level:'WARN',
+      category:'DOWNLOAD',
+      message:`Lỗi tải file: ${relativePath} (${message})`,
+      details:{relativePath,message,tabId:job.tabId},
+      tabId:job.tabId,
+      url:job.sourceUrl||'',
+      studyUid:job.studyUid||''
+    }
+  }).catch(()=>{});
+  emit(job,true);
+}
 
 async function runTask(job,task,index){
   if(job.cancelled)throw new DOMException('Cancelled','AbortError');

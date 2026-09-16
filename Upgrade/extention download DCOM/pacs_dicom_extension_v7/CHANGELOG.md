@@ -1,3 +1,13 @@
+# 7.2.5
+
+Comprehensive full activity logging & diagnostics per PACS site:
+
+- Extended log record schema with `pacsSite`, `tabId`, `url`, `studyUid`.
+- Raised circular log buffer capacity to 3000 entries in `lib/logger.js`.
+- Added PACS site dropdown filter (`siteFilter`) and site badges in `log_viewer.html` / `log_viewer.js`.
+- Real-time logging of discovery, detection warnings, deep probes, and per-slice download failures and milestone progress across `background.js` and `offscreen.js`.
+- Redaction of sensitive URL tokens, keys, and patient identifiers in activity logs.
+
 # 7.2.4
 
 Declare `host_permissions` in manifest to allow `webRequest` API event interception without Chrome configuration error.
