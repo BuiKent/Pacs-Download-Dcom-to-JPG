@@ -1,3 +1,20 @@
+# 7.2.8
+
+Fix end-of-job UI state flickering, eliminate cross-tab patient metadata leaks, and harden download resumption:
+
+- **End-of-Job State Flickering Fix (`lib/download_ui_state.js`, `background.js`)**:
+  - `ENGINE_PROGRESS` with completion status no longer terminates active jobs prematurely before sidecar writes and fallback adapter runs.
+  - Introduced intermediate `finishing` status where the side panel displays "Finishing" with Cancel/Resume disabled. Only `finalizeJob` seals the final outcome.
+  - Added a 15-second watchdog timer: if the offscreen document crashes during completion, the job is cleanly finalized with latest progress metrics rather than hanging indefinitely.
+- **Cross-Tab Stale Metadata Isolation (`sidepanel.js`)**:
+  - Immediately purge previous tab state (`resetPanelContext()`) upon tab switch, preventing previous patient credentials from briefly lingering while `GET_OVERVIEW` resolves on the newly focused tab.
+- **Robust Resume without Rendered Checkboxes (`sidepanel.js`)**:
+  - When opening the side panel mid-download before the series checklist DOM mounts, `selectedIds()` now reliably falls back to `job.selectedSeries` instead of returning an empty array, keeping the Resume button operational.
+- **Stale Download State Unblocking (`background.js`)**:
+  - Orphaned `downloading` records surviving in session storage after service worker teardown no longer indefinitely block downloads; only jobs actively maintained in worker memory gate execution.
+- **Automated Sidepanel Production Smoke Test (`tests/smoke_sidepanel.py`, `tests/test_sidepanel_runtime.mjs`)**:
+  - Added headless Chromium runtime test (29 assertions, 0 console errors) verifying panel context clearing, selection fallback, and button state integrity.
+
 # 7.2.7
 
 Stop extension instrumentation from following unrelated browsing and close the remaining tracking lifecycle leaks:

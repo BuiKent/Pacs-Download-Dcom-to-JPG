@@ -2,9 +2,11 @@
 import { decodeQrFromBlob, decodeQrFromDataUrl, parseQrResult, isLikelyPacsViewerUrl } from './lib/qr_decoder.js';
 import { resolveBulkDicomSaveMode } from './lib/save_policy.js';
 import { formatLogsAsText } from './lib/logger.js';
-const $=id=>document.getElementById(id),show=(id,on)=>$(id).classList.toggle('hidden',!on);const TERMINAL=new Set(['done','partial','done_with_errors','error','cancelled']);
-let tabId=null,summary=null,state=null,inventory=null,job=null,history=[],revealDownloaded=false,refreshTimer=null,activeTabUrl='',isStartingDownload=false,currentQrUrl='';
+import { FINISHING_STATUS, isActiveDownload, isTerminalDownload, panelPhase, reconcileInventory, shouldShowInventoryEditor } from './lib/download_ui_state.js';
+const $=id=>document.getElementById(id),show=(id,on)=>$(id).classList.toggle('hidden',!on);
+let tabId=null,summary=null,state=null,inventory=null,job=null,history=[],revealDownloaded=false,refreshTimer=null,activeTabUrl='',isStartingDownload=false,currentQrUrl='',refreshRevision=0,lastTerminalRefreshKey='';
 function setTopLoader(on){const e=$('topLoader');if(e)e.classList.toggle('active',Boolean(on));}
+function panelJob(){return isStartingDownload&&!isActiveDownload(job)?{...(job||{}),status:'preparing'}:job;}
 const FS_DB='pacs_dicom_fs_v1',FS_STORE='handles',FS_KEY='download-root',SAVE_MODE_KEY='pacs6_save_mode',FOLDER_NAME_KEY='pacs6_folder_name',SUBFOLDER_KEY='pacs6_subfolder_name',DEFAULT_SUBFOLDER='DCom to JPG';
 
 async function send(type,payload={}){const r=await chrome.runtime.sendMessage({type,...payload});if(!r?.ok)throw new Error(r?.error||'Extension error');return r;}
@@ -49,9 +51,30 @@ async function renderFolder(){
 async function grantAccess(){let pats=[...(summary?.missingOrigins||[])];if(!pats.length){pats=patternsFor(activeTabUrl);}else{const extra=[];for(const p of pats){try{const u=new URL(p.replace(/\/\*$/,'/'));for(const ep of patternsFor(u.href))extra.push(ep);}catch{}}pats=[...new Set([...pats,...extra])];}if(!pats.length)return;const ok=await chrome.permissions.request({origins:pats});if(!ok)return toast('Site permission not granted.',true);await send('SITE_ACCESS_CHANGED',{tabId});toast('Permission granted.');await refresh();}
 
 function compactCandidate(row){const ct=String(row.contentType||'').split(';')[0],bits=[row.method||'GET'];if(row.status)bits.push(String(row.status));if(ct)bits.push(ct.replace('application/',''));return bits.join(' · ');}
-function renderLearning(){const active=Boolean(state?.learning?.active),rows=[...(state?.learnCandidates||[])].reverse();show('learnCard',!inventory&&state?.tracking==='watching');if($('learnCard').classList.contains('hidden'))return;$('learnToggleBtn').textContent=active?'Stop learning':'Start learning';$('learnText').textContent=active?`${rows.length} requests recorded. Interact with viewer, then pick candidate.`:'Enable when site is not yet supported.';const el=$('learnList');el.textContent='';if(!active&&!rows.length){el.innerHTML='<div class="empty">No learning requests captured yet.</div>';return;}for(const row of rows.slice(0,24)){const item=document.createElement('div');item.className='learn-item';const info=document.createElement('div');info.className='learn-info';const name=document.createElement('div');name.className='learn-name';name.textContent=row.display||row.url||'Request';const meta=document.createElement('div');meta.className='learn-meta';meta.textContent=compactCandidate(row);info.append(name,meta);const acts=document.createElement('div');acts.className='learn-actions';const dicom=document.createElement('button');dicom.textContent='DICOM';dicom.title='Mark as DICOM endpoint';dicom.addEventListener('click',()=>learnCandidate(row,'dicom'));const manifest=document.createElement('button');manifest.textContent='Manifest';manifest.title='Mark as JSON containing image list/URLs';manifest.addEventListener('click',()=>learnCandidate(row,'manifest'));acts.append(dicom,manifest);item.append(info,acts);el.append(item);}}
+function renderLearning(){const active=Boolean(state?.learning?.active),rows=[...(state?.learnCandidates||[])].reverse();show('learnCard',!isActiveDownload(panelJob())&&!inventory&&state?.tracking==='watching');if($('learnCard').classList.contains('hidden'))return;$('learnToggleBtn').textContent=active?'Stop learning':'Start learning';$('learnText').textContent=active?`${rows.length} requests recorded. Interact with viewer, then pick candidate.`:'Enable when site is not yet supported.';const el=$('learnList');el.textContent='';if(!active&&!rows.length){el.innerHTML='<div class="empty">No learning requests captured yet.</div>';return;}for(const row of rows.slice(0,24)){const item=document.createElement('div');item.className='learn-item';const info=document.createElement('div');info.className='learn-info';const name=document.createElement('div');name.className='learn-name';name.textContent=row.display||row.url||'Request';const meta=document.createElement('div');meta.className='learn-meta';meta.textContent=compactCandidate(row);info.append(name,meta);const acts=document.createElement('div');acts.className='learn-actions';const dicom=document.createElement('button');dicom.textContent='DICOM';dicom.title='Mark as DICOM endpoint';dicom.addEventListener('click',()=>learnCandidate(row,'dicom'));const manifest=document.createElement('button');manifest.textContent='Manifest';manifest.title='Mark as JSON containing image list/URLs';manifest.addEventListener('click',()=>learnCandidate(row,'manifest'));acts.append(dicom,manifest);item.append(info,acts);el.append(item);}}
 async function learnCandidate(row,role){try{const r=await send('LEARN_CANDIDATE',{tabId,url:row.url,role});if(role==='dicom')toast('Learned DICOM endpoint.');else toast(r.result?.valid?`Learned manifest · ${r.result.valid} DICOM`:'Saved manifest template.');await refresh();}catch(e){toast(e.message||String(e),true);}}
-function renderStatus(){const conf=Number(summary?.confidence||state?.confidence||0),ready=Boolean(inventory?.series?.length),missing=summary?.missingOrigins||[],trimmed=Boolean(state?.truncated||summary?.storageTruncated||inventory?.context?.storageTruncated);$('scoreText').textContent=conf?`${conf}%`:'';if(ready&&trimmed){$('statusTitle').textContent='Ready · rescan recommended';$('statusText').textContent=inventory?.storageWarning||'Chrome trimmed captured requests; reload the PACS page and scan again to verify every series.';chip($('siteChip'),'Partial cache','warn');}else if(ready){$('statusTitle').textContent='Ready';$('statusText').textContent=`${inventory.adapter} · ${inventory.series.length} series`;chip($('siteChip'),'PACS','good');}else if(state?.tracking==='watching'){$('statusTitle').textContent='Tracking';$('statusText').textContent='Waiting for manifest or DICOM from viewer';chip($('siteChip'),'Tracking','warn');}else if(state?.tracking==='candidate'||conf>=55){$('statusTitle').textContent='Possible PACS';$('statusText').textContent=missing.length?'Grant site permission to analyze':'Click Track tab';chip($('siteChip'),'PACS?','warn');}else if(state?.tracking==='stopped'){$('statusTitle').textContent='Stopped';$('statusText').textContent='This tab is not tracked';chip($('siteChip'),'Stopped','neutral');}else{$('statusTitle').textContent='No PACS detected';$('statusText').textContent='Manual tracking can be enabled for this tab';chip($('siteChip'),'Normal Tab','neutral');}show('permissionBox',missing.length>0);$('permissionText').textContent=missing.length>1?`Permission needed for ${missing.length} sites`:'Site permission required';$('trackBtn').textContent=state?.tracking==='watching'?'Stop tracking':'Track tab';show('deepScanBtn',!ready&&state?.tracking==='watching'&&!missing.length&&Boolean(state?.binaryCandidates?.length));}
+function renderStatus(){
+  const conf=Number(summary?.confidence||state?.confidence||0),ready=Boolean(inventory?.series?.length),missing=summary?.missingOrigins||[],trimmed=Boolean(state?.truncated||summary?.storageTruncated||inventory?.context?.storageTruncated),activeJob=panelJob(),phase=panelPhase({job:activeJob,hasInventory:ready,tracking:state?.tracking,confidence:conf});
+  if(phase==='downloading'){
+    const total=Number(activeJob?.total)||0,done=Number(activeJob?.completed||0)+Number(activeJob?.failed||0),pct=total?Math.min(100,Math.round(done*100/total)):0;
+    $('scoreText').textContent=total?`${pct}%`:'';
+    $('statusTitle').textContent=activeJob?.status==='cancelling'?'Cancelling':activeJob?.status===FINISHING_STATUS?'Finishing':'Downloading';
+    $('statusText').textContent=`${activeJob?.adapter||inventory?.adapter||'DICOM'} · ${done}/${total||'?'} images`;
+    chip($('siteChip'),'Downloading','neutral');
+  }else{
+    $('scoreText').textContent=conf?`${conf}%`:'';
+    if(phase==='ready'&&trimmed){$('statusTitle').textContent='Ready · rescan recommended';$('statusText').textContent=inventory?.storageWarning||'Chrome trimmed captured requests; reload the PACS page and scan again to verify every series.';chip($('siteChip'),'Partial cache','warn');}
+    else if(phase==='ready'){$('statusTitle').textContent='Ready';$('statusText').textContent=`${inventory.adapter} · ${inventory.series.length} series`;chip($('siteChip'),'PACS','good');}
+    else if(phase==='tracking'){$('statusTitle').textContent='Tracking';$('statusText').textContent='Waiting for manifest or DICOM from viewer';chip($('siteChip'),'Tracking','warn');}
+    else if(phase==='candidate'){$('statusTitle').textContent='Possible PACS';$('statusText').textContent=missing.length?'Grant site permission to analyze':'Click Track tab';chip($('siteChip'),'PACS?','warn');}
+    else if(phase==='stopped'){$('statusTitle').textContent='Stopped';$('statusText').textContent='This tab is not tracked';chip($('siteChip'),'Stopped','neutral');}
+    else{$('statusTitle').textContent='No PACS detected';$('statusText').textContent='Manual tracking can be enabled for this tab';chip($('siteChip'),'Normal Tab','neutral');}
+  }
+  const busy=phase==='downloading';
+  show('permissionBox',!busy&&missing.length>0);$('permissionText').textContent=missing.length>1?`Permission needed for ${missing.length} sites`:'Site permission required';
+  $('trackBtn').disabled=busy;$('scanBtn').disabled=busy;$('trackBtn').textContent=busy?'Download in progress':state?.tracking==='watching'?'Stop tracking':'Track tab';
+  show('deepScanBtn',!busy&&!ready&&state?.tracking==='watching'&&!missing.length&&Boolean(state?.binaryCandidates?.length));
+}
 
 // Result labels for previous download
 const RESULT_LABELS={done:'Download complete',partial:'Saved (partial images)',done_with_errors:'Completed with errors',error:'Download failed',cancelled:'Cancelled'};
@@ -69,6 +92,7 @@ function previousResult(){const p=inventory?.previousDownload;return p&&p.lastDo
 function fillStudyCard(){$('studySub').textContent=inventory.studyUid||inventory.patient?.description||'—';chip($('adapterChip'),inventory.adapter||'DICOM','good');$('patientName').textContent=fmtName(inventory.patient?.name)||'—';$('patientId').textContent=inventory.patient?.id||'—';$('studyDate').textContent=fmtDate(inventory.patient?.studyDate);$('seriesCount').textContent=String(inventory.series?.length||0);}
 let lastRenderedStudyKey='';
 function renderInventory(){
+  if(!shouldShowInventoryEditor(panelJob())){show('doneCard',false);show('studyCard',false);show('seriesCard',false);show('stickyBar',false);show('partialBanner',false);return;}
   if(!inventory){show('doneCard',false);show('studyCard',false);show('seriesCard',false);show('stickyBar',false);return;}
   const result=previousResult();
   if(result&&!revealDownloaded){
@@ -143,13 +167,14 @@ function renderInventory(){
   }
   updateSelected();
 }
-function selectedIds(){return[...$('seriesList').querySelectorAll('input[type=checkbox]:checked')].map(x=>x.dataset.id);}
+function jobSelectionIds(){const j=job&&Number(job.tabId)===Number(tabId)?job:null;return Array.isArray(j?.selectedSeries)?j.selectedSeries.filter(Boolean):[];}
+function selectedIds(){const boxes=[...$('seriesList').querySelectorAll('input[type=checkbox]')];return boxes.length?boxes.filter(x=>x.checked).map(x=>x.dataset.id):jobSelectionIds();}
 function updateSelected(){
   const ids=selectedIds(),sel=(inventory?.series||[]).filter(s=>ids.includes(s.id)),images=sel.reduce((n,s)=>n+(Number(s.imageCount)||0),0);
   $('selectedSummary').textContent=`${ids.length}/${inventory?.series?.length||0} series${images?` · ~${images} images`:''}`;
   $('stickyTitle').textContent=`${ids.length} series${images?` · ~${images} images`:''}`;
   $('stickySub').textContent='Name - ID - Date / Series';
-  const isBusy=isStartingDownload||(job&&['preparing','downloading','cancelling'].includes(job.status));
+  const isBusy=isActiveDownload(panelJob());
   if(isBusy){
     $('downloadBtn').disabled=true;
     $('downloadBtn').classList.add('btn-loading');
@@ -167,7 +192,7 @@ function updateSelected(){
   $('resumeBtn').disabled=!ids.length;
 }
 
-function jobLabel(s){return({preparing:'Preparing',downloading:'Downloading',done:'Completed',partial:'Partial',done_with_errors:'Errors',error:'Failed',cancelling:'Cancelling',cancelled:'Cancelled'})[s]||s||'—';}
+function jobLabel(s){return({preparing:'Preparing',downloading:'Downloading',finishing:'Finishing',done:'Completed',partial:'Partial',done_with_errors:'Errors',error:'Failed',cancelling:'Cancelling',cancelled:'Cancelled'})[s]||s||'—';}
 function renderJob(){
   if(!job||Number(job.tabId)!==Number(tabId)){show('progressCard',false);setTopLoader(false);return;}
   show('progressCard',true);
@@ -180,10 +205,15 @@ function renderJob(){
   $('jobMeta').textContent=`${job.adapter||'DICOM'}${job.original||job.reconstructed?` · ${job.original||0} original${job.reconstructed?` · ${job.reconstructed} reconstructed`:''}`:''}`;
   const kind=job.status==='done'?'good':['error','done_with_errors'].includes(job.status)?'bad':['partial','cancelled'].includes(job.status)?'warn':'neutral';
   chip($('jobBadge'),jobLabel(job.status),kind);
-  const isBusy=['preparing','downloading','cancelling'].includes(job.status)||isStartingDownload;
+  const isBusy=isActiveDownload(panelJob());
   setTopLoader(isBusy);
   if(isBusy){
-    if(job&&['downloading','cancelling'].includes(job.status)){
+    if(job.status===FINISHING_STATUS){
+      show('cancelBtn',false);
+      show('resumeBtn',false);
+      show('jobNote',true);
+      $('jobNote').textContent='All images fetched. Writing study metadata...';
+    }else if(['downloading','cancelling'].includes(job.status)){
       show('cancelBtn',true);
       show('resumeBtn',false);
       show('jobNote',false);
@@ -229,7 +259,7 @@ function renderJob(){
     updateSelected();
   }
   const errs=job.errors||[];show('errorDetails',errs.length>0);$('errorLog').textContent=errs.join('\n');
-  if(TERMINAL.has(job.status)){refreshHistory().catch(()=>{});setTimeout(refresh,250);}
+  if(isTerminalDownload(job)){const terminalKey=`${job.id||tabId}|${job.status}|${job.updatedAt||''}`;if(terminalKey!==lastTerminalRefreshKey){lastTerminalRefreshKey=terminalKey;refreshHistory().catch(()=>{});setTimeout(()=>scheduleRefresh(0),250);}}else lastTerminalRefreshKey='';
 }
 
 function historyStatus(s){return({done:'Downloaded',partial:'Partial',done_with_errors:'Errors',error:'Failed',cancelled:'Cancelled',viewed:'Viewed'})[s]||'Viewed';}
@@ -238,9 +268,10 @@ function historyCounts(h){const done=Number(h.completed||0),total=Number(h.total
 function renderHistory(){const q=$('historySearch').value.trim().toLowerCase(),el=$('historyList');el.textContent='';const rows=history.filter(h=>!q||`${h.patientName||''} ${h.patientId||''} ${h.studyDate||''} ${h.description||''}`.toLowerCase().includes(q));if(!rows.length){el.innerHTML='<div class="empty">No results.</div>';return;}for(const h of rows.slice(0,70)){const item=document.createElement('div');item.className='history-item';const top=document.createElement('div');top.className='history-top';const left=document.createElement('div'),name=document.createElement('div');name.className='history-name';name.textContent=`${fmtName(h.patientName)||'Unknown'}${h.patientId?` · ${h.patientId}`:''}`;const meta=document.createElement('div');meta.className='history-meta';meta.textContent=[fmtDate(h.studyDate),h.seriesCount?`${h.seriesCount} series`:'',historyCounts(h),h.lastDownloadAt?fmtWhen(h.lastDownloadAt):''].filter(Boolean).join(' · ');left.append(name,meta);const st=document.createElement('span');st.className=`history-status ${historyKind(h.status)}`;st.textContent=historyStatus(h.status);top.append(left,st);item.append(top);el.append(item);}}
 async function refreshHistory(){try{history=(await send('GET_HISTORY')).history||[];renderHistory();}catch{}}
 
-async function refresh(){if(tabId==null)return;try{const r=await send('GET_OVERVIEW',{tabId});summary=r.summary;state=r.state;inventory=r.inventory;job=r.job;renderStatus();renderLink();renderInventory();renderJob();renderLearning();}catch(e){$('statusText').textContent=e.message||String(e);}await renderFolder();}
-async function bindActive(){const urlTab=new URLSearchParams(location.search).get('tabId');let t=urlTab?await chrome.tabs.get(Number(urlTab)).catch(()=>null):null;if(!t)t=(await chrome.tabs.query({active:true,currentWindow:true}))[0];if(!t?.id)return;tabId=t.id;activeTabUrl=t.url||'';revealDownloaded=false;await refresh();}
-function scheduleRefresh(ms=500){clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>refresh().catch(()=>{}),ms);}
+async function refresh(){if(tabId==null)return;const revision=++refreshRevision;try{const r=await send('GET_OVERVIEW',{tabId});if(revision!==refreshRevision)return;summary=r.summary;state=r.state;job=r.job;inventory=reconcileInventory(inventory,r.inventory,job);renderStatus();renderLink();renderInventory();renderJob();renderLearning();}catch(e){if(revision===refreshRevision)$('statusText').textContent=e.message||String(e);}if(revision===refreshRevision)await renderFolder();}
+function resetPanelContext(){summary=null;state=null;inventory=null;job=null;isStartingDownload=false;lastRenderedStudyKey='';lastTerminalRefreshKey='';$('seriesList').textContent='';renderStatus();renderInventory();renderJob();renderLearning();}
+async function bindActive(){const urlTab=new URLSearchParams(location.search).get('tabId');let t=urlTab?await chrome.tabs.get(Number(urlTab)).catch(()=>null):null;if(!t)t=(await chrome.tabs.query({active:true,currentWindow:true}))[0];if(!t?.id)return;if(Number(tabId)!==Number(t.id))resetPanelContext();tabId=t.id;activeTabUrl=t.url||'';revealDownloaded=false;await refresh();}
+function scheduleRefresh(ms=500){refreshRevision++;clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>refresh().catch(()=>{}),ms);}
 
 /**
  * Bulk downloads write through a granted directory handle. The picker is shown
@@ -248,9 +279,10 @@ function scheduleRefresh(ms=500){clearTimeout(refreshTimer);refreshTimer=setTime
  */
 async function startDownload(){
   if(isStartingDownload)return;
-  if(job&&['preparing','downloading','cancelling'].includes(job.status))return;
+  if(isActiveDownload(job))return;
   if(!selectedIds().length)return;
   isStartingDownload=true;
+  renderStatus();renderInventory();renderLearning();
   $('downloadBtn').disabled=true;
   $('downloadBtn').classList.add('btn-loading');
   $('downloadBtn').innerHTML='<span class="spinner"></span> Starting...';
@@ -268,6 +300,7 @@ async function startDownload(){
     if(!h){
       setTopLoader(false);
       isStartingDownload=false;
+      renderStatus();renderInventory();renderLearning();
       show('jobNote',true);
       $('jobNote').textContent='Cần chọn thư mục lưu (hoặc cấp quyền ghi) để tải ngầm toàn bộ ảnh DICOM.';
       toast('Chưa cấp quyền thư mục. Đã dừng để tránh hiện hàng loạt popup lưu file.',true);
@@ -278,7 +311,7 @@ async function startDownload(){
     await chrome.storage.local.set({[SAVE_MODE_KEY]:saveMode,[FOLDER_NAME_KEY]:h.name||'Selected Folder'});
     await renderFolder();
     const r=await send('START_DOWNLOAD',{tabId,selectedSeries:selectedIds(),options:{concurrency:6,frameConcurrency:6,saveMode,subfolder}});
-    job=r.job;renderJob();
+    job=r.job;renderStatus();renderInventory();renderJob();renderLearning();
   }catch(e){
     toast(e.message||String(e),true);
     setTopLoader(false);
@@ -291,6 +324,7 @@ async function startDownload(){
     updateSelected();
   }finally{
     isStartingDownload=false;
+    renderStatus();renderInventory();renderJob();renderLearning();
   }
 }
 
@@ -314,7 +348,7 @@ $('folderBtn').addEventListener('click',async()=>{try{const h=await window.showD
 $('copyLinkBtn').addEventListener('click',async()=>{const t=$('viewerUrl').textContent||'';if(!t||t==='—')return;try{await navigator.clipboard.writeText(t);toast('Viewer link copied to clipboard.');}catch(e){toast('Copy failed; select URL to copy manually.',true);}});
 $('folderResetBtn').addEventListener('click',async()=>{try{await fsDelete();await chrome.storage.local.remove([SAVE_MODE_KEY,FOLDER_NAME_KEY]);await renderFolder();toast('Saved folder cleared. Choose a folder before downloading.');}catch(e){toast(e.message||String(e),true);}});
 if($('subfolderInput')){$('subfolderInput').addEventListener('input',async(e)=>{const val=String(e.target.value||'').trim()||DEFAULT_SUBFOLDER;await chrome.storage.local.set({[SUBFOLDER_KEY]:val});await renderFolder();});$('subfolderInput').addEventListener('change',async(e)=>{const val=String(e.target.value||'').trim()||DEFAULT_SUBFOLDER;await chrome.storage.local.set({[SUBFOLDER_KEY]:val});await renderFolder();toast(`Subfolder: ${val}`);});}
-$('trackBtn').addEventListener('click',async()=>{if($('trackBtn').disabled)return;$('trackBtn').disabled=true;const old=$('trackBtn').textContent;$('trackBtn').innerHTML='<span class="spinner dark"></span> Processing...';setTopLoader(true);try{if(state?.tracking==='watching')await send('STOP_TRACKING',{tabId});else{if((summary?.missingOrigins||[]).length)await grantAccess();await send('START_TRACKING',{tabId});}await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('trackBtn').disabled=false;$('trackBtn').textContent=old;setTopLoader(false);}});
+$('trackBtn').addEventListener('click',async()=>{if($('trackBtn').disabled)return;$('trackBtn').disabled=true;$('trackBtn').innerHTML='<span class="spinner dark"></span> Processing...';setTopLoader(true);try{if(state?.tracking==='watching')await send('STOP_TRACKING',{tabId});else{if((summary?.missingOrigins||[]).length)await grantAccess();await send('START_TRACKING',{tabId});}await refresh();}catch(e){toast(e.message||String(e),true);}finally{renderStatus();setTopLoader(isActiveDownload(panelJob()));}});
 $('scanBtn').addEventListener('click',async()=>{if($('scanBtn').disabled)return;$('scanBtn').disabled=true;const old=$('scanBtn').textContent;$('scanBtn').innerHTML='<span class="spinner dark"></span> Scanning...';setTopLoader(true);try{await send('ANALYZE_TAB',{tabId});await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('scanBtn').disabled=false;$('scanBtn').textContent=old;setTopLoader(false);}});
 $('deepScanBtn').addEventListener('click',async()=>{if($('deepScanBtn').disabled)return;$('deepScanBtn').disabled=true;const old=$('deepScanBtn').textContent;$('deepScanBtn').innerHTML='<span class="spinner dark"></span> Deep scanning...';setTopLoader(true);try{const r=await send('DEEP_SCAN',{tabId});toast(r.valid?.length?`Identified ${r.valid.length} DICOM endpoints.`:'No DICOM endpoints verified.',!r.valid?.length);await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('deepScanBtn').disabled=false;$('deepScanBtn').textContent=old;setTopLoader(false);}});
 $('learnToggleBtn').addEventListener('click',async()=>{if($('learnToggleBtn').disabled)return;$('learnToggleBtn').disabled=true;try{if(state?.learning?.active)await send('STOP_LEARNING',{tabId});else{if((summary?.missingOrigins||[]).length)await grantAccess();await send('START_LEARNING',{tabId});}await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('learnToggleBtn').disabled=false;}});
@@ -351,6 +385,28 @@ if($('historyFolderBtn'))$('historyFolderBtn').addEventListener('click',async()=
   toast(folder?`Saving to: ${folder}/${sub}`:'No save folder chosen yet.',!folder);
 });
 chrome.tabs.onActivated.addListener(()=>bindActive().catch(()=>{}));chrome.tabs.onUpdated.addListener((id,change,tab)=>{if(id===tabId&&(change.url||change.title||change.status==='complete')){activeTabUrl=tab.url||activeTabUrl;scheduleRefresh(150);}});
-chrome.runtime.onMessage.addListener(m=>{if(['JOB_UPDATED','INVENTORY_UPDATED','PACS_SIGNAL','TAB_CONTEXT_CHANGED','LEARN_UPDATED'].includes(m?.type)&&Number(m.tabId)!==Number(tabId))return;if(m?.type==='JOB_UPDATED'){job=m.job;renderJob();}else if(m?.type==='INVENTORY_UPDATED'){inventory=m.inventory;renderInventory();scheduleRefresh(80);}else if(['PACS_SIGNAL','TAB_CONTEXT_CHANGED','LEARN_UPDATED'].includes(m?.type))scheduleRefresh(800);else if(m?.type==='HISTORY_UPDATED'){history=m.history||[];if(!$('historyCard').classList.contains('hidden'))renderHistory();}});
+chrome.runtime.onMessage.addListener(m=>{
+  if(['JOB_UPDATED','INVENTORY_UPDATED','PACS_SIGNAL','TAB_CONTEXT_CHANGED','LEARN_UPDATED'].includes(m?.type)&&Number(m.tabId)!==Number(tabId))return;
+  if(m?.type==='JOB_UPDATED'){
+    refreshRevision++;
+    const wasActive=isActiveDownload(panelJob());
+    job=m.job;
+    renderStatus();
+    // The one skipped case is active -> terminal: the series editor must not be
+    // rebuilt under a Resume that belongs to the job that just ended, which was
+    // started from a selection this panel may never have rendered.
+    if(isActiveDownload(panelJob())||!wasActive)renderInventory();
+    renderJob();renderLearning();
+  }else if(m?.type==='INVENTORY_UPDATED'){
+    refreshRevision++;
+    inventory=reconcileInventory(inventory,m.inventory,panelJob());
+    renderStatus();renderInventory();renderLearning();
+    if(!isActiveDownload(panelJob()))scheduleRefresh(80);
+  }else if(['PACS_SIGNAL','TAB_CONTEXT_CHANGED','LEARN_UPDATED'].includes(m?.type)){
+    if(!isActiveDownload(panelJob()))scheduleRefresh(800);
+  }else if(m?.type==='HISTORY_UPDATED'){
+    history=m.history||[];if(!$('historyCard').classList.contains('hidden'))renderHistory();
+  }
+});
 bindActive().then(refreshHistory).catch(e=>toast(e.message||String(e),true));
 

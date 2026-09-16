@@ -10,10 +10,36 @@ node tests/test_generic_discovery.mjs
 node tests/test_generic_adapter.mjs
 node tests/test_network_transport.mjs
 node tests/test_dicom_writer.mjs
+node tests/test_download_ui_state.mjs
+node --test tests/test_sidepanel_runtime.mjs
 python tests/static_checks.py
+python tests/smoke_sidepanel.py
 python tests/validate_dicom_minimal.py tests/writer_raw.dcm
 python tests/validate_dicom_minimal.py tests/writer_jpeg.dcm
 ```
+
+## Side Panel Download State
+
+`test_download_ui_state.mjs` covers the shared state module: which statuses count
+as an active download, why a progress message may not end a job, and what a
+delayed or empty overview may do to the visible study.
+
+`test_sidepanel_runtime.mjs` runs the real `sidepanel.js` handlers against an
+in-memory DOM: an active job owns the status header, progress never rebuilds the
+series editor, a late overview cannot overwrite newer progress, and Resume
+repeats the job's own selection.
+
+`smoke_sidepanel.py` is the browser gate. It serves the extension over HTTP and
+drives the shipped `sidepanel.html` in headless Chromium, stubbing only the
+`chrome.*` APIs:
+
+```bash
+python tests/smoke_sidepanel.py          # add --headed to watch it
+```
+
+It fails on any console error, and on the two regressions a DOM stub cannot see:
+the progress card moving when an inventory update lands mid-download, and the
+previous patient staying on screen while another tab is being bound.
 
 ## Generic Discovery Regression
 
