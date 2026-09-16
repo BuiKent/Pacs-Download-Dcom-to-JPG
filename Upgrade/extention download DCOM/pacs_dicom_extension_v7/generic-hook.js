@@ -20,12 +20,15 @@
   }
   async function inspectFetchResponse(resp,req){
     try{
+      const url = resp.url || req.url || '';
+      if(/\/signalr\//i.test(url))return;
       const ct=String(resp.headers.get('content-type')||'').toLowerCase();
+      if(ct.includes('event-stream'))return;
       const len=Number(resp.headers.get('content-length')||0);
       if(!(ct.includes('json')||ct.includes('javascript')||ct.includes('text/plain')||(!ct&&len>0&&len<=MAX_TEXT)))return;
       if(len>MAX_TEXT)return;
       const text=await resp.clone().text();if(text.length>MAX_TEXT||!maybeJsonText(text))return;
-      emit({url:resp.url||req.url,method:req.method,status:resp.status,contentType:ct,requestBody:req.body||null,text});
+      emit({url,method:req.method,status:resp.status,contentType:ct,requestBody:req.body||null,text});
     }catch{}
   }
   const origFetch=window.fetch;
@@ -38,5 +41,25 @@
   }
   const XO=XMLHttpRequest.prototype.open,XS=XMLHttpRequest.prototype.send;
   XMLHttpRequest.prototype.open=function(method,url){try{this.__pacsV7={method:String(method||'GET').toUpperCase(),url:new URL(String(url),location.href).href};}catch{this.__pacsV7={method:String(method||'GET').toUpperCase(),url:String(url||'')};}return XO.apply(this,arguments);};
-  XMLHttpRequest.prototype.send=function(body){const self=this,meta=this.__pacsV7||{method:'GET',url:''};meta.body=cleanBody(body);this.addEventListener('load',()=>{try{if(sensitive(meta.url))return;const ct=String(self.getResponseHeader('content-type')||'').toLowerCase();const len=Number(self.getResponseHeader('content-length')||0);if(len>MAX_TEXT)return;let text='';if(self.responseType===''||self.responseType==='text')text=String(self.responseText||'');else if(self.responseType==='json')text=JSON.stringify(self.response);else return;if(text.length>MAX_TEXT||!maybeJsonText(text))return;emit({url:self.responseURL||meta.url,method:meta.method,status:self.status,contentType:ct,requestBody:meta.body||null,text});}catch{}},{once:true});return XS.apply(this,arguments);};
+  XMLHttpRequest.prototype.send=function(body){
+    const self=this,meta=this.__pacsV7||{method:'GET',url:''};
+    meta.body=cleanBody(body);
+    if(/\/signalr\//i.test(meta.url))return XS.apply(this,arguments);
+    this.addEventListener('load',()=>{
+      try{
+        if(sensitive(meta.url))return;
+        const ct=String(self.getResponseHeader('content-type')||'').toLowerCase();
+        if(ct.includes('event-stream'))return;
+        const len=Number(self.getResponseHeader('content-length')||0);
+        if(len>MAX_TEXT)return;
+        let text='';
+        if(self.responseType===''||self.responseType==='text')text=String(self.responseText||'');
+        else if(self.responseType==='json')text=JSON.stringify(self.response);
+        else return;
+        if(text.length>MAX_TEXT||!maybeJsonText(text))return;
+        emit({url:self.responseURL||meta.url,method:meta.method,status:self.status,contentType:ct,requestBody:meta.body||null,text});
+      }catch{}
+    },{once:true});
+    return XS.apply(this,arguments);
+  };
 })();

@@ -1,3 +1,15 @@
+# 7.2.6
+
+Fix multi-iframe injection storm, protect real-time SignalR streams, and add Meditec Clinic ULite PACS support:
+
+- **Multi-iframe Injection Isolation (`background.js`)**: Isolated `injectContent` and `injectGenericHook` to specific frame IDs upon `onCommitted` sub-frame navigation (`frameIds: [d.frameId]`). Eliminates the $O(N^2)$ script injection explosion (e.g. 6,561 injections on 81-frame pages like Meditec ULite) that caused Chrome to hang indefinitely.
+- **Leaf Frame Observation Optimization (`content.js`)**: Skipped heavy subtree `MutationObserver` and periodic `PAGE_HINTS` reporting on leaf iframes that lack Canvas viewports and child frames, eliminating ~95% of redundant DOM traversal overhead.
+- **SignalR & Event-Stream Protection (`generic-hook.js`)**: Explicitly bypassed `/signalr/` endpoints and `event-stream` responses in both `fetch` and `XMLHttpRequest.prototype.send` monkey-patches, preventing streaming lockups and connection latency on real-time web socket/polling PACS interfaces.
+- **Meditec Clinic ULite PACS Support (`lib/pacs.js`)**:
+  - Added detection of `/externalinterface/viewexi` into `classifyViewerShell` as `MEDITEC_ULITE` (score 94) to auto-arm tracking immediately upon opening.
+  - Added case-insensitive Accession Number extraction (`AN`, `acc`, `accession`) into `viewerStudyHint`.
+  - Added classification of Meditec endpoints (`MEDITEC_WORKLIST`, `MEDITEC_EXPORT_ZIP`, `DICOM_IMAGE_API`, `DICOM_METADATA`, `MEDITEC_VIEWER_API`) into `classifyPacsUrl`.
+
 # 7.2.5
 
 Comprehensive full activity logging & diagnostics per PACS site:

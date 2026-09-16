@@ -28,3 +28,22 @@ if (derived.rsBase !== 'https://pacs.benhvienhuunghi.vn:6868') {
 }
 console.log('OHIF / Benh Vien Huu Nghi URL tests OK');
 
+const meditecUrl = 'https://ketqua.meditecclinic.com.vn/externalinterface/viewexi?MODE=UL&LID=hispacs&LPW=123&TYPE=V&AN=1030396';
+const meditecShell = classifyViewerShell(meditecUrl);
+if (meditecShell?.type !== 'MEDITEC_ULITE' || meditecShell.score < 90) {
+  throw new Error(`Meditec ULite shell detect failed: ${JSON.stringify(meditecShell)}`);
+}
+const meditecHint = viewerStudyHint(meditecUrl);
+if (!meditecHint.includes('an=1030396')) {
+  throw new Error(`Meditec accession hint failed: ${meditecHint}`);
+}
+const meditecExportZip = classifyPacsUrl('https://ketqua.meditecclinic.com.vn/requestDataReadOnly/ExportStudy2ZIP');
+if (meditecExportZip?.type !== 'MEDITEC_EXPORT_ZIP') {
+  throw new Error(`Meditec ExportStudy2ZIP detect failed: ${JSON.stringify(meditecExportZip)}`);
+}
+const meditecWorklist = classifyPacsUrl('https://ketqua.meditecclinic.com.vn/requestData/RequestWorklistData');
+if (meditecWorklist?.type !== 'MEDITEC_WORKLIST') {
+  throw new Error(`Meditec RequestWorklistData detect failed: ${JSON.stringify(meditecWorklist)}`);
+}
+console.log('Meditec ULite URL tests OK');
+

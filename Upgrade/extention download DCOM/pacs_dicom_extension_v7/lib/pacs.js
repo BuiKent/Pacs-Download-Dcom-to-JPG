@@ -55,6 +55,11 @@ export function classifyPacsUrl(raw) {
   if (lower.includes('studydata/getstudies') || lower.includes('studydata/getshareinfo')) return { type:'VRAD_MANIFEST', url, score:100 };
   if (lower.includes('get-share-patient-image')) return { type:'VRPACS_MANIFEST', url, score:100 };
   if (lower.includes('study-get-public')) return { type:'VRPACS_DICOM', url, score:96 };
+  if (/\/requestdata\/(?:requestworklistdata|load_wetreadinginfo)/i.test(path)) return { type:'MEDITEC_WORKLIST', url, score:100 };
+  if (/\/requestdatareadonly\/exportstudy2(?:jpeg_)?zip/i.test(path)) return { type:'MEDITEC_EXPORT_ZIP', url, score:108 };
+  if (/\/requestdatareadonly\/getdicom(?:jpeg|thumbnail)/i.test(path)) return { type:'DICOM_IMAGE_API', url, score:92 };
+  if (/\/requestdatareadonly\/getdicomheader/i.test(path)) return { type:'DICOM_METADATA', url, score:95 };
+  if (/\/requestdatareadonly\/requestviewer/i.test(path)) return { type:'MEDITEC_VIEWER_API', url, score:85 };
   if (/\/studies\/[^/]+\/structure(?:\/|$|\?)/i.test(url) || /\/studies\/[^/]+\/structure$/.test(path)) return { type:'MEDDREAM_STRUCTURE', url, score:108 };
   if (/\/studies\/[^/]+\/series$/.test(path)) return { type:'QIDO_SERIES', url, score:110 };
   if (/\/studies\/[^/]+\/series\/[^/]+\/instances$/.test(path)) return { type:'QIDO_INSTANCES', url, score:105 };
@@ -100,9 +105,10 @@ export function viewerStudyHint(raw) {
   try {
     const u = new URL(url);
     const candidates = [];
-    for (const key of ['studyUID','studyuid','StudyUID','StudyInstanceUIDs','studyinstanceuids','StudyInstanceUID','studyinstanceuid','studies','study','id','share','session','stoken','token']) {
-      const v = u.searchParams.get(key);
-      if (v) candidates.push([key.toLowerCase(), v]);
+    const targetKeys = new Set(['studyuid','studyinstanceuid','studyinstanceuids','studies','study','id','share','session','stoken','token','an','acc','accession']);
+    for (const [k, v] of u.searchParams.entries()) {
+      const kl = k.toLowerCase();
+      if (targetKeys.has(kl) && v) candidates.push([kl, v]);
     }
     const unnamed = unnamedToken(u.searchParams);
     if (unnamed) candidates.push(['', unnamed]);
@@ -110,9 +116,9 @@ export function viewerStudyHint(raw) {
     const qpos = hash.indexOf('?');
     if (qpos >= 0) {
       const hp = new URLSearchParams(hash.slice(qpos + 1));
-      for (const key of ['studyUID','studyuid','StudyUID','StudyInstanceUIDs','studyinstanceuids','StudyInstanceUID','studyinstanceuid','studies','study','id','share','session','stoken','token']) {
-        const v = hp.get(key);
-        if (v) candidates.push([key.toLowerCase(), v]);
+      for (const [k, v] of hp.entries()) {
+        const kl = k.toLowerCase();
+        if (targetKeys.has(kl) && v) candidates.push([kl, v]);
       }
       const hu = unnamedToken(hp);
       if (hu) candidates.push(['', hu]);
@@ -137,20 +143,26 @@ export function classifyViewerShell(raw) {
   if (/\/pages\/sharestudy\.aspx$/i.test(path) && (u.searchParams.has('stoken') || u.searchParams.has('token') || Boolean(unnamedToken(u.searchParams)))) return { type:'SHARE_STUDY', url, score:92 };
   if (/(?:^#|\/)view\?id=/i.test(hash) || (path.includes('/viewer/s') && /(?:^#|\/)view\?id=/.test(hash)) || (/(?:^#|\/)view/i.test(hash) && (u.searchParams.has('id') || u.searchParams.has('shareId')))) return { type:'VRAD_SHELL', url, score:88 };
   if (path.includes('/viewer') && u.searchParams.has('studies')) return { type:'DICOMWEB_VIEWER', url, score:88 };
+  if (/\/externalinterface\/viewexi/i.test(path) || (portalHost(u) && /viewexi/i.test(path))) return { type:'MEDITEC_ULITE', url, score:94 };
   const tokenKeys=['token','stoken','access_token','access-token','jwt','share','session'];
   const hasBootstrapToken=tokenKeys.some(k=>u.searchParams.has(k)) || Boolean(unnamedToken(u.searchParams));
   const hostPath=(u.hostname + path).toLowerCase();
-  const portalHost=/(^|\.)(pportal|portal|ketqua|results?|patient|pacs|ris|radiology|rad)(\.|$)/i.test(u.hostname)
+  const portalHostMatch=/(^|\.)(pportal|portal|ketqua|results?|patient|pacs|ris|radiology|rad)(\.|$)/i.test(u.hostname)
     || /hospital|benhvien|hfh|pmr|cdhaviet/i.test(u.hostname);
   if (hasBootstrapToken && /portal|pacs|viewer|image|radiology|rad|pmr|study/i.test(hostPath))
     return { type:'TOKEN_PORTAL', url, score:86 };
   if (hasBootstrapToken && u.port) return { type:'TOKEN_PORTAL', url, score:44 };
-  if ((path.includes('/auth/login') || path.includes('/account/login') || path.includes('/login')) && portalHost)
+  if ((path.includes('/auth/login') || path.includes('/account/login') || path.includes('/login')) && portalHostMatch)
     return { type:'PATIENT_PORTAL', url, score:72 };
-  if (portalHost && (u.port || /share|study|exam|result|ketqua|viewer|image/i.test(path)))
+  if (portalHostMatch && (u.port || /share|study|exam|result|ketqua|viewer|image/i.test(path)))
     return { type:'PATIENT_PORTAL', url, score:66 };
   if ((path.includes('/viewer') || path.includes('/vrviewer')) && (u.search || u.hash)) return { type:'VIEWER_SHELL', url, score:72 };
   return null;
+}
+
+function portalHost(u) {
+  return /(^|\.)(pportal|portal|ketqua|results?|patient|pacs|ris|radiology|rad)(\.|$)/i.test(u.hostname)
+    || /hospital|benhvien|hfh|pmr|cdhaviet/i.test(u.hostname);
 }
 
 export function viewerUrlScore(raw) {
@@ -163,6 +175,8 @@ export function viewerUrlScore(raw) {
   if (/token|stoken|session|share|access[_-]?key|key=|jwt|signature|sig=/.test(lower)) score += 16;
   if (/viewer|view|pacs|ohif|minerva|cornerstone|sharestudy|pportal|portal|ketqua|radiology|pmr|ris/.test(lower)) score += 14;
   if (/patient(id)?=/.test(lower)) score += 4;
+  if (/(?:^|[?&#])(?:an|acc|accession)=\d+/i.test(url)) score += 25;
+  if (/viewexi/i.test(lower)) score += 22;
   try {
     const u = new URL(url);
     if (/(^|\.)(pportal|portal|ketqua|pacs|ris)(\.|$)/i.test(u.hostname)) score += 22;

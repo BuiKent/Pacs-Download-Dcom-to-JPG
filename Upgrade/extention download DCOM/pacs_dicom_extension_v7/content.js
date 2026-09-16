@@ -289,6 +289,12 @@
   function schedule(){if(stopped)return;clearTimeout(timer);timer=setTimeout(report,800);}
   const start=()=>{
     stopped=false;
+    const isTopFrame = window.self === window.top;
+    const hasViewer = Boolean(document.querySelector('canvas, .cornerstone-canvas, [data-cornerstone-enabled], #patientBanner'));
+    const hasSubframes = Boolean(document.querySelector('iframe, frame'));
+    if (!isTopFrame && !hasViewer && !hasSubframes) {
+      return;
+    }
     try{
       if(observer)observer.disconnect();
       observer=new MutationObserver(schedule);
@@ -296,8 +302,6 @@
     }catch{}
     schedule();
     if(intervalId)clearInterval(intervalId);
-    const isTopFrame = window.self === window.top;
-    const hasViewer = Boolean(document.querySelector('canvas, .cornerstone-canvas, [data-cornerstone-enabled], #patientBanner'));
     if(isTopFrame || hasViewer){
       intervalId=setInterval(report,10000);
     }
