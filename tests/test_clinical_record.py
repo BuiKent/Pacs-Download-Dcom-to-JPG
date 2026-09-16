@@ -366,6 +366,55 @@ class WorklistIntegrationTests(unittest.TestCase):
             self.assertFalse(meta["hasClinicalRecord"])
 
 
+class NotADocumentTests(unittest.TestCase):
+    """The record is bookkeeping, not paperwork the archive holds."""
+
+    def _patient_folder(self, tmp: str) -> Path:
+        """A patient folder holding one real report, the way a record arrives."""
+        folder = Path(tmp) / "2510020628-NGUYEN XUAN QUANG"
+        folder.mkdir(parents=True)
+        (folder / "ho-so-benh-an.txt").write_text(
+            "Tóm tắt bệnh án: theo dõi sau mổ.", encoding="utf-8")
+        (folder / dcom_pipeline.PATIENT_MANIFEST_NAME).write_text(json.dumps({
+            "format": dcom_pipeline.PATIENT_MANIFEST_FORMAT,
+            "patientId": "2510020628",
+            "patientName": "NGUYEN XUAN QUANG",
+            "studies": {},
+        }, ensure_ascii=False), encoding="utf-8")
+        return folder
+
+    def test_the_record_is_not_offered_as_a_text_document(self):
+        # It is `.json` sitting in the patient folder, which is exactly what
+        # the text scanner collects.
+        self.assertEqual(
+            "", web_backend.media_type_for_file(
+                Path("2510020628") / clinical_record.CLINICAL_RECORD_NAME),
+        )
+
+    def test_writing_a_record_adds_no_row_to_the_exam_history(self):
+        # Listed, it turned up in "Lịch sử khám" as a VĂN BẢN row, and opening
+        # it showed the doctor their own notes back as though somebody had
+        # written a report.
+        with TemporaryDirectory() as tmp:
+            folder = self._patient_folder(tmp)
+            clinical_record.write_record(folder, {"tumors": [{
+                "compartment": "Nội sọ",
+                "histology": "U tế bào hình sao lan toả, IDH đột biến",
+                "grade": "3",
+            }]})
+
+            series = web_backend.ArchiveCatalog().open(folder)["series"]
+            documents = [item for item in series if item["mediaType"] == "text"]
+
+            # The report is still there, and it is the only file in that row.
+            self.assertEqual(1, len(documents))
+            self.assertEqual(1, documents[0]["sliceCount"])
+            self.assertNotIn(
+                clinical_record.CLINICAL_RECORD_NAME,
+                json.dumps(series, ensure_ascii=False),
+            )
+
+
 class ReadingWithoutAManifestTests(unittest.TestCase):
     """Opening a folder that cannot hold a record is not an error.
 

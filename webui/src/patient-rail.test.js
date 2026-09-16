@@ -2,6 +2,7 @@
 
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { setLanguage } from "./i18n.js";
+import { resetClinicalState } from "./clinical.js";
 import {
   state,
   renderPatientRail,
@@ -35,6 +36,20 @@ const SERIES = [
 
 const originalFetch = global.fetch;
 
+/** Put the shell on screen the way the app does. */
+function mountApp() {
+  if (!document.querySelector("#app")) document.body.innerHTML = '<div id="app"></div>';
+  render();
+}
+
+/** Press a button the way a person does, then let the repaint settle. */
+async function press(selector) {
+  const button = document.querySelector(selector);
+  expect(button, `no button matched ${selector}`).not.toBeNull();
+  button.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe("Viewer tab: patient rail", () => {
   beforeEach(() => {
     setLanguage("vi");
@@ -42,6 +57,10 @@ describe("Viewer tab: patient rail", () => {
     state.activeTabId = "tab-1";
     state.editingPatientInfo = false;
     state.patientEditDraft = null;
+    // The record card shares one state object with the whole window, and the
+    // pencil hides while the form is open — a test that left it open would
+    // take the pencil away from the next one.
+    resetClinicalState();
     state.tabs = [];
     state.worklistPatients = [];
     state.selectedId = "s1";
@@ -113,10 +132,12 @@ describe("Viewer tab: patient rail", () => {
   });
 
   it("prints a dash for every field the manifest does not carry", () => {
-    // A diagnosis has no source in a local archive — no RIS, no DICOM tag —
-    // so it stays a dash until a clinician types one.
+    // Phone and address have no source in a local archive — no RIS, no DICOM
+    // tag — so they stay dashes until a clinician types one.
     const html = renderPatientRail();
-    expect(html).toMatch(/data-action="edit-diagnosis"[^>]*>—</);
+    expect(html).toMatch(/<dd>—<\/dd>/);
+    // And the note line is absent rather than empty: nothing was written.
+    expect(html).not.toContain('class="dx-note"');
 
     state.archive.patient = {};
     const blank = renderPatientRail();
@@ -220,25 +241,32 @@ describe("Viewer tab: patient rail", () => {
     expect(html).toContain("rec-name-row");
     expect(html).toContain("0912345678");
     expect(html).toContain("Hà Nội");
-    expect(html).toContain('data-action="edit-patient-info"');
+    expect(html).toContain('data-action="edit-record"');
     // Button should only contain the icon glyph '✎', not trailing text
     expect(html).toContain('>✎</button>');
     // Header title 'Thông tin bệnh nhân' is removed
     expect(html).not.toContain("Thông tin bệnh nhân");
   });
 
-  it("renders icon-only save and cancel buttons when editing", () => {
-    state.editingPatientInfo = true;
-    const html = renderPatientRail();
-    expect(html).toContain('data-action="save-patient-info"');
-    expect(html).toContain('>✓</button>');
-    expect(html).toContain('data-action="cancel-patient-info"');
-    expect(html).toContain('>✕</button>');
+  it("opens one form in the reading pane rather than unfolding the rail", async () => {
+    // Who the patient is and what has been recorded about them are one record
+    // to the doctor, and the rail is 246px wide.
+    mountApp();
+    await press('[data-action="edit-record"]');
+
+    expect(state.editingPatientInfo).toBe(true);
+    expect(document.querySelector('.rec-rail [data-field="patient-edit-form"]')).toBeNull();
+    expect(document.querySelector('#workspace [data-field="patient-edit-form"]')).not.toBeNull();
+    expect(document.querySelector('#workspace [data-action="save-record"]')).not.toBeNull();
+    expect(document.querySelector('#workspace [data-action="cancel-record"]')).not.toBeNull();
+    // The rail says where the form went instead of showing a stale copy.
+    expect(document.querySelector(".rec-rail").textContent)
+      .toContain("Đang sửa ở khung bên phải");
   });
 
   it("allows entering edit mode and saving updated patient information", async () => {
-    document.body.innerHTML = `<div id="app">${renderPatientRail()}</div>`;
-    await action("edit-patient-info", document.querySelector('[data-action="edit-patient-info"]'));
+    mountApp();
+    await press('[data-action="edit-record"]');
     expect(state.editingPatientInfo).toBe(true);
 
     const form = document.querySelector('[data-field="patient-edit-form"]');
@@ -247,20 +275,23 @@ describe("Viewer tab: patient rail", () => {
     form.querySelector('input[name="phone"]').value = "0988112233";
     form.querySelector('input[name="address"]').value = "TP. Hồ Chí Minh";
 
-    global.fetch = vi.fn().mockResolvedValue({
+    // One press writes both halves, so the mock answers by route.
+    global.fetch = vi.fn(async (url) => ({
       ok: true,
       headers: { get: () => "application/json" },
-      json: async () => ({
-        patient: {
-          ...PATIENT,
-          patientName: "NGUYỄN THỊ MỚI",
-          phone: "0988112233",
-          address: "TP. Hồ Chí Minh",
-        },
-      }),
-    });
+      json: async () => (String(url).includes("/api/patient/update")
+        ? {
+          patient: {
+            ...PATIENT,
+            patientName: "NGUYỄN THỊ MỚI",
+            phone: "0988112233",
+            address: "TP. Hồ Chí Minh",
+          },
+        }
+        : {}),
+    }));
 
-    await action("save-patient-info", document.querySelector('[data-action="save-patient-info"]'));
+    await press('[data-action="save-record"]');
 
     expect(global.fetch).toHaveBeenCalled();
     const [endpoint, req] = global.fetch.mock.calls[0];
@@ -308,25 +339,29 @@ describe("Viewer tab: patient rail", () => {
     state.archive = tab1.archive;
 
     // Enable edit mode on tab-1
-    await action("edit-patient-info");
+    mountApp();
+    await press('[data-action="edit-record"]');
     expect(state.editingPatientInfo).toBe(true);
     expect(tab1.editingPatientInfo).toBe(true);
     document.querySelector('input[name="patientName"]').value = "Bản nháp tab 1";
 
-    // Switch to tab-2: tab-2 should NOT be in edit mode
+    // Switch to tab-2: tab-2 should NOT be carrying tab-1's draft
     await switchTab("tab-2");
     expect(state.activeTabId).toBe("tab-2");
     expect(state.editingPatientInfo).toBe(false);
     expect(tab2.editingPatientInfo).toBe(false);
+    expect(document.querySelector('input[name="patientName"]')).toBeNull();
 
-    // Switch back to tab-1: tab-1 should still have edit mode preserved
+    // Switch back to tab-1: the draft it was holding is still there, and the
+    // pencil opens it again rather than starting over from the manifest.
     await switchTab("tab-1");
     expect(state.activeTabId).toBe("tab-1");
     expect(state.editingPatientInfo).toBe(true);
+    await press('[data-action="edit-record"]');
     expect(document.querySelector('input[name="patientName"]').value).toBe("Bản nháp tab 1");
 
     // Cancel edit mode on tab-1
-    await action("cancel-patient-info");
+    await press('[data-action="cancel-record"]');
     expect(state.editingPatientInfo).toBe(false);
     expect(tab1.editingPatientInfo).toBe(false);
   });
@@ -359,7 +394,8 @@ describe("Viewer tab: patient rail", () => {
       patientId: "BN01", patientName: "Bệnh nhân 1", folder: tab1.folder,
     }];
 
-    await action("edit-patient-info");
+    mountApp();
+    await press('[data-action="edit-record"]');
     document.querySelector('input[name="patientId"]').value = "BN01-NEW";
     document.querySelector('input[name="patientName"]').value = "Bệnh nhân đã sửa";
 
@@ -378,8 +414,8 @@ describe("Viewer tab: patient rail", () => {
       });
     });
     const save = action(
-      "save-patient-info",
-      document.querySelector('[data-action="save-patient-info"]'),
+      "save-record",
+      document.querySelector('[data-action="save-record"]'),
     );
     await Promise.resolve();
     await switchTab(tab2.id);
@@ -405,6 +441,13 @@ describe("Viewer tab: patient rail", () => {
     expect(tab1.archive.patient.patientId).toBe("BN01-NEW");
     expect(tab1.patientName).toBe("Bệnh nhân đã sửa");
     expect(state.worklistPatients[0].patientId).toBe("BN01-NEW");
+    // And the clinical half never went out. `clinicalState` is one object for
+    // the window, so by now it holds tab 2's record — writing it would put
+    // tab 2's diagnosis into tab 1's folder.
+    const written = global.fetch.mock.calls
+      .filter(([url, options]) => String(url).includes("/api/patient/clinical")
+        && options?.method === "POST");
+    expect(written).toEqual([]);
   });
 });
 

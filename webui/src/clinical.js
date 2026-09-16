@@ -665,6 +665,76 @@ function formDatalists() {
   `;
 }
 
+/**
+ * Who the patient is.
+ *
+ * The same eight fields the rail card used to unfold on its own, in the same
+ * `patient-edit-form` the save reads with `FormData` — moved here so that one
+ * press of the pencil opens everything about this patient at once instead of
+ * two forms in two places.
+ */
+function renderPatientSection(patient) {
+  const year = new Date().getFullYear();
+  const other = patient.gender && patient.gender !== "Nam" && patient.gender !== "Nữ";
+  return `
+    <form class="dxf-section" data-field="patient-edit-form" onsubmit="event.preventDefault();">
+      <div class="dxf-section-head">
+        <b>${escapeHtml(t("Thông tin bệnh nhân"))}</b>
+      </div>
+      <div class="dxf-block">
+        <label class="dxf-field dxf-wide">
+          <span>${escapeHtml(t("Họ và tên"))}</span>
+          <input class="dxf-input" name="patientName" maxlength="128"
+            value="${escapeHtml(patient.patientName || "")}"
+            placeholder="${escapeHtml(t("Nhập họ tên"))}">
+        </label>
+        <label class="dxf-field">
+          <span>${escapeHtml(t("Mã bệnh nhân"))}</span>
+          <input class="dxf-input" name="patientId" maxlength="128" required
+            value="${escapeHtml(patient.patientId || "")}"
+            placeholder="${escapeHtml(t("Nhập mã BN"))}">
+        </label>
+        <label class="dxf-field">
+          <span>${escapeHtml(t("Giới tính"))}</span>
+          <select class="dxf-input" name="gender">
+            <option value=""${patient.gender ? "" : " selected"}>—</option>
+            <option value="Nam"${patient.gender === "Nam" ? " selected" : ""}>${escapeHtml(t("Nam"))}</option>
+            <option value="Nữ"${patient.gender === "Nữ" ? " selected" : ""}>${escapeHtml(t("Nữ"))}</option>
+            <option value="Khác"${other ? " selected" : ""}>${escapeHtml(t("Khác"))}</option>
+          </select>
+        </label>
+        <label class="dxf-field">
+          <span>${escapeHtml(t("Năm sinh"))}</span>
+          <input class="dxf-input" name="birthYear" type="number" min="1900" max="${year}"
+            value="${escapeHtml(patient.birthYear || "")}" placeholder="YYYY">
+        </label>
+        <label class="dxf-field">
+          <span>${escapeHtml(t("Số điện thoại"))}</span>
+          <input class="dxf-input" name="phone" type="tel"
+            value="${escapeHtml(patient.phone || "")}"
+            placeholder="${escapeHtml(t("Nhập SĐT"))}">
+        </label>
+        <label class="dxf-field dxf-wide">
+          <span>${escapeHtml(t("Địa chỉ"))}</span>
+          <input class="dxf-input" name="address" value="${escapeHtml(patient.address || "")}"
+            placeholder="${escapeHtml(t("Nhập địa chỉ"))}">
+        </label>
+        <label class="dxf-field dxf-wide">
+          <span>${escapeHtml(t("Bệnh viện"))}</span>
+          <input class="dxf-input" name="hospital" value="${escapeHtml(patient.hospital || "")}"
+            placeholder="${escapeHtml(t("Tên bệnh viện"))}">
+        </label>
+        <label class="dxf-field dxf-wide">
+          <span>${escapeHtml(t("Chẩn đoán / Ghi chú"))}</span>
+          <textarea class="dxf-input" name="diagnosis" rows="3"
+            placeholder="${escapeHtml(t("Ghi tự do: lưu ý khi đọc phim, hẹn khám…"))}"
+            >${escapeHtml(patient.diagnosis || "")}</textarea>
+        </label>
+      </div>
+    </form>
+  `;
+}
+
 /** What the tumour is: one block per tumour described. */
 function renderDiagnosisSection(draft) {
   return `
@@ -709,7 +779,7 @@ function renderTreatmentSection(draft) {
  * had nothing left to scroll. Out here the fields get the width of the pane
  * and the form scrolls on its own, while the rail keeps the summary.
  */
-export function renderClinicalWorkspace(patient = {}) {
+export function renderClinicalWorkspace(patient = {}, editPatient = null) {
   const draft = clinicalState.draft || emptyRecord();
   const identity = [patient.patientName, patient.patientId]
     .map((value) => String(value || "").trim())
@@ -720,14 +790,14 @@ export function renderClinicalWorkspace(patient = {}) {
       ${formDatalists()}
       <header class="dxw-bar">
         <div class="dxw-title">
-          <b>${escapeHtml(t("Hồ sơ lâm sàng"))}</b>
+          <b>${escapeHtml(t("Hồ sơ bệnh nhân"))}</b>
           ${identity ? `<span class="dxw-patient">${escapeHtml(identity)}</span>` : ""}
         </div>
         <div class="dxw-actions">
-          <button class="dxw-btn primary" type="button" data-action="save-clinical"
+          <button class="dxw-btn primary" type="button" data-action="save-record"
             ${clinicalState.saving ? "disabled" : ""}>${escapeHtml(
               clinicalState.saving ? t("Đang lưu…") : t("Lưu"))}</button>
-          <button class="dxw-btn" type="button" data-action="cancel-clinical"
+          <button class="dxw-btn" type="button" data-action="cancel-record"
             >${escapeHtml(t("Đóng"))}</button>
         </div>
       </header>
@@ -735,6 +805,7 @@ export function renderClinicalWorkspace(patient = {}) {
         <p class="dxf-error" role="alert">${escapeHtml(clinicalState.error)}</p>
       ` : ""}
       <div class="dxw-body">
+        <section class="dxw-col">${renderPatientSection(editPatient || patient)}</section>
         <section class="dxw-col">${renderDiagnosisSection(draft)}</section>
         <section class="dxw-col">${renderTreatmentSection(draft)}</section>
       </div>
@@ -802,31 +873,24 @@ function renderReader() {
 }
 
 /**
- * The record as it stands, in the patient rail.
+ * What has been recorded about the tumour and the treatment, inside the
+ * patient card.
  *
- * Reading only: the pencil opens the form in the reading pane rather than
- * unfolding it here, where it never fitted. What is on screen is always the
- * record on disk, so a draft being typed next door cannot be mistaken for
- * something already saved.
+ * Reading only, and no pencil of its own: who the patient is and what they
+ * have is one record, so the card carries one edit button and it opens
+ * everything in the reading pane. What is on screen here is always the record
+ * on disk, so a draft being typed next door cannot be mistaken for something
+ * already saved.
  */
 export function renderClinicalCard() {
   const chip = stageChip(clinicalState.stage);
   const editing = clinicalState.editing;
-  // A draft with the form closed: the doctor opened a study while part-way
-  // through. Nothing typed is lost, and the card says so rather than showing
-  // the old record as though the edit had been abandoned.
+  // A draft with the form closed: the doctor opened a study part-way through.
+  // Nothing typed is lost, and the card says so rather than showing the old
+  // record as though the edit had been abandoned.
   const pendingDraft = Boolean(clinicalState.draft) && !editing;
   return `
-    <div class="rec-card dx-card${editing ? " editing" : ""}">
-      <div class="rec-card-header">
-        <b>${escapeHtml(t("Hồ sơ lâm sàng"))}</b>
-        <div class="rec-card-actions">
-          ${clinicalState.canWrite && !editing ? `
-            <button class="mini-btn" type="button" data-action="edit-clinical"
-              title="${escapeHtml(t("Sửa hồ sơ lâm sàng"))}">✎</button>
-          ` : ""}
-        </div>
-      </div>
+    <div class="dx-card">
       ${editing ? `
         <p class="dx-hint">${escapeHtml(t("Đang sửa ở khung bên phải."))}</p>
       ` : ""}

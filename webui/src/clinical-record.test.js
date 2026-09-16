@@ -5,7 +5,7 @@
  *
  * Every interaction below goes through a real DOM event on the real node — a
  * `click()` on the button that is on screen, an `input` event on the field
- * that was typed into. Calling `action("save-clinical")` directly would prove
+ * that was typed into. Calling `action("save-record")` directly would prove
  * the handler and nothing about whether the button the doctor presses ever
  * reaches it, and this card repaints itself with `outerHTML` on every
  * structural change, which is exactly the situation where a listener goes
@@ -133,39 +133,43 @@ describe("Clinical record card", () => {
     expect(card().querySelector(".dx-stage-chip")).toBeNull();
   });
 
-  it("opens the form in the reading pane, not inside the rail card", async () => {
+  it("opens one form for the whole record, in the reading pane", async () => {
     // The rail column is 246px wide and `.rec-card` hides its overflow, so a
     // form unfolded in there was squashed by the flex column with nothing left
     // to scroll — the fields below the fold could not be reached at all.
     mountApp();
-    await press("[data-action='edit-clinical']");
+    await press("[data-action='edit-record']");
 
     expect(clinicalState.editing).toBe(true);
     expect(form()).not.toBeNull();
+    // Who the patient is and what the tumour is, in one form.
+    expect(form().querySelector("[data-field='patient-edit-form']")).not.toBeNull();
+    expect(form().querySelector("input[name='patientId']").value).toBe("2607009886");
     expect(form().querySelector("[data-action='clinical-add-tumor']")).not.toBeNull();
-    expect(form().querySelector("[data-action='save-clinical']")).not.toBeNull();
+    expect(form().querySelector("[data-action='save-record']")).not.toBeNull();
     // Nothing to type into in the rail: the card is the summary.
     expect(card().querySelector("[data-clinical-field]")).toBeNull();
+    expect(document.querySelector("#app .rec-rail [data-field='patient-edit-form']")).toBeNull();
     expect(card().textContent).toContain("Đang sửa ở khung bên phải");
   });
 
   it("gives the reading pane back when the form is closed", async () => {
     mountApp();
-    await press("[data-action='edit-clinical']");
+    await press("[data-action='edit-record']");
     expect(form()).not.toBeNull();
 
-    await press("[data-action='cancel-clinical']");
+    await press("[data-action='cancel-record']");
 
     expect(clinicalState.editing).toBe(false);
     expect(form()).toBeNull();
-    expect(card().querySelector("[data-action='edit-clinical']")).not.toBeNull();
+    expect(document.querySelector("#app [data-action='edit-record']")).not.toBeNull();
   });
 
   it("keeps its buttons alive after the card repaints itself", async () => {
     // The card replaces its own markup with `outerHTML` on every structural
     // change. A binder that runs once would leave the second press dead.
     mountApp();
-    await press("[data-action='edit-clinical']");
+    await press("[data-action='edit-record']");
     await press("[data-action='clinical-add-tumor']");
     await press("[data-action='clinical-add-tumor']");
 
@@ -179,7 +183,7 @@ describe("Clinical record card", () => {
     // `bindEvents` sweeps every [data-action] in the shell and the form binds
     // its own; without the shared WeakSet one press added two tumours.
     mountApp();
-    await press("[data-action='edit-clinical']");
+    await press("[data-action='edit-record']");
     await press("[data-action='clinical-add-tumor']");
 
     expect(clinicalState.draft.tumors).toHaveLength(1);
@@ -187,7 +191,7 @@ describe("Clinical record card", () => {
 
   it("offers a list and still takes a diagnosis typed in full", async () => {
     mountApp();
-    await press("[data-action='edit-clinical']");
+    await press("[data-action='edit-record']");
     await press("[data-action='clinical-add-tumor']");
 
     const histology = form().querySelector("[data-clinical-field='histology']");
@@ -203,7 +207,7 @@ describe("Clinical record card", () => {
 
   it("swaps the location list when the compartment changes", async () => {
     mountApp();
-    await press("[data-action='edit-clinical']");
+    await press("[data-action='edit-record']");
     await press("[data-action='clinical-add-tumor']");
 
     type(form().querySelector("[data-clinical-field='compartment']"), "Tuỷ sống");
@@ -217,7 +221,7 @@ describe("Clinical record card", () => {
 
   it("asks about fractions for radiotherapy and about cycles for chemotherapy", async () => {
     mountApp();
-    await press("[data-action='edit-clinical']");
+    await press("[data-action='edit-record']");
     await press("[data-action='clinical-add-event']");
 
     type(form().querySelector("[data-clinical-field='kind']"), "Xạ");
@@ -249,23 +253,25 @@ describe("Clinical record card", () => {
       },
       label: "U nguyên bào thần kinh đệm, IDH tự nhiên (độ 4) · Thuỳ chẩm P",
     };
+    // Saving writes the patient's own details and then the record, so the
+    // mock answers by route rather than by the order the calls arrive in.
     let sent = null;
-    global.fetch = vi.fn(async (_url, options) => {
+    global.fetch = vi.fn(async (url, options) => {
+      const body = { ok: true, headers: { get: () => "application/json" } };
+      if (String(url).includes("/api/patient/update")) {
+        return { ...body, json: async () => ({ patient: state.archive.patient }) };
+      }
       sent = JSON.parse(options.body);
-      return {
-        ok: true,
-        headers: { get: () => "application/json" },
-        json: async () => saved,
-      };
+      return { ...body, json: async () => saved };
     });
 
     mountApp();
-    await press("[data-action='edit-clinical']");
+    await press("[data-action='edit-record']");
     await press("[data-action='clinical-add-tumor']");
     type(form().querySelector("[data-clinical-field='histology']"),
       "U nguyên bào thần kinh đệm, IDH tự nhiên");
     type(form().querySelector("[data-clinical-field='grade']"), "4");
-    await press("[data-action='save-clinical']");
+    await press("[data-action='save-record']");
     await Promise.resolve();
     await Promise.resolve();
 
@@ -286,9 +292,9 @@ describe("Clinical record card", () => {
       events: [],
     };
     mountApp();
-    await press("[data-action='edit-clinical']");
+    await press("[data-action='edit-record']");
     type(form().querySelector("[data-clinical-field='histology']"), "Nhập nhầm rồi");
-    await press("[data-action='cancel-clinical']");
+    await press("[data-action='cancel-record']");
 
     expect(clinicalState.draft).toBeNull();
     expect(clinicalState.record.tumors[0].histology).toBe("U màng não");
@@ -298,7 +304,7 @@ describe("Clinical record card", () => {
 
   it("drops a marker nobody put a result against", async () => {
     mountApp();
-    await press("[data-action='edit-clinical']");
+    await press("[data-action='edit-record']");
     await press("[data-action='clinical-add-tumor']");
     type(form().querySelector("[data-clinical-field='histology']"), "U màng não");
     await press("[data-action='clinical-add-marker']");
@@ -307,11 +313,15 @@ describe("Clinical record card", () => {
     // The result field is left empty on purpose: naming a test is not the same
     // as having its answer, and the record must not imply the second.
     let sent = null;
-    global.fetch = vi.fn(async (_url, options) => {
+    global.fetch = vi.fn(async (url, options) => {
+      const body = { ok: true, headers: { get: () => "application/json" } };
+      if (String(url).includes("/api/patient/update")) {
+        return { ...body, json: async () => ({ patient: state.archive.patient }) };
+      }
       sent = JSON.parse(options.body);
-      return { ok: true, headers: { get: () => "application/json" }, json: async () => ({}) };
+      return { ...body, json: async () => ({}) };
     });
-    await press("[data-action='save-clinical']");
+    await press("[data-action='save-record']");
     await Promise.resolve();
 
     expect(sent.record.tumors[0].molecular).toEqual({});
@@ -326,7 +336,7 @@ describe("Clinical record card", () => {
     clinicalState.reason = "Hồ sơ này chưa có patient-index.json nên chưa xem hồ sơ lâm sàng được.";
     mountApp();
 
-    expect(card().querySelector("[data-action='edit-clinical']")).toBeNull();
+    expect(document.querySelector("#app [data-action='edit-record']")).toBeNull();
     expect(card().textContent).toContain("patient-index.json");
   });
 
@@ -339,7 +349,7 @@ describe("Clinical record card", () => {
     }];
     state.selectedId = "s1";
     mountApp();
-    await press("[data-action='edit-clinical']");
+    await press("[data-action='edit-record']");
     await press("[data-action='clinical-add-tumor']");
     type(form().querySelector("[data-clinical-field='histology']"), "U màng não");
 
@@ -354,7 +364,7 @@ describe("Clinical record card", () => {
     expect(card().textContent).toContain("Còn bản sửa chưa lưu");
 
     // Reopening resumes the draft rather than starting again from the record.
-    await press("[data-action='edit-clinical']");
+    await press("[data-action='edit-record']");
     expect(form().querySelector("[data-clinical-field='histology']").value)
       .toBe("U màng não");
   });
@@ -368,8 +378,8 @@ describe("Clinical record card", () => {
     }));
 
     mountApp();
-    await press("[data-action='edit-clinical']");
-    await press("[data-action='save-clinical']");
+    await press("[data-action='edit-record']");
+    await press("[data-action='save-record']");
     await Promise.resolve();
     await Promise.resolve();
 

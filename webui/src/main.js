@@ -1926,7 +1926,9 @@ function renderWorkspacePane(series) {
   // the reader's own record rather than a file in the archive, so it is asked
   // for before the media type is consulted.
   if (clinical.clinicalState.editing) {
-    return clinical.renderClinicalWorkspace(state.archive?.patient || {});
+    return clinical.renderClinicalWorkspace(
+      state.archive?.patient || {}, currentPatientDraft(),
+    );
   }
   switch (getSeriesMediaType(series)) {
     case "video":
@@ -2130,6 +2132,20 @@ function patientInfoDraft(patient = {}) {
   };
 }
 
+/**
+ * The patient details the open form is holding.
+ *
+ * Read back out of the form when there is one on screen, so a repaint in the
+ * middle of typing — another tumour, a different compartment — puts the same
+ * characters back rather than the values the form opened with.
+ */
+function currentPatientDraft() {
+  const form = app?.querySelector("[data-field='patient-edit-form']");
+  return patientInfoFromForm(form)
+    || state.patientEditDraft
+    || patientInfoDraft(state.archive?.patient || {});
+}
+
 function patientInfoFromForm(form) {
   if (!form) return null;
   const formData = new FormData(form);
@@ -2180,7 +2196,9 @@ function refreshClinicalCard() {
 function refreshClinicalEditor() {
   const pane = app?.querySelector(".dx-workspace");
   if (!pane) return;
-  pane.outerHTML = clinical.renderClinicalWorkspace(state.archive?.patient || {});
+  pane.outerHTML = clinical.renderClinicalWorkspace(
+    state.archive?.patient || {}, currentPatientDraft(),
+  );
   bindClinicalCard();
 }
 
@@ -2307,7 +2325,6 @@ async function loadClinicalRecord({ force = false } = {}) {
 
 function renderPatientRail() {
   const patient = state.archive?.patient || {};
-  const editPatient = state.patientEditDraft || patientInfoDraft(patient);
   const series = state.archive?.series || [];
   const dash = (value) => (recordedIdentity(value) || "—");
 
@@ -2318,71 +2335,25 @@ function renderPatientRail() {
 
   const timeline = buildMediaTimeline(series, patient.timelineLabels || {});
 
-  const renderInfoCard = () => {
-    if (state.editingPatientInfo) {
-      return `
-        <div class="rec-card rec-info-card editing">
-          <div class="rec-card-header">
-            <b>${escapeHtml(t("Sửa thông tin bệnh nhân"))}</b>
-            <div class="rec-card-actions">
-              <button class="mini-btn primary" type="button" data-action="save-patient-info" title="${escapeHtml(t("Lưu thay đổi"))}">✓</button>
-              <button class="mini-btn" type="button" data-action="cancel-patient-info" title="${escapeHtml(t("Hủy"))}">✕</button>
-            </div>
-          </div>
-          <form class="rec-edit-form" data-field="patient-edit-form" onsubmit="event.preventDefault();">
-            <label class="rec-form-field">
-              <span>${escapeHtml(t("Họ và tên"))}</span>
-              <input name="patientName" maxlength="128" value="${escapeHtml(editPatient.patientName)}" placeholder="${escapeHtml(t("Nhập họ tên"))}">
-            </label>
-            <label class="rec-form-field">
-              <span>${escapeHtml(t("Mã bệnh nhân"))}</span>
-              <input name="patientId" maxlength="128" required value="${escapeHtml(editPatient.patientId)}" placeholder="${escapeHtml(t("Nhập mã BN"))}">
-            </label>
-            <div class="rec-form-row">
-              <label class="rec-form-field" style="flex:1;">
-                <span>${escapeHtml(t("Giới tính"))}</span>
-                <select name="gender">
-                  <option value="" ${!editPatient.gender ? "selected" : ""}>—</option>
-                  <option value="Nam" ${editPatient.gender === "Nam" ? "selected" : ""}>${escapeHtml(t("Nam"))}</option>
-                  <option value="Nữ" ${editPatient.gender === "Nữ" ? "selected" : ""}>${escapeHtml(t("Nữ"))}</option>
-                  <option value="Khác" ${editPatient.gender && editPatient.gender !== "Nam" && editPatient.gender !== "Nữ" ? "selected" : ""}>${escapeHtml(t("Khác"))}</option>
-                </select>
-              </label>
-              <label class="rec-form-field" style="flex:1;">
-                <span>${escapeHtml(t("Năm sinh"))}</span>
-                <input name="birthYear" type="number" min="1900" max="${new Date().getFullYear()}" value="${escapeHtml(editPatient.birthYear)}" placeholder="YYYY">
-              </label>
-            </div>
-            <label class="rec-form-field">
-              <span>${escapeHtml(t("Số điện thoại"))}</span>
-              <input name="phone" type="tel" value="${escapeHtml(editPatient.phone)}" placeholder="${escapeHtml(t("Nhập SĐT"))}">
-            </label>
-            <label class="rec-form-field">
-              <span>${escapeHtml(t("Địa chỉ"))}</span>
-              <input name="address" value="${escapeHtml(editPatient.address)}" placeholder="${escapeHtml(t("Nhập địa chỉ"))}">
-            </label>
-            <label class="rec-form-field">
-              <span>${escapeHtml(t("Bệnh viện"))}</span>
-              <input name="hospital" value="${escapeHtml(editPatient.hospital)}" placeholder="${escapeHtml(t("Tên bệnh viện"))}">
-            </label>
-            <label class="rec-form-field">
-              <span>${escapeHtml(t("Chẩn đoán"))}</span>
-              <textarea name="diagnosis" rows="2" placeholder="${escapeHtml(t("Chẩn đoán / Ghi chú"))}">${escapeHtml(editPatient.diagnosis)}</textarea>
-            </label>
-          </form>
-        </div>
-      `;
-    }
-
-    return `
+  /**
+   * Who this is, and what has been recorded about them — one card.
+   *
+   * They were two, each with its own pencil, which put the patient's details
+   * and their diagnosis in two forms that had to be opened and saved
+   * separately. One record, one edit button: it opens everything in the
+   * reading pane, where there is room for it.
+   */
+  const renderInfoCard = () => `
       <div class="rec-card rec-info-card">
         <div class="rec-id">
           <div class="rec-name-row">
             <b>${escapeHtml(dash(patient.patientName) === "—"
               ? t("Chưa có tên bệnh nhân")
               : patient.patientName)}</b>
-            <button class="rec-edit-btn" type="button" data-action="edit-patient-info"
-              title="${escapeHtml(t("Chỉnh sửa thông tin bệnh nhân"))}">✎</button>
+            ${clinical.clinicalState.canWrite && !clinical.clinicalState.editing ? `
+              <button class="rec-edit-btn" type="button" data-action="edit-record"
+                title="${escapeHtml(t("Sửa hồ sơ bệnh nhân"))}">✎</button>
+            ` : ""}
           </div>
           <small>${escapeHtml(dash(patient.patientId))}${identity ? ` · ${escapeHtml(identity)}` : ""}</small>
         </div>
@@ -2393,15 +2364,15 @@ function renderPatientRail() {
           <div class="rfact"><dt>${escapeHtml(t("Điện thoại"))}</dt><dd>${escapeHtml(dash(patient.phone))}</dd></div>
           <div class="rfact"><dt>${escapeHtml(t("Địa chỉ"))}</dt><dd>${escapeHtml(dash(patient.address))}</dd></div>
           <div class="rfact"><dt>${escapeHtml(t("Bệnh viện"))}</dt><dd>${escapeHtml(dash(patient.hospital))}</dd></div>
-          <div class="rfact">
-            <dt>${escapeHtml(t("Chẩn đoán"))}</dt>
-            <dd><button class="rfact-edit" type="button" data-action="edit-diagnosis"
-              title="${escapeHtml(t("Ghi chẩn đoán cho hồ sơ này"))}">${escapeHtml(dash(patient.diagnosis))}</button></dd>
-          </div>
         </dl>
+        <div class="dx-divider">${escapeHtml(t("Chẩn đoán & điều trị"))}</div>
+        ${clinical.renderClinicalCard()}
+        ${String(patient.diagnosis || "").trim() ? `
+          <p class="dx-note" title="${escapeHtml(t("Chẩn đoán / Ghi chú"))}"
+            >${escapeHtml(patient.diagnosis)}</p>
+        ` : ""}
       </div>
-    `;
-  };
+  `;
 
   return `
     <aside class="rec-rail patient-history-rail">
@@ -2421,7 +2392,6 @@ function renderPatientRail() {
         </button>
       </div>
       ${renderInfoCard()}
-      ${clinical.renderClinicalCard()}
 
       <div class="rec-timeline-head"><b>${escapeHtml(t("Lịch sử khám"))}</b></div>
       <div class="tl">
@@ -6116,6 +6086,103 @@ async function executeExportJob(folder, mode = "viewer") {
   }
 }
 
+/**
+ * Write the patient's own details, and say whether they landed.
+ *
+ * The tab that submitted owns the answer: a reader who starts a save and moves
+ * to another patient must not have this one's name land on the record they are
+ * now looking at.
+ */
+async function savePatientInfo() {
+  const form = app?.querySelector("[data-field='patient-edit-form']");
+  if (!form) return false;
+  const info = patientInfoFromForm(form);
+  const requestTabId = state.activeTabId;
+  const requestTab = state.tabs.find((tab) => tab.id === requestTabId);
+  const requestArchive = requestTab?.archive || state.archive;
+  const previousPatientId = requestArchive?.patient?.patientId || "";
+  const requestRoot = requestArchive?.root || "";
+  state.patientEditDraft = { ...info };
+  if (requestTab) requestTab.patientEditDraft = { ...info };
+  try {
+    const result = await api("/api/patient/update", {
+      method: "POST",
+      body: JSON.stringify({
+        info,
+        archiveRoot: requestRoot,
+        patientId: previousPatientId,
+      }),
+    });
+    if (result?.patient) {
+      requestArchive.patient = result.patient;
+      if (requestTab) {
+        requestTab.archive = requestArchive;
+        requestTab.patientName = result.patient.patientName || "";
+        requestTab.patientId = result.patient.patientId || "";
+        requestTab.editingPatientInfo = false;
+        requestTab.patientEditDraft = null;
+      }
+      const normalPath = (value) => String(value || "").replace(/[\\/]+$/, "").toLowerCase();
+      let wp = state.worklistPatients.find((p) => (
+        requestRoot && normalPath(p.folder) === normalPath(requestRoot)
+      ));
+      if (!wp && previousPatientId) {
+        const sameId = state.worklistPatients.filter((p) => p.patientId === previousPatientId);
+        if (sameId.length === 1) [wp] = sameId;
+      }
+      if (wp) {
+        for (const key of ["patientName", "patientId", "gender", "birthYear", "hospital"]) {
+          wp[key] = result.patient[key] || "";
+        }
+      }
+    }
+    if (state.activeTabId === requestTabId) {
+      state.archive = requestArchive;
+      return true;
+    }
+    // The reader has moved on. The record was written, and the tab that asked
+    // for it carries the news rather than whatever is on screen now.
+    if (requestTab) requestTab.status = t("Đã lưu thông tin bệnh nhân.");
+    return false;
+  } catch (error) {
+    const message = humanError(error);
+    if (state.activeTabId === requestTabId) {
+      clinical.clinicalState.error = message;
+      setStatus(`${t("Lỗi:")} ${message}`, true);
+    } else if (requestTab) {
+      requestTab.status = `${t("Lỗi:")} ${message}`;
+    }
+    return false;
+  }
+}
+
+/** Write the clinical record as it was when Lưu was pressed. */
+async function saveClinicalRecord(record) {
+  try {
+    // Name the record this tab is showing. The backend refuses to write when
+    // the folder turns out to belong to a different patient, so a diagnosis
+    // typed here cannot land in whichever archive happened to be opened last.
+    const result = await api("/api/patient/clinical", {
+      method: "POST",
+      body: JSON.stringify({
+        record,
+        archiveRoot: state.archive?.root || "",
+        patientId: state.archive?.patient?.patientId || "",
+      }),
+    });
+    clinical.clinicalState.record = result?.record || clinical.emptyRecord();
+    clinical.clinicalState.stage = result?.stage || clinical.emptyStage();
+    clinical.clinicalState.label = String(result?.label || "");
+    // The worklist row shows the diagnosis and the stage this just changed, so
+    // it is rescanned rather than left showing the old one.
+    refreshWorklist({ silent: true });
+    return true;
+  } catch (error) {
+    clinical.clinicalState.error = humanError(error);
+    return false;
+  }
+}
+
 async function action(name, element = null) {
   try {
     if (name === "cancel-login") {
@@ -6481,110 +6548,17 @@ async function action(name, element = null) {
       stepMediaFile(selectedSeries(), name === "media-file-next" ? 1 : -1);
       return;
     }
-    if (name === "edit-patient-info") {
+    if (name === "edit-record") {
+      // Both halves of the record open together: they are one thing to the
+      // doctor, and the pane has room for both.
       state.editingPatientInfo = true;
-      state.patientEditDraft = patientInfoDraft(state.archive?.patient || {});
-      const currentTab = state.tabs.find((t) => t.id === state.activeTabId);
+      state.patientEditDraft = state.patientEditDraft
+        || patientInfoDraft(state.archive?.patient || {});
+      const currentTab = state.tabs.find((tab) => tab.id === state.activeTabId);
       if (currentTab) {
         currentTab.editingPatientInfo = true;
         currentTab.patientEditDraft = { ...state.patientEditDraft };
       }
-      render();
-      return;
-    }
-    if (name === "cancel-patient-info") {
-      state.editingPatientInfo = false;
-      state.patientEditDraft = null;
-      const currentTab = state.tabs.find((t) => t.id === state.activeTabId);
-      if (currentTab) {
-        currentTab.editingPatientInfo = false;
-        currentTab.patientEditDraft = null;
-      }
-      render();
-      return;
-    }
-    if (name === "save-patient-info") {
-      const form = app.querySelector("[data-field='patient-edit-form']");
-      if (!form) return;
-      const info = patientInfoFromForm(form);
-      const requestTabId = state.activeTabId;
-      const requestTab = state.tabs.find((tab) => tab.id === requestTabId);
-      const requestArchive = requestTab?.archive || state.archive;
-      const previousPatientId = requestArchive?.patient?.patientId || "";
-      const requestRoot = requestArchive?.root || "";
-      state.patientEditDraft = { ...info };
-      if (requestTab) requestTab.patientEditDraft = { ...info };
-      try {
-        const result = await api("/api/patient/update", {
-          method: "POST",
-          body: JSON.stringify({
-            info,
-            archiveRoot: requestRoot,
-            patientId: previousPatientId,
-          }),
-        });
-        if (result?.patient) {
-          requestArchive.patient = result.patient;
-          if (requestTab) {
-            requestTab.archive = requestArchive;
-            requestTab.patientName = result.patient.patientName || "";
-            requestTab.patientId = result.patient.patientId || "";
-            requestTab.editingPatientInfo = false;
-            requestTab.patientEditDraft = null;
-          }
-          const normalPath = (value) => String(value || "").replace(/[\\/]+$/, "").toLowerCase();
-          let wp = state.worklistPatients.find((p) => (
-            requestRoot && normalPath(p.folder) === normalPath(requestRoot)
-          ));
-          if (!wp && previousPatientId) {
-            const sameId = state.worklistPatients.filter((p) => p.patientId === previousPatientId);
-            if (sameId.length === 1) [wp] = sameId;
-          }
-          if (wp) {
-            for (const key of ["patientName", "patientId", "gender", "birthYear", "hospital"]) {
-              wp[key] = result.patient[key] || "";
-            }
-          }
-        }
-        if (state.activeTabId === requestTabId) {
-          state.archive = requestArchive;
-          state.editingPatientInfo = false;
-          state.patientEditDraft = null;
-          render();
-          setStatus(t("Đã lưu thông tin bệnh nhân."));
-        } else if (requestTab) {
-          requestTab.status = t("Đã lưu thông tin bệnh nhân.");
-        }
-      } catch (err) {
-        const message = `${t("Lỗi:")} ${err.message || err}`;
-        if (state.activeTabId === requestTabId) setStatus(message, true);
-        else if (requestTab) requestTab.status = message;
-      }
-      return;
-    }
-    if (name === "edit-diagnosis") {
-      // Typed by the reader because nothing else in a local archive knows it:
-      // no RIS, and StudyDescription is the exam type, not a finding.
-      const current = state.archive?.patient?.diagnosis || "";
-      const next = window.prompt(t("Chẩn đoán của hồ sơ này:"), current);
-      if (next === null || next.trim() === current.trim()) return;
-      const result = await api("/api/patient/diagnosis", {
-        method: "POST",
-        // Name the record this tab is showing. The backend refuses to write
-        // when the folder belongs to a different patient, so a note cannot
-        // land in the chart of whichever archive happened to be opened last.
-        body: JSON.stringify({
-          diagnosis: next,
-          archiveRoot: state.archive?.root || "",
-          patientId: state.archive?.patient?.patientId || "",
-        }),
-      });
-      state.archive.patient = result.patient || state.archive.patient;
-      render();
-      setStatus(t("Đã lưu chẩn đoán vào hồ sơ bệnh nhân."));
-      return;
-    }
-    if (name === "edit-clinical") {
       // A draft left behind by a study opened mid-edit is picked back up; only
       // a fresh start copies the record again.
       clinical.clinicalState.draft
@@ -6595,9 +6569,16 @@ async function action(name, element = null) {
       await renderViewer();
       return;
     }
-    if (name === "cancel-clinical") {
-      // The draft is a copy, so dropping it really does leave the record as it
-      // was on disk — nothing typed since the last save survives this.
+    if (name === "cancel-record") {
+      // Both drafts are copies, so dropping them really does leave the record
+      // as it was on disk — nothing typed since the last save survives this.
+      state.editingPatientInfo = false;
+      state.patientEditDraft = null;
+      const currentTab = state.tabs.find((tab) => tab.id === state.activeTabId);
+      if (currentTab) {
+        currentTab.editingPatientInfo = false;
+        currentTab.patientEditDraft = null;
+      }
       clinical.clinicalState.draft = null;
       clinical.clinicalState.editing = false;
       clinical.clinicalState.error = "";
@@ -6638,44 +6619,35 @@ async function action(name, element = null) {
       refreshClinicalSurfaces();
       return;
     }
-    if (name === "save-clinical") {
+    if (name === "save-record") {
+      // Read out of the form before anything is awaited. `clinicalState` is
+      // one object for the whole window, so a tab switch during the write
+      // would otherwise hand the second request whatever the new tab loaded.
+      const record = clinical.draftForSave();
       clinical.clinicalState.saving = true;
       clinical.clinicalState.error = "";
       refreshClinicalSurfaces();
-      try {
-        // Name the record this tab is showing. The backend refuses to write
-        // when the folder belongs to a different patient, so a diagnosis typed
-        // here cannot land in whichever archive happened to be opened last.
-        const result = await api("/api/patient/clinical", {
-          method: "POST",
-          body: JSON.stringify({
-            record: clinical.draftForSave(),
-            archiveRoot: state.archive?.root || "",
-            patientId: state.archive?.patient?.patientId || "",
-          }),
-        });
-        clinical.clinicalState.record = result?.record || clinical.emptyRecord();
-        clinical.clinicalState.stage = result?.stage || clinical.emptyStage();
-        clinical.clinicalState.label = String(result?.label || "");
-        clinical.clinicalState.draft = null;
-        clinical.clinicalState.editing = false;
-        setStatus(t("Đã lưu hồ sơ lâm sàng."));
-        // The worklist row shows the diagnosis and the stage this just
-        // changed, so it is rescanned rather than left showing the old one.
-        refreshWorklist({ silent: true });
-      } catch (error) {
-        clinical.clinicalState.error = humanError(error);
-      } finally {
-        clinical.clinicalState.saving = false;
-        if (clinical.clinicalState.editing) {
-          // The save was refused. The form stays open, with what was typed
-          // still in it and the reason above the fields.
-          refreshClinicalSurfaces();
-        } else {
-          render();
-          await renderViewer();
-        }
+      // The patient's own details go first. The clinical write names the
+      // patient on screen and the backend refuses it when the folder holds
+      // somebody else, so the two must agree before the second one goes out.
+      // A `false` here also means the reader has moved to another record,
+      // which is the other reason not to send the second request.
+      const savedInfo = await savePatientInfo();
+      const savedRecord = savedInfo ? await saveClinicalRecord(record) : false;
+      clinical.clinicalState.saving = false;
+      if (!savedInfo || !savedRecord) {
+        // The form stays open, with what was typed still in it and the reason
+        // above the fields.
+        refreshClinicalSurfaces();
+        return;
       }
+      clinical.clinicalState.draft = null;
+      clinical.clinicalState.editing = false;
+      state.editingPatientInfo = false;
+      state.patientEditDraft = null;
+      render();
+      await renderViewer();
+      setStatus(t("Đã lưu hồ sơ bệnh nhân."));
       return;
     }
     if (name === "edit-timeline-label") {

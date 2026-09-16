@@ -1997,48 +1997,6 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   border-color: #256ecc;
 }
 
-.rec-edit-form {
-  padding: 8px 10px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.rec-form-field {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.rec-form-field span {
-  font-size: 10px;
-  color: var(--label-muted, #7890a2);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-.rec-form-field input,
-.rec-form-field select,
-.rec-form-field textarea {
-  width: 100%;
-  font-size: 12px;
-  background: #070b10;
-  color: #e7f1f8;
-  border: 1px solid #223244;
-  border-radius: 4px;
-  padding: 4px 6px;
-  box-sizing: border-box;
-  font-family: inherit;
-}
-.rec-form-field input:focus,
-.rec-form-field select:focus,
-.rec-form-field textarea:focus {
-  border-color: #2f80ed;
-  outline: none;
-}
-.rec-form-row {
-  display: flex;
-  gap: 6px;
-}
-
 .rec-id {
   padding: 10px 12px;
   border-bottom: 1px solid var(--list-border, #1c2a36);
@@ -2073,23 +2031,6 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .rfact { display: flex; gap: 8px; padding: 3px 0; font-size: 12px; }
 .rfact dt { flex: 0 0 74px; color: var(--label-muted, #7890a2); }
 .rfact dd { margin: 0; flex: 1; color: var(--body-fg, #dce7f2); word-break: break-word; }
-/* Reads as text until hovered: the diagnosis is a note the reader writes, not
-   a control competing for attention beside the images. */
-.rfact-edit {
-  padding: 1px 4px;
-  margin: -1px -4px;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: text;
-}
-.rfact-edit:hover {
-  border-color: var(--list-border, #1c2a36);
-  background: var(--list-hover, #16202b);
-}
 .rec-timeline-head {
   padding: 10px 14px 6px;
   font-size: 11px;
@@ -5972,6 +5913,30 @@ button.stt-cell.twist-btn:focus-visible {
 .dx-workspace .dxf-field > span,
 .dx-workspace .dxf-sub-label {
   font-size: 11.5px;
+}
+
+/* The rule between the two halves of the patient card: who this is above,
+   what has been recorded about them below. */
+.dx-divider {
+  margin-top: 2px;
+  padding: 8px 10px 0;
+  border-top: 1px solid #1c2a36;
+  color: #8fa8bd;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+/* The free-text note, kept as typed — a reader writes line breaks into these
+   and means them. */
+.dx-note {
+  margin: 0;
+  padding: 2px 10px 10px;
+  color: #9bacba;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
 }
 
 /* A line in the rail card about where the form is, or about work not yet

@@ -515,12 +515,17 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                 #     afterwards, never by the press having been dispatched.
                 print("4b. Filling in the clinical record...")
                 require(page, ".dx-card", "thẻ hồ sơ lâm sàng")
-                require(page, ".dx-card [data-action='edit-clinical']", "nút sửa").click()
+                require(page, ".rec-info-card [data-action='edit-record']", "nút sửa").click()
                 require(page, "#workspace .dx-workspace", "khung hồ sơ lâm sàng")
                 if page.query_selector(".dx-card [data-clinical-field]") is not None:
                     raise AssertionError(
                         "Gate 3: form phải mở ở khung xem, không nhồi vào thẻ bên rail."
                     )
+                require(
+                    page, ".dx-workspace [data-field='patient-edit-form']",
+                    "phần thông tin bệnh nhân trong form",
+                )
+                page.fill(".dx-workspace input[name='phone']", "0912345678")
                 require(
                     page, ".dx-workspace [data-action='clinical-add-tumor']",
                     "nút thêm khối u",
@@ -594,12 +599,17 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                 page.set_viewport_size({"width": 1280, "height": 800})
                 page.wait_for_timeout(200)
 
-                require(page, ".dx-workspace [data-action='save-clinical']", "nút lưu").click()
+                require(page, ".dx-workspace [data-action='save-record']", "nút lưu").click()
                 page.wait_for_selector(".dx-card .dx-stage-chip", timeout=8000)
                 chip = page.inner_text(".dx-card .dx-stage-chip").strip()
                 if "Đang xạ" not in chip:
                     raise AssertionError(
                         f"Gate 3: chip giai đoạn phải nói đang xạ, đang là {chip!r}."
+                    )
+                phone = page.inner_text(".rec-info-card .rec-facts").strip()
+                if "0912345678" not in phone:
+                    raise AssertionError(
+                        "Gate 3: lưu xong mà số điện thoại vừa nhập không lên thẻ."
                     )
                 heading = page.inner_text(".dx-card .dx-tumor b").strip()
                 if "độ 4" not in heading:

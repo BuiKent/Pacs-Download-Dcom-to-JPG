@@ -97,6 +97,11 @@ APP_METADATA_NAMES = {
     "mpr-volume.json",
     "pacs-strategies-v1.json",
     "settings.json",
+    # The reading doctor's own clinical record. It sits beside
+    # `patient-index.json` in the patient folder, so without this line the
+    # exam history lists it as a text document and opening the record offers
+    # the doctor their own notes back as though they were a report.
+    clinical_record.CLINICAL_RECORD_NAME,
 }
 # Largest text file the viewer will load into the page. A report or a manifest
 # is kilobytes; anything past this is a data dump that would freeze the tab.

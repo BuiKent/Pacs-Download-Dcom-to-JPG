@@ -171,8 +171,6 @@ export const EN = {
   "Đang mở…": "Opening…",
   "Chưa rõ định dạng nguồn": "Source format not recorded",
   "Không mở được hồ sơ": "Could not open the record",
-  "Ghi chẩn đoán cho hồ sơ này": "Record a diagnosis for this patient",
-  "Chẩn đoán của hồ sơ này:": "Diagnosis for this patient:",
   "Đã lưu chẩn đoán vào hồ sơ bệnh nhân.": "Diagnosis saved to the patient record.",
 
   // Text / JSON reading pane
@@ -419,6 +417,11 @@ export const EN = {
   "Độ {}": "Grade {}",
   "Khối u chưa mô tả": "Tumour not described",
   "Hồ sơ lâm sàng": "Clinical record",
+  "Hồ sơ bệnh nhân": "Patient record",
+  "Sửa hồ sơ bệnh nhân": "Edit this patient record",
+  "Chẩn đoán & điều trị": "Diagnosis & treatment",
+  "Đã lưu hồ sơ bệnh nhân.": "Patient record saved.",
+  "Ghi tự do: lưu ý khi đọc phim, hẹn khám…": "Free text: what to watch for when reading, appointments…",
   "Đang lưu…": "Saving…",
   "Đang sửa ở khung bên phải.": "Being edited in the pane on the right.",
   "Còn bản sửa chưa lưu.": "There are unsaved edits.",
