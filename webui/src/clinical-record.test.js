@@ -96,6 +96,10 @@ const VOCABULARY = {
   resectionExtents: ["Lấy toàn bộ", "Sinh thiết"],
   radiotherapyTechniques: ["IMRT", "VMAT"],
   chemoRegimens: ["Temozolomide đồng thời"],
+  histologyGroups: {
+    "U màng não": "U màng não và u trung mô",
+    "U nguyên bào thần kinh đệm, IDH tự nhiên": "U thần kinh đệm",
+  },
 };
 
 describe("Clinical record card", () => {
@@ -655,5 +659,128 @@ describe("An empty record", () => {
   it("is a shape, not a null", () => {
     expect(emptyRecord()).toEqual({ tumors: [], events: [] });
     expect(emptyStage().state).toBe("unknown");
+  });
+});
+
+/**
+ * The vocabulary, read out in the reader's language.
+ *
+ * Two different jobs, and they are deliberately not the same string. A picker
+ * says both languages at once, because choosing "U màng não" is easier when the
+ * line also says Meningioma. What is read back afterwards says one, because a
+ * finished record is scanned, not searched, and "Thuỳ chẩm (Occipital lobe) P
+ * (R)" is not a line anybody scans.
+ */
+describe("Clinical terms in two languages", () => {
+  beforeEach(() => {
+    setLanguage("vi");
+    state.activeTabId = "tab-1";
+    state.editingPatientInfo = false;
+    state.patientEditDraft = null;
+    state.tabs = [];
+    state.worklistPatients = [];
+    state.selectedId = "";
+    state.archive = {
+      root: "D:\\Kho\\2607009886",
+      patient: { patientId: "2607009886", patientName: "NGUYEN VAN A" },
+      series: [],
+    };
+    resetClinicalState();
+    clinicalState.vocabulary = VOCABULARY;
+    clinicalState.loadedFor = "D:\\Kho\\2607009886::2607009886";
+    global.fetch = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    setLanguage("vi");
+    resetClinicalState();
+  });
+
+  /** The options of the closed list for `field`, as the doctor sees them. */
+  function options(field) {
+    const select = form().querySelector(`select[data-clinical-field='${field}']`);
+    expect(select, `no ${field} select`).not.toBeNull();
+    return [...select.options].map((option) => ({ value: option.value, text: option.textContent.trim() }));
+  }
+
+  async function openFormWithATumour() {
+    mountApp();
+    await press("#app .rec-info-card [data-action='edit-record']");
+    await press("#app [data-action='clinical-add-tumor']");
+  }
+
+  it("offers a term in both languages while it is being chosen", async () => {
+    await openFormWithATumour();
+
+    const compartment = options("compartment").find((o) => o.value === "Nội sọ");
+    expect(compartment.text).toBe("Nội sọ (Intracranial)");
+    // The stored value is the Vietnamese on its own. The English is a reading
+    // aid; writing it into the record would change what is on disk.
+    expect(compartment.value).toBe("Nội sọ");
+
+    // One letter each, and unreadable to anyone who does not know that P is
+    // phải and T is trái.
+    expect(options("side").find((o) => o.value === "P").text).toBe("P (R)");
+    expect(options("side").find((o) => o.value === "T").text).toBe("T (L)");
+  });
+
+  it("says only English once the interface is in English", async () => {
+    setLanguage("en");
+    await openFormWithATumour();
+
+    const compartment = options("compartment").find((o) => o.value === "Nội sọ");
+    expect(compartment.text).toBe("Intracranial");
+    expect(compartment.value).toBe("Nội sọ");
+    expect(options("side").find((o) => o.value === "P").text).toBe("R");
+  });
+
+  it("puts the family and the WHO name beside every diagnosis on offer", async () => {
+    await openFormWithATumour();
+
+    const list = form().querySelector("#dx-histologies");
+    expect(list, "no diagnosis list").not.toBeNull();
+    const gbm = [...list.options].find(
+      (option) => option.value === "U nguyên bào thần kinh đệm, IDH tự nhiên",
+    );
+    expect(gbm.label).toBe("U thần kinh đệm · Glioblastoma, IDH-wildtype");
+    expect([...list.options].find((option) => option.value === "U màng não").label)
+      .toBe("U màng não và u trung mô · Meningioma");
+  });
+
+  it("reads a saved record back in the language on screen", async () => {
+    clinicalState.record = {
+      tumors: [{
+        id: "t1", compartment: "Nội sọ", location: "Thuỳ chẩm", side: "P",
+        axis: "Trong trục", histology: "U màng não", grade: "1",
+        basis: "Mô bệnh học", molecular: {},
+      }],
+      events: [{ id: "e1", kind: "Xạ", start: "2026-07-01", technique: "IMRT" }],
+    };
+
+    mountApp();
+    expect(card().textContent).toContain("U màng não");
+    expect(card().textContent).toContain("Thuỳ chẩm P");
+    // Vietnamese is the stored wording, so a Vietnamese screen is untouched by
+    // any of this.
+    expect(card().textContent).not.toContain("Meningioma");
+
+    setLanguage("en");
+    mountApp();
+    expect(card().textContent).toContain("Meningioma");
+    expect(card().textContent).toContain("Occipital lobe R");
+    expect(card().textContent).toContain("Intra-axial");
+    expect(card().textContent).toContain("Histopathology");
+    expect(card().textContent).toContain("Radiotherapy");
+  });
+
+  it("leaves a diagnosis typed off a report exactly as it was written", async () => {
+    // The whole point of the fallback: a term nobody listed reaches the screen
+    // untouched rather than being dropped or guessed at.
+    const typed = "U tế bào hình sao kiểu hiếm, chưa phân loại";
+    clinicalState.record = { tumors: [{ id: "t1", histology: typed, molecular: {} }], events: [] };
+    setLanguage("en");
+    mountApp();
+    expect(card().textContent).toContain(typed);
   });
 });

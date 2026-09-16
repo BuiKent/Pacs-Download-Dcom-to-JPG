@@ -874,6 +874,182 @@ export function t(text) {
   return EN[text] ?? text;
 }
 
+/**
+ * The clinical vocabulary in English, kept apart from the interface strings.
+ *
+ * Two reasons it is not merged into `EN`. The values here are *recorded data* —
+ * what is stored in `clinical-index.json` is the Vietnamese on the left, and
+ * the English on the right is only how it is read out — so a term must never be
+ * substituted where the stored string itself is meant. And some of them are one
+ * letter: "P" and "T" are phải and trái, and a table shared with the interface
+ * would rewrite any future `t("T")` in the app into "L".
+ *
+ * The Vietnamese side is the contract. `tests/test_clinical_record.py` fails if
+ * `clinical_record.vocabulary()` ever offers a term this table has no English
+ * for, so the two files cannot drift apart unnoticed.
+ */
+export const CLINICAL_EN = {
+  // Compartment, axis and side
+  "Nội sọ": "Intracranial",
+  "Tuỷ sống": "Spinal",
+  "Trong trục": "Intra-axial",
+  "Ngoài trục": "Extra-axial",
+  "Nội tuỷ": "Intramedullary",
+  "Ngoài tuỷ - trong màng cứng": "Intradural extramedullary",
+  "Ngoài màng cứng": "Extradural",
+  "P": "R",
+  "T": "L",
+  "Giữa": "Midline",
+  "Hai bên": "Bilateral",
+
+  // Intracranial locations
+  "Thuỳ trán": "Frontal lobe",
+  "Thuỳ đỉnh": "Parietal lobe",
+  "Thuỳ thái dương": "Temporal lobe",
+  "Thuỳ chẩm": "Occipital lobe",
+  "Thuỳ đảo": "Insula",
+  "Thể chai": "Corpus callosum",
+  "Đồi thị": "Thalamus",
+  "Hạch nền": "Basal ganglia",
+  "Não thất bên": "Lateral ventricle",
+  "Não thất III": "Third ventricle",
+  "Não thất IV": "Fourth ventricle",
+  "Vùng tuyến tùng": "Pineal region",
+  "Vùng yên": "Sellar region",
+  "Vùng trên yên": "Suprasellar region",
+  "Góc cầu tiểu não": "Cerebellopontine angle (CPA)",
+  "Thân não": "Brainstem",
+  "Tiểu não": "Cerebellum",
+  "Hố sau": "Posterior fossa",
+  "Nền sọ trước": "Anterior skull base",
+  "Nền sọ giữa": "Middle skull base",
+  "Nền sọ sau": "Posterior skull base",
+  "Lỗ chẩm": "Foramen magnum",
+  "Xoang tĩnh mạch dọc trên": "Superior sagittal sinus",
+  "Cạnh liềm não": "Parafalcine",
+  "Lều tiểu não": "Tentorial",
+  "Màng não lan toả": "Diffuse leptomeningeal",
+
+  // Spinal locations
+  "Bản lề cổ-chẩm": "Craniocervical junction",
+  "C1-C2": "C1-C2",
+  "Cột sống cổ": "Cervical spine",
+  "Bản lề cổ-ngực": "Cervicothoracic junction",
+  "Cột sống ngực": "Thoracic spine",
+  "Bản lề ngực-thắt lưng": "Thoracolumbar junction",
+  "Cột sống thắt lưng": "Lumbar spine",
+  "Nón tuỷ": "Conus medullaris",
+  "Đuôi ngựa": "Cauda equina",
+  "Cùng-cụt": "Sacrococcygeal",
+  "Đám rối cánh tay": "Brachial plexus",
+
+  // The families the diagnosis list is grouped into
+  "U thần kinh đệm": "Gliomas",
+  "U màng não thất và đám rối mạch mạc": "Ependymal & choroid plexus",
+  "U thần kinh đệm - thần kinh và u phôi": "Glioneuronal & embryonal",
+  "U màng não và u trung mô": "Meningioma & mesenchymal",
+  "U vỏ bao thần kinh": "Nerve sheath",
+  "U vùng yên và tuyến tùng": "Sellar & pineal",
+  "U lympho và di căn": "Lymphoma & metastasis",
+  "Nang, tổn thương dạng u và mạch máu": "Cysts, tumour-like & vascular",
+
+  // WHO CNS5 entity names. English is the nomenclature these were written in,
+  // so it is the name a report, a guideline and a tumour board all use.
+  "U tế bào hình sao, IDH đột biến": "Astrocytoma, IDH-mutant",
+  "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q":
+    "Oligodendroglioma, IDH-mutant, 1p/19q-codeleted",
+  "U nguyên bào thần kinh đệm, IDH tự nhiên": "Glioblastoma, IDH-wildtype",
+  "U thần kinh đệm lan toả đường giữa, H3 K27 thay đổi":
+    "Diffuse midline glioma, H3 K27-altered",
+  "U thần kinh đệm lan toả bán cầu, H3 G34 đột biến":
+    "Diffuse hemispheric glioma, H3 G34-mutant",
+  "U tế bào hình sao lông": "Pilocytic astrocytoma",
+  "U tế bào hình sao vàng đa hình": "Pleomorphic xanthoastrocytoma (PXA)",
+  "U tế bào hình sao dưới màng não thất tế bào khổng lồ":
+    "Subependymal giant cell astrocytoma (SEGA)",
+  "U màng não thất": "Ependymoma",
+  "U dưới màng não thất": "Subependymoma",
+  "U đám rối mạch mạc": "Choroid plexus tumour",
+  "U hạch thần kinh đệm": "Ganglioglioma",
+  "U biểu mô thần kinh loạn sản phôi": "Dysembryoplastic neuroepithelial tumour (DNET)",
+  "U nguyên bào tuỷ": "Medulloblastoma",
+  "U quái không điển hình/dạng cơ vân": "Atypical teratoid/rhabdoid tumour (ATRT)",
+  "U màng não": "Meningioma",
+  "U xơ đơn độc": "Solitary fibrous tumour",
+  "U nguyên bào mạch máu": "Haemangioblastoma",
+  "U dây sống": "Chordoma",
+  "U bao sợi thần kinh": "Schwannoma",
+  "U sợi thần kinh": "Neurofibroma",
+  "U tuyến yên": "Pituitary adenoma (PitNET)",
+  "U sọ hầu": "Craniopharyngioma",
+  "U tế bào mầm nội sọ": "Intracranial germ cell tumour",
+  "U nhu mô tuyến tùng": "Pineal parenchymal tumour",
+  "U lympho thần kinh trung ương nguyên phát": "Primary CNS lymphoma (PCNSL)",
+  "U di căn": "Metastasis",
+  "Nang keo": "Colloid cyst",
+  "Nang màng nhện": "Arachnoid cyst",
+  "U bì": "Dermoid cyst",
+  "U thượng bì": "Epidermoid cyst",
+  "U mỡ": "Lipoma",
+  "U mạch thể hang": "Cavernous malformation",
+  "Dị dạng thông động tĩnh mạch": "Arteriovenous malformation (AVM)",
+
+  // What the diagnosis rests on
+  "Hình ảnh": "Imaging",
+  "Mô bệnh học": "Histopathology",
+
+  // Treatment
+  "Mổ": "Surgery",
+  "Xạ": "Radiotherapy",
+  "Hoá": "Chemotherapy",
+  "Đích/Miễn dịch": "Targeted / immunotherapy",
+  "Theo dõi": "Follow-up",
+  "Tái phát/Tiến triển": "Recurrence / progression",
+  "Biến chứng": "Complication",
+  // The abbreviations an operation note is written with.
+  "Lấy toàn bộ": "Gross total resection (GTR)",
+  "Lấy gần toàn bộ": "Near total resection (NTR)",
+  "Lấy một phần": "Subtotal resection (STR)",
+  "Sinh thiết": "Biopsy",
+  "Chỉ mở sọ giải áp": "Decompressive craniectomy only",
+  "Dẫn lưu não thất": "Ventricular drainage",
+  "Xạ phẫu Gamma Knife": "Gamma Knife radiosurgery",
+  "Xạ phẫu CyberKnife": "CyberKnife radiosurgery",
+  "Xạ toàn não": "Whole-brain radiotherapy (WBRT)",
+  "Xạ trục não tuỷ": "Craniospinal irradiation (CSI)",
+  "Temozolomide đồng thời": "Concurrent temozolomide",
+  "Temozolomide bổ trợ": "Adjuvant temozolomide",
+};
+
+/**
+ * A recorded clinical term, read out in the language on screen.
+ *
+ * Falls back to the term itself, which is the whole point: a histology typed
+ * off a pathology report has no entry here and must reach the screen exactly as
+ * it was written down.
+ */
+export function tc(term) {
+  const text = String(term ?? "").trim();
+  if (!text || language === "vi") return text;
+  return CLINICAL_EN[text] ?? text;
+}
+
+/**
+ * The same term as a *picker* shows it: both languages at once in Vietnamese.
+ *
+ * A dropdown is where the term is chosen, and the standard English name is what
+ * the pathology report, the guideline and the tumour board all use — so
+ * "U màng não (Meningioma)" is what a Vietnamese reader wants to see while
+ * choosing, even though "U màng não" alone is what gets stored and what the
+ * record reads back.
+ */
+export function tcPicker(term) {
+  const text = String(term ?? "").trim();
+  const english = CLINICAL_EN[text];
+  if (!english || english === text) return text;
+  return language === "vi" ? `${text} (${english})` : english;
+}
+
 /** Translate `text`, then substitute each `{}` with the next argument. */
 export function tf(text, ...values) {
   let index = 0;

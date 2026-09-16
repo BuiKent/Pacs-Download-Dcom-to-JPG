@@ -17,6 +17,7 @@ on claiming a treatment that may have finished.
 
 import datetime
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -48,6 +49,71 @@ class VocabularyTests(unittest.TestCase):
         self.assertIn("Tuỷ sống", lists["compartments"])
         self.assertIn("U màng não", lists["histologies"])
         self.assertIn("Xạ", lists["eventKinds"])
+
+    def test_each_entity_is_filed_under_exactly_one_family(self):
+        """The flat list and the grouped one are the same list.
+
+        `HISTOLOGIES` is derived from `HISTOLOGY_GROUPS`, so the only way they
+        can disagree is an entity written into two families — which would put
+        it in the dropdown twice and leave the reader choosing between two
+        spellings of one diagnosis.
+        """
+        groups = clinical_record.HISTOLOGY_GROUPS
+        flat = [name for entities in groups.values() for name in entities]
+        self.assertEqual(sorted(flat), sorted(set(flat)))
+        self.assertEqual(list(clinical_record.HISTOLOGIES), flat)
+
+        index = clinical_record.vocabulary()["histologyGroups"]
+        self.assertEqual(sorted(index), sorted(flat))
+        self.assertEqual(index["U màng não"], "U màng não và u trung mô")
+        self.assertEqual(index["U nguyên bào thần kinh đệm, IDH tự nhiên"], "U thần kinh đệm")
+
+    def test_the_web_ui_can_read_every_term_out_in_english(self):
+        """A Vietnamese term the interface has no English for is a term that
+        reaches an English screen in Vietnamese.
+
+        The vocabulary lives here and its English lives in `CLINICAL_EN` in
+        `webui/src/i18n.js`, which is the app's one home for translations. Two
+        files, so this test is the thing that stops them drifting: add a
+        histology in Python and forget the English, and it fails here rather
+        than on the screen of whoever switched the app to English.
+
+        Terms that are already English — IMRT, PCV, Ki-67, the WHO grades —
+        need no entry, so only the ones carrying Vietnamese are required.
+        """
+        source = (
+            Path(__file__).resolve().parents[1] / "webui" / "src" / "i18n.js"
+        ).read_text(encoding="utf-8")
+        start = source.index("export const CLINICAL_EN = {")
+        block = source[start:source.index("\n};", start)]
+        english = set(re.findall('^  "([^"]*)":', block, re.MULTILINE))
+        self.assertIn("U màng não", english)
+
+        terms = set()
+
+        def collect(value):
+            if isinstance(value, str):
+                terms.add(value)
+            elif isinstance(value, list):
+                for item in value:
+                    collect(item)
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    terms.add(key)
+                    collect(item)
+
+        collect(clinical_record.vocabulary())
+
+        self.assertEqual(
+            sorted(term for term in terms if not term.isascii() and term not in english),
+            [],
+            "these clinical terms have no English in webui/src/i18n.js",
+        )
+        self.assertEqual(
+            sorted(term for term in english if term not in terms),
+            [],
+            "these English entries no longer match a term the form offers",
+        )
 
     def test_brain_and_spine_do_not_share_one_location_list(self):
         """A spinal level has no business in a dropdown for a brain tumour."""

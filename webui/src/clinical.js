@@ -21,7 +21,7 @@
  * a form that will not take the real answer gets a wrong one instead.
  */
 
-import { t, tf } from "./i18n.js";
+import { t, tf, tc, tcPicker, CLINICAL_EN } from "./i18n.js";
 import { escapeHtml } from "./html.js";
 
 /** Blank stage, for a patient nothing has been recorded about yet. */
@@ -155,9 +155,9 @@ export function eventPeriod(event) {
 export function eventDetail(event) {
   const item = event || {};
   const parts = [];
-  if (item.extent) parts.push(item.extent);
-  if (item.technique) parts.push(item.technique);
-  if (item.regimen) parts.push(item.regimen);
+  if (item.extent) parts.push(tc(item.extent));
+  if (item.technique) parts.push(tc(item.technique));
+  if (item.regimen) parts.push(tc(item.regimen));
   if (Number.isFinite(item.doseGy) && item.doseGy > 0) parts.push(`${item.doseGy} Gy`);
   if (Number.isFinite(item.fractions) && item.fractions > 0) {
     parts.push(tf("{} buổi", item.fractions));
@@ -173,14 +173,14 @@ export function eventDetail(event) {
 /** "Thuỳ chẩm P · Trong trục" — the site of one tumour, minus what is unknown. */
 export function tumorSite(tumor) {
   const item = tumor || {};
-  const place = [item.location, item.side].map((v) => String(v || "").trim()).filter(Boolean).join(" ");
-  return [place, String(item.axis || "").trim()].filter(Boolean).join(" · ");
+  const place = [item.location, item.side].map((v) => tc(v)).filter(Boolean).join(" ");
+  return [place, tc(item.axis)].filter(Boolean).join(" · ");
 }
 
 /** "U nguyên bào thần kinh đệm (độ 4)", or as much of it as is known. */
 export function tumorHeading(tumor) {
   const item = tumor || {};
-  const histology = String(item.histology || "").trim();
+  const histology = tc(item.histology);
   const grade = String(item.grade || "").trim();
   if (histology && grade) return tf("{} (độ {})", histology, grade);
   if (histology) return histology;
@@ -441,6 +441,7 @@ function vocab() {
     axes: value?.axes || {},
     sides: value?.sides || [],
     histologies: value?.histologies || [],
+    histologyGroups: value?.histologyGroups || {},
     grades: value?.grades || [],
     molecularMarkers: value?.molecularMarkers || [],
     diagnosisBases: value?.diagnosisBases || [],
@@ -451,10 +452,39 @@ function vocab() {
   };
 }
 
-function datalist(id, options) {
+/**
+ * The list a combo box offers.
+ *
+ * `hintFor` fills each entry's `label`, which the browser draws greyed beside
+ * the value. That is where the standard English name goes: the list itself
+ * stays Vietnamese, because the Vietnamese is what gets stored, while the line
+ * a reader scans also carries the name their pathology report was written in.
+ */
+function datalist(id, options, hintFor = null) {
   return `<datalist id="${escapeHtml(id)}">${
-    (options || []).map((option) => `<option value="${escapeHtml(option)}"></option>`).join("")
+    (options || []).map((option) => {
+      const hint = hintFor ? hintFor(option) : "";
+      return `<option value="${escapeHtml(option)}"${
+        hint ? ` label="${escapeHtml(hint)}"` : ""}></option>`;
+    }).join("")
   }</datalist>`;
+}
+
+/** The standard English name of a term, or nothing when it is already one. */
+function englishHint(term) {
+  return CLINICAL_EN[term] || "";
+}
+
+/**
+ * The family and the WHO name, for one entry of the diagnosis list.
+ *
+ * This is where the list is "grouped": a datalist cannot hold headings, so the
+ * family rides along on every entry instead. Ordering does the rest — the list
+ * arrives from Python family by family.
+ */
+function histologyHint(name) {
+  const group = (vocab().histologyGroups || {})[name];
+  return [group ? tc(group) : "", englishHint(name)].filter(Boolean).join(" · ");
 }
 
 /**
@@ -474,7 +504,7 @@ function select(field, value, options, blankLabel) {
   return `<select class="dxf-input" data-clinical-field="${escapeHtml(field)}">
     <option value=""${value ? "" : " selected"}>${escapeHtml(blankLabel)}</option>
     ${(options || []).map((option) => `
-      <option value="${escapeHtml(option)}"${option === value ? " selected" : ""}>${escapeHtml(option)}</option>
+      <option value="${escapeHtml(option)}"${option === value ? " selected" : ""}>${escapeHtml(tcPicker(option))}</option>
     `).join("")}
   </select>`;
 }
@@ -534,7 +564,7 @@ function renderTumorForm(tumor, index) {
         <span>${escapeHtml(t("Vị trí"))}</span>
         ${combo("location", tumor.location, `dx-loc-${index}`, t("Chọn hoặc gõ vị trí"))}
       </label>
-      ${datalist(`dx-loc-${index}`, locations)}
+      ${datalist(`dx-loc-${index}`, locations, englishHint)}
       <div class="dxf-row">
         <label class="dxf-field">
           <span>${escapeHtml(t("Bên"))}</span>
@@ -544,7 +574,7 @@ function renderTumorForm(tumor, index) {
           <span>${escapeHtml(t("Trục"))}</span>
           ${combo("axis", tumor.axis, `dx-axis-${index}`, t("Chọn hoặc gõ"))}
         </label>
-        ${datalist(`dx-axis-${index}`, axes)}
+        ${datalist(`dx-axis-${index}`, axes, englishHint)}
       </div>
       <label class="dxf-field dxf-wide">
         <span>${escapeHtml(t("Mô bệnh học"))}</span>
@@ -556,13 +586,13 @@ function renderTumorForm(tumor, index) {
           ${select("grade", tumor.grade, lists.grades, "—")}
         </label>
         <label class="dxf-field">
-          <span>${escapeHtml(t("Căn cứ"))}</span>
-          ${select("basis", tumor.basis, lists.diagnosisBases, t("Chưa rõ"))}
+          <span>${escapeHtml(t("Ngày có kết quả"))}</span>
+          ${dateField("confirmedAt", tumor.confirmedAt)}
         </label>
       </div>
-      <label class="dxf-field">
-        <span>${escapeHtml(t("Ngày có kết quả"))}</span>
-        ${dateField("confirmedAt", tumor.confirmedAt)}
+      <label class="dxf-field dxf-wide">
+        <span>${escapeHtml(t("Căn cứ"))}</span>
+        ${select("basis", tumor.basis, lists.diagnosisBases, t("Chưa rõ"))}
       </label>
       ${renderMolecular(tumor, index)}
       <label class="dxf-field dxf-wide">
@@ -657,11 +687,11 @@ function renderEventForm(event, index) {
 function formDatalists() {
   const lists = vocab();
   return `
-    ${datalist("dx-histologies", lists.histologies)}
+    ${datalist("dx-histologies", lists.histologies, histologyHint)}
     ${datalist("dx-markers", lists.molecularMarkers)}
-    ${datalist("dx-extents", lists.resectionExtents)}
-    ${datalist("dx-techniques", lists.radiotherapyTechniques)}
-    ${datalist("dx-regimens", lists.chemoRegimens)}
+    ${datalist("dx-extents", lists.resectionExtents, englishHint)}
+    ${datalist("dx-techniques", lists.radiotherapyTechniques, englishHint)}
+    ${datalist("dx-regimens", lists.chemoRegimens, englishHint)}
   `;
 }
 
@@ -839,8 +869,8 @@ function renderReader() {
               ` : ""}
               ${tumor.basis ? `
                 <span class="dx-basis ${tumor.basis === "Mô bệnh học" ? "confirmed" : "imaging"}"
-                  title="${escapeHtml(tf("Chẩn đoán dựa trên: {}", tumor.basis))}"
-                  >${escapeHtml(tumor.basis)}${tumor.confirmedAt ? ` · ${escapeHtml(formatDate(tumor.confirmedAt))}` : ""}</span>
+                  title="${escapeHtml(tf("Chẩn đoán dựa trên: {}", tc(tumor.basis)))}"
+                  >${escapeHtml(tc(tumor.basis))}${tumor.confirmedAt ? ` · ${escapeHtml(formatDate(tumor.confirmedAt))}` : ""}</span>
               ` : `
                 <span class="dx-basis unknown" title="${escapeHtml(t("Chưa ghi chẩn đoán này dựa trên gì"))}"
                   >${escapeHtml(t("Chưa rõ căn cứ"))}</span>
@@ -858,7 +888,7 @@ function renderReader() {
           const open = !event.end;
           return `
             <li class="dx-event${open ? " open" : ""}">
-              <span class="dx-event-kind">${escapeHtml(event.kind)}</span>
+              <span class="dx-event-kind">${escapeHtml(tc(event.kind))}</span>
               <span class="dx-event-body">
                 <b>${escapeHtml(eventPeriod(event))}</b>
                 ${event.where ? `<small>${escapeHtml(event.where)}</small>` : ""}

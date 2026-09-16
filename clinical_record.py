@@ -97,39 +97,76 @@ AXES = {
 
 SIDES = ("P", "T", "Giữa", "Hai bên")
 
-# The thirty-odd entities a neuro-oncology list is mostly made of, in the order
-# a brain list then a spine list runs. Anything outside them is typed.
-HISTOLOGIES = (
-    "U tế bào hình sao lan toả, IDH đột biến",
-    "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q",
-    "U nguyên bào thần kinh đệm, IDH tự nhiên",
-    "U thần kinh đệm lan toả đường giữa, H3 K27 thay đổi",
-    "U tế bào hình sao lông",
-    "U tế bào hình sao vàng đa hình",
-    "U tế bào hình sao dưới màng não thất tế bào khổng lồ",
-    "U màng não thất",
-    "U nguyên bào tuỷ",
-    "U hạch thần kinh đệm",
-    "U biểu mô thần kinh loạn sản phôi",
-    "U màng não",
-    "U bao sợi thần kinh",
-    "U sợi thần kinh",
-    "U tế bào quanh mạch",
-    "U tuyến yên",
-    "U sọ hầu",
-    "U tế bào mầm nội sọ",
-    "U nguyên bào mạch máu",
-    "U đám rối mạch mạc",
-    "U lympho thần kinh trung ương nguyên phát",
-    "U di căn",
-    "U dây sống",
-    "U mỡ",
-    "U bì",
-    "U thượng bì",
-    "Nang keo",
-    "Nang màng nhện",
-    "U mạch thể hang",
-    "Dị dạng thông động tĩnh mạch",
+# The entities a neuro-oncology list is mostly made of, grouped by WHO CNS5
+# family and ordered the way a brain list then a spine list runs.
+#
+# Grouped rather than flat because thirty-odd names in one dropdown are read by
+# scrolling, while eight families are read by recognising one. The group is a
+# *display* axis only: it decides what the list looks like and nothing else. It
+# is deliberately never stored against a tumour, because a group recorded
+# beside an entity is a second opinion about the same fact — file a
+# haemangioblastoma under "U thần kinh đệm" and every later reader has to
+# decide which of the two to believe.
+#
+# None of this is a closed set. The field accepts typed text, because a list of
+# thirty cannot cover a pathology report.
+HISTOLOGY_GROUPS = {
+    "U thần kinh đệm": (
+        "U tế bào hình sao, IDH đột biến",
+        "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q",
+        "U nguyên bào thần kinh đệm, IDH tự nhiên",
+        "U thần kinh đệm lan toả đường giữa, H3 K27 thay đổi",
+        "U thần kinh đệm lan toả bán cầu, H3 G34 đột biến",
+        "U tế bào hình sao lông",
+        "U tế bào hình sao vàng đa hình",
+        "U tế bào hình sao dưới màng não thất tế bào khổng lồ",
+    ),
+    "U màng não thất và đám rối mạch mạc": (
+        "U màng não thất",
+        "U dưới màng não thất",
+        "U đám rối mạch mạc",
+    ),
+    "U thần kinh đệm - thần kinh và u phôi": (
+        "U hạch thần kinh đệm",
+        "U biểu mô thần kinh loạn sản phôi",
+        "U nguyên bào tuỷ",
+        "U quái không điển hình/dạng cơ vân",
+    ),
+    "U màng não và u trung mô": (
+        "U màng não",
+        "U xơ đơn độc",
+        "U nguyên bào mạch máu",
+        "U dây sống",
+    ),
+    "U vỏ bao thần kinh": (
+        "U bao sợi thần kinh",
+        "U sợi thần kinh",
+    ),
+    "U vùng yên và tuyến tùng": (
+        "U tuyến yên",
+        "U sọ hầu",
+        "U tế bào mầm nội sọ",
+        "U nhu mô tuyến tùng",
+    ),
+    "U lympho và di căn": (
+        "U lympho thần kinh trung ương nguyên phát",
+        "U di căn",
+    ),
+    "Nang, tổn thương dạng u và mạch máu": (
+        "Nang keo",
+        "Nang màng nhện",
+        "U bì",
+        "U thượng bì",
+        "U mỡ",
+        "U mạch thể hang",
+        "Dị dạng thông động tĩnh mạch",
+    ),
+}
+
+# The same names as one list, in family order, which is what the dropdown is
+# built from. Derived rather than written twice.
+HISTOLOGIES = tuple(
+    name for entities in HISTOLOGY_GROUPS.values() for name in entities
 )
 
 # WHO grades are 1 to 4. An empty grade is a grade nobody has assigned yet, and
@@ -197,6 +234,13 @@ def vocabulary() -> dict:
         "axes": {key: list(value) for key, value in AXES.items()},
         "sides": list(SIDES),
         "histologies": list(HISTOLOGIES),
+        # Which family each entity belongs to, so the dropdown can show the
+        # list grouped without the web UI holding a second copy of it.
+        "histologyGroups": {
+            name: group
+            for group, entities in HISTOLOGY_GROUPS.items()
+            for name in entities
+        },
         "grades": list(GRADES),
         "molecularMarkers": list(MOLECULAR_MARKERS),
         "diagnosisBases": list(DIAGNOSIS_BASES),
