@@ -1254,7 +1254,13 @@ export function applyFieldEdit(input, eventType = "change") {
       // The location and axis lists belong to a compartment. Anything typed
       // under the old one is kept — it may still be right, and silently
       // clearing a field somebody typed is worse than offering a new list.
-      return true;
+      //
+      // On `change` alone, like the diagnosis above. A `<select>` fires
+      // `input` and then `change` for one choice, and redrawing on both ran
+      // the repaint twice: the second pass was handed the node the first pass
+      // had already detached, so it could not tell where the caret had been
+      // and dropped focus altogether.
+      return eventType === "change";
     }
     return false;
   }
@@ -1263,7 +1269,9 @@ export function applyFieldEdit(input, eventType = "change") {
     const event = draft.events[Number(eventBlock.dataset.eventIndex)];
     if (!event) return false;
     event[field] = NUMBER_FIELDS.has(field) ? readNumber(input.value) : input.value;
-    return field === "kind";
+    // The kind decides which fields the event asks about, so it redraws — but
+    // on `change` only, for the reason given against `compartment` above.
+    return field === "kind" && eventType === "change";
   }
   return false;
 }

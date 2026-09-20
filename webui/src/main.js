@@ -2196,9 +2196,18 @@ function refreshClinicalCard() {
 function refreshClinicalEditor() {
   const pane = app?.querySelector(".dx-workspace");
   if (!pane) return;
+  // The form scrolls inside `.dxw-body`, and the repaint replaces it along
+  // with everything else. Without carrying the offset across, choosing a
+  // treatment kind halfway down the form threw the person back to the top of
+  // it — which is the jump that reads as the pane flashing.
+  const scrolled = pane.querySelector(".dxw-body")?.scrollTop || 0;
   pane.outerHTML = clinical.renderClinicalWorkspace(
     state.archive?.patient || {}, currentPatientDraft(),
   );
+  const body = app?.querySelector(".dx-workspace .dxw-body");
+  // Clamped by the browser: the new form can be shorter than the old one when
+  // a kind that asked about fractions is swapped for one that does not.
+  if (body && scrolled) body.scrollTop = scrolled;
   bindClinicalCard();
 }
 

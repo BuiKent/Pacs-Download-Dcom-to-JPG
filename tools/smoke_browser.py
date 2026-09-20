@@ -620,6 +620,77 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                     f"   {reach['fields']} trường ở cửa sổ 900x600: cuộn được"
                     f" {reach['scrollable']}px, tới được trường cuối."
                 )
+
+                # Choosing a treatment kind rebuilds the pane, because the kind
+                # decides whether the event asks about fractions or cycles. The
+                # person has to keep their place through it: this is the jump
+                # that read as the pane flashing on every edit, and jsdom cannot
+                # catch it because it lays nothing out and every offset is zero.
+                keep = page.evaluate(
+                    """() => new Promise((resolve) => {
+                      const body = document.querySelector('.dxw-body');
+                      body.scrollTop = body.scrollHeight;
+                      const before = Math.round(body.scrollTop);
+                      const kind = document.querySelector(
+                        ".dx-workspace [data-clinical-field='kind']");
+                      kind.focus();
+                      kind.value = 'Hoá';
+                      kind.dispatchEvent(new Event('input', { bubbles: true }));
+                      kind.dispatchEvent(new Event('change', { bubbles: true }));
+                      setTimeout(() => {
+                        const after = document.querySelector('.dxw-body');
+                        resolve({
+                          before,
+                          after: Math.round(after.scrollTop),
+                          // The form a chemotherapy course asks for is not the
+                          // same height as a radiotherapy one, so the browser
+                          // clamps the offset to whatever the new content
+                          // allows. That ceiling is what "kept their place"
+                          // can honestly mean here.
+                          ceiling: Math.max(0, after.scrollHeight - after.clientHeight),
+                          focused: document.activeElement
+                            && document.activeElement.dataset
+                            && document.activeElement.dataset.clinicalField,
+                          swapped: !!document.querySelector(
+                            ".dx-workspace [data-clinical-field='cycles']"),
+                        });
+                      }, 120);
+                    })"""
+                )
+                if keep["before"] <= 0:
+                    raise AssertionError(
+                        f"Gate 3: form phải cuộn được thì mới kiểm được, đang là {keep}"
+                    )
+                expected = min(keep["before"], keep["ceiling"])
+                # A few pixels of slack: the swap can change a wrapped label's
+                # height, and the point of the check is that the person is
+                # still where they were rather than back at the top.
+                if abs(keep["after"] - expected) > 4:
+                    raise AssertionError(
+                        "Gate 3: đổi loại điều trị làm form nhảy mất chỗ cuộn —"
+                        f" đang ở {keep['before']}px, đáng lẽ còn {expected}px"
+                        f" (trần mới {keep['ceiling']}px), thực tế {keep['after']}px."
+                    )
+                if keep["focused"] != "kind":
+                    raise AssertionError(
+                        "Gate 3: đổi loại điều trị xong con trỏ rời khỏi ô vừa chọn,"
+                        f" đang ở {keep['focused']!r}."
+                    )
+                if not keep["swapped"]:
+                    raise AssertionError(
+                        "Gate 3: đổi sang Hoá mà form không đổi sang hỏi số chu kỳ."
+                    )
+                print(
+                    f"   Đổi loại điều trị: giữ chỗ cuộn {keep['before']}px ->"
+                    f" {keep['after']}px (trần mới {keep['ceiling']}px), con trỏ"
+                    " vẫn ở ô vừa chọn."
+                )
+                # Put it back, so the record saved below is the radiotherapy
+                # course the rest of this step is written against.
+                page.select_option(".dx-workspace [data-clinical-field='kind']", "Xạ")
+                page.wait_for_selector(
+                    ".dx-workspace [data-clinical-field='fractions']", timeout=5000)
+
                 page.set_viewport_size({"width": 1280, "height": 800})
                 page.wait_for_timeout(200)
 
