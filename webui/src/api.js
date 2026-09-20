@@ -66,9 +66,22 @@ export async function api(path, options = {}) {
   return body;
 }
 
+/**
+ * A file this server holds: a slice, a thumbnail, a clip.
+ *
+ * Unlike the JSON calls above this one does NOT ask for `no-store`. These
+ * routes answer with an `ETag`, so the browser asks "still the same file?" and
+ * is told yes without a body when nothing has changed. Forcing `no-store` here
+ * threw that away and re-read every slice off the disk each time a record was
+ * opened — which is most of what made reopening a study already downloaded
+ * feel like downloading it again.
+ *
+ * Staleness is not the risk it would be with a time-based cache: the server
+ * sends `must-revalidate`, so nothing is reused until the file it came from
+ * has been confirmed unchanged.
+ */
 export async function apiBlob(path) {
   const response = await fetch(path, {
-    cache: "no-store",
     headers: baseHeaders(),
   });
   if (!response.ok) {
@@ -83,9 +96,9 @@ export async function apiBlob(path) {
   return response.blob();
 }
 
+/** DICOM pixels, revalidated the same way `apiBlob` describes. */
 export async function apiPixelData(path) {
   const response = await fetch(path, {
-    cache: "no-store",
     headers: baseHeaders(),
   });
   if (!response.ok) {

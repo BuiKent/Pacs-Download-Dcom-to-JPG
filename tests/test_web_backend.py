@@ -1053,6 +1053,79 @@ class ServerSecurityTests(unittest.TestCase):
             timeout=timeout,
         )
 
+    def test_a_slice_is_revalidated_rather_than_re_sent(self):
+        """Reopening a record must not re-send slices the browser already has.
+
+        Every response carried `Cache-Control: no-store`, sent unconditionally
+        by the header helper. The slice route had asked for a cache since it
+        was written — `private, max-age=86400` — but that arrived as a *second*
+        `Cache-Control` line, the two were joined with a comma, and `no-store`
+        won. So the cache the author intended never once took effect, and
+        opening a study already on disk re-read and re-sent every slice in it.
+
+        A time-based cache would be the wrong repair. A series id is derived
+        from the folder path, so a study downloaded a second time keeps every
+        URL it had, and `max-age` would hand back a slice from before the
+        re-download with nothing to notice it by. The fix is a validator: the
+        browser asks whether the file is still the one it holds, and is
+        answered without a body when it is.
+        """
+        token = self.server.token
+        catalog = self.controller.catalog
+        series_id = catalog.snapshot()["series"][0]["id"]
+        path = f"/api/series/{series_id}/image/0"
+
+        with self.request(path, token=token) as first:
+            body = first.read()
+            etag = first.headers.get("ETag")
+            cache_control = first.headers.get("Cache-Control")
+
+        self.assertTrue(body, "the slice came back empty")
+        self.assertTrue(etag, "no validator, so nothing can be revalidated")
+        # One header, and not the one that made the cache impossible.
+        self.assertNotIn("no-store", cache_control)
+        self.assertIn("must-revalidate", cache_control)
+
+        # What the browser sends once it holds the file.
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.request(path, token=token, extra={"If-None-Match": etag})
+        self.assertEqual(caught.exception.code, 304)
+        self.assertEqual(caught.exception.read(), b"")
+
+    def test_a_slice_that_changed_on_disk_is_sent_again(self):
+        """The validator has to move when the pixels do.
+
+        This is the case a time-based cache gets wrong and the reason the
+        repair is an ETag: the URL is unchanged, so the only thing that can
+        tell the browser it is holding the wrong image is the validator.
+        """
+        token = self.server.token
+        catalog = self.controller.catalog
+        record = catalog.get(catalog.snapshot()["series"][0]["id"])
+        path = f"/api/series/{record.series_id}/image/0"
+
+        with self.request(path, token=token) as first:
+            etag = first.headers.get("ETag")
+
+        # The pipeline replacing a slice after a second download.
+        time.sleep(0.01)
+        Image.new("L", (4, 4), 200).save(record.images[0])
+
+        with self.request(path, token=token, extra={"If-None-Match": etag}) as again:
+            self.assertEqual(again.status, 200)
+            self.assertTrue(again.read(), "the replaced slice came back empty")
+            self.assertNotEqual(again.headers.get("ETag"), etag)
+
+    def test_the_json_routes_are_still_never_cached(self):
+        """A catalog or a job snapshot must stay uncacheable.
+
+        `no-store` is still the default for everything; the slice route is the
+        one place that asks for something else. Losing that default would let a
+        browser answer from a stale catalog.
+        """
+        with self.request("/api/archive", token=self.server.token) as res:
+            self.assertEqual(res.headers.get("Cache-Control"), "no-store")
+
     def test_media_photo_api_endpoints(self):
         from PIL import Image, ImageDraw
         catalog_dir = Path(self.tmp.name) / "archive"

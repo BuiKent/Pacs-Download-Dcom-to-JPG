@@ -6495,9 +6495,20 @@ class LocalApiServer:
                 length: int,
                 extra: Optional[dict[str, str]] = None,
             ) -> None:
+                extra = dict(extra or {})
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(length))
-                self.send_header("Cache-Control", "no-store")
+                # `no-store` is the right default for everything this server
+                # answers with — a catalog, a job snapshot, a clinical record —
+                # and it stays the default. It is a *default*, though, and it
+                # was being sent unconditionally: a handler that asked for
+                # something else got a second `Cache-Control` line instead, the
+                # two were joined with a comma, and `no-store` won every time.
+                #
+                # The slice route has asked for a cache since it was written.
+                # It never got one, so every reopen of a record already on disk
+                # re-read and re-sent every slice in it.
+                self.send_header("Cache-Control", extra.pop("Cache-Control", "no-store"))
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("X-Frame-Options", "DENY")
                 self.send_header("Referrer-Policy", "no-referrer")
@@ -6510,7 +6521,7 @@ class LocalApiServer:
                     # external can be plugged in.
                     "object-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'",
                 )
-                for name, value in (extra or {}).items():
+                for name, value in extra.items():
                     self.send_header(name, value)
 
             def _send(
@@ -6544,7 +6555,26 @@ class LocalApiServer:
                 it would play and could not be seeked at all. Answering ranges
                 lets the player ask only for the part it is about to show.
                 """
-                size = target.stat().st_size
+                info = target.stat()
+                size = info.st_size
+                # What the browser quotes back to ask "is this still the file I
+                # already have?". Size and mtime, because a slice is rewritten
+                # only by the pipeline replacing the file, and both move when it
+                # does. Cheap enough to compute on every request — it is one
+                # stat, which this method already did for the length.
+                etag = f'"{info.st_mtime_ns:x}-{size:x}"'
+                if self.headers.get("If-None-Match", "").strip() == etag:
+                    # The bytes are already in the browser's cache. Saying so
+                    # costs a header; re-sending a 90 KB slice it already holds
+                    # is what made reopening a record feel like downloading it
+                    # again.
+                    self.send_response(HTTPStatus.NOT_MODIFIED)
+                    self._headers(content_type, 0, {"ETag": etag, **(extra or {})})
+                    try:
+                        self.end_headers()
+                    except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                        pass
+                    return
                 start, end = 0, max(size - 1, 0)
                 status = HTTPStatus.OK
                 requested = self.headers.get("Range", "").strip()
@@ -6570,7 +6600,7 @@ class LocalApiServer:
                     if match:
                         status = HTTPStatus.PARTIAL_CONTENT
                 length = (end - start + 1) if size else 0
-                headers = {"Accept-Ranges": "bytes", **(extra or {})}
+                headers = {"Accept-Ranges": "bytes", "ETag": etag, **(extra or {})}
                 if status == HTTPStatus.PARTIAL_CONTENT:
                     headers["Content-Range"] = f"bytes {start}-{end}/{size}"
                 self.send_response(status)
@@ -7098,7 +7128,16 @@ class LocalApiServer:
                     )
                     return True
                 mime = MIME_TYPES.get(image.suffix.casefold(), "application/octet-stream")
-                self._send_file(image, mime, {"Cache-Control": "private, max-age=86400"})
+                # Revalidate rather than trust a clock. A series id is derived
+                # from the path, so a study downloaded again keeps every URL it
+                # had: a time-based cache would hand back the slice from before
+                # the re-download and there would be nothing to notice it by.
+                # `must-revalidate` makes the browser ask first, and the ETag
+                # above answers without a body when nothing has changed.
+                self._send_file(
+                    image, mime,
+                    {"Cache-Control": "private, max-age=0, must-revalidate"},
+                )
                 return True
 
             def _static(self, path: str) -> None:
