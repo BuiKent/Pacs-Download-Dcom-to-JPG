@@ -545,6 +545,30 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                     ".dx-workspace [data-clinical-field='location']", timeout=5000)
                 page.fill(".dx-workspace [data-clinical-field='location']", "Thuỳ chẩm")
 
+                # The molecular work-up, which is what the reading below the
+                # tumour is derived from. A glioblastoma needs IDH before it is
+                # an integrated diagnosis, and `basis` decides whether any of
+                # it counts: a full panel on an unbiopsied tumour is still an
+                # impression.
+                page.select_option(
+                    ".dx-workspace [data-clinical-field='basis']", "Mô bệnh học")
+                require(
+                    page, ".dx-workspace [data-action='clinical-add-marker']",
+                    "nút thêm dấu ấn phân tử",
+                ).click()
+                page.wait_for_selector(
+                    ".dx-workspace [data-clinical-field='molecularName']", timeout=5000)
+                page.fill(
+                    ".dx-workspace [data-clinical-field='molecularName']", "IDH1/2")
+                # Adding the name redraws the row, because the result field's
+                # list belongs to the marker that was just named. If the redraw
+                # dropped the listener the fill below lands on a dead field.
+                page.wait_for_timeout(120)
+                page.fill(
+                    ".dx-workspace [data-clinical-field='molecularValue']",
+                    "Không đột biến (đã giải trình tự)",
+                )
+
                 require(
                     page, ".dx-workspace [data-action='clinical-add-event']",
                     "nút thêm sự kiện",
@@ -622,6 +646,31 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                         "Gate 3: lưu xong mà form vẫn chiếm khung xem phim."
                     )
                 print(f"   Saved and read back: {heading} · {chip}")
+
+                # What the classification makes of what was just typed. This
+                # is derived on the Python side and never stored, so seeing it
+                # here proves the whole chain: the form wrote a result the
+                # rules recognise, the backend read it, and the card drew it.
+                reading = require(page, ".dx-card .dx-reading", "khối chẩn đoán tích hợp")
+                flag = page.inner_text(".dx-card .dx-integrated-flag").strip()
+                if flag != "Chẩn đoán tích hợp":
+                    raise AssertionError(
+                        "Gate 3: mô bệnh học và IDH đã đủ, nhãn phải là chẩn đoán"
+                        f" tích hợp, đang là {flag!r}."
+                    )
+                # A regimen name with no dose and no citation is the part the
+                # reader already knew, so both are checked rather than the name.
+                protocol = page.inner_text(".dx-card .dx-rx.preferred").strip()
+                for expected in ("Stupp", "60 Gy", "N Engl J Med 2005"):
+                    if expected not in protocol:
+                        raise AssertionError(
+                            f"Gate 3: phác đồ phải nêu {expected!r}, đang là {protocol!r}."
+                        )
+                if reading.query_selector(".dx-conflicts") is not None:
+                    raise AssertionError(
+                        "Gate 3: hồ sơ này không mâu thuẫn, không được hiện cảnh báo."
+                    )
+                print(f"   Reading derived from the record: {flag} · {protocol.splitlines()[1]}")
 
                 # The timeline rows say where each study sits in that
                 # treatment. The chip is filled in place rather than by

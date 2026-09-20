@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import clinical_record
 import dcom_pipeline
+import neuro_oncology
 import web_backend
 
 
@@ -125,6 +126,13 @@ class VocabularyTests(unittest.TestCase):
 
         Terms that are already English — IMRT, PCV, Ki-67, the WHO grades —
         need no entry, so only the ones carrying Vietnamese are required.
+
+        Two sources, because the form is no longer the only thing that puts a
+        clinical term on screen. `neuro_oncology` names the protocol under each
+        tumour and the treatment it is, and those are served inside the
+        assessment rather than in the vocabulary payload — so collecting only
+        the vocabulary would let a protocol name reach an English screen in
+        Vietnamese, which is precisely what this test exists to prevent.
         """
         source = (
             Path(__file__).resolve().parents[1] / "webui" / "src" / "i18n.js"
@@ -148,6 +156,11 @@ class VocabularyTests(unittest.TestCase):
                     collect(item)
 
         collect(clinical_record.vocabulary())
+        # Everything `neuro_oncology` can say beside a record: the protocol
+        # names, the rule quoted when a grade is outranked, the sentence naming
+        # a contradiction. `display_terms` leaves out doses and citations,
+        # which are not translated.
+        terms.update(neuro_oncology.display_terms())
 
         self.assertEqual(
             sorted(term for term in terms if not term.isascii() and term not in english),

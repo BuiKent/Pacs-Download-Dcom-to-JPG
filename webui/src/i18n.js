@@ -460,6 +460,28 @@ export const EN = {
   "Thêm dấu ấn": "Add marker",
   "Xoá dấu ấn": "Remove marker",
   "Dấu ấn mới": "New marker",
+  "Kết quả ({})": "Result ({})",
+  // Between two markers that are alternatives: "ATRX hoặc 1p/19q".
+  "hoặc": "or",
+  "chưa làm": "not performed",
+  "chưa đọc được": "not recognised",
+  "Ô này có chữ nhưng không khớp đáp án nào trong danh sách, nên không luật nào đọc được.":
+    "This field holds text that matches none of the listed answers, so no rule can read it.",
+
+  // The reading the classification makes of a record: what the work-up still
+  // needs, whether the diagnosis is integrated, and the protocol that follows.
+  "Bắt buộc còn thiếu": "Essential, still missing",
+  "Nên có": "Recommended",
+  "Chẩn đoán tích hợp": "Integrated diagnosis",
+  "Chưa tích hợp": "Not yet integrated",
+  "Mô bệnh học và phân tử đã đủ để kết luận chẩn đoán tích hợp":
+    "Histology and molecular results are sufficient for an integrated diagnosis",
+  "Chưa đủ căn cứ cho chẩn đoán tích hợp theo WHO CNS5":
+    "Not enough evidence for an integrated diagnosis under WHO CNS5",
+  "Độ đã ghi {} · theo phân tử là độ {}": "Recorded grade {} · molecular grade {}",
+  "Phác đồ chuẩn": "Standard protocol",
+  "Cân nhắc theo bối cảnh": "Consider in context",
+  "Khi: {}": "When: {}",
   "Điều trị": "Treatment",
   "Sự kiện {}": "Event {}",
   "Thêm sự kiện": "Add event",
@@ -1021,6 +1043,134 @@ export const CLINICAL_EN = {
   "Xạ trục não tuỷ": "Craniospinal irradiation (CSI)",
   "Temozolomide đồng thời": "Concurrent temozolomide",
   "Temozolomide bổ trợ": "Adjuvant temozolomide",
+
+  // Molecular marker results.
+  //
+  // The two negative IDH answers are translated apart rather than both into
+  // "negative", because the distinction between them is the whole reason the
+  // marker has four answers: immunohistochemistry sees IDH1 R132H alone, so a
+  // negative stain has not excluded the non-canonical IDH1 and IDH2
+  // substitutions, and collapsing the two would read an untested tumour as a
+  // wildtype one.
+  "Đột biến": "Mutant",
+  "Không đột biến": "Wildtype",
+  "Không đột biến (đã giải trình tự)": "Wildtype (sequenced)",
+  "IHC R132H âm tính (chưa giải trình tự)": "IHC R132H negative (not sequenced)",
+  "Chưa làm": "Not performed",
+  "Đồng mất": "Codeleted",
+  "Không đồng mất": "Not codeleted",
+  "Mất biểu hiện": "Loss of expression",
+  "Còn biểu hiện": "Retained",
+  "Mất đồng hợp tử": "Homozygous deletion",
+  "Không mất đồng hợp tử": "No homozygous deletion",
+  "Methyl hoá": "Methylated",
+  "Không methyl hoá": "Unmethylated",
+  "Dương tính lan toả (IHC)": "Diffuse positivity (IHC)",
+  "K27M đột biến": "K27M mutant",
+  "Mất biểu hiện H3K27me3": "H3K27me3 loss",
+  "Không thay đổi": "Not altered",
+  "G34R/V đột biến": "G34R/V mutant",
+  "Khuếch đại": "Amplified",
+  "Không khuếch đại": "Not amplified",
+  "Thêm 7 mất 10 (+7/-10)": "+7/-10",
+  "Không": "No",
+  "V600E đột biến": "V600E mutant",
+  "Hợp nhất KIAA1549-BRAF": "KIAA1549-BRAF fusion",
+  "Hợp nhất": "Fusion present",
+  "Không hợp nhất": "No fusion",
+  "Dương tính": "Positive",
+  "Âm tính": "Negative",
+  "SHH TP53 tự nhiên": "SHH, TP53-wildtype",
+  "SHH TP53 đột biến": "SHH, TP53-mutant",
+  "Nhóm 3": "Group 3",
+  "Nhóm 4": "Group 4",
+
+  // What a marker's answers mean, shown under the row that takes them and as
+  // the tooltip on an outstanding work-up item. Translated rather than left in
+  // Vietnamese because the IDH one carries the distinction between a negative
+  // antibody and a sequenced wildtype, which is the difference between a grade
+  // 2 astrocytoma and a glioblastoma.
+  "IHC chỉ bắt được IDH1 R132H. IHC âm tính chưa phải IDH tự nhiên, trừ u độ 4 ở bệnh nhân từ 55 tuổi trở lên.":
+    "IHC detects only IDH1 R132H. A negative stain is not IDH-wildtype, except for a grade 4 tumour in a patient aged 55 or over.",
+  "Đồng mất toàn nhánh là tiêu chuẩn bắt buộc của u thần kinh đệm ít nhánh. Mất một phần nhánh không tính.":
+    "Whole-arm codeletion is an essential criterion for oligodendroglioma. Partial-arm loss does not count.",
+  "Mất biểu hiện ATRX hướng về u sao bào và thực tế loại trừ đồng mất 1p/19q.":
+    "ATRX loss points to astrocytoma and effectively excludes 1p/19q codeletion.",
+  "Mất đồng hợp tử CDKN2A/B đưa u sao bào IDH đột biến lên độ 4 dù mô học chưa đủ tiêu chuẩn.":
+    "Homozygous CDKN2A/B deletion makes an IDH-mutant astrocytoma grade 4 even when the histology falls short.",
+  "MGMT không tham gia định danh u. Đây là yếu tố tiên lượng và dự báo đáp ứng temozolomide.":
+    "MGMT does not name the tumour. It is prognostic and predicts response to temozolomide.",
+  "U màng não: từ 4 nhân chia trở lên là độ 2, từ 20 trở lên là độ 3.":
+    "Meningioma: 4 or more mitoses is grade 2, 20 or more is grade 3.",
+  "Ghi tỉ lệ phần trăm, ví dụ 25%.": "Record a percentage, for example 25%.",
+  "Ghi nhóm methyl hoá và điểm tin cậy nếu phiếu có.":
+    "Record the methylation class and its calibrated score if the report gives one.",
+  "/10 vi trường": "/10 HPF",
+
+  // Marker names that are words rather than gene symbols.
+  "Nhiễm sắc thể 7/10": "Chromosome 7/10",
+  "Hồ sơ methyl hoá": "Methylation profile",
+  "Nhóm u nguyên bào tuỷ": "Medulloblastoma subgroup",
+  "Chỉ số nhân chia": "Mitotic count",
+  "TERT promoter": "TERT promoter",
+
+  // Marker families, as the picker groups them. The glioma, ependymal and
+  // meningioma families are already translated above as tumour entities, and
+  // one key carries both readings.
+  "U phôi": "Embryonal tumour",
+  "Chung": "General",
+
+  // What a rule says when it fires: why a grade was outranked, and why two
+  // recorded facts cannot both be true. Translated because a reader who is
+  // told a grade moved has to be able to read the reason for it.
+  "Mất đồng hợp tử CDKN2A/B trong u sao bào IDH đột biến là tiêu chuẩn độ 4 của WHO CNS5, không phụ thuộc mô học.":
+    "Homozygous CDKN2A/B deletion in an IDH-mutant astrocytoma is a WHO CNS5 grade 4 criterion in its own right, whatever the histology shows.",
+  "U màng não có đột biến TERT promoter hoặc mất đồng hợp tử CDKN2A/B được xếp độ 3 theo WHO CNS5.":
+    "A meningioma with a TERT promoter mutation or homozygous CDKN2A/B deletion is CNS WHO grade 3.",
+  "Đồng mất 1p/19q loại trừ u sao bào. Đối chiếu lại: đây nhiều khả năng là u thần kinh đệm ít nhánh.":
+    "1p/19q codeletion excludes astrocytoma. Review this: it is more likely an oligodendroglioma.",
+  "Tên chẩn đoán ghi IDH đột biến nhưng kết quả giải trình tự là không đột biến.":
+    "The diagnosis is named IDH-mutant but the sequencing result is wildtype.",
+  "Tên chẩn đoán ghi IDH tự nhiên nhưng kết quả xét nghiệm là đột biến.":
+    "The diagnosis is named IDH-wildtype but the test result is mutant.",
+  "Tên chẩn đoán ghi đồng mất 1p/19q nhưng kết quả là không đồng mất.":
+    "The diagnosis names 1p/19q codeletion but the result is not codeleted.",
+  "Tên chẩn đoán ghi H3 K27 thay đổi nhưng kết quả là không thay đổi.":
+    "The diagnosis is named H3 K27-altered but the result is not altered.",
+  "Tên chẩn đoán ghi H3 G34 đột biến nhưng kết quả là không đột biến.":
+    "The diagnosis is named H3 G34-mutant but the result is not mutant.",
+
+  // The condition a regimen is offered under, never left for the reader to
+  // infer from the regimen's name.
+  "Bệnh nhân từ 65-70 tuổi trở lên hoặc thể trạng kém":
+    "Aged roughly 65-70 or over, or poor performance status",
+  "MGMT methyl hoá, ở bệnh nhân cao tuổi không xạ được":
+    "MGMT methylated, in an elderly patient unfit for radiotherapy",
+  "Số lượng tổn thương hạn chế, bệnh ngoài sọ đang kiểm soát":
+    "A limited number of lesions, with extracranial disease controlled",
+  "Di căn lan toả nhiều ổ": "Diffuse, multifocal metastases",
+  "Liều xạ trục hạ thấp ở nhóm nguy cơ chuẩn":
+    "A reduced craniospinal dose in the standard-risk group",
+
+  // Treatment protocols. The regimen names are translated; the doses and
+  // schedules beside them are not, because a dose is written the same way in
+  // both languages and a translated one is a dose somebody has retyped.
+  "Phác đồ Stupp": "Stupp protocol",
+  "Xạ giảm phân liều ± temozolomide": "Hypofractionated RT ± temozolomide",
+  "Temozolomide đơn thuần": "Temozolomide alone",
+  "Xạ khu trú + PCV": "Focal RT + PCV",
+  "Xạ khu trú + temozolomide bổ trợ": "Focal RT + adjuvant temozolomide",
+  "Theo dõi bằng hình ảnh": "Imaging surveillance",
+  "Xạ khu trú": "Focal radiotherapy",
+  "Hoá chất nền methotrexate liều cao": "High-dose methotrexate based",
+  "Xạ trục não tuỷ + hoá chất": "Craniospinal irradiation + chemotherapy",
+  "Hoá chất nền platinum + xạ": "Platinum-based chemotherapy + RT",
+  "Xạ phẫu định vị": "Stereotactic radiosurgery",
+  "Xạ toàn não bảo tồn hồi hải mã + memantine": "Hippocampal-avoidance WBRT + memantine",
+  "Phẫu thuật rồi theo dõi": "Surgery then surveillance",
+  // A protocol's kind reuses the event-kind wording above, so "Xạ", "Hoá" and
+  // "Theo dõi" are not repeated here.
+  "Xạ + Hoá": "RT + chemotherapy",
 };
 
 /**

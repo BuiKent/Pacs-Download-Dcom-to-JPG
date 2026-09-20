@@ -2393,6 +2393,7 @@ async function loadClinicalRecord({ force = false } = {}) {
     const result = await api(`/api/patient/clinical?${params.toString()}`);
     clinical.clinicalState.record = result?.record || clinical.emptyRecord();
     clinical.clinicalState.stage = result?.stage || clinical.emptyStage();
+    clinical.clinicalState.assessment = Array.isArray(result?.assessment) ? result.assessment : [];
     clinical.clinicalState.label = String(result?.label || "");
     clinical.clinicalState.canWrite = result?.canWrite !== false;
     clinical.clinicalState.reason = String(result?.reason || "");
@@ -6291,6 +6292,7 @@ async function saveClinicalRecord(record) {
     });
     clinical.clinicalState.record = result?.record || clinical.emptyRecord();
     clinical.clinicalState.stage = result?.stage || clinical.emptyStage();
+    clinical.clinicalState.assessment = Array.isArray(result?.assessment) ? result.assessment : [];
     clinical.clinicalState.label = String(result?.label || "");
     // The worklist row shows the diagnosis and the stage this just changed, so
     // it is rescanned rather than left showing the old one.

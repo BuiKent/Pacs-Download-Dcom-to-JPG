@@ -48,6 +48,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+import neuro_oncology
+
 CLINICAL_RECORD_NAME = "clinical-index.json"
 CLINICAL_RECORD_FORMAT = "dcom-clinical-v1"
 
@@ -211,12 +213,13 @@ GRADES_BY_HISTOLOGY = {
 # it stays empty.
 GRADES = ("1", "2", "3", "4")
 
-# The markers a neuro-oncology report actually turns on. Values are typed
-# because a report says "methyl hoá 42%", not "có".
-MOLECULAR_MARKERS = (
-    "IDH1/2", "1p/19q", "MGMT", "ATRX", "TERT", "TP53",
-    "H3 K27", "H3 G34", "BRAF", "EGFR", "Ki-67",
-)
+# The markers a neuro-oncology report actually turns on.
+#
+# Owned by `neuro_oncology`, not by this file, because the marker list and the
+# rules that read it are one body of knowledge: a marker added here and unknown
+# there is a field nothing can interpret. Re-exported under the name it has
+# always had so existing callers keep working.
+MOLECULAR_MARKERS = neuro_oncology.MOLECULAR_MARKERS
 
 # What the diagnosis rests on. This is the field that keeps an impression from
 # being read as a result: a tumour whose basis is "Hình ảnh" has not been under
@@ -285,7 +288,10 @@ def vocabulary() -> dict:
         "gradesByHistology": {
             name: list(grades) for name, grades in GRADES_BY_HISTOLOGY.items()
         },
-        "molecularMarkers": list(MOLECULAR_MARKERS),
+        # The markers, the answers each one can give, and which of them each
+        # entity has to have. All of it from `neuro_oncology`, so the form
+        # offers exactly the vocabulary the rules are written against.
+        **neuro_oncology.vocabulary(),
         "diagnosisBases": list(DIAGNOSIS_BASES),
         "eventKinds": list(EVENT_KINDS),
         "ongoingKinds": list(ONGOING_KINDS),

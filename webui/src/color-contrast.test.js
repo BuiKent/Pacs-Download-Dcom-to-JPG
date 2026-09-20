@@ -95,6 +95,18 @@ const READING_PANE_PAIRS = [
   ["#d7dde3", "#1b2229", "the Đóng button"],
   ["#ffffff", "#1f6f8b", "the Lưu button"],
   ["#ddc98c", "#0f1620", "the warning that a draft is unsaved"],
+  // The reading the classification makes of the record, below each tumour.
+  ["#cdd7e0", "#141d25", "the integrated diagnosis line"],
+  ["#8fe0b6", "#13291f", "the integrated-diagnosis badge"],
+  ["#f2cf93", "#2c2415", "the not-yet-integrated badge and the essential gaps"],
+  ["#f2cf93", "#221c11", "the grade a molecular result outranks"],
+  ["#f0a6ab", "#2b1619", "two recorded facts that contradict each other"],
+  ["#aebecb", "#18222b", "a recommended test that is not essential"],
+  ["#e6ebf0", "#18222b", "the name of a protocol"],
+  ["#9bacba", "#18222b", "its dose and schedule"],
+  ["#7fb4cf", "#18222b", "the kind of treatment it is"],
+  ["#8a9aa8", "#18222b", "the paper it rests on"],
+  ["#94a5b3", "#141d25", "the label over a group of protocols"],
 ];
 
 describe("clinical record on the reading pane", () => {

@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import unquote, urlparse
 
 import clinical_record
+import neuro_oncology
 import dcom_pipeline
 import dicom_io
 from dicom_io import discover_dicom_files, looks_like_dicom_file
@@ -5430,6 +5431,7 @@ class WebController:
             return {
                 "record": blank,
                 "stage": clinical_record.treatment_stage(blank),
+                "assessment": [],
                 "label": "",
                 "note": "",
                 "folder": "",
@@ -5440,6 +5442,10 @@ class WebController:
         return {
             "record": clinical_record.with_derived(record),
             "stage": clinical_record.treatment_stage(record),
+            # Derived on every read rather than stored, so a marker entered
+            # today re-reads a diagnosis entered last year, and a rule
+            # corrected in `neuro_oncology` corrects the whole archive.
+            "assessment": neuro_oncology.assess_record(record),
             "label": clinical_record.diagnosis_label(record),
             # The free-text layer stays where it has always lived, on the
             # manifest, so an archive opened by an older build still shows it.
@@ -5472,6 +5478,7 @@ class WebController:
         return {
             "record": clinical_record.with_derived(saved),
             "stage": clinical_record.treatment_stage(saved),
+            "assessment": neuro_oncology.assess_record(saved),
             "label": clinical_record.diagnosis_label(saved),
             "note": str(manifest.get("diagnosis") or "").strip(),
             "folder": str(folder),

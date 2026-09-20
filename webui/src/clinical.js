@@ -41,6 +41,16 @@ export const clinicalState = {
   loadedFor: "",
   record: emptyRecord(),
   stage: emptyStage(),
+  /**
+   * What the record *means*, one entry per tumour, in the same order.
+   *
+   * Derived by `neuro_oncology` on the Python side and never stored, so the
+   * reading is recomputed from the markers on every load rather than frozen at
+   * the moment somebody pressed save. Held apart from `record` for the same
+   * reason it is not stored: the record is what a doctor typed, and this is
+   * what the classification makes of it, and the two are allowed to disagree.
+   */
+  assessment: [],
   label: "",
   vocabulary: null,
   editing: false,
@@ -63,6 +73,7 @@ export function resetClinicalState() {
   clinicalState.loadedFor = "";
   clinicalState.record = emptyRecord();
   clinicalState.stage = emptyStage();
+  clinicalState.assessment = [];
   clinicalState.label = "";
   clinicalState.editing = false;
   clinicalState.draft = null;
@@ -445,6 +456,11 @@ function vocab() {
     grades: value?.grades || [],
     gradesByHistology: value?.gradesByHistology || {},
     molecularMarkers: value?.molecularMarkers || [],
+    markerGroups: value?.markerGroups || {},
+    markerResults: value?.markerResults || {},
+    markerNotes: value?.markerNotes || {},
+    markerUnits: value?.markerUnits || {},
+    workup: value?.workup || {},
     diagnosisBases: value?.diagnosisBases || [],
     eventKinds: value?.eventKinds || [],
     resectionExtents: value?.resectionExtents || [],
@@ -552,23 +568,110 @@ function numberField(field, value, placeholder) {
     value="${escapeHtml(shown)}" placeholder="${escapeHtml(placeholder)}">`;
 }
 
+/** The family a marker belongs to, for the greyed hint beside its name. */
+function markerHint(name) {
+  const lists = vocab();
+  const group = Object.keys(lists.markerGroups || {}).find(
+    (key) => (lists.markerGroups[key] || []).includes(name));
+  return group ? tc(group) : "";
+}
+
+/**
+ * The tests this diagnosis needs and the record does not have.
+ *
+ * Shown inside the form rather than only in the reading pane, because this is
+ * the one moment somebody can do something about it: the marker rows are right
+ * there, and adding the missing one is a click rather than a return trip.
+ *
+ * Essential and useful are kept apart, and only in that order. Without an
+ * essential test there is no integrated diagnosis at all; a useful one changes
+ * management without changing what the tumour is, and a list that ran them
+ * together would send somebody chasing MGMT with the same urgency as IDH.
+ */
+/**
+ * One work-up requirement, named the way the reader reads it.
+ *
+ * Several markers means *any one of these* rather than all of them: an
+ * IDH-mutant glioma needs codeletion ruled out, and either ATRX or 1p/19q
+ * rules it out. Joined here rather than on the Python side so the word between
+ * them follows the language on screen.
+ */
+function requirementName(markers) {
+  const names = Array.isArray(markers) ? markers : [markers].filter(Boolean);
+  return names.join(` ${t("hoặc")} `);
+}
+
+function workupHint(tumor) {
+  const spec = vocab().workup[String(tumor.histology || "").trim()];
+  if (!spec) return "";
+  const recorded = Object.keys(tumor.molecular || {});
+  // An entry is a marker name or a list of alternatives, and a list is
+  // satisfied by any one of them.
+  const absent = (entries) => (entries || [])
+    .map((entry) => (Array.isArray(entry) ? entry : [entry]))
+    .filter((names) => !names.some((name) => recorded.includes(name)))
+    .map(requirementName);
+  const essential = absent(spec.essential);
+  const useful = absent(spec.useful);
+  if (!essential.length && !useful.length) return "";
+  return `
+    <p class="dxf-workup">
+      ${essential.length ? `
+        <span class="dxf-workup-need">${escapeHtml(t("Bắt buộc còn thiếu"))}:
+          ${escapeHtml(essential.join(", "))}</span>
+      ` : ""}
+      ${useful.length ? `
+        <span class="dxf-workup-extra">${escapeHtml(t("Nên có"))}:
+          ${escapeHtml(useful.join(", "))}</span>
+      ` : ""}
+    </p>
+  `;
+}
+
+/**
+ * One tumour's molecular results.
+ *
+ * Both halves of a row offer a list and accept typed text, and the *result*
+ * list is the one that matters. Free text made this section unreadable by
+ * anything but a human — "(-)", "am tinh", "wildtype" and "không đột biến" are
+ * one answer written four ways, and no rule can be written against that. The
+ * lists are what the Python rules match on, so choosing from them is what
+ * makes a record mean something; typing past them still stores what the report
+ * said, and the reading pane says the answer was not recognised rather than
+ * guessing at it.
+ */
 function renderMolecular(tumor, index) {
+  const lists = vocab();
   const entries = Object.entries(tumor.molecular || {});
   return `
     <div class="dxf-molecular">
       <span class="dxf-sub-label">${escapeHtml(t("Dấu ấn phân tử"))}</span>
-      ${entries.map(([marker, value], mIdx) => `
+      ${workupHint(tumor)}
+      ${entries.map(([name, value], mIdx) => {
+        const results = lists.markerResults[name] || [];
+        // Both read out in the language on screen: the note about IDH carries
+        // the distinction between a negative antibody and a sequenced
+        // wildtype, which is the one a reader most needs in either language.
+        const unit = tc(lists.markerUnits[name] || "");
+        const note = tc(lists.markerNotes[name] || "");
+        const listId = `dx-res-${index}-${mIdx}`;
+        return `
         <div class="dxf-molecular-row" data-molecular-index="${mIdx}">
           <input class="dxf-input dxf-marker" type="text" list="dx-markers"
-            data-clinical-field="molecularName" value="${escapeHtml(marker)}"
+            data-clinical-field="molecularName" value="${escapeHtml(name)}"
             placeholder="${escapeHtml(t("Tên dấu ấn"))}" autocomplete="off">
           <input class="dxf-input" type="text" data-clinical-field="molecularValue"
-            value="${escapeHtml(value)}" placeholder="${escapeHtml(t("Kết quả"))}">
+            list="${escapeHtml(listId)}" value="${escapeHtml(value)}"
+            placeholder="${escapeHtml(unit ? tf("Kết quả ({})", unit) : t("Kết quả"))}"
+            ${note ? `title="${escapeHtml(note)}"` : ""} autocomplete="off">
+          ${results.length ? datalist(listId, results) : ""}
           <button class="dxf-mini danger" type="button" data-action="clinical-remove-marker"
             data-tumor-index="${index}" data-molecular-index="${mIdx}"
             title="${escapeHtml(t("Xoá dấu ấn"))}">×</button>
         </div>
-      `).join("")}
+        ${note ? `<small class="dxf-marker-note">${escapeHtml(note)}</small>` : ""}
+      `;
+      }).join("")}
       <button class="dxf-mini" type="button" data-action="clinical-add-marker" data-tumor-index="${index}">
         + ${escapeHtml(t("Thêm dấu ấn"))}
       </button>
@@ -720,7 +823,7 @@ function formDatalists() {
   const lists = vocab();
   return `
     ${datalist("dx-histologies", lists.histologies, histologyHint)}
-    ${datalist("dx-markers", lists.molecularMarkers)}
+    ${datalist("dx-markers", lists.molecularMarkers, markerHint)}
     ${datalist("dx-extents", lists.resectionExtents, englishHint)}
     ${datalist("dx-techniques", lists.radiotherapyTechniques, englishHint)}
     ${datalist("dx-regimens", lists.chemoRegimens, englishHint)}
@@ -875,6 +978,111 @@ export function renderClinicalWorkspace(patient = {}, editPatient = null) {
   `;
 }
 
+/**
+ * What the classification makes of one tumour, under what was recorded about it.
+ *
+ * Four things, in the order a reader needs them, and each is left out entirely
+ * when there is nothing to say rather than rendered as an empty heading:
+ *
+ *   the integrated line   entity, the molecular findings its own name does not
+ *                         already carry, and the grade
+ *   disagreements         two recorded facts that cannot both be true. First,
+ *                         because everything below it is being read off a
+ *                         record that contradicts itself
+ *   what is missing       the tests the entity needs. Essential ones are the
+ *                         reason a diagnosis is not integrated; useful ones
+ *                         change treatment without changing the diagnosis
+ *   protocols             with the dose and the paper, because a regimen name
+ *                         on its own is the part a reader already knew
+ *
+ * The grade appears twice on purpose when the two disagree. The recorded one
+ * is what the pathologist wrote and the derived one is what the classification
+ * makes of the molecular result, and a reader who is shown only one of them
+ * cannot tell which they are looking at. The rule that moved it is named, so
+ * the disagreement can be checked rather than merely noticed.
+ */
+function renderAssessment(index) {
+  const reading = (clinicalState.assessment || [])[index];
+  if (!reading || !reading.line) return "";
+  const grade = reading.grade || {};
+  const escalated = grade.source === "molecular" && grade.recorded && grade.recorded !== grade.grade;
+  const conflicts = reading.conflicts || [];
+  const essential = (reading.missing || []).filter((gap) => gap.essential);
+  const useful = (reading.missing || []).filter((gap) => !gap.essential);
+  const protocols = reading.protocols || {};
+  const preferred = protocols.preferred || [];
+  const conditional = protocols.conditional || [];
+
+  const gaps = (items, label, tone) => items.length ? `
+    <p class="dx-gap ${tone}">
+      <span class="dx-gap-label">${escapeHtml(label)}</span>
+      ${items.map((gap) => {
+        // Three ways a requirement can be outstanding, and they send the
+        // reader to three different places: order the test, accept that it was
+        // declined, or tidy a field that already holds the answer in words no
+        // rule can match.
+        const state = gap.unreadable
+          ? { cls: " unreadable", suffix: t("chưa đọc được"),
+              hint: t("Ô này có chữ nhưng không khớp đáp án nào trong danh sách, nên không luật nào đọc được.") }
+          : gap.declined
+            ? { cls: " declined", suffix: t("chưa làm"), hint: "" }
+            : { cls: "", suffix: "", hint: "" };
+        const title = state.hint || tc(gap.note || "");
+        return `<span class="dx-gap-item${state.cls}"
+          ${title ? `title="${escapeHtml(title)}"` : ""}
+          >${escapeHtml(requirementName(gap.markers))}${
+            state.suffix ? ` (${escapeHtml(state.suffix)})` : ""}</span>`;
+      }).join("")}
+    </p>
+  ` : "";
+
+  const regimens = (items, label, tone) => items.length ? `
+    <div class="dx-rx ${tone}">
+      <span class="dx-rx-label">${escapeHtml(label)}</span>
+      ${items.map((protocol) => `
+        <div class="dx-rx-item">
+          <b>${escapeHtml(tc(protocol.name))}</b>
+          <span class="dx-rx-kind">${escapeHtml(tc(protocol.kind))}</span>
+          <small class="dx-rx-detail">${escapeHtml(protocol.detail)}</small>
+          ${protocol.cycles ? `<small class="dx-rx-cycles">${escapeHtml(protocol.cycles)}</small>` : ""}
+          ${protocol.when ? `<small class="dx-rx-when">${escapeHtml(tf("Khi: {}", tc(protocol.when)))}</small>` : ""}
+          <small class="dx-rx-ref">${escapeHtml(protocol.reference)}</small>
+        </div>
+      `).join("")}
+    </div>
+  ` : "";
+
+  return `
+    <div class="dx-reading">
+      <p class="dx-integrated">
+        <span class="dx-integrated-line">${escapeHtml(reading.line)}</span>
+        <span class="dx-integrated-flag ${reading.integrated ? "done" : "pending"}"
+          title="${escapeHtml(reading.integrated
+            ? t("Mô bệnh học và phân tử đã đủ để kết luận chẩn đoán tích hợp")
+            : t("Chưa đủ căn cứ cho chẩn đoán tích hợp theo WHO CNS5"))}"
+          >${escapeHtml(reading.integrated ? t("Chẩn đoán tích hợp") : t("Chưa tích hợp"))}</span>
+      </p>
+      ${escalated ? `
+        <p class="dx-escalated" title="${escapeHtml(tc(grade.rule))}">
+          ${escapeHtml(tf("Độ đã ghi {} · theo phân tử là độ {}", grade.recorded, grade.grade))}
+          <small>${escapeHtml(tc(grade.rule))}</small>
+        </p>
+      ` : ""}
+      ${conflicts.length ? `
+        <ul class="dx-conflicts">
+          ${conflicts.map((conflict) => `
+            <li><b>${escapeHtml(conflict.marker)}</b> ${escapeHtml(tc(conflict.text))}</li>
+          `).join("")}
+        </ul>
+      ` : ""}
+      ${gaps(essential, t("Bắt buộc còn thiếu"), "need")}
+      ${gaps(useful, t("Nên có"), "extra")}
+      ${regimens(preferred, t("Phác đồ chuẩn"), "preferred")}
+      ${regimens(conditional, t("Cân nhắc theo bối cảnh"), "conditional")}
+    </div>
+  `;
+}
+
 function renderReader() {
   const record = clinicalState.record || emptyRecord();
   const tumors = record.tumors || [];
@@ -885,7 +1093,7 @@ function renderReader() {
   return `
     ${tumors.length ? `
       <ul class="dx-tumors">
-        ${tumors.map((tumor) => {
+        ${tumors.map((tumor, index) => {
           const site = tumorSite(tumor);
           const markers = Object.entries(tumor.molecular || {});
           return `
@@ -908,6 +1116,7 @@ function renderReader() {
                   >${escapeHtml(t("Chưa rõ căn cứ"))}</span>
               `}
               ${tumor.note ? `<small class="dx-note">${escapeHtml(tumor.note)}</small>` : ""}
+              ${renderAssessment(index)}
             </li>
           `;
         }).join("")}
