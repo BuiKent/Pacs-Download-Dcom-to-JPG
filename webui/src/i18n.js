@@ -458,6 +458,18 @@ export const EN = {
   "Tên dấu ấn": "Marker",
   "Kết quả": "Result",
   "Thêm dấu ấn": "Add marker",
+  "Thêm dấu ấn khác": "Add another marker",
+  // The panel asks for the markers the diagnosis needs, so without a
+  // diagnosis it has nothing to ask for.
+  "Chọn chẩn đoán mô bệnh học để app hỏi đúng bộ dấu ấn.":
+    "Choose a histological diagnosis and the app will ask for the right markers.",
+  "Bắt buộc": "Essential",
+  // On a marker row whose answer is being typed instead of chosen.
+  "Danh sách": "List",
+  "Khác…": "Other…",
+  "Gõ chẩn đoán theo phiếu giải phẫu bệnh": "Type the diagnosis as the report words it",
+  "Quay lại danh sách đáp án, xoá nội dung đang gõ":
+    "Go back to the listed answers, clearing what has been typed",
   "Xoá dấu ấn": "Remove marker",
   "Dấu ấn mới": "New marker",
   "Kết quả ({})": "Result ({})",

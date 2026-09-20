@@ -63,6 +63,21 @@ async function press(selector) {
   return button;
 }
 
+/** One marker's row, addressed the way the form addresses it. */
+function row(marker) {
+  const node = form().querySelector(`.dxf-molecular-row[data-marker-name="${marker}"]`);
+  expect(node, `no marker row for ${marker}`).not.toBeNull();
+  return node;
+}
+
+/** Choose from a `<select>` the way a browser reports it: `input`, then `change`. */
+function choose(node, value) {
+  expect(node, "field is missing").not.toBeNull();
+  node.value = value;
+  node.dispatchEvent(new window.Event("input", { bubbles: true }));
+  node.dispatchEvent(new window.Event("change", { bubbles: true }));
+}
+
 function type(node, value) {
   expect(node, "field is missing").not.toBeNull();
   node.value = value;
@@ -112,6 +127,7 @@ const VOCABULARY = {
     // The nested pair is "any one of these": ATRX and 1p/19q each rule out
     // codeletion, so a record carrying one is not missing the other.
     [ASTRO]: { essential: ["IDH1/2", ["ATRX", "1p/19q"], "CDKN2A/B"], useful: ["MGMT"] },
+    [GBM]: { essential: ["IDH1/2"], useful: ["MGMT"] },
   },
   diagnosisBases: ["Hình ảnh", "Mô bệnh học"],
   eventKinds: ["Mổ", "Xạ", "Hoá", "Theo dõi", "Tái phát/Tiến triển"],
@@ -554,6 +570,100 @@ describe("The reading beside a tumour", () => {
   });
 });
 
+describe("The reading under the open form", () => {
+  beforeEach(() => {
+    setLanguage("vi");
+    state.activeTabId = "tab-1";
+    state.editingPatientInfo = false;
+    state.patientEditDraft = null;
+    state.tabs = [];
+    state.worklistPatients = [];
+    state.selectedId = "";
+    state.archive = {
+      root: "D:/Kho/2607009886",
+      patient: { patientId: "2607009886", patientName: "NGUYEN VAN A" },
+      series: [],
+    };
+    resetClinicalState();
+    clinicalState.vocabulary = VOCABULARY;
+    clinicalState.loadedFor = "D:/Kho/2607009886::2607009886";
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("shows the protocol inside the form, not only on the card behind it", async () => {
+    // The card is hidden behind the form while the form is open, and the rail
+    // it lives in is 246px wide, so a protocol drawn only there was a
+    // protocol nobody found. The moment it is worth reading is the moment the
+    // marker deciding it goes in, which is inside the form.
+    clinicalState.record = {
+      tumors: [{ id: "t1", histology: GBM, grade: "4", basis: "Mô bệnh học", molecular: {} }],
+      events: [],
+    };
+    clinicalState.assessment = [reading({
+      line: "U nguyên bào thần kinh đệm, IDH tự nhiên, CNS WHO độ 4",
+      integrated: true,
+      protocols: { route: "gbm", preferred: [STUPP], conditional: [] },
+    })];
+    mountApp();
+    await press("[data-action='edit-record']");
+
+    const panel = form().querySelector(".dxf-block[data-tumor-index='0'] .dx-reading");
+    expect(panel, "the form shows no reading at all").not.toBeNull();
+    expect(panel.textContent).toContain("Phác đồ Stupp");
+    // The dose and the schedule travel with the name: the name alone is the
+    // part the reader already knew.
+    expect(panel.textContent).toContain("60 Gy");
+    expect(panel.textContent).toContain("N Engl J Med 2005");
+  });
+
+  it("asks Python what the unsaved draft means, and draws the answer", async () => {
+    // The record on disk has no IDH result, so nothing recommends Stupp until
+    // one is entered. Entering one must not require a save first.
+    clinicalState.record = {
+      tumors: [{ id: "t1", histology: GBM, grade: "4", basis: "Mô bệnh học", molecular: {} }],
+      events: [],
+    };
+    clinicalState.assessment = [reading({ line: "U nguyên bào thần kinh đệm, IDH tự nhiên" })];
+
+    const asked = [];
+    global.fetch = vi.fn(async (url, options) => {
+      asked.push({ url: String(url), body: JSON.parse(options?.body || "{}") });
+      return {
+        ok: true,
+        headers: { get: () => "application/json" },
+        json: async () => ({
+          assessment: [reading({
+            line: "U nguyên bào thần kinh đệm, IDH tự nhiên, CNS WHO độ 4",
+            integrated: true,
+            protocols: { route: "gbm", preferred: [STUPP], conditional: [] },
+          })],
+        }),
+      };
+    });
+
+    mountApp();
+    await press("[data-action='edit-record']");
+    choose(
+      row("IDH1/2").querySelector("[data-clinical-field='molecularValue']"),
+      "Không đột biến (đã giải trình tự)",
+    );
+    // Debounced, so the reading arrives a moment after the keystrokes stop.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    const sent = asked.filter((call) => call.url.includes("/api/clinical/assessment"));
+    expect(sent.length, "the draft was never sent to be read").toBeGreaterThan(0);
+    expect(sent[sent.length - 1].body.record.tumors[0].molecular["IDH1/2"])
+      .toBe("Không đột biến (đã giải trình tự)");
+    expect(form().querySelector(".dx-reading").textContent).toContain("Phác đồ Stupp");
+    // And the card keeps showing what is actually saved.
+    expect(clinicalState.assessment[0].protocols.preferred).toHaveLength(0);
+  });
+});
+
 describe("The molecular section of the form", () => {
   beforeEach(() => {
     setLanguage("vi");
@@ -578,7 +688,31 @@ describe("The molecular section of the form", () => {
     vi.restoreAllMocks();
   });
 
-  it("offers the marker's own answers, not an empty box", async () => {
+  it("asks for the diagnosis's own markers before anything is typed", async () => {
+    // The old section opened empty with a "+" on it, so the name of every
+    // test had to be typed from memory before it could be answered. The
+    // diagnosis already says which tests matter, so the rows are there first.
+    clinicalState.record = {
+      tumors: [{ id: "t1", histology: ASTRO, grade: "2", basis: "Mô bệnh học", molecular: {} }],
+      events: [],
+    };
+    mountApp();
+    await press("[data-action='edit-record']");
+
+    const asked = [...form().querySelectorAll(".dxf-molecular-row")]
+      .map((node) => node.dataset.markerName);
+    expect(asked).toContain("IDH1/2");
+    expect(asked).toContain("CDKN2A/B");
+    // Both halves of the pair are offered. Either rules out codeletion, and
+    // which one a department sends is the department's business.
+    expect(asked).toContain("ATRX");
+    expect(asked).toContain("1p/19q");
+    // Essential first, then recommended, so the list reads in the order the
+    // work-up is done.
+    expect(asked.indexOf("MGMT")).toBeGreaterThan(asked.indexOf("CDKN2A/B"));
+  });
+
+  it("offers the marker's own answers in a dropdown, not an empty box", async () => {
     // Free text made this section unreadable by anything but a human: "(-)",
     // "am tinh", "wildtype" and "không đột biến" are one answer written four
     // ways, and no rule can be written against that.
@@ -592,10 +726,9 @@ describe("The molecular section of the form", () => {
     mountApp();
     await press("[data-action='edit-record']");
 
-    const result = form().querySelector("[data-clinical-field='molecularValue']");
-    const list = form().querySelector(`#${result.getAttribute("list")}`);
-    expect(list, "the result field offers no list").not.toBeNull();
-    const offered = [...list.querySelectorAll("option")].map((o) => o.value);
+    const result = row("IDH1/2").querySelector("[data-clinical-field='molecularValue']");
+    expect(result.tagName, "the answer is not a real dropdown").toBe("SELECT");
+    const offered = [...result.querySelectorAll("option")].map((o) => o.value);
     expect(offered).toContain("Đột biến");
     expect(offered).toContain("Không đột biến (đã giải trình tự)");
     // The two negatives stay apart: IHC sees IDH1 R132H alone, so a negative
@@ -604,25 +737,138 @@ describe("The molecular section of the form", () => {
     expect(offered).toContain("Chưa làm");
   });
 
-  it("still takes an answer the list does not have", async () => {
-    // A pathology report that says something else is the reason every
-    // vocabulary in this form is open, and this one is no different.
+  it("still offers the whole list once an answer has been chosen", async () => {
+    // This is what an `<input list>` could not do. A datalist filters itself
+    // down to what is already in the box, so after one choice the list would
+    // not open again until the field was emptied — which is not a way to
+    // correct an answer.
+    clinicalState.record = {
+      tumors: [{ id: "t1", histology: ASTRO, grade: "2", basis: "Mô bệnh học", molecular: {} }],
+      events: [],
+    };
+    mountApp();
+    await press("[data-action='edit-record']");
+
+    choose(row("IDH1/2").querySelector("[data-clinical-field='molecularValue']"), "Đột biến");
+    await settle();
+
+    expect(clinicalState.draft.tumors[0].molecular["IDH1/2"]).toBe("Đột biến");
+    const again = row("IDH1/2").querySelector("[data-clinical-field='molecularValue']");
+    expect(again.value).toBe("Đột biến");
+    const offered = [...again.querySelectorAll("option")].map((o) => o.value);
+    expect(offered).toContain("Không đột biến (đã giải trình tự)");
+    expect(offered).toContain("Chưa làm");
+  });
+
+  it("keeps an answer the list does not have, in a box that can be edited", async () => {
+    // A report that says something else is why the vocabulary stays open. A
+    // select that reset the field to blank would erase what the pathologist
+    // wrote, so an unlisted answer arrives in a text box instead.
     clinicalState.record = {
       tumors: [{
         id: "t1", histology: ASTRO, grade: "2", basis: "Mô bệnh học",
-        molecular: { "IDH1/2": "" },
+        molecular: { "IDH1/2": "chờ kết quả giải trình tự lại" },
       }],
       events: [],
     };
     mountApp();
     await press("[data-action='edit-record']");
 
-    const result = form().querySelector("[data-clinical-field='molecularValue']");
+    const result = row("IDH1/2").querySelector("[data-clinical-field='molecularValue']");
     expect(result.tagName).toBe("INPUT");
-    type(result, "nghi ngờ đột biến, chờ giải trình tự lại");
+    expect(result.value).toBe("chờ kết quả giải trình tự lại");
 
+    type(result, "nghi ngờ đột biến, chờ giải trình tự lại");
     expect(clinicalState.draft.tumors[0].molecular["IDH1/2"])
       .toBe("nghi ngờ đột biến, chờ giải trình tự lại");
+  });
+
+  it("opens a box on Khác… and puts the row back on the list afterwards", async () => {
+    clinicalState.record = {
+      tumors: [{ id: "t1", histology: ASTRO, grade: "2", basis: "Mô bệnh học", molecular: {} }],
+      events: [],
+    };
+    mountApp();
+    await press("[data-action='edit-record']");
+
+    choose(row("IDH1/2").querySelector("[data-clinical-field='molecularValue']"), "__other__");
+    await settle();
+
+    const box = row("IDH1/2").querySelector("[data-clinical-field='molecularValue']");
+    expect(box.tagName).toBe("INPUT");
+    // "Khác…" is a request for somewhere to write, not an answer: it must not
+    // be stored as one.
+    expect(clinicalState.draft.tumors[0].molecular["IDH1/2"] || "").toBe("");
+    type(box, "IDH2 R172K");
+    expect(clinicalState.draft.tumors[0].molecular["IDH1/2"]).toBe("IDH2 R172K");
+
+    await press(".dxf-molecular-row[data-marker-name='IDH1/2'] [data-action='clinical-marker-list']");
+    const back = row("IDH1/2").querySelector("[data-clinical-field='molecularValue']");
+    expect(back.tagName).toBe("SELECT");
+    // The typed answer goes with it. Left behind, it would put the row
+    // straight back into the box on the next redraw and look stuck.
+    expect(clinicalState.draft.tumors[0].molecular["IDH1/2"] || "").toBe("");
+  });
+
+  it("leaves a marker that has no listed answers as a plain box", async () => {
+    // Ki-67 is a percentage and the mitotic count is a number. Neither has a
+    // set of answers to choose from, and neither should sprout one.
+    clinicalState.record = {
+      tumors: [{
+        id: "t1", histology: ASTRO, grade: "2", basis: "Mô bệnh học",
+        molecular: { "Ki-67": "" },
+      }],
+      events: [],
+    };
+    mountApp();
+    await press("[data-action='edit-record']");
+
+    const result = row("Ki-67").querySelector("[data-clinical-field='molecularValue']");
+    expect(result.tagName).toBe("INPUT");
+    expect(row("Ki-67").querySelector("[data-action='clinical-marker-list']")).toBeNull();
+  });
+
+  it("records nothing for a row nobody has answered", async () => {
+    // Every required marker is on screen from the moment the form opens, so
+    // a row is no evidence that the test was done. Counting rows instead of
+    // answers would report a work-up as complete before a single result had
+    // been entered, and mark the diagnosis integrated with it.
+    clinicalState.record = {
+      tumors: [{ id: "t1", histology: ASTRO, grade: "2", basis: "Mô bệnh học", molecular: {} }],
+      events: [],
+    };
+    mountApp();
+    await press("[data-action='edit-record']");
+
+    expect(Object.keys(clinicalState.draft.tumors[0].molecular)).toHaveLength(0);
+    expect(form().querySelector(".dxf-workup-need").textContent).toContain("IDH1/2");
+
+    const answer = () => row("IDH1/2").querySelector("[data-clinical-field='molecularValue']");
+    choose(answer(), "Đột biến");
+    await settle();
+    expect(form().querySelector(".dxf-workup-need").textContent).not.toContain("IDH1/2");
+
+    // Taken back out again: the record must not keep an empty answer behind.
+    choose(answer(), "");
+    await settle();
+    expect(clinicalState.draft.tumors[0].molecular["IDH1/2"]).toBeUndefined();
+    expect(form().querySelector(".dxf-workup-need").textContent).toContain("IDH1/2");
+  });
+
+  it("will not let a marker the work-up asks for be renamed or deleted", async () => {
+    // The entity needs that test whether or not anybody wants the row, and a
+    // row renamed to something else is the requirement quietly disappearing.
+    clinicalState.record = {
+      tumors: [{ id: "t1", histology: ASTRO, grade: "2", basis: "Mô bệnh học", molecular: {} }],
+      events: [],
+    };
+    mountApp();
+    await press("[data-action='edit-record']");
+
+    const idh = row("IDH1/2");
+    expect(idh.querySelector("[data-clinical-field='molecularName']")).toBeNull();
+    expect(idh.querySelector("[data-action='clinical-remove-marker']")).toBeNull();
+    expect(idh.querySelector(".dxf-marker-name").textContent).toContain("IDH1/2");
   });
 
   it("says under the row what a negative antibody has and has not excluded", async () => {
@@ -735,8 +981,8 @@ describe("The molecular section of the form", () => {
 
   it("keeps the marker buttons alive after the section repaints", async () => {
     // The form replaces its own markup on every structural change, and this
-    // section now renders a datalist and a note per row. A binder that ran
-    // once would leave the second press dead.
+    // section renders a control and a note per row. A binder that ran once
+    // would leave the second press dead.
     clinicalState.record = {
       tumors: [{ id: "t1", histology: ASTRO, grade: "2", basis: "Mô bệnh học", molecular: {} }],
       events: [],
@@ -746,10 +992,13 @@ describe("The molecular section of the form", () => {
     await press("[data-action='clinical-add-marker']");
     await press("[data-action='clinical-add-marker']");
 
+    // Two rows that were added by hand, on top of the ones the work-up asks
+    // for. Only the hand-added ones put a key in the record before they are
+    // answered, which is why the draft holds two and the section shows more.
     expect(Object.keys(clinicalState.draft.tumors[0].molecular)).toHaveLength(2);
-    expect(form().querySelectorAll(".dxf-molecular-row")).toHaveLength(2);
+    expect(form().querySelectorAll(".dxf-molecular-row.extra")).toHaveLength(2);
 
-    await press(".dxf-molecular-row[data-molecular-index='1'] [data-action='clinical-remove-marker']");
+    await press(".dxf-molecular-row[data-marker-name='Dấu ấn mới 2'] [data-action='clinical-remove-marker']");
     expect(Object.keys(clinicalState.draft.tumors[0].molecular)).toHaveLength(1);
   });
 });

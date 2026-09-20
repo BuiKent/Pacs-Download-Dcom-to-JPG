@@ -51,10 +51,30 @@ export const clinicalState = {
    * what the classification makes of it, and the two are allowed to disagree.
    */
   assessment: [],
+  /**
+   * The same reading, taken of the draft being typed rather than of the record
+   * on disk.
+   *
+   * A recommendation that only appears after save is a recommendation nobody
+   * sees: the moment it is worth reading is the moment the marker goes in.
+   * Kept apart from `assessment` so the card beside the form keeps showing
+   * what is actually saved while the form shows what is being typed.
+   */
+  draftAssessment: [],
   label: "",
   vocabulary: null,
   editing: false,
   draft: null,
+  /**
+   * Fields being typed into instead of chosen from, as `m:0:IDH1/2`, `h:0`.
+   *
+   * A listed answer is what the rules read, so the list is the default. But a
+   * pathology report that says something the list cannot say still has to be
+   * recordable, and this is which fields have been switched over to a text
+   * box for it. Emptied when the record is, so one patient's exceptions do
+   * not follow the next patient into the form.
+   */
+  freeFields: new Set(),
   /**
    * Whether this folder can hold a clinical record at all.
    *
@@ -74,9 +94,11 @@ export function resetClinicalState() {
   clinicalState.record = emptyRecord();
   clinicalState.stage = emptyStage();
   clinicalState.assessment = [];
+  clinicalState.draftAssessment = [];
   clinicalState.label = "";
   clinicalState.editing = false;
   clinicalState.draft = null;
+  clinicalState.freeFields = new Set();
   clinicalState.canWrite = true;
   clinicalState.reason = "";
 }
@@ -523,19 +545,6 @@ function englishHint(term) {
 }
 
 /**
- * The family and the WHO name, for one entry of the diagnosis list.
- *
- * This is where the list is "grouped": a datalist cannot hold headings, so the
- * family rides along on every entry instead. Ordering does the rest — the list
- * arrives from Python family by family.
- */
-function histologyHint(name) {
-  const group = (vocab().histologyGroups || {})[name];
-  return [group ? tc(group) : "", englishHint(name), gradeRangeHint(name)]
-    .filter(Boolean).join(" · ");
-}
-
-/**
  * A field that offers a list and still accepts anything typed into it.
  *
  * `<input list>` rather than `<select>`: the dropdown is there for the thirty
@@ -604,7 +613,13 @@ function requirementName(markers) {
 function workupHint(tumor) {
   const spec = vocab().workup[String(tumor.histology || "").trim()];
   if (!spec) return "";
-  const recorded = Object.keys(tumor.molecular || {});
+  // A row with no answer in it is a test that has not been done. The panel
+  // now puts every required marker on screen before anything is entered, so
+  // counting the row rather than the answer would report the whole work-up
+  // as complete the moment the form opened.
+  const recorded = Object.entries(tumor.molecular || {})
+    .filter(([, value]) => String(value || "").trim())
+    .map(([name]) => name);
   // An entry is a marker name or a list of alternatives, and a list is
   // satisfied by any one of them.
   const absent = (entries) => (entries || [])
@@ -629,51 +644,227 @@ function workupHint(tumor) {
 }
 
 /**
+ * The value a result dropdown carries for "none of these, let me type it".
+ *
+ * A sentinel rather than an empty string, because blank already means
+ * something else here: nothing has been recorded yet.
+ */
+const TYPE_IT = "__other__";
+
+/** How a marker row is addressed in `freeFields`. */
+function markerKey(tumorIndex, name) {
+  return `m:${tumorIndex}:${name}`;
+}
+
+/** How a tumour's diagnosis field is addressed in `freeFields`. */
+function histologyKey(tumorIndex) {
+  return `h:${tumorIndex}`;
+}
+
+/**
+ * The diagnosis, as the classification lists it.
+ *
+ * A `<select>` with the families as `<optgroup>`s, which is closer to how the
+ * classification is actually written than the flat list a datalist could
+ * manage — and it opens on whatever is already chosen, which an `<input list>`
+ * would not: a datalist filters itself against the value in the box, so
+ * picking a diagnosis was a one-way door until the field was emptied again.
+ *
+ * The grade range rides on each entry, because the grade field below reads
+ * off this one. A diagnosis the table does not list keeps the whole range,
+ * and "Khác…" is how it gets typed: the vocabulary cannot cover a pathology
+ * report, and a form that will not take the real answer gets a wrong one.
+ */
+function histologyField(tumor, index) {
+  const lists = vocab();
+  const options = lists.histologies || [];
+  const current = String(tumor.histology || "").trim();
+  const key = histologyKey(index);
+  if (clinicalState.freeFields.has(key) || (current && !options.includes(current))) {
+    return `
+      <input class="dxf-input" type="text" data-clinical-field="histology"
+        value="${escapeHtml(current)}"
+        placeholder="${escapeHtml(t("Gõ chẩn đoán theo phiếu giải phẫu bệnh"))}" autocomplete="off">
+      <button class="dxf-mini" type="button" data-action="clinical-histology-list"
+        data-tumor-index="${escapeHtml(String(index))}"
+        title="${escapeHtml(t("Quay lại danh sách đáp án, xoá nội dung đang gõ"))}"
+        >${escapeHtml(t("Danh sách"))}</button>
+    `;
+  }
+  // Grouped in the order Python serves them, family by family, so the list
+  // reads down the classification rather than alphabetically across it.
+  const families = [];
+  const byFamily = new Map();
+  for (const name of options) {
+    const family = (lists.histologyGroups || {})[name] || "";
+    if (!byFamily.has(family)) {
+      byFamily.set(family, []);
+      families.push(family);
+    }
+    byFamily.get(family).push(name);
+  }
+  const entry = (name) => {
+    const range = gradeRangeHint(name);
+    return `<option value="${escapeHtml(name)}"${name === current ? " selected" : ""}
+      >${escapeHtml(tcPicker(name))}${range ? ` · ${escapeHtml(range)}` : ""}</option>`;
+  };
+  return `<select class="dxf-input" data-clinical-field="histology">
+    <option value=""${current ? "" : " selected"}>${escapeHtml(t("Chưa chọn"))}</option>
+    ${families.map((family) => (family
+      ? `<optgroup label="${escapeHtml(tc(family))}">${byFamily.get(family).map(entry).join("")}</optgroup>`
+      : byFamily.get(family).map(entry).join("")
+    )).join("")}
+    <option value="${TYPE_IT}">${escapeHtml(t("Khác…"))}</option>
+  </select>`;
+}
+
+/**
+ * The markers one tumour's panel asks about, in the order a reader works down
+ * them.
+ *
+ * Driven by the work-up table rather than by what somebody has already typed.
+ * The diagnosis is what decides that IDH is the question, so the IDH row is on
+ * screen before the first keystroke — nobody should have to already know the
+ * name of a test in order to be asked for it. That was the old behaviour: an
+ * empty section with a "+" on it, and a name to be typed from memory before
+ * any answer could be given.
+ *
+ * A requirement made of several markers is spread into a row each. Either of
+ * ATRX and 1p/19q rules out codeletion, which one gets sent depends on the
+ * department, so both are offered and answering one is enough.
+ *
+ * Anything the record already holds that the table does not ask for stays at
+ * the bottom, still editable and still removable. A marker entered against an
+ * older diagnosis must not disappear because the diagnosis was corrected.
+ */
+function markerRows(tumor) {
+  const spec = vocab().workup[String(tumor.histology || "").trim()] || {};
+  const rows = [];
+  const seen = new Set();
+  const push = (name, role) => {
+    const key = String(name || "").trim();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    rows.push({ name: key, role });
+  };
+  const spread = (entries) => (entries || [])
+    .flatMap((entry) => (Array.isArray(entry) ? entry : [entry]));
+  spread(spec.essential).forEach((name) => push(name, "essential"));
+  spread(spec.useful).forEach((name) => push(name, "useful"));
+  Object.keys(tumor.molecular || {}).forEach((name) => push(name, "extra"));
+  return rows;
+}
+
+/**
+ * The answer half of a marker row.
+ *
+ * A real `<select>` wherever the marker has a fixed set of answers. An
+ * `<input list>` filters its own list down to what is already in the box, so
+ * once "Đột biến" had been chosen the list would not open again until the
+ * field was emptied — which is not a way to correct an answer, and is what
+ * made this section feel broken.
+ *
+ * The listed strings are also what the Python rules match on. "(-)", "am
+ * tinh", "wildtype" and "không đột biến" are one answer written four ways, and
+ * no rule can be written against that; choosing from the list is what makes a
+ * record readable by anything other than a person.
+ *
+ * Two ways out of the list, because a pathology report is allowed to say
+ * something the list cannot. A recorded answer that is not on the list is
+ * shown in a text box rather than silently reset to blank, and "Khác…" opens
+ * that same box on purpose. Either way the reading pane reports the answer as
+ * unrecognised instead of guessing at it.
+ *
+ * Ki-67, the mitotic count and the methylation profile have no fixed answers —
+ * they are numbers and free text — and never get a dropdown at all.
+ */
+function markerResultField(name, value, tumorIndex) {
+  const key = markerKey(tumorIndex, name);
+  const lists = vocab();
+  const results = lists.markerResults[name] || [];
+  const unit = tc(lists.markerUnits[name] || "");
+  const note = tc(lists.markerNotes[name] || "");
+  const title = note ? ` title="${escapeHtml(note)}"` : "";
+  const current = String(value || "");
+  const typed = results.length
+    ? clinicalState.freeFields.has(key) || (current && !results.includes(current))
+    : true;
+  if (typed) {
+    return `
+      <input class="dxf-input" type="text" data-clinical-field="molecularValue"
+        value="${escapeHtml(current)}"
+        placeholder="${escapeHtml(unit ? tf("Kết quả ({})", unit) : t("Kết quả"))}"${title}
+        autocomplete="off">
+      ${results.length ? `
+        <button class="dxf-mini" type="button" data-action="clinical-marker-list"
+          data-tumor-index="${escapeHtml(String(tumorIndex))}"
+          data-marker-name="${escapeHtml(name)}"
+          title="${escapeHtml(t("Quay lại danh sách đáp án, xoá nội dung đang gõ"))}"
+          >${escapeHtml(t("Danh sách"))}</button>
+      ` : ""}
+    `;
+  }
+  return `<select class="dxf-input" data-clinical-field="molecularValue"${title}>
+    <option value=""${current ? "" : " selected"}>${escapeHtml(t("Chưa ghi"))}</option>
+    ${results.map((result) => `
+      <option value="${escapeHtml(result)}"${result === current ? " selected" : ""}
+        >${escapeHtml(tc(result))}</option>
+    `).join("")}
+    <option value="${TYPE_IT}">${escapeHtml(t("Khác…"))}</option>
+  </select>`;
+}
+
+/**
  * One tumour's molecular results.
  *
- * Both halves of a row offer a list and accept typed text, and the *result*
- * list is the one that matters. Free text made this section unreadable by
- * anything but a human — "(-)", "am tinh", "wildtype" and "không đột biến" are
- * one answer written four ways, and no rule can be written against that. The
- * lists are what the Python rules match on, so choosing from them is what
- * makes a record mean something; typing past them still stores what the report
- * said, and the reading pane says the answer was not recognised rather than
- * guessing at it.
+ * The rows come from the diagnosis, so the panel is already filled in with the
+ * right questions and the work is answering them. Rows the work-up asks for
+ * carry their name as a label and cannot be renamed or deleted — the entity
+ * needs that test whether or not anybody wants the row. Rows added by hand
+ * keep an editable name and a "×".
  */
 function renderMolecular(tumor, index) {
-  const lists = vocab();
-  const entries = Object.entries(tumor.molecular || {});
+  const recorded = tumor.molecular || {};
+  const rows = markerRows(tumor);
+  const roleLabel = { essential: t("Bắt buộc"), useful: t("Nên có") };
   return `
     <div class="dxf-molecular">
       <span class="dxf-sub-label">${escapeHtml(t("Dấu ấn phân tử"))}</span>
       ${workupHint(tumor)}
-      ${entries.map(([name, value], mIdx) => {
-        const results = lists.markerResults[name] || [];
-        // Both read out in the language on screen: the note about IDH carries
-        // the distinction between a negative antibody and a sequenced
-        // wildtype, which is the one a reader most needs in either language.
-        const unit = tc(lists.markerUnits[name] || "");
-        const note = tc(lists.markerNotes[name] || "");
-        const listId = `dx-res-${index}-${mIdx}`;
+      ${rows.length ? "" : `
+        <p class="dxf-hint">${escapeHtml(
+          t("Chọn chẩn đoán mô bệnh học để app hỏi đúng bộ dấu ấn."))}</p>
+      `}
+      ${rows.map((row) => {
+        // The note reads out in the language on screen: the one under IDH
+        // carries the difference between a negative antibody and a sequenced
+        // wildtype, which is the distinction a reader most needs either way.
+        const note = tc(vocab().markerNotes[row.name] || "");
+        const asked = row.role !== "extra";
         return `
-        <div class="dxf-molecular-row" data-molecular-index="${mIdx}">
-          <input class="dxf-input dxf-marker" type="text" list="dx-markers"
-            data-clinical-field="molecularName" value="${escapeHtml(name)}"
-            placeholder="${escapeHtml(t("Tên dấu ấn"))}" autocomplete="off">
-          <input class="dxf-input" type="text" data-clinical-field="molecularValue"
-            list="${escapeHtml(listId)}" value="${escapeHtml(value)}"
-            placeholder="${escapeHtml(unit ? tf("Kết quả ({})", unit) : t("Kết quả"))}"
-            ${note ? `title="${escapeHtml(note)}"` : ""} autocomplete="off">
-          ${results.length ? datalist(listId, results) : ""}
-          <button class="dxf-mini danger" type="button" data-action="clinical-remove-marker"
-            data-tumor-index="${index}" data-molecular-index="${mIdx}"
-            title="${escapeHtml(t("Xoá dấu ấn"))}">×</button>
+        <div class="dxf-molecular-row ${escapeHtml(row.role)}"
+          data-marker-name="${escapeHtml(row.name)}">
+          ${asked ? `
+            <span class="dxf-marker-name" title="${escapeHtml(markerHint(row.name))}"
+              >${escapeHtml(row.name)}<small class="dxf-marker-role ${escapeHtml(row.role)}"
+                >${escapeHtml(roleLabel[row.role])}</small></span>
+          ` : `
+            <input class="dxf-input dxf-marker" type="text" list="dx-markers"
+              data-clinical-field="molecularName" value="${escapeHtml(row.name)}"
+              placeholder="${escapeHtml(t("Tên dấu ấn"))}" autocomplete="off">
+          `}
+          ${markerResultField(row.name, recorded[row.name] ?? "", index)}
+          ${asked ? "" : `
+            <button class="dxf-mini danger" type="button" data-action="clinical-remove-marker"
+              data-tumor-index="${index}" data-marker-name="${escapeHtml(row.name)}"
+              title="${escapeHtml(t("Xoá dấu ấn"))}">×</button>
+          `}
         </div>
         ${note ? `<small class="dxf-marker-note">${escapeHtml(note)}</small>` : ""}
       `;
       }).join("")}
       <button class="dxf-mini" type="button" data-action="clinical-add-marker" data-tumor-index="${index}">
-        + ${escapeHtml(t("Thêm dấu ấn"))}
+        + ${escapeHtml(t("Thêm dấu ấn khác"))}
       </button>
     </div>
   `;
@@ -711,9 +902,9 @@ function renderTumorForm(tumor, index) {
         </label>
         ${datalist(`dx-axis-${index}`, axes, englishHint)}
       </div>
-      <label class="dxf-field dxf-wide">
+      <label class="dxf-field dxf-wide dxf-picker">
         <span>${escapeHtml(t("Mô bệnh học"))}</span>
-        ${combo("histology", tumor.histology, "dx-histologies", t("Chọn hoặc gõ chẩn đoán"))}
+        ${histologyField(tumor, index)}
       </label>
       <div class="dxf-row">
         <label class="dxf-field">
@@ -735,6 +926,7 @@ function renderTumorForm(tumor, index) {
         <textarea class="dxf-input" rows="2" data-clinical-field="note"
           placeholder="${escapeHtml(t("Tuỳ chọn"))}">${escapeHtml(tumor.note || "")}</textarea>
       </label>
+      ${renderAssessment(index, clinicalState.draftAssessment)}
     </div>
   `;
 }
@@ -822,7 +1014,6 @@ function renderEventForm(event, index) {
 function formDatalists() {
   const lists = vocab();
   return `
-    ${datalist("dx-histologies", lists.histologies, histologyHint)}
     ${datalist("dx-markers", lists.molecularMarkers, markerHint)}
     ${datalist("dx-extents", lists.resectionExtents, englishHint)}
     ${datalist("dx-techniques", lists.radiotherapyTechniques, englishHint)}
@@ -1001,8 +1192,8 @@ export function renderClinicalWorkspace(patient = {}, editPatient = null) {
  * cannot tell which they are looking at. The rule that moved it is named, so
  * the disagreement can be checked rather than merely noticed.
  */
-function renderAssessment(index) {
-  const reading = (clinicalState.assessment || [])[index];
+function renderAssessment(index, readings = clinicalState.assessment) {
+  const reading = (readings || [])[index];
   if (!reading || !reading.line) return "";
   const grade = reading.grade || {};
   const escalated = grade.source === "molecular" && grade.recorded && grade.recorded !== grade.grade;
@@ -1081,6 +1272,23 @@ function renderAssessment(index) {
       ${regimens(conditional, t("Cân nhắc theo bối cảnh"), "conditional")}
     </div>
   `;
+}
+
+/**
+ * The reading for one tumour of the draft, on its own.
+ *
+ * Exported so the answer arriving from Python can be dropped into the block
+ * it belongs to instead of redrawing the form around it. The reading is the
+ * one part of the form that changes without anybody touching it, and a
+ * wholesale repaint at that moment takes away whatever the person was about
+ * to press: the browser smoke test caught the Lưu button being replaced
+ * between the press and the release.
+ *
+ * Safe to swap in place because nothing inside it is interactive — no field,
+ * no `data-action` — so nothing needs rebinding afterwards.
+ */
+export function renderDraftReading(index) {
+  return renderAssessment(index, clinicalState.draftAssessment);
 }
 
 function renderReader() {
@@ -1222,33 +1430,78 @@ export function applyFieldEdit(input, eventType = "change") {
   if (!field) return false;
 
   const tumorBlock = input.closest("[data-tumor-index]");
-  const markerRow = input.closest("[data-molecular-index]");
+  const markerRow = input.closest("[data-marker-name]");
   const eventBlock = input.closest("[data-event-index]");
 
   if (markerRow && tumorBlock) {
-    const tumor = draft.tumors[Number(tumorBlock.dataset.tumorIndex)];
+    const tumorIndex = Number(tumorBlock.dataset.tumorIndex);
+    const tumor = draft.tumors[tumorIndex];
     if (!tumor) return false;
+    // Addressed by name rather than by position, because most of these rows
+    // come from the work-up table and have no entry in the record until they
+    // are answered.
+    const name = markerRow.dataset.markerName || "";
     const entries = Object.entries(tumor.molecular || {});
-    const index = Number(markerRow.dataset.molecularIndex);
-    if (!entries[index]) return false;
-    const [name, value] = entries[index];
-    entries[index] = field === "molecularName"
-      ? [input.value.trim(), value]
-      : [name, input.value.trim()];
-    // Rebuilt rather than mutated so a renamed marker keeps its position, which
-    // is where the person's cursor is.
+    const at = entries.findIndex(([key]) => key === name);
+
+    if (field === "molecularName") {
+      if (at < 0) return false;
+      const renamed = input.value.trim();
+      entries[at] = [renamed, entries[at][1]];
+      // Rebuilt rather than mutated so a renamed marker keeps its position,
+      // which is where the person's cursor is. The row is told its own new
+      // name at once, or the next keystroke would look for a key that the
+      // rename has already replaced and append a second row instead.
+      markerRow.dataset.markerName = renamed;
+      tumor.molecular = Object.fromEntries(entries.filter(([key]) => key));
+      // On `change`: naming a row MGMT is what gives it MGMT's answers, and
+      // that list cannot appear without a redraw.
+      return eventType === "change";
+    }
+
+    const chosen = input.value;
+    if (chosen === TYPE_IT) {
+      // "Khác…" is not an answer, it is a request for somewhere to write one.
+      clinicalState.freeFields.add(markerKey(tumorIndex, name));
+      if (at >= 0) entries[at] = [name, ""];
+      tumor.molecular = Object.fromEntries(entries.filter(([key]) => key));
+      return true;
+    }
+    const value = chosen.trim();
+    // A row the work-up put on screen and nobody answered leaves no trace: it
+    // will be drawn again from the diagnosis next time, and a key with an
+    // empty value would follow the record around as a leftover row after the
+    // diagnosis that asked for it had been corrected.
+    if (!value && at >= 0 && !markerRow.classList.contains("extra")) {
+      entries.splice(at, 1);
+    } else if (at >= 0) {
+      entries[at] = [name, value];
+    } else if (value) {
+      entries.push([name, value]);
+    }
     tumor.molecular = Object.fromEntries(entries.filter(([key]) => key));
-    return false;
+    // A choice from a list is one event and redrawing on it is what refreshes
+    // the reading under the form. Typing is not: a redraw per keystroke would
+    // take the cursor out from under the person writing a Ki-67 percentage.
+    return input.tagName === "SELECT" && eventType === "change";
   }
 
   if (tumorBlock) {
-    const tumor = draft.tumors[Number(tumorBlock.dataset.tumorIndex)];
+    const at = Number(tumorBlock.dataset.tumorIndex);
+    const tumor = draft.tumors[at];
     if (!tumor) return false;
+    if (field === "histology" && input.value === TYPE_IT) {
+      // "Khác…" is a request for somewhere to write, not a diagnosis.
+      clinicalState.freeFields.add(histologyKey(at));
+      tumor.histology = "";
+      return true;
+    }
     tumor[field] = input.value;
-    // Only on `change`. The diagnosis is a text field, and redrawing it on
-    // every keystroke would take the cursor out from under the person typing;
-    // `change` arrives when they pick from the list or leave the field, which
-    // is when the grade beside it needs to be a different list.
+    // Only on `change`. Typed in a box, the diagnosis would otherwise redraw
+    // on every keystroke and take the cursor out from under the person
+    // writing it; `change` arrives when they pick from the list or leave the
+    // field, which is when the grade and the marker panel below need to be
+    // rebuilt around a different entity.
     if (field === "histology") return eventType === "change";
     if (field === "compartment") {
       // The location and axis lists belong to a compartment. Anything typed
@@ -1312,11 +1565,40 @@ export function addMarker(tumorIndex) {
   tumor.molecular = markers;
 }
 
-export function removeMarker(tumorIndex, markerIndex) {
+export function removeMarker(tumorIndex, name) {
   const tumor = clinicalState.draft?.tumors?.[tumorIndex];
   if (!tumor) return;
-  const entries = Object.entries(tumor.molecular || {});
-  entries.splice(markerIndex, 1);
+  const entries = Object.entries(tumor.molecular || {}).filter(([key]) => key !== name);
+  tumor.molecular = Object.fromEntries(entries);
+  clinicalState.freeFields.delete(markerKey(tumorIndex, name));
+}
+
+/**
+ * Put a marker row back on its list of answers.
+ *
+ * The answer being typed goes with it. Leaving it would put the row straight
+ * back into the text box on the next redraw — an off-list answer is exactly
+ * what keeps it there — and the row would look stuck.
+ */
+/**
+ * Put the diagnosis field back on the classification list.
+ *
+ * What was typed goes with it, for the same reason it does on a marker row: a
+ * diagnosis the list does not hold is exactly what keeps the box open, so
+ * leaving it there would make the button look broken.
+ */
+export function useHistologyList(tumorIndex) {
+  clinicalState.freeFields.delete(histologyKey(tumorIndex));
+  const tumor = clinicalState.draft?.tumors?.[tumorIndex];
+  if (tumor) tumor.histology = "";
+}
+
+export function useMarkerList(tumorIndex, name) {
+  const tumor = clinicalState.draft?.tumors?.[tumorIndex];
+  clinicalState.freeFields.delete(markerKey(tumorIndex, name));
+  if (!tumor || !tumor.molecular) return;
+  const entries = Object.entries(tumor.molecular)
+    .map(([key, value]) => (key === name ? [key, ""] : [key, value]));
   tumor.molecular = Object.fromEntries(entries);
 }
 

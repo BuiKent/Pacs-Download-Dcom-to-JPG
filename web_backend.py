@@ -6851,6 +6851,21 @@ class LocalApiServer:
                         catalog=catalog,
                         media_index=_as_index(payload.get("mediaIndex")),
                     )
+                if path == "/api/clinical/assessment":
+                    # The same reading `patient_clinical` returns, taken of a
+                    # record that has not been saved. The form asks for it
+                    # while a marker is being entered, because a protocol that
+                    # only appears after save is one nobody reads at the
+                    # moment it would have changed what they typed.
+                    #
+                    # No folder is opened and nothing is written, so none of
+                    # the patient guards on the save path apply here.
+                    draft = payload.get("record")
+                    return {
+                        "assessment": neuro_oncology.assess_record(
+                            draft if isinstance(draft, dict) else {},
+                        ),
+                    }
                 if path == "/api/patient/clinical":
                     return owner.controller.set_patient_clinical(
                         payload.get("record") if isinstance(payload.get("record"), dict) else {},

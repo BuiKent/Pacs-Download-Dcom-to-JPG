@@ -2253,6 +2253,82 @@ function refreshClinicalSurfaces() {
 }
 
 /**
+ * Ask Python what the draft on screen means, and show it under the form.
+ *
+ * The reading the card carries is of the record on disk, which is the right
+ * thing for the card and the wrong thing for the form: the moment a protocol
+ * is worth reading is the moment the marker deciding it goes in, not after the
+ * next save. So the draft is sent to the same `neuro_oncology` that reads the
+ * saved record, and the answer is drawn under the tumour it belongs to.
+ *
+ * Asked for over the wire rather than worked out here, because the
+ * classification lives in Python and two copies of it are two classifications
+ * the moment one is corrected.
+ *
+ * Debounced, since this fires on every keystroke and only the pause matters.
+ * A token sequences the replies so a slow answer about an older draft cannot
+ * land on top of a newer one.
+ */
+let draftAssessmentTimer = 0;
+let draftAssessmentToken = 0;
+
+function scheduleDraftAssessment(delay = 250) {
+  clearTimeout(draftAssessmentTimer);
+  if (!clinical.clinicalState.editing) return;
+  draftAssessmentTimer = setTimeout(() => {
+    void loadDraftAssessment();
+  }, delay);
+}
+
+async function loadDraftAssessment() {
+  const token = (draftAssessmentToken += 1);
+  let assessment = [];
+  try {
+    const reply = await api("/api/clinical/assessment", {
+      method: "POST",
+      body: JSON.stringify({ record: clinical.draftForSave() }),
+    });
+    assessment = Array.isArray(reply?.assessment) ? reply.assessment : [];
+  } catch {
+    // The reading is an aid; the record is the record. A form that stopped
+    // accepting markers because this call failed would be worse than one that
+    // shows nothing under them for a moment.
+    return;
+  }
+  if (token !== draftAssessmentToken || !clinical.clinicalState.editing) return;
+  clinical.clinicalState.draftAssessment = assessment;
+  paintDraftReadings();
+}
+
+/**
+ * Drop each tumour's reading into the block it belongs to.
+ *
+ * Only the reading, never the form around it. This is the one thing on the
+ * form that changes without anybody touching it, and repainting the pane at
+ * that moment takes away whatever was under the cursor — the browser smoke
+ * test caught the Lưu button being replaced between the press and the
+ * release. The panel holds no field and no `data-action`, so swapping it
+ * needs no rebinding.
+ *
+ * Only the card beside the form keeps showing the saved reading: what is
+ * being typed is not yet what is on disk, and the two must not be confused.
+ */
+function paintDraftReadings() {
+  const blocks = app?.querySelectorAll(".dx-workspace .dxf-block[data-tumor-index]") || [];
+  for (const block of blocks) {
+    const markup = clinical.renderDraftReading(Number(block.dataset.tumorIndex));
+    const shown = block.querySelector(":scope > .dx-reading");
+    if (!markup.trim()) {
+      shown?.remove();
+    } else if (shown) {
+      shown.outerHTML = markup;
+    } else {
+      block.insertAdjacentHTML("beforeend", markup);
+    }
+  }
+}
+
+/**
  * Where the caret is, so the redraw about to happen can put it back.
  *
  * A repaint replaces the form wholesale and the node being worked in goes with
@@ -2330,6 +2406,9 @@ function bindClinicalHost(card) {
     // dropdown or a date set by the picker; both write into the same draft.
     const handle = (event) => {
       const needsRedraw = clinical.applyFieldEdit(event.target, event.type);
+      // Whether or not the form changes shape, the draft just did, and what
+      // the classification makes of it may have changed with it.
+      scheduleDraftAssessment();
       if (!needsRedraw) return;
       const place = clinicalFocusPlace(event.target);
       refreshClinicalSurfaces();
@@ -6695,6 +6774,11 @@ async function action(name, element = null) {
         = clinical.clinicalState.draft || clinical.draftFrom(clinical.clinicalState.record);
       clinical.clinicalState.editing = true;
       clinical.clinicalState.error = "";
+      // The reading of what is already recorded belongs on screen as the form
+      // opens, not after the first edit: most of the time the record is
+      // already complete and the protocol is what the form was opened to check.
+      clinical.clinicalState.draftAssessment = clinical.clinicalState.assessment;
+      scheduleDraftAssessment(0);
       render();
       await renderViewer();
       return;
@@ -6719,11 +6803,13 @@ async function action(name, element = null) {
     if (name === "clinical-add-tumor") {
       clinical.addTumor();
       refreshClinicalSurfaces();
+      scheduleDraftAssessment();
       return;
     }
     if (name === "clinical-remove-tumor") {
       clinical.removeTumor(Number(element?.dataset?.tumorIndex));
       refreshClinicalSurfaces();
+      scheduleDraftAssessment();
       return;
     }
     if (name === "clinical-add-event") {
@@ -6739,14 +6825,31 @@ async function action(name, element = null) {
     if (name === "clinical-add-marker") {
       clinical.addMarker(Number(element?.dataset?.tumorIndex));
       refreshClinicalSurfaces();
+      scheduleDraftAssessment();
       return;
     }
     if (name === "clinical-remove-marker") {
       clinical.removeMarker(
         Number(element?.dataset?.tumorIndex),
-        Number(element?.dataset?.molecularIndex),
+        String(element?.dataset?.markerName || ""),
       );
       refreshClinicalSurfaces();
+      scheduleDraftAssessment();
+      return;
+    }
+    if (name === "clinical-histology-list") {
+      clinical.useHistologyList(Number(element?.dataset?.tumorIndex));
+      refreshClinicalSurfaces();
+      scheduleDraftAssessment();
+      return;
+    }
+    if (name === "clinical-marker-list") {
+      clinical.useMarkerList(
+        Number(element?.dataset?.tumorIndex),
+        String(element?.dataset?.markerName || ""),
+      );
+      refreshClinicalSurfaces();
+      scheduleDraftAssessment();
       return;
     }
     if (name === "save-record") {

@@ -112,6 +112,23 @@ const VOCABULARY = {
   },
 };
 
+/**
+ * Set the diagnosis the way a person would.
+ *
+ * From the classification list when it is on the list, and through "Khác…"
+ * when it is not — which is the one path a text box used to give for free and
+ * a dropdown has to be asked for.
+ */
+async function setHistology(value) {
+  const field = () => form().querySelector("[data-clinical-field='histology']");
+  if (!VOCABULARY.histologies.includes(value) && field().tagName === "SELECT") {
+    type(field(), "__other__");
+    await settle();
+  }
+  type(field(), value);
+  await settle();
+}
+
 describe("Clinical record card", () => {
   beforeEach(() => {
     setLanguage("vi");
@@ -203,20 +220,35 @@ describe("Clinical record card", () => {
     expect(clinicalState.draft.tumors).toHaveLength(1);
   });
 
-  it("offers a list and still takes a diagnosis typed in full", async () => {
+  it("offers the classification as a list, and still takes a diagnosis typed in full", async () => {
     mountApp();
     await press("[data-action='edit-record']");
     await press("[data-action='clinical-add-tumor']");
 
+    // A real dropdown, so the list opens again after something has been
+    // chosen. An `<input list>` filtered itself against whatever was in the
+    // box, which made picking a diagnosis a one-way door.
     const histology = form().querySelector("[data-clinical-field='histology']");
-    // A combobox, not a select: the list is on the element, and the value is
-    // whatever the person leaves in it.
-    expect(histology.tagName).toBe("INPUT");
-    expect(document.getElementById(histology.getAttribute("list"))).not.toBeNull();
+    expect(histology.tagName).toBe("SELECT");
+    expect([...histology.querySelectorAll("option")].map((o) => o.value))
+      .toContain("U màng não");
 
-    type(histology, "U tế bào hình sao kiểu hiếm, chưa phân loại");
+    // And the way out of the list is still there, because no vocabulary of
+    // thirty entities covers a pathology report.
+    type(histology, "__other__");
+    await settle();
+    const box = form().querySelector("[data-clinical-field='histology']");
+    expect(box.tagName).toBe("INPUT");
+    type(box, "U tế bào hình sao kiểu hiếm, chưa phân loại");
     expect(clinicalState.draft.tumors[0].histology)
       .toBe("U tế bào hình sao kiểu hiếm, chưa phân loại");
+
+    // Back to the list, and what was typed goes with it: an unlisted
+    // diagnosis is exactly what keeps the box open, so leaving it there would
+    // make the button look broken.
+    await press("[data-tumor-index='0'] [data-action='clinical-histology-list']");
+    expect(form().querySelector("[data-clinical-field='histology']").tagName).toBe("SELECT");
+    expect(clinicalState.draft.tumors[0].histology).toBe("");
   });
 
   it("swaps the location list when the compartment changes", async () => {
@@ -307,7 +339,7 @@ describe("Clinical record card", () => {
     };
     mountApp();
     await press("[data-action='edit-record']");
-    type(form().querySelector("[data-clinical-field='histology']"), "Nhập nhầm rồi");
+    await setHistology("Nhập nhầm rồi");
     await press("[data-action='cancel-record']");
 
     expect(clinicalState.draft).toBeNull();
@@ -841,9 +873,7 @@ describe("Clinical terms in two languages", () => {
 
   it("keeps the whole range for a diagnosis typed off a report", async () => {
     await openFormWithATumour();
-    type(form().querySelector("[data-clinical-field='histology']"),
-      "U sao bào kiểu hiếm, chưa phân loại");
-    await settle();
+    await setHistology("U sao bào kiểu hiếm, chưa phân loại");
     expect(gradesOffered()).toEqual(["1", "2", "3", "4"]);
   });
 
@@ -865,14 +895,23 @@ describe("Clinical terms in two languages", () => {
     expect(clinicalState.draft.tumors[0].grade).toBe("2");
   });
 
-  it("puts the family, the WHO name and the grade beside each diagnosis", async () => {
+  it("groups the diagnoses by family and says the grade each can carry", async () => {
+    // A `<select>` can hold headings where a datalist could not, so the
+    // families are real `<optgroup>`s and the list reads down the
+    // classification rather than alphabetically across it.
     await openFormWithATumour();
-    const list = form().querySelector("#dx-histologies");
+    const list = form().querySelector("select[data-clinical-field='histology']");
     expect(list, "no diagnosis list").not.toBeNull();
-    const label = (value) => [...list.options].find((o) => o.value === value).label;
-    expect(label("U nguyên bào thần kinh đệm, IDH tự nhiên"))
-      .toBe("U thần kinh đệm · Glioblastoma, IDH-wildtype · độ 4");
-    expect(label("U màng não")).toBe("U màng não và u trung mô · Meningioma · độ 1-3");
+
+    const family = (value) => [...list.options]
+      .find((o) => o.value === value).closest("optgroup").label;
+    expect(family("U nguyên bào thần kinh đệm, IDH tự nhiên")).toBe("U thần kinh đệm");
+    expect(family("U màng não")).toBe("U màng não và u trung mô");
+
+    const text = (value) => [...list.options].find((o) => o.value === value).textContent.trim();
+    expect(text("U nguyên bào thần kinh đệm, IDH tự nhiên"))
+      .toBe("U nguyên bào thần kinh đệm, IDH tự nhiên (Glioblastoma, IDH-wildtype) · độ 4");
+    expect(text("U màng não")).toBe("U màng não (Meningioma) · độ 1-3");
   });
 
   it("leaves a diagnosis typed off a report exactly as it was written", async () => {

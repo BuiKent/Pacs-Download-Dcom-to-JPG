@@ -532,10 +532,15 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                 ).click()
                 page.wait_for_selector(
                     ".dx-workspace [data-clinical-field='histology']", timeout=5000)
-                page.fill(
-                    ".dx-workspace [data-clinical-field='histology']",
+                # Chosen off the classification, not typed: the list is
+                # grouped by family and opens again after a choice, which an
+                # `<input list>` could not do.
+                page.select_option(
+                    ".dx-workspace select[data-clinical-field='histology']",
                     "U nguyên bào thần kinh đệm, IDH tự nhiên",
                 )
+                page.wait_for_selector(
+                    ".dx-workspace [data-clinical-field='grade']", timeout=5000)
                 page.select_option(".dx-workspace [data-clinical-field='grade']", "4")
                 page.select_option(
                     ".dx-workspace [data-clinical-field='compartment']", "Nội sọ")
@@ -552,22 +557,38 @@ def run_smoke_test(static_dir: Path, headless: bool = True) -> int:
                 # impression.
                 page.select_option(
                     ".dx-workspace [data-clinical-field='basis']", "Mô bệnh học")
-                require(
-                    page, ".dx-workspace [data-action='clinical-add-marker']",
-                    "nút thêm dấu ấn phân tử",
-                ).click()
-                page.wait_for_selector(
-                    ".dx-workspace [data-clinical-field='molecularName']", timeout=5000)
-                page.fill(
-                    ".dx-workspace [data-clinical-field='molecularName']", "IDH1/2")
-                # Adding the name redraws the row, because the result field's
-                # list belongs to the marker that was just named. If the redraw
-                # dropped the listener the fill below lands on a dead field.
-                page.wait_for_timeout(120)
-                page.fill(
-                    ".dx-workspace [data-clinical-field='molecularValue']",
+                # No marker name is typed: the diagnosis is what decides which
+                # tests are asked for, so the IDH row is already on screen with
+                # its own answers in a real dropdown. Typing the name from
+                # memory was the old way, and it meant a doctor had to know
+                # what to ask for before the form would ask for it.
+                idh = ".dx-workspace .dxf-molecular-row[data-marker-name='IDH1/2']"
+                page.wait_for_selector(idh, timeout=5000)
+                if page.query_selector(f"{idh} [data-clinical-field='molecularName']"):
+                    raise AssertionError(
+                        "Gate 3: dấu ấn bắt buộc của chẩn đoán phải là nhãn cố định,"
+                        " không phải ô gõ tên."
+                    )
+                page.select_option(
+                    f"{idh} [data-clinical-field='molecularValue']",
                     "Không đột biến (đã giải trình tự)",
                 )
+
+                # And the reading has to appear where the marker was entered,
+                # while the record is still a draft. Derived by Python from
+                # the unsaved draft, so this proves the whole live chain: the
+                # form sent the draft, `neuro_oncology` read it, and the
+                # protocol came back under the tumour it belongs to.
+                page.wait_for_selector(
+                    ".dx-workspace .dx-reading .dx-rx.preferred", timeout=8000)
+                drafted = page.inner_text(".dx-workspace .dx-reading .dx-rx.preferred").strip()
+                for expected in ("Stupp", "60 Gy"):
+                    if expected not in drafted:
+                        raise AssertionError(
+                            "Gate 3: phác đồ phải hiện ngay trong form khi chưa lưu,"
+                            f" thiếu {expected!r}: {drafted!r}"
+                        )
+                print(f"   Phác đồ hiện ngay trong form: {drafted.splitlines()[1]}")
 
                 require(
                     page, ".dx-workspace [data-action='clinical-add-event']",

@@ -5916,6 +5916,35 @@ button.stt-cell.twist-btn:focus-visible {
   min-width: 0;
 }
 
+/* A field that offers a list and a way off it. While the answer is being
+   typed the box and the button back to the list share one line, so the field
+   keeps the height it has when the list is showing. */
+.dxf-picker {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 2px 6px;
+}
+
+.dxf-picker > span {
+  grid-column: 1 / -1;
+}
+
+/* With the list showing there is nothing in the second column, and an `auto`
+   track with nothing in it takes no width. */
+.dxf-picker > select {
+  grid-column: 1 / -1;
+}
+
+.dxf-picker > input {
+  grid-column: 1;
+}
+
+.dxf-picker > .dxf-mini {
+  grid-column: 2;
+  align-self: center;
+}
+
 .dxf-field > span,
 .dxf-sub-label {
   color: #9bacba;
@@ -5967,6 +5996,45 @@ button.stt-cell.twist-btn:focus-visible {
 .dxf-molecular-row .dxf-marker {
   flex: 0 0 38%;
 }
+
+/* A marker the work-up asks for is named, not typed: the label takes the same
+   width the editable name field would have, so the answers below each other
+   line up whether a row came from the table or was added by hand. */
+.dxf-molecular-row .dxf-marker-name {
+  flex: 0 0 38%;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  color: #dbe4ec;
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+
+.dxf-molecular-row .dxf-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Centred against the field beside it, unlike the "+ Thêm dấu ấn" button
+   below the list, which sits at the start of its own line. */
+.dxf-molecular-row .dxf-mini {
+  align-self: center;
+  flex: 0 0 auto;
+}
+
+/* Why the row is being asked about at all. Without an essential marker there
+   is no integrated diagnosis; a recommended one changes management without
+   changing what the tumour is, and the two must not read as one urgency. */
+.dxf-marker-role {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.dxf-marker-role.essential { color: #f2cf93; }
+.dxf-marker-role.useful { color: #94a5b3; }
 
 .dxf-mini {
   align-self: flex-start;
@@ -6156,8 +6224,18 @@ button.stt-cell.twist-btn:focus-visible {
 .dx-workspace .dxf-row,
 .dx-workspace .dxf-molecular,
 .dx-workspace .dxf-hint,
+.dx-workspace .dx-reading,
 .dx-workspace .dxf-wide {
   grid-column: 1 / -1;
+}
+
+/* The reading sits at the foot of the tumour it belongs to, inside the form.
+   Same panel as the one on the card, set apart from the fields above it so it
+   reads as an answer rather than as another thing to fill in. */
+.dx-workspace .dx-reading {
+  margin-top: 8px;
+  border-top: 1px solid #1c2a36;
+  border-left: 2px solid #3d7f9c;
 }
 
 .dx-workspace .dxf-input {

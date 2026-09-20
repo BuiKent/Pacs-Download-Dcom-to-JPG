@@ -1126,6 +1126,51 @@ class ServerSecurityTests(unittest.TestCase):
         with self.request("/api/archive", token=self.server.token) as res:
             self.assertEqual(res.headers.get("Cache-Control"), "no-store")
 
+    def test_an_unsaved_record_can_be_read_without_being_written(self):
+        """The form asks what the draft means while it is still a draft.
+
+        A protocol that only appears after save is one nobody sees at the
+        moment it would have changed what they typed. So the draft goes to the
+        same `neuro_oncology` that reads the saved record, over a route that
+        opens no folder and writes nothing.
+        """
+        draft = {
+            "tumors": [{
+                "histology": "U nguyên bào thần kinh đệm, IDH tự nhiên",
+                "grade": "4",
+                # Histology is what makes a diagnosis integrated. Left out,
+                # this is an imaging impression with a molecular panel beside
+                # it, and `assess` is right to refuse to call that integrated.
+                "basis": "Mô bệnh học",
+                "molecular": {"IDH1/2": "Không đột biến (đã giải trình tự)"},
+            }],
+            "events": [],
+        }
+        with self.post_json(
+            "/api/clinical/assessment", {"record": draft}, token=self.server.token,
+        ) as res:
+            body = json.loads(res.read().decode("utf-8"))
+
+        reading = body["assessment"][0]
+        self.assertTrue(reading["integrated"])
+        names = [rx["name"] for rx in reading["protocols"]["preferred"]]
+        self.assertIn("Phác đồ Stupp", names)
+
+    def test_reading_a_draft_leaves_nothing_behind_on_disk(self):
+        """It is a read. A record reaches this route precisely because nobody
+        has decided to keep it yet, and a half-typed diagnosis written to the
+        archive is the one outcome this must not have."""
+        archive = Path(self.tmp.name) / "archive"
+        before = sorted(path.name for path in archive.rglob("*"))
+        with self.post_json(
+            "/api/clinical/assessment",
+            {"record": {"tumors": [{"histology": "U màng não", "grade": "1"}], "events": []}},
+            token=self.server.token,
+        ) as res:
+            self.assertEqual(res.status, 200)
+        self.assertEqual(sorted(path.name for path in archive.rglob("*")), before)
+        self.assertEqual(list(archive.rglob("clinical-index.json")), [])
+
     def test_media_photo_api_endpoints(self):
         from PIL import Image, ImageDraw
         catalog_dir = Path(self.tmp.name) / "archive"
