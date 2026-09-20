@@ -75,11 +75,11 @@ class Element {
 }
 
 const fixtureInventory = () => ({
-  adapter: 'VRAD', studyUid: 'test-study', patient: {id: 'test-patient', name: 'Fixture'},
+  adapter: 'VRAD', studyUid: 'test-study', createdAt: 50, patient: {id: 'test-patient', name: 'Fixture'},
   series: [{id: 'series-1', imageCount: 20}, {id: 'series-2', imageCount: 30}],
 });
 const fixtureJob = (overrides = {}) => ({
-  id: 'test-job', tabId: 1, adapter: 'VRAD', status: 'downloading',
+  id: 'test-job', tabId: 1, adapter: 'VRAD', status: 'downloading', studyUid: 'test-study', inventoryCreatedAt: 50,
   completed: 197, failed: 0, total: 576, updatedAt: 100,
   selectedSeries: ['series-1', 'series-2'], ...overrides,
 });
@@ -281,4 +281,83 @@ test('opening during a download still allows resuming its selected series after 
   const request = panel.requests.find(message => message.type === 'START_DOWNLOAD');
   assert.ok(request, 'Resume starts a new download');
   assert.deepEqual(Array.from(request.selectedSeries), ['series-2'], 'Resume retains the original selection');
+});
+
+test('progress during initial binding does not starve study metadata or rewind the job', async () => {
+  const panel = createPanel();
+  let resolveOverview;
+  panel.respondWith(message => message.type === 'GET_OVERVIEW'
+    ? new Promise(resolve => { resolveOverview = resolve; }) : {ok: true});
+  const binding = panel.evaluate('bindActive()');
+  await panel.advance(0);
+  await panel.emit({type: 'JOB_UPDATED', tabId: 1, job: fixtureJob({completed: 337})});
+  resolveOverview(overview(fixtureJob({completed: 197})));
+  await binding;
+  assert.equal(panel.evaluate('inventory.studyUid'), 'test-study');
+  assert.equal(panel.element('viewerUrl').textContent, 'https://pacs.test/viewer');
+  assert.equal(panel.element('progressText').textContent, '337 / 576');
+});
+
+test('repeated terminal timestamps do not schedule more overview refreshes', async () => {
+  const panel = createPanel(), done = fixtureJob({status: 'done'});
+  panel.seed(overview(done));
+  panel.respondWith(message => message.type === 'GET_OVERVIEW' ? overview(done) : {ok: true, history: []});
+  panel.evaluate('renderJob()');
+  await panel.advance(1000);
+  const initial = panel.requests.filter(m => m.type === 'GET_OVERVIEW').length;
+  await panel.emit({type: 'JOB_UPDATED', tabId: 1, job: {...done, updatedAt: 200}});
+  await panel.advance(2000);
+  assert.equal(initial, 1);
+  assert.equal(panel.requests.filter(m => m.type === 'GET_OVERVIEW').length, initial);
+});
+
+test('late START_DOWNLOAD response cannot overwrite pushed progress', async () => {
+  const panel = createPanel();
+  panel.seed(overview(null));
+  panel.evaluate('renderInventory()');
+  let resolveStart;
+  panel.respondWith(message => message.type === 'START_DOWNLOAD'
+    ? new Promise(resolve => { resolveStart = resolve; }) : {ok: true});
+  const pending = panel.evaluate('startDownload()');
+  await panel.advance(0);
+  assert.ok(resolveStart);
+  await panel.emit({type: 'JOB_UPDATED', tabId: 1, job: fixtureJob({completed: 337})});
+  resolveStart({ok: true, job: fixtureJob({completed: 0, status: 'preparing'})});
+  await pending;
+  assert.equal(panel.element('progressText').textContent, '337 / 576');
+});
+
+test('a pending folder prompt cannot start the download on a newly selected tab', async () => {
+  const panel = createPanel();
+  panel.seed(overview(null));
+  panel.evaluate('renderInventory(); let resolveFolder; ensureFolder=()=>new Promise(resolve=>{resolveFolder=resolve;});');
+  panel.respondWith(message => message.type === 'GET_OVERVIEW' ? overview(null, null) : {ok: true});
+  const pending = panel.evaluate('startDownload()');
+  await panel.advance(0);
+  await panel.activate({id: 2, url: 'https://other-pacs.test/viewer'});
+  panel.evaluate("resolveFolder({name:'Fixture folder'})");
+  await pending;
+  assert.equal(panel.requests.filter(m => m.type === 'START_DOWNLOAD').length, 0);
+});
+
+test('Resume matches an unidentified generic study by captured inventory identity only', () => {
+  const panel = createPanel();
+  const inv = {...fixtureInventory(), studyUid: ''};
+  const partial = fixtureJob({status: 'partial', studyUid: '', selectedSeries: ['series-2']});
+  panel.seed(overview(partial, inv));
+  panel.evaluate('renderInventory(); renderJob()');
+  assert.equal(panel.element('resumeBtn').disabled, false);
+  assert.deepEqual(Array.from(panel.evaluate('selectedIds()')), ['series-2']);
+  panel.seed(overview(partial, {...inv, createdAt: 999}));
+  panel.evaluate('renderJob()');
+  assert.equal(panel.element('resumeBtn').disabled, true, 'same series IDs do not identify the same study');
+});
+
+test('Resume cannot reuse checkboxes from another study even when series IDs coincide', () => {
+  const panel = createPanel();
+  panel.seed(overview(null));
+  panel.evaluate('renderInventory()');
+  panel.seed(overview(fixtureJob({status: 'partial'}), {...fixtureInventory(), studyUid: 'different-study'}));
+  panel.evaluate('renderInventory(); renderJob()');
+  assert.equal(panel.element('resumeBtn').disabled, true);
 });

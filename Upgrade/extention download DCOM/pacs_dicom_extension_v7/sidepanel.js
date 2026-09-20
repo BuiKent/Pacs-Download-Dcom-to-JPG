@@ -5,6 +5,7 @@ import { formatLogsAsText } from './lib/logger.js';
 import { FINISHING_STATUS, isActiveDownload, isTerminalDownload, panelPhase, reconcileInventory, shouldShowInventoryEditor } from './lib/download_ui_state.js';
 const $=id=>document.getElementById(id),show=(id,on)=>$(id).classList.toggle('hidden',!on);
 let tabId=null,summary=null,state=null,inventory=null,job=null,history=[],revealDownloaded=false,refreshTimer=null,activeTabUrl='',isStartingDownload=false,currentQrUrl='',refreshRevision=0,lastTerminalRefreshKey='';
+let jobRevision=0,inventoryRevision=0,bindRevision=0,contextRevision=0,terminalRefreshTimer=null;
 function setTopLoader(on){const e=$('topLoader');if(e)e.classList.toggle('active',Boolean(on));}
 function panelJob(){return isStartingDownload&&!isActiveDownload(job)?{...(job||{}),status:'preparing'}:job;}
 const FS_DB='pacs_dicom_fs_v1',FS_STORE='handles',FS_KEY='download-root',SAVE_MODE_KEY='pacs6_save_mode',FOLDER_NAME_KEY='pacs6_folder_name',SUBFOLDER_KEY='pacs6_subfolder_name',DEFAULT_SUBFOLDER='DCom to JPG';
@@ -88,12 +89,24 @@ function renderLink(){
   $('viewerUrl').title=real;
   $('linkNote').textContent=(summary?.currentUrl&&real!==summary.currentUrl)?'Direct viewer link — differs from address bar':'Current page link';
 }
-function previousResult(){const p=inventory?.previousDownload;return p&&p.lastDownloadAt&&RESULT_LABELS[p.status]?p:null;}
+function jobMatchesInventory(){
+  if(!inventory||!job||Number(job.tabId)!==Number(tabId))return false;
+  if(job.studyUid&&inventory.studyUid)return job.studyUid===inventory.studyUid;
+  // Generic discovery may learn the Study UID only after downloading a file.
+  // In that case match the captured inventory, not merely the tab or series IDs.
+  return Boolean(job.inventoryCreatedAt&&job.inventoryCreatedAt===inventory.createdAt);
+}
+function previousResult(){
+  // JOB_UPDATED can arrive before the finalized inventory. Do not reopen the
+  // series editor in the gap between these two messages.
+  if(jobMatchesInventory()&&isTerminalDownload(job))return {...job,lastDownloadAt:job.updatedAt||job.startedAt};
+  const p=inventory?.previousDownload;return p&&p.lastDownloadAt&&RESULT_LABELS[p.status]?p:null;
+}
 function fillStudyCard(){$('studySub').textContent=inventory.studyUid||inventory.patient?.description||'—';chip($('adapterChip'),inventory.adapter||'DICOM','good');$('patientName').textContent=fmtName(inventory.patient?.name)||'—';$('patientId').textContent=inventory.patient?.id||'—';$('studyDate').textContent=fmtDate(inventory.patient?.studyDate);$('seriesCount').textContent=String(inventory.series?.length||0);}
 let lastRenderedStudyKey='';
 function renderInventory(){
   if(!shouldShowInventoryEditor(panelJob())){show('doneCard',false);show('studyCard',false);show('seriesCard',false);show('stickyBar',false);show('partialBanner',false);return;}
-  if(!inventory){show('doneCard',false);show('studyCard',false);show('seriesCard',false);show('stickyBar',false);return;}
+  if(!inventory){show('doneCard',false);show('studyCard',false);show('seriesCard',false);show('stickyBar',false);show('partialBanner',false);return;}
   const result=previousResult();
   if(result&&!revealDownloaded){
     fillStudyCard();
@@ -119,7 +132,7 @@ function renderInventory(){
         btn.textContent = '⏳ Đang nạp các series...';
         btn.disabled = true;
         try {
-          const res = await chrome.tabs.sendMessage(activeTabId, {type: 'AUTOFETCH_MACH7_SERIES'});
+          const res = await chrome.tabs.sendMessage(tabId, {type: 'AUTOFETCH_MACH7_SERIES'});
           btn.textContent = `✓ Đã nạp ${res?.count || ''} series`;
         } catch(_) {
           btn.textContent = '⚡ Thử lại nạp Series';
@@ -134,6 +147,7 @@ function renderInventory(){
   const existingCbs=$('seriesList').querySelectorAll('input[type=checkbox]');
   const hadUserSelection=isSameStudy&&existingCbs.length>0;
   const currentCheckedIds=new Set([...existingCbs].filter(x=>x.checked).map(x=>x.dataset.id));
+  const jobSelected=new Set(jobSelectionIds());
   lastRenderedStudyKey=currentStudyKey;
 
   const list=$('seriesList');
@@ -143,7 +157,7 @@ function renderInventory(){
     row.className='series-row';
     const cb=document.createElement('input');
     cb.type='checkbox';
-    cb.checked=hadUserSelection?currentCheckedIds.has(s.id):true;
+    cb.checked=hadUserSelection?currentCheckedIds.has(s.id):jobSelected.size?jobSelected.has(s.id):true;
     cb.dataset.id=s.id;
     cb.addEventListener('change',updateSelected);
     const main=document.createElement('div');
@@ -167,8 +181,14 @@ function renderInventory(){
   }
   updateSelected();
 }
-function jobSelectionIds(){const j=job&&Number(job.tabId)===Number(tabId)?job:null;return Array.isArray(j?.selectedSeries)?j.selectedSeries.filter(Boolean):[];}
-function selectedIds(){const boxes=[...$('seriesList').querySelectorAll('input[type=checkbox]')];return boxes.length?boxes.filter(x=>x.checked).map(x=>x.dataset.id):jobSelectionIds();}
+function inventoryStudyKey(){return inventory?.studyUid||`${inventory?.patient?.id||''}_${inventory?.patient?.studyDate||''}`;}
+function jobSelectionIds(){return jobMatchesInventory()&&Array.isArray(job.selectedSeries)?job.selectedSeries.filter(id=>inventory.series?.some(s=>s.id===id)):[];}
+function selectedIds(){
+  if(!inventory)return [];
+  const boxes=[...$('seriesList').querySelectorAll('input[type=checkbox]')];
+  if(boxes.length&&lastRenderedStudyKey===inventoryStudyKey())return boxes.filter(x=>x.checked).map(x=>x.dataset.id);
+  return jobSelectionIds();
+}
 function updateSelected(){
   const ids=selectedIds(),sel=(inventory?.series||[]).filter(s=>ids.includes(s.id)),images=sel.reduce((n,s)=>n+(Number(s.imageCount)||0),0);
   $('selectedSummary').textContent=`${ids.length}/${inventory?.series?.length||0} series${images?` · ~${images} images`:''}`;
@@ -189,7 +209,7 @@ function updateSelected(){
   $('downloadBtn').disabled=!ids.length;
   $('downloadBtn').textContent=inventory?.previousDownload&&inventory.previousDownload.status!=='done'?'Download missing':'Download DICOM';
   $('resumeBtn').classList.remove('btn-loading');
-  $('resumeBtn').disabled=!ids.length;
+  $('resumeBtn').disabled=!ids.length||!jobMatchesInventory();
 }
 
 function jobLabel(s){return({preparing:'Preparing',downloading:'Downloading',finishing:'Finishing',done:'Completed',partial:'Partial',done_with_errors:'Errors',error:'Failed',cancelling:'Cancelling',cancelled:'Cancelled'})[s]||s||'—';}
@@ -259,7 +279,16 @@ function renderJob(){
     updateSelected();
   }
   const errs=job.errors||[];show('errorDetails',errs.length>0);$('errorLog').textContent=errs.join('\n');
-  if(isTerminalDownload(job)){const terminalKey=`${job.id||tabId}|${job.status}|${job.updatedAt||''}`;if(terminalKey!==lastTerminalRefreshKey){lastTerminalRefreshKey=terminalKey;refreshHistory().catch(()=>{});setTimeout(()=>scheduleRefresh(0),250);}}else lastTerminalRefreshKey='';
+  if(isTerminalDownload(job)){
+    const terminalKey=`${job.id||tabId}|${job.status}`;
+    if(terminalKey!==lastTerminalRefreshKey){
+      lastTerminalRefreshKey=terminalKey;
+      refreshHistory().catch(()=>{});
+      const revision=contextRevision;
+      clearTimeout(terminalRefreshTimer);
+      terminalRefreshTimer=setTimeout(()=>{if(revision===contextRevision)scheduleRefresh(0);},250);
+    }
+  }else lastTerminalRefreshKey='';
 }
 
 function historyStatus(s){return({done:'Downloaded',partial:'Partial',done_with_errors:'Errors',error:'Failed',cancelled:'Cancelled',viewed:'Viewed'})[s]||'Viewed';}
@@ -268,10 +297,39 @@ function historyCounts(h){const done=Number(h.completed||0),total=Number(h.total
 function renderHistory(){const q=$('historySearch').value.trim().toLowerCase(),el=$('historyList');el.textContent='';const rows=history.filter(h=>!q||`${h.patientName||''} ${h.patientId||''} ${h.studyDate||''} ${h.description||''}`.toLowerCase().includes(q));if(!rows.length){el.innerHTML='<div class="empty">No results.</div>';return;}for(const h of rows.slice(0,70)){const item=document.createElement('div');item.className='history-item';const top=document.createElement('div');top.className='history-top';const left=document.createElement('div'),name=document.createElement('div');name.className='history-name';name.textContent=`${fmtName(h.patientName)||'Unknown'}${h.patientId?` · ${h.patientId}`:''}`;const meta=document.createElement('div');meta.className='history-meta';meta.textContent=[fmtDate(h.studyDate),h.seriesCount?`${h.seriesCount} series`:'',historyCounts(h),h.lastDownloadAt?fmtWhen(h.lastDownloadAt):''].filter(Boolean).join(' · ');left.append(name,meta);const st=document.createElement('span');st.className=`history-status ${historyKind(h.status)}`;st.textContent=historyStatus(h.status);top.append(left,st);item.append(top);el.append(item);}}
 async function refreshHistory(){try{history=(await send('GET_HISTORY')).history||[];renderHistory();}catch{}}
 
-async function refresh(){if(tabId==null)return;const revision=++refreshRevision;try{const r=await send('GET_OVERVIEW',{tabId});if(revision!==refreshRevision)return;summary=r.summary;state=r.state;job=r.job;inventory=reconcileInventory(inventory,r.inventory,job);renderStatus();renderLink();renderInventory();renderJob();renderLearning();}catch(e){if(revision===refreshRevision)$('statusText').textContent=e.message||String(e);}if(revision===refreshRevision)await renderFolder();}
-function resetPanelContext(){summary=null;state=null;inventory=null;job=null;isStartingDownload=false;lastRenderedStudyKey='';lastTerminalRefreshKey='';$('seriesList').textContent='';renderStatus();renderInventory();renderJob();renderLearning();}
-async function bindActive(){const urlTab=new URLSearchParams(location.search).get('tabId');let t=urlTab?await chrome.tabs.get(Number(urlTab)).catch(()=>null):null;if(!t)t=(await chrome.tabs.query({active:true,currentWindow:true}))[0];if(!t?.id)return;if(Number(tabId)!==Number(t.id))resetPanelContext();tabId=t.id;activeTabUrl=t.url||'';revealDownloaded=false;await refresh();}
-function scheduleRefresh(ms=500){refreshRevision++;clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>refresh().catch(()=>{}),ms);}
+async function refresh(){
+  if(tabId==null)return;
+  const requestedTabId=tabId,revision=++refreshRevision,requestedJobRevision=jobRevision,requestedInventoryRevision=inventoryRevision;
+  try{
+    const r=await send('GET_OVERVIEW',{tabId:requestedTabId});
+    if(revision!==refreshRevision||requestedTabId!==tabId)return;
+    summary=r.summary;state=r.state;
+    // Progress and inventory have independent freshness. A busy job must not
+    // starve the initial context response, nor may that response rewind it.
+    if(requestedJobRevision===jobRevision)job=r.job;
+    if(requestedInventoryRevision===inventoryRevision)inventory=reconcileInventory(inventory,r.inventory,panelJob());
+    renderStatus();renderLink();renderInventory();renderJob();renderLearning();
+  }catch(e){if(revision===refreshRevision&&requestedTabId===tabId)$('statusText').textContent=e.message||String(e);}
+  if(revision===refreshRevision&&requestedTabId===tabId)await renderFolder();
+}
+function resetPanelContext(){
+  contextRevision++;refreshRevision++;jobRevision++;inventoryRevision++;
+  clearTimeout(refreshTimer);clearTimeout(terminalRefreshTimer);
+  summary=null;state=null;inventory=null;job=null;isStartingDownload=false;revealDownloaded=false;
+  lastRenderedStudyKey='';lastTerminalRefreshKey='';$('seriesList').textContent='';
+  renderStatus();renderLink();renderInventory();renderJob();renderLearning();
+}
+async function bindActive(){
+  const revision=++bindRevision,urlTab=new URLSearchParams(location.search).get('tabId');
+  let t=urlTab?await chrome.tabs.get(Number(urlTab)).catch(()=>null):null;
+  if(!t)t=(await chrome.tabs.query({active:true,currentWindow:true}))[0];
+  if(revision!==bindRevision||!t?.id)return;
+  const changed=Number(tabId)!==Number(t.id);
+  tabId=t.id;activeTabUrl=t.url||'';
+  if(changed)resetPanelContext();
+  await refresh();
+}
+function scheduleRefresh(ms=500){clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>refresh().catch(()=>{}),ms);}
 
 /**
  * Bulk downloads write through a granted directory handle. The picker is shown
@@ -280,7 +338,9 @@ function scheduleRefresh(ms=500){refreshRevision++;clearTimeout(refreshTimer);re
 async function startDownload(){
   if(isStartingDownload)return;
   if(isActiveDownload(job))return;
-  if(!selectedIds().length)return;
+  const selectedSeries=selectedIds(),requestedTabId=tabId,revision=contextRevision,studyKey=inventoryStudyKey();
+  if(!selectedSeries.length)return;
+  const stillCurrent=()=>revision===contextRevision&&requestedTabId===tabId&&studyKey===inventoryStudyKey();
   isStartingDownload=true;
   renderStatus();renderInventory();renderLearning();
   $('downloadBtn').disabled=true;
@@ -297,6 +357,7 @@ async function startDownload(){
     const requestedMode=st[SAVE_MODE_KEY]||'';
     const subfolder=String(st[SUBFOLDER_KEY]||'').trim()||DEFAULT_SUBFOLDER;
     const h=await ensureFolder(true).catch(()=>null);
+    if(!stillCurrent())return;
     if(!h){
       setTopLoader(false);
       isStartingDownload=false;
@@ -310,9 +371,14 @@ async function startDownload(){
     const saveMode=resolveBulkDicomSaveMode(Boolean(h),requestedMode);
     await chrome.storage.local.set({[SAVE_MODE_KEY]:saveMode,[FOLDER_NAME_KEY]:h.name||'Selected Folder'});
     await renderFolder();
-    const r=await send('START_DOWNLOAD',{tabId,selectedSeries:selectedIds(),options:{concurrency:6,frameConcurrency:6,saveMode,subfolder}});
-    job=r.job;renderStatus();renderInventory();renderJob();renderLearning();
+    if(!stillCurrent())return;
+    const requestedJobRevision=jobRevision;
+    const r=await send('START_DOWNLOAD',{tabId:requestedTabId,selectedSeries,options:{concurrency:6,frameConcurrency:6,saveMode,subfolder}});
+    if(!stillCurrent())return;
+    if(requestedJobRevision===jobRevision){job=r.job;jobRevision++;}
+    renderStatus();renderInventory();renderJob();renderLearning();
   }catch(e){
+    if(!stillCurrent())return;
     toast(e.message||String(e),true);
     setTopLoader(false);
     isStartingDownload=false;
@@ -323,8 +389,10 @@ async function startDownload(){
     $('resumeBtn').innerHTML='🔄 Retry';
     updateSelected();
   }finally{
-    isStartingDownload=false;
-    renderStatus();renderInventory();renderJob();renderLearning();
+    if(revision===contextRevision){
+      isStartingDownload=false;
+      renderStatus();renderInventory();renderJob();renderLearning();
+    }
   }
 }
 
@@ -349,7 +417,7 @@ $('copyLinkBtn').addEventListener('click',async()=>{const t=$('viewerUrl').textC
 $('folderResetBtn').addEventListener('click',async()=>{try{await fsDelete();await chrome.storage.local.remove([SAVE_MODE_KEY,FOLDER_NAME_KEY]);await renderFolder();toast('Saved folder cleared. Choose a folder before downloading.');}catch(e){toast(e.message||String(e),true);}});
 if($('subfolderInput')){$('subfolderInput').addEventListener('input',async(e)=>{const val=String(e.target.value||'').trim()||DEFAULT_SUBFOLDER;await chrome.storage.local.set({[SUBFOLDER_KEY]:val});await renderFolder();});$('subfolderInput').addEventListener('change',async(e)=>{const val=String(e.target.value||'').trim()||DEFAULT_SUBFOLDER;await chrome.storage.local.set({[SUBFOLDER_KEY]:val});await renderFolder();toast(`Subfolder: ${val}`);});}
 $('trackBtn').addEventListener('click',async()=>{if($('trackBtn').disabled)return;$('trackBtn').disabled=true;$('trackBtn').innerHTML='<span class="spinner dark"></span> Processing...';setTopLoader(true);try{if(state?.tracking==='watching')await send('STOP_TRACKING',{tabId});else{if((summary?.missingOrigins||[]).length)await grantAccess();await send('START_TRACKING',{tabId});}await refresh();}catch(e){toast(e.message||String(e),true);}finally{renderStatus();setTopLoader(isActiveDownload(panelJob()));}});
-$('scanBtn').addEventListener('click',async()=>{if($('scanBtn').disabled)return;$('scanBtn').disabled=true;const old=$('scanBtn').textContent;$('scanBtn').innerHTML='<span class="spinner dark"></span> Scanning...';setTopLoader(true);try{await send('ANALYZE_TAB',{tabId});await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('scanBtn').disabled=false;$('scanBtn').textContent=old;setTopLoader(false);}});
+$('scanBtn').addEventListener('click',async()=>{if($('scanBtn').disabled)return;$('scanBtn').disabled=true;const old=$('scanBtn').textContent;$('scanBtn').innerHTML='<span class="spinner dark"></span> Scanning...';setTopLoader(true);try{await send('ANALYZE_TAB',{tabId});await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('scanBtn').textContent=old;renderStatus();setTopLoader(isActiveDownload(panelJob()));}});
 $('deepScanBtn').addEventListener('click',async()=>{if($('deepScanBtn').disabled)return;$('deepScanBtn').disabled=true;const old=$('deepScanBtn').textContent;$('deepScanBtn').innerHTML='<span class="spinner dark"></span> Deep scanning...';setTopLoader(true);try{const r=await send('DEEP_SCAN',{tabId});toast(r.valid?.length?`Identified ${r.valid.length} DICOM endpoints.`:'No DICOM endpoints verified.',!r.valid?.length);await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('deepScanBtn').disabled=false;$('deepScanBtn').textContent=old;setTopLoader(false);}});
 $('learnToggleBtn').addEventListener('click',async()=>{if($('learnToggleBtn').disabled)return;$('learnToggleBtn').disabled=true;try{if(state?.learning?.active)await send('STOP_LEARNING',{tabId});else{if((summary?.missingOrigins||[]).length)await grantAccess();await send('START_LEARNING',{tabId});}await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('learnToggleBtn').disabled=false;}});
 $('selectAllBtn').addEventListener('click',()=>{$('seriesList').querySelectorAll('input').forEach(x=>x.checked=true);updateSelected();});
@@ -388,21 +456,23 @@ chrome.tabs.onActivated.addListener(()=>bindActive().catch(()=>{}));chrome.tabs.
 chrome.runtime.onMessage.addListener(m=>{
   if(['JOB_UPDATED','INVENTORY_UPDATED','PACS_SIGNAL','TAB_CONTEXT_CHANGED','LEARN_UPDATED'].includes(m?.type)&&Number(m.tabId)!==Number(tabId))return;
   if(m?.type==='JOB_UPDATED'){
-    refreshRevision++;
+    jobRevision++;
     const wasActive=isActiveDownload(panelJob());
     job=m.job;
     renderStatus();
-    // The one skipped case is active -> terminal: the series editor must not be
-    // rebuilt under a Resume that belongs to the job that just ended, which was
-    // started from a selection this panel may never have rendered.
-    if(isActiveDownload(panelJob())||!wasActive)renderInventory();
+    if(wasActive!==isActiveDownload(panelJob()))renderInventory();
     renderJob();renderLearning();
   }else if(m?.type==='INVENTORY_UPDATED'){
-    refreshRevision++;
+    inventoryRevision++;
     inventory=reconcileInventory(inventory,m.inventory,panelJob());
     renderStatus();renderInventory();renderLearning();
     if(!isActiveDownload(panelJob()))scheduleRefresh(80);
-  }else if(['PACS_SIGNAL','TAB_CONTEXT_CHANGED','LEARN_UPDATED'].includes(m?.type)){
+  }else if(m?.type==='TAB_CONTEXT_CHANGED'){
+    contextRevision++;refreshRevision++;inventoryRevision++;
+    inventory=null;summary=null;isStartingDownload=false;lastRenderedStudyKey='';$('seriesList').textContent='';
+    renderStatus();renderLink();renderInventory();renderJob();renderLearning();
+    scheduleRefresh(80);
+  }else if(['PACS_SIGNAL','LEARN_UPDATED'].includes(m?.type)){
     if(!isActiveDownload(panelJob()))scheduleRefresh(800);
   }else if(m?.type==='HISTORY_UPDATED'){
     history=m.history||[];if(!$('historyCard').classList.contains('hidden'))renderHistory();

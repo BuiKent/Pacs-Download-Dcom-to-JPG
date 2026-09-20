@@ -13,11 +13,11 @@ import {isActiveDownload,progressStatus,FINISHING_STATUS} from './lib/download_u
 const TAB_PREFIX='pacs6_tab_',INV_PREFIX='pacs6_inv_',JOB_PREFIX='pacs6_job_',HISTORY_KEY='pacs6_history',RECIPES_KEY='pacs6_site_recipes';
 const MAX_HISTORY=100,MAX_NAV=60,MAX_REQUESTS=500,AUTO_SCORE=50,AUTO_ARM_SCORE=70;
 const analyzeTimers=new Map(),contextTimers=new Map(),probeTimers=new Map(),learnTimers=new Map(),jobMemory=new Map(),jobFlushTimers=new Map(),finishTimers=new Map();
-// A job held in 'finishing' is waiting for ENGINE_FINISHED. If the offscreen
-// document dies inside that window the result never arrives, so the counters
-// the engine last reported become the outcome instead of a permanently stuck tab.
+// Finishing waits for ENGINE_FINISHED, including sidecar writes and cleanup.
+// Elapsed time alone cannot establish that those writes completed.
 const FINISH_WATCHDOG_MS=15000;
 const trackedTabIds=new Set(),badgeCache=new Map(),activeAnalysis=new Map();
+const startingJobs=new Set(),finalizingJobs=new Set(),analysisEpochs=new Map();
 function logEvent(level,category,message,details=null,{tabId=null,url='',studyUid=''}={}){appendLog({level,category,message,details,tabId,url,studyUid,pacsSite:extractPacsSite(url)}).catch(()=>{});}
 function hasActiveDownloadJobs(excludeTabId=null){for(const[tId,j]of jobMemory.entries()){if(excludeTabId!==null&&excludeTabId!==undefined&&Number(tId)===Number(excludeTabId))continue;if(isActiveDownload(j))return true;}return false;}
 // MV3 recycles this worker constantly, so the tracked-tab set is mirrored into
@@ -315,7 +315,7 @@ async function shouldHandleNavigation(tabId,raw){
   return trackedTabIds.has(tabId)||urlConfidence(raw)>=AUTO_SCORE||Boolean(classifyViewerShell(raw));
 }
 async function rememberBeforeNavigate(tabId,raw){if(tabId<0)return;const u=cleanUrl(raw);if(!u||!(await shouldHandleNavigation(tabId,u)))return;const s=await getTabState(tabId);pushUnique(s.pendingNavUrls,u);s.currentUrl=u;await saveTabState(tabId,s);markCandidate(tabId,u).catch(()=>{});}
-async function invalidate(tabId,reason){perfScanCache.delete(tabId);invMemory.delete(tabId);await chrome.storage.session.remove(invKey(tabId)).catch(()=>{});chrome.runtime.sendMessage({type:'TAB_CONTEXT_CHANGED',tabId,reason}).catch(()=>{});}
+async function invalidate(tabId,reason){analysisEpochs.set(tabId,(analysisEpochs.get(tabId)||0)+1);perfScanCache.delete(tabId);invMemory.delete(tabId);await chrome.storage.session.remove(invKey(tabId)).catch(()=>{});chrome.runtime.sendMessage({type:'TAB_CONTEXT_CHANGED',tabId,reason}).catch(()=>{});}
 async function rememberCommitted(d){
   if(d.tabId<0)return;
   const u=cleanUrl(d.url);
@@ -326,10 +326,15 @@ async function rememberCommitted(d){
     return;
   }
   const s=await getTabState(d.tabId),oldStudy=s.studyHint||'',nextStudy=viewerStudyHint(u)||'';
-  const docChanged=Boolean(s.mainDocumentId&&d.documentId&&s.mainDocumentId!==d.documentId),studyChanged=Boolean(oldStudy&&nextStudy&&oldStudy!==nextStudy),changed=Boolean(docChanged||studyChanged||(s.currentUrl&&s.currentUrl!==u));
-  const preserveDownloadContext=isActiveDownload(await getJob(d.tabId));
+  const activeJob=await getJob(d.tabId),captured=await getSession(invKey(d.tabId));
+  // ZFP intentionally reloads the viewer to collect uncached frames. Preserve
+  // only a verified reload of this study, never a link to another patient.
+  const capturedUrl=cleanUrl(captured?.summary?.currentUrl||captured?.context?.viewerUrl||captured?.context?.url||'');
+  const docChanged=Boolean(s.mainDocumentId&&d.documentId&&s.mainDocumentId!==d.documentId),studyChanged=Boolean(oldStudy&&nextStudy&&oldStudy!==nextStudy),changed=Boolean(docChanged||studyChanged||(s.currentUrl&&s.currentUrl!==u)||(capturedUrl&&capturedUrl!==u));
+  const sameStudy=oldStudy&&nextStudy?oldStudy===nextStudy:Boolean(capturedUrl&&capturedUrl===u);
+  const preserveDownloadContext=isActiveDownload(activeJob)&&d.transitionType==='reload'&&sameStudy;
   if(changed&&!preserveDownloadContext){
-    const transitionType=d.transitionType||'',preserveContext=shouldPreserveTerminalContext(s.tracking,{oldStudy,nextStudy,transitionType}),nextTracking=trackingAfterDocumentChange(s.tracking,{oldStudy,nextStudy,transitionType});
+    const transitionType=d.transitionType||'',preserveContext=!isActiveDownload(activeJob)&&shouldPreserveTerminalContext(s.tracking,{oldStudy,nextStudy,transitionType}),nextTracking=trackingAfterDocumentChange(s.tracking,{oldStudy,nextStudy,transitionType});
     if(!preserveContext){s.navUrls=[...(s.pendingNavUrls||[])];s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.pageHintScore=0;s.pageHintReasons=[];s.confidence=0;await invalidate(d.tabId,'document');}
     s.studyHint=nextStudy;s.vietmyRecaptureDone=false;s.tracking=nextTracking;
   }
@@ -342,9 +347,9 @@ async function rememberSameDocument(tabId,raw){
   if(tabId<0)return;
   const u=cleanUrl(raw);
   if(!u||!(await shouldHandleNavigation(tabId,u)))return;
-  const s=await getTabState(tabId),old=s.studyHint||'',next=viewerStudyHint(u)||'',preserveDownloadContext=isActiveDownload(await getJob(tabId));
-  if(!preserveDownloadContext&&old&&next&&old!==next){s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.studyHint=next;s.tracking=trackingAfterSameDocumentStudyChange(s.tracking);await invalidate(tabId,'study');}
-  else if(!preserveDownloadContext&&!old&&next)s.studyHint=next;
+  const s=await getTabState(tabId),old=s.studyHint||'',next=viewerStudyHint(u)||'';
+  if(old&&next&&old!==next){s.pacsRequests=[];s.frameUrls=[];s.genericDirectUrls=[];s.genericDirectMeta={};s.genericEntries=[];s.genericProfile={};s.binaryCandidates=[];s.binaryProbed=[];s.lastDeepProbeAt=0;s.studyHint=next;s.tracking=trackingAfterSameDocumentStudyChange(s.tracking);await invalidate(tabId,'study');}
+  else if(!old&&next)s.studyHint=next;
   pushUnique(s.navUrls,u);s.currentUrl=u;await saveTabState(tabId,s);await markCandidate(tabId,u);
 }
 chrome.webNavigation.onBeforeNavigate.addListener(d=>{if(d.frameId!==0)return;if(urlConfidence(d.url)>=AUTO_SCORE||Boolean(classifyViewerShell(d.url)))markTracked(d.tabId,true);rememberBeforeNavigate(d.tabId,d.url).catch(()=>{});});
@@ -561,11 +566,20 @@ async function fetchJsonFor(state,url,accept='application/json, application/dico
 function inheritQuery(target,source){const t=new URL(target),s=new URL(source);for(const[k,v]of s.searchParams)if(!t.searchParams.has(k))t.searchParams.append(k,v);return t.href;}
 function normalizeStudy(inv){const p=inv.patient||{};return{adapter:inv.adapter||'',studyUid:String(inv.studyUid||''),patient:{name:String(p.name||''),id:String(p.id||''),birthDate:String(p.birthDate||''),studyDate:String(p.studyDate||''),description:String(p.description||''),accession:String(p.accession||'')},series:Array.isArray(inv.series)?inv.series:[],context:inv.context||{}};}
 function adapterContext(summary,state){return{summary,state,fetchJson:(url,accept,req,timeoutMs)=>fetchJsonFor(state,url,accept,req,timeoutMs),headersForUrl:url=>headersForUrl(state,url),inheritQuery,normalizeStudy,zfpInfo:()=>zfpInfo(state.tabId)};}
+function analysisContextKey(state){return JSON.stringify([state.mainDocumentId||'',state.currentUrl||'',state.studyHint||'']);}
+async function analysisIsCurrent(tabId,contextKey,epoch){
+  const[state,job]=await Promise.all([getTabState(tabId),getJob(tabId)]);
+  return !startingJobs.has(tabId)&&!isActiveDownload(job)&&(analysisEpochs.get(tabId)||0)===epoch&&analysisContextKey(state)===contextKey;
+}
 async function analyzeTab(tabId){
+  if(isActiveDownload(await getJob(tabId))||startingJobs.has(tabId))return getSession(invKey(tabId));
   if(activeAnalysis.has(tabId))return activeAnalysis.get(tabId);
   const p=(async()=>{
     try{
-      const summary=await scanTab(tabId),state=await getTabState(tabId);
+      const epoch=analysisEpochs.get(tabId)||0,state=await getTabState(tabId),contextKey=analysisContextKey(state);
+      if(startingJobs.has(tabId))return getSession(invKey(tabId));
+      const summary=await scanTab(tabId);
+      if(!await analysisIsCurrent(tabId,contextKey,epoch))return getSession(invKey(tabId));
       let inv=null,lastError=null;
       const inventories={};
       const allMatching=matchingAdapters(summary,state);
@@ -578,6 +592,7 @@ async function analyzeTab(tabId){
           const candidate=await adapter.analyze(adapterContext(summary,state));
           if(candidate)inventories[adapter.id]={...candidate,adapter:adapter.id,tabId,createdAt:Date.now()};
         }catch(e){lastError=e;}
+        if(!await analysisIsCurrent(tabId,contextKey,epoch))return getSession(invKey(tabId));
       }
       const primaryId=ranked.map(a=>a.id).find(id=>inventories[id]);
       if(primaryId){
@@ -600,6 +615,7 @@ async function analyzeTab(tabId){
       }
       const prev=await findHistory(inv);
       if(prev)inv.previousDownload=prev;
+      if(!await analysisIsCurrent(tabId,contextKey,epoch)||startingJobs.has(tabId))return getSession(invKey(tabId));
       await setSession(invKey(tabId),inv);
       await upsertHistory(inv,{status:prev?.status==='done'?'done':'viewed',analyzedAt:Date.now()});
       await setBadge(tabId);
@@ -611,7 +627,7 @@ async function analyzeTab(tabId){
   activeAnalysis.set(tabId,p);
   return p;
 }
-function scheduleAnalyze(tabId,delay=500){clearTimeout(analyzeTimers.get(tabId));analyzeTimers.set(tabId,setTimeout(async()=>{analyzeTimers.delete(tabId);try{if(isActiveDownload(await getJob(tabId)))return;const inv=await analyzeTab(tabId);chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});}catch{}},delay));}
+function scheduleAnalyze(tabId,delay=500){clearTimeout(analyzeTimers.get(tabId));analyzeTimers.set(tabId,setTimeout(async()=>{analyzeTimers.delete(tabId);try{if(isActiveDownload(await getJob(tabId))||startingJobs.has(tabId))return;const inv=await analyzeTab(tabId);if(isActiveDownload(await getJob(tabId))||startingJobs.has(tabId))return;chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});}catch{}},delay));}
 
 async function ensureOffscreen(){const url=chrome.runtime.getURL('offscreen.html');const c=await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT'],documentUrls:[url]});if(c.length)return;await chrome.offscreen.createDocument({url:'offscreen.html',reasons:['BLOBS'],justification:'Download and write DICOM directly to user selected directory.'});}
 function safeFolderName(inv){const p=inv?.patient||{};return buildStudyStoragePath({patientName:p.name,patientId:p.id,birthDate:p.birthDate,age:p.age,studyDate:p.studyDate,modality:inv?.modality||inv?.series?.[0]?.modality||p.modality,description:p.description});}
@@ -620,13 +636,72 @@ async function buildTasks(inv,selected){return buildTasksForAdapter(inv,selected
 
 function scheduleJobFlush(tabId,force=false){if(force){clearTimeout(jobFlushTimers.get(tabId));jobFlushTimers.delete(tabId);const j=jobMemory.get(tabId);if(j)setSession(jobKey(tabId),j).catch(()=>{});return;}if(jobFlushTimers.has(tabId))return;jobFlushTimers.set(tabId,setTimeout(()=>{jobFlushTimers.delete(tabId);const j=jobMemory.get(tabId);if(j)setSession(jobKey(tabId),j).catch(()=>{});},600));}
 async function getJob(tabId){return jobMemory.get(tabId)||await getSession(jobKey(tabId));}
+function jobMatchesInventory(job,inventory){
+  if(!job||!inventory||Number(job.tabId)!==Number(inventory.tabId))return false;
+  if(job.studyUid&&inventory.studyUid)return job.studyUid===inventory.studyUid;
+  return Boolean(job.inventoryCreatedAt&&job.inventoryCreatedAt===inventory.createdAt);
+}
+function snapshotStudy(inv){
+  return{tabId:inv.tabId,createdAt:inv.createdAt||0,studyUid:inv.studyUid||'',adapter:inv.adapter,modality:inv.modality||'',
+    patient:{...inv.patient},series:(inv.series||[]).map(({id,number,description,modality,imageCount})=>({id,number,description,modality,imageCount})),
+    context:{completeKnown:Boolean(inv.context?.completeKnown)},summary:{currentUrl:inv.summary?.currentUrl||inv.context?.url||inv.context?.viewerUrl||''}};
+}
+async function hasOffscreenDocument(){return(await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT'],documentUrls:[chrome.runtime.getURL('offscreen.html')]})).length>0;}
+async function engineIsRunning(tabId){
+  if(!await hasOffscreenDocument())return false;
+  let timer;
+  try{
+    const response=await Promise.race([
+      chrome.runtime.sendMessage({target:'offscreen',type:'PING_ENGINE',tabId}),
+      new Promise(resolve=>{timer=setTimeout(()=>resolve(null),2000);})
+    ]);
+    // An idle offscreen document can belong to another tab or an earlier job.
+    // Only an explicit reply may declare this tab's engine absent.
+    return response?.ok&&typeof response.running==='boolean'?response.running:true;
+  }catch{return true;}finally{clearTimeout(timer);}
+}
 function clearFinishWatchdog(tabId){clearTimeout(finishTimers.get(tabId));finishTimers.delete(tabId);}
-function armFinishWatchdog(tabId,reported){clearFinishWatchdog(tabId);finishTimers.set(tabId,setTimeout(()=>{finishTimers.delete(tabId);if(jobMemory.get(tabId)?.status!==FINISHING_STATUS)return;finalizeJob(tabId,reported).catch(()=>{});},FINISH_WATCHDOG_MS));}
-async function finalizeJob(tabId,engineResult){clearFinishWatchdog(tabId);let job=jobMemory.get(tabId)||await getSession(jobKey(tabId),{tabId});let inv=await getSession(invKey(tabId));job={...job,...engineResult,updatedAt:Date.now()};if(inv&&engineResult?.resolvedMeta){const m=engineResult.resolvedMeta||{},p={...(inv.patient||{})};if(!p.name&&m.patientName)p.name=m.patientName;if(!p.id&&m.patientId)p.id=m.patientId;if(!p.studyDate&&m.studyDate)p.studyDate=m.studyDate;if(!inv.studyUid&&m.studyUid)inv.studyUid=m.studyUid;inv={...inv,patient:p};await setSession(invKey(tabId),inv);}const known=Boolean(inv?.context?.completeKnown),fullSelection=Boolean(job.allSeriesSelected);if(job.status==='done'&&(!known||!fullSelection))job.status='partial';if(job.status==='done_with_errors'&&(!known||!fullSelection)&&job.completed)job.status='partial';jobMemory.set(tabId,job);scheduleJobFlush(tabId,true);
+function armFinishWatchdog(tabId,reported){
+  clearFinishWatchdog(tabId);
+  const expected=jobMemory.get(tabId);
+  const timer=setTimeout(async()=>{
+    const matches=()=>{const current=jobMemory.get(tabId);return finishTimers.get(tabId)===timer&&current?.status===FINISHING_STATUS&&current.id===expected?.id&&current.attemptId===expected?.attemptId;};
+    if(!matches())return;
+    // BLOBS offscreen documents can outlive a suspended worker. A live context
+    // may still be writing a large sidecar; only absence proves interruption.
+    const alive=await engineIsRunning(tabId).catch(()=>true);
+    if(!matches())return;
+    if(alive){armFinishWatchdog(tabId,reported);return;}
+    await finalizeJob(tabId,{...reported,status:'error',errors:[...(reported.errors||[]),'Download engine closed before final confirmation. Retry to verify saved files.']}).catch(()=>{});
+  },FINISH_WATCHDOG_MS);
+  finishTimers.set(tabId,timer);
+}
+async function finalizeJob(tabId,engineResult){
+  if(finalizingJobs.has(tabId))return;
+  finalizingJobs.add(tabId);
+  try{
+  clearFinishWatchdog(tabId);
+  let job=jobMemory.get(tabId)||await getSession(jobKey(tabId),{tabId});
+  const epoch=analysisEpochs.get(tabId)||0,currentInventory=await getSession(invKey(tabId));
+  const ownsCurrentInventory=()=>epoch===(analysisEpochs.get(tabId)||0)&&jobMatchesInventory(job,invMemory.get(tabId)||currentInventory);
+  let inv=ownsCurrentInventory()?currentInventory:job.studySnapshot||null;
+  job={...job,...engineResult,updatedAt:Date.now()};
+  if(inv&&engineResult?.resolvedMeta){
+    const m=engineResult.resolvedMeta||{},p={...(inv.patient||{})};
+    if(!p.name&&m.patientName)p.name=m.patientName;
+    if(!p.id&&m.patientId)p.id=m.patientId;
+    if(!p.studyDate&&m.studyDate)p.studyDate=m.studyDate;
+    inv={...inv,studyUid:inv.studyUid||m.studyUid||'',patient:p};
+  }
+  const known=Boolean(inv?.context?.completeKnown),fullSelection=Boolean(job.allSeriesSelected);
+  if(job.status==='done'&&(!known||!fullSelection))job.status='partial';
+  if(job.status==='done_with_errors'&&(!known||!fullSelection)&&job.completed)job.status='partial';
 if(inv){
   const completedSopUids = Array.isArray(job.completedSopUids) ? job.completedSopUids : [];
-  const row=await upsertHistory(inv,{status:job.status,lastDownloadAt:Date.now(),completed:job.completed||0,total:job.total||0,failed:job.failed||0,completedSopUids});
-  if(row){inv={...inv,previousDownload:row};await setSession(invKey(tabId),inv);}
+  let row=null;
+  try{row=await upsertHistory(inv,{status:job.status,lastDownloadAt:Date.now(),completed:job.completed||0,total:job.total||0,failed:job.failed||0,completedSopUids});}
+  catch{logEvent('WARN','STORAGE','Download finished, but its history entry could not be saved.',null,{tabId});}
+  if(row)inv={...inv,previousDownload:row};
   try{
     const studyUrl=inv.summary?.currentUrl||inv.context?.url||'';
     if(studyUrl&&job.adapter){
@@ -654,26 +729,50 @@ if(inv){
       });
     }
   }catch{}
-}if(job.status==='done'){const st=await getTabState(tabId);st.tracking='completed';await saveTabState(tabId,st);await cleanupTabInstrumentation(tabId);}chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});if(inv)chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});if(!hasActiveDownloadJobs(tabId)&&(!activeDownloads||activeDownloads.size===0))await setDownloadUi(true);await setBadge(tabId);logEvent(job.status==='done'?'INFO':['partial','cancelled'].includes(job.status)?'WARN':'ERROR','DOWNLOAD',`Kết thúc tải tab ${tabId} [${job.status}]: đã lưu ${job.completed}/${job.total} ảnh (lỗi: ${job.failed||0})`,{tabId,status:job.status,completed:job.completed,total:job.total,failed:job.failed,errors:job.errors?.slice(0,5)},{tabId,url:inv?.summary?.currentUrl||'',studyUid:inv?.studyUid||''});}
+}
+  // History writes can outlive a navigation. Never put the old patient's
+  // inventory back into the current page, or stop discovery for the new study.
+  if(inv&&ownsCurrentInventory())await setSession(invKey(tabId),inv);
+  if(job.status==='done'&&ownsCurrentInventory()){
+    const st=await getTabState(tabId);
+    if(ownsCurrentInventory()){
+      st.tracking='completed';await saveTabState(tabId,st);
+      if(ownsCurrentInventory())await cleanupTabInstrumentation(tabId);
+    }
+  }
+  jobMemory.set(tabId,job);scheduleJobFlush(tabId,true);
+  chrome.runtime.sendMessage({type:'JOB_UPDATED',tabId,job}).catch(()=>{});
+  if(inv&&ownsCurrentInventory())chrome.runtime.sendMessage({type:'INVENTORY_UPDATED',tabId,inventory:inv}).catch(()=>{});
+  if(!hasActiveDownloadJobs(tabId)&&(!activeDownloads||activeDownloads.size===0))await setDownloadUi(true);
+  await setBadge(tabId);
+  logEvent(job.status==='done'?'INFO':['partial','cancelled'].includes(job.status)?'WARN':'ERROR','DOWNLOAD',`Kết thúc tải tab ${tabId} [${job.status}]: đã lưu ${job.completed}/${job.total} ảnh (lỗi: ${job.failed||0})`,{tabId,status:job.status,completed:job.completed,total:job.total,failed:job.failed,errors:job.errors?.slice(0,5)},{tabId,url:inv?.summary?.currentUrl||'',studyUid:inv?.studyUid||''});
+  }finally{finalizingJobs.delete(tabId);}
+}
 async function startJob(tabId,selected,options={}){
+  if(startingJobs.has(tabId)||finalizingJobs.has(tabId))throw new Error('This tab is currently downloading DICOM.');
+  startingJobs.add(tabId);
+  analysisEpochs.set(tabId,(analysisEpochs.get(tabId)||0)+1);
+  try{
   const existing=await getJob(tabId);
-  // A busy job that this worker does not hold in memory was owned by a worker
-  // that is gone, and the offscreen engine died with it. Refusing to start would
-  // leave the tab unable to download anything until it is closed.
-  if(isActiveDownload(existing)&&jobMemory.has(tabId))throw new Error('This tab is currently downloading DICOM.');
+  // Worker suspension loses globals, not the offscreen document. Retry a
+  // persisted busy job only after verifying that its engine context is gone.
+  if(isActiveDownload(existing)&&await engineIsRunning(tabId))throw new Error('This tab is currently downloading DICOM.');
   clearFinishWatchdog(tabId);
   clearTimeout(analyzeTimers.get(tabId));analyzeTimers.delete(tabId);
   const inv=await getSession(invKey(tabId));
   if(!inv)throw new Error('Study not yet recognized.');
+  const sourceContext=analysisContextKey(await getTabState(tabId)),sourceEpoch=analysisEpochs.get(tabId)||0;
   const tasks=await buildTasks(inv,selected);
   if(!tasks.length)throw new Error('No DICOM images in selected series.');
   logEvent('INFO','DOWNLOAD',`Bắt đầu tải DICOM tab ${tabId}: ${selected.length} series (${tasks.length} ảnh, adapter: ${inv.adapter})`,{tabId,selected:selected.length,total:tasks.length,adapter:inv.adapter},{tabId,url:inv?.summary?.currentUrl||''});
   await ensureOffscreen();
+  const currentInventory=await getSession(invKey(tabId)),currentState=await getTabState(tabId);
+  if(sourceContext!==analysisContextKey(currentState)||sourceEpoch!==(analysisEpochs.get(tabId)||0)||!jobMatchesInventory({tabId,studyUid:inv.studyUid,inventoryCreatedAt:inv.createdAt},currentInventory))throw new Error('Study changed while preparing the download. Rescan the current page and try again.');
   const attemptId=crypto.randomUUID();
   const expectedSopUids=[...new Set(tasks.map(t=>String(t.sopInstanceUid||'').trim()).filter(Boolean))];
   const prevCompletedSopUids = (inv.previousDownload && Array.isArray(inv.previousDownload.completedSopUids))
     ? inv.previousDownload.completedSopUids
-    : (Array.isArray(existing?.completedSopUids) ? existing.completedSopUids : []);
+    : (jobMatchesInventory(existing,inv)&&Array.isArray(existing?.completedSopUids) ? existing.completedSopUids : []);
   const baselineCompleted = tasks.filter(t => t.sopInstanceUid && prevCompletedSopUids.includes(String(t.sopInstanceUid).trim())).length;
   const job={
     id:crypto.randomUUID(),
@@ -685,6 +784,8 @@ async function startJob(tabId,selected,options={}){
     attemptIndex:0,
     options,
     studyUid:inv.studyUid||'',
+    inventoryCreatedAt:inv.createdAt||0,
+    studySnapshot:snapshotStudy(inv),
     selectedSeries:selected,
     allSeriesSelected:selected.length===Number(inv.series?.length||0),
     total:tasks.length,
@@ -733,17 +834,25 @@ async function startJob(tabId,selected,options={}){
     throw new Error(r?.error||'Failed to start download engine.');
   }
   return job;
+  }finally{startingJobs.delete(tabId);}
 }
 
 async function cancelJob(tabId){const j=await getJob(tabId);if(!j)return;jobMemory.set(tabId,{...j,status:'cancelling',updatedAt:Date.now()});scheduleJobFlush(tabId,true);await ensureOffscreen();await chrome.runtime.sendMessage({target:'offscreen',type:'CANCEL_ENGINE',tabId}).catch(()=>{});}
 
 async function siteAccessChanged(tabId){await startTracking(tabId,true);return scanTab(tabId);}
-async function currentOverview(tabId){const[state,inventory,job]=await Promise.all([getTabState(tabId),getSession(invKey(tabId)),getJob(tabId)]),summary=isActiveDownload(job)&&inventory?.summary?inventory.summary:await scanTab(tabId);return{summary,state,inventory,job};}
+async function currentOverview(tabId){
+  const[state,inventory,job]=await Promise.all([getTabState(tabId),getSession(invKey(tabId)),getJob(tabId)]);
+  const summary=isActiveDownload(job)||startingJobs.has(tabId)
+    ? inventory?.summary||{tabId,currentUrl:state.currentUrl||'',bestViewerUrl:state.currentUrl||'',confidence:state.confidence||0,tracking:state.tracking,missingOrigins:[],requests:[],frameUrls:state.frameUrls||[]}
+    : await scanTab(tabId);
+  return{summary,state,inventory,job};
+}
 
 async function handleEngineProgress(m){
   const tabId=Number(m.tabId),stored=jobMemory.get(tabId)||await getSession(jobKey(tabId),{tabId,id:m.jobId});
   if(stored.id&&m.jobId&&stored.id!==m.jobId)return;
   if(stored.attemptId&&m.attemptId&&stored.attemptId!==m.attemptId)return;
+  if(stored.status&&!isActiveDownload(stored))return;
   const cumulative=cumulativeAttemptCounters(stored,m);
   const status=progressStatus(stored.status,m.status);
   const job={
@@ -848,7 +957,7 @@ chrome.runtime.onMessage.addListener((m,sender,sendResponse)=>{
 
       if(isPartialOrError&&nextIdx<candidates.length&&old?.status!=='cancelling'){
         const inv=await getSession(invKey(tabId));
-        if(inv){
+        if(jobMatchesInventory(old,inv)){
           for(let candidateIndex=nextIdx;candidateIndex<candidates.length;candidateIndex++){
             const nextAdapterId=candidates[candidateIndex];
             try{

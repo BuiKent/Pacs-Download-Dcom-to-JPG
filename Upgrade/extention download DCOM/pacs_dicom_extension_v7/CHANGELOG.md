@@ -1,3 +1,19 @@
+# 7.2.9
+
+Finish the download-state and performance fixes from 7.2.8:
+
+- Keep overview metadata and job progress independently fresh. Continuous progress no longer starves the first overview, and delayed overview/start responses cannot rewind progress or populate another tab.
+- Refresh the terminal result once per job/status, not once per timestamp. Progress messages do not rebuild the Series editor; the result stays compact until the user chooses to show series.
+- Pause discovery during preparation and download, including analyses already awaiting adapter responses. An active overview never scans all frames, even if inventory is missing.
+- Preserve active inventory only for a verified same-study reload (including ZFP). Navigation to another study clears the current inventory; the old download records its own compact study snapshot without marking the new page completed.
+- Keep finalization active through history writes. The finishing watchdog checks the actual engine and reports interruption when it disappears; it never infers successful completion from a 15-second timeout.
+- Keep the engine registered until lock cleanup settles. A failed History write no longer prevents the authoritative download result from reaching the panel.
+- Verify persisted jobs through the existing offscreen `PING_ENGINE` before allowing a retry. A worker restart does not imply the downloader died, and an idle offscreen document does not imply a job is still running.
+- Keep Resume tied to the original study/selection, including generic captures that have not yet resolved a Study UID. Fix the Mach7 auto-load button's tab reference.
+- Add worker race tests and an unpacked-extension Chromium smoke test; extend panel runtime and browser checks for late responses, stable layout and terminal refresh counts.
+
+Reload the unpacked extension only after current downloads finish, then reopen the panel. Tests use synthetic studies; live PACS authentication and a full ZFP WebSocket capture still need site-specific verification.
+
 # 7.2.8
 
 Fix end-of-job UI state flickering, eliminate cross-tab patient metadata leaks, and harden download resumption:

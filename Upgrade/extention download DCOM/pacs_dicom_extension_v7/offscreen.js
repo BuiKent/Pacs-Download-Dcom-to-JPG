@@ -503,8 +503,9 @@ async function runJob(spec){
   };
   } finally {
     if(job.lockHeartbeat)clearInterval(job.lockHeartbeat);
-    jobs.delete(job.tabId);
-    await queueMetaWrite(job,()=>clearStudyLock(job));
+    // PING_ENGINE must remain running until sidecar/lock cleanup has settled.
+    try{await queueMetaWrite(job,()=>clearStudyLock(job));}
+    finally{jobs.delete(job.tabId);}
   }
 }
 

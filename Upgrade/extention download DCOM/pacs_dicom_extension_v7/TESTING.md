@@ -12,11 +12,27 @@ node tests/test_network_transport.mjs
 node tests/test_dicom_writer.mjs
 node tests/test_download_ui_state.mjs
 node --test tests/test_sidepanel_runtime.mjs
+node --test tests/test_background_download_lifecycle.mjs
+node --test tests/test_offscreen_lifecycle.mjs
 python tests/static_checks.py
 python tests/smoke_sidepanel.py
+python tests/smoke_extension_lifecycle.py
 python tests/validate_dicom_minimal.py tests/writer_raw.dcm
 python tests/validate_dicom_minimal.py tests/writer_jpeg.dcm
 ```
+
+## Page Scan Cost
+
+`test_content_extraction.mjs` also holds a budget. `document.body.textContent`
+inserts no line breaks, so a viewer that builds its DOM in JavaScript hands the
+scan one line of a million characters; an unbounded line skip inside the series
+regex turned that into a quadratic rescan and froze the tab for tens of seconds
+while the study was opening. The SPA fixture at the end of that file scans in
+about 15 ms today and fails the budget long before a reader would feel it.
+
+Anything added to `content.js` that reads the page runs on the reader's main
+thread, in the busiest seconds of the load. Bound every quantifier that walks
+body text, and never assume that text contains newlines.
 
 ## Side Panel Download State
 
@@ -40,6 +56,40 @@ python tests/smoke_sidepanel.py          # add --headed to watch it
 It fails on any console error, and on the two regressions a DOM stub cannot see:
 the progress card moving when an inventory update lands mid-download, and the
 previous patient staying on screen while another tab is being bound.
+
+`test_background_download_lifecycle.mjs` exercises the shipped worker with
+deferred adapter/history calls and deterministic clocks: active-job scan
+suppression, stale analysis rejection, same-study ZFP reloads, navigation during
+preparation/finalization, persisted engine checks and slow sidecar writes.
+`test_offscreen_lifecycle.mjs` keeps cleanup pending and checks the real
+`PING_ENGINE` handler reports the job running until that cleanup settles.
+
+`smoke_extension_lifecycle.py` loads the unpacked extension into a temporary
+Chromium profile with real `chrome.*` APIs. An active overview with no inventory
+must perform zero script injections, and an idle offscreen engine must respond
+to the existing job-status probe. It does not access a live PACS or start a real
+download. Use Playwright's `chromium` channel: the default headless shell does
+not load extensions ([Playwright extension guide](https://playwright.dev/python/docs/chrome-extensions)).
+
+The worker must not use loss of its globals as proof that the downloader died:
+[Chrome worker lifecycle](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle)
+and [offscreen lifetime](https://developer.chrome.com/docs/extensions/reference/api/offscreen#reasons)
+are independent. Likewise, a finalization timeout is not evidence of a successful
+disk write.
+
+### Measured regression checks
+
+- Earlier 7.2.7 browser reproduction: 7 terminal `GET_OVERVIEW` requests in 1.8 s;
+  one-shot fix: 1 final synchronization in that interval. The current runtime
+  test also changes terminal timestamps and requires no extra refresh.
+- Current Chromium panel smoke: progress-card position unchanged after late
+  inventory and progress messages; no console/page errors; newer progress
+  survives a delayed overview.
+- Current unpacked-extension smoke: 0 `executeScript` calls for an active-job
+  overview without cached inventory.
+
+These are synthetic correctness/work-count checks, not an estimate of CPU/RAM
+savings or download speed on the user's live PACS.
 
 ## Generic Discovery Regression
 
@@ -88,4 +138,3 @@ Compares SOPInstanceUID, PixelData SHA-256, and primary geometric tags.
 - Full ZFP `runZfpJob` execution in extension context;
 - Multi-tier auth portals;
 - File System Access permission persistence.
-

@@ -30,13 +30,13 @@ assert.ok(
 
 let bodyTextReads = 0;
 
-function runReport() {
+function runReport(bodyText = BODY_TEXT) {
   const hints = [];
   bodyTextReads = 0;
   const body = {
     get textContent() {
       bodyTextReads += 1;
-      return BODY_TEXT;
+      return bodyText;
     },
   };
   const context = {
@@ -99,4 +99,28 @@ assert.equal(patient.patientName, 'NGUYEN VAN AN', 'patient name must be read pa
 // would quietly restore the freeze this guards against.
 assert.equal(bodyTextReads, 1, `body text must be serialised once per report, was ${bodyTextReads}`);
 
-console.log('Content DOM extraction tests OK');
+// --- A viewer that builds its DOM in JavaScript ---------------------------
+// `textContent` inserts no line breaks, so an SPA viewer - which is every
+// modern one - hands the extractor a single half-megabyte line. While the line
+// skip inside the series regex was unbounded, each of the thousands of "Se:"
+// candidates rescanned the whole page hunting a newline that was not there:
+// the tab answered no click and no scroll for 15 s during the first seconds of
+// a study. Every fixture above carries newlines, which is why the freeze shipped.
+const SPA_ROW = 'Se: 7 Im: 118 / 220 AXIAL T2 TSE 1.5T ';
+const SPA_BODY = SPA_ROW.repeat(30000);
+assert.ok(!SPA_BODY.includes('\n'), 'this fixture is only meaningful without line breaks');
+assert.ok(SPA_BODY.length > 1000000, 'the page must be large enough to expose a quadratic scan');
+
+const spaStarted = Date.now();
+runReport(SPA_BODY);
+const spaElapsed = Date.now() - spaStarted;
+// Bounded, this fixture costs about 15 ms because the work is linear in page
+// size. Unbounded it costs about 11 s, because tripling the page multiplies the
+// work ninefold. The budget sits two orders of magnitude from each side, so it
+// catches the regression without failing on a slow machine.
+assert.ok(
+  spaElapsed < 1000,
+  `scanning a newline-free viewer page must not block the tab, took ${spaElapsed} ms`,
+);
+
+console.log(`Content DOM extraction tests OK (SPA page scan ${spaElapsed} ms)`);

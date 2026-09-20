@@ -120,8 +120,18 @@
     // (`{0,5}?`) so each series still binds to the FIRST count that follows it.
     // A greedy `{0,5}` reaches across the next "Se:" line, stealing that
     // series' image count and dropping the series from the list entirely.
+    //
+    // The line skip itself is bounded too, and that bound is not cosmetic.
+    // `textContent` inserts no line breaks, so a viewer that builds its DOM in
+    // JavaScript - every SPA viewer - hands this one line of half a million
+    // characters. With an unbounded `[^\n]*` each of the thousands of "Se:"
+    // candidates rescanned the whole page five times looking for a newline that
+    // is not there: 15.3 s of frozen tab, measured on a 575k-character page
+    // carrying 14k series markers. Bounded, the same page costs 55 ms and
+    // returns the identical list. A real overlay line is far under 200
+    // characters, so pages that do carry newlines still match as before.
     const fullText = cachedBodyText || (document.body?.textContent || '').slice(0, 100000);
-    const seMatches = [...fullText.matchAll(/Se\s*:\s*(\d+)(?:[^\n]*\n){0,5}?\s*(?:(?:W\/L:[^\n]*\n\s*)?(\d+)\s*\/\s*(\d+))/gi)];
+    const seMatches = [...fullText.matchAll(/Se\s*:\s*(\d+)(?:[^\n]{0,200}\n){0,5}?\s*(?:(?:W\/L:[^\n]{0,200}\n\s*)?(\d+)\s*\/\s*(\d+))/gi)];
     for(const m of seMatches){
       const seNum = m[1];
       const count = Number(m[3]) || 0;

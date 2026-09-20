@@ -44,33 +44,15 @@ assert "startIn:'downloads'" in ui and "id:'pacs-dicom'" in ui
 assert "resolveBulkDicomSaveMode(Boolean(h),requestedMode)" in side
 assert "saveMode:resolveBulkDicomSaveMode(true,options.saveMode)" in bg
 assert "[SAVE_MODE_KEY]:'downloads'" not in side, 'side panel must never restore the unsafe bulk Downloads mode'
-assert 'lastTerminalRefreshKey' in side and 'setTimeout(refresh,250)' not in side, \
-    'a terminal job must not start an endless 250 ms overview refresh loop'
-assert "if(!isActiveDownload(panelJob()))scheduleRefresh(80);" in side, \
-    'inventory progress must not trigger full panel rescans during a download'
-assert 'if(isActiveDownload(await getJob(tabId)))return;' in bg, \
-    'passive discovery analysis must pause while the tab is downloading'
-assert 'isActiveDownload(job)&&inventory?.summary' in bg, \
-    'active-job overview must reuse the captured summary instead of scanning every frame'
-assert bg.count('preserveDownloadContext=isActiveDownload(await getJob(') == 2, \
-    'full-page and same-document navigation must both preserve the active job inventory'
+# Download-state behavior is exercised against actual handlers in
+# test_sidepanel_runtime.mjs and test_background_download_lifecycle.mjs.
+# Source-string checks previously required unsafe navigation preservation and
+# a memory-only start guard, although neither was a valid lifecycle invariant.
 # One vocabulary for "this tab is busy", so a status added to the shared module
 # reaches the badge, the start guard and the tab-removal cleanup at once.
 for src, name in ((bg, 'background.js'), (side, 'sidepanel.js')):
     assert "['preparing','downloading','cancelling']" not in src, (
         name + ' must ask isActiveDownload() instead of listing busy statuses inline')
-# The engine announces its outcome before the sidecar write and before a
-# fallback adapter may restart the job, so only the finalizer may end it.
-assert 'const status=progressStatus(stored.status,m.status);' in bg, (
-    'an engine progress message must not be allowed to end the job by itself')
-assert 'clearFinishWatchdog(tabId);let job=' in bg and bg.count('clearFinishWatchdog(tabId);') >= 3, (
-    'the finishing watchdog must be cleared once the worker owns the outcome')
-assert 'isActiveDownload(existing)&&jobMemory.has(tabId)' in bg, (
-    'a busy job left behind by a dead worker must not block the tab forever')
-assert 'boxes.length?boxes.filter(x=>x.checked).map(x=>x.dataset.id):jobSelectionIds()' in side, (
-    'Resume must fall back to the series the job was started with, not to an unrendered editor')
-assert 'if(Number(tabId)!==Number(t.id))resetPanelContext();' in side, (
-    'binding another tab must drop the previous study, job and selection')
 
 # ---------------------------------------------------------------------------
 # Architecture invariants maintained from v6.2.

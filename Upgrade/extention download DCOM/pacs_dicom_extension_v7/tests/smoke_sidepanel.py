@@ -136,6 +136,7 @@ def job(**overrides):
     base = {
         "id": "smoke-job",
         "tabId": 1,
+        "studyUid": "1.2.826.smoke.PID-1",
         "adapter": "VRAD",
         "status": "downloading",
         "completed": 197,
@@ -289,6 +290,11 @@ def run(headed):
             panel.check("resumeBtn visible", panel.hidden("resumeBtn"), False)
             panel.check("resumeBtn enabled", panel.disabled("resumeBtn"), False)
             panel.check("no rendered checkbox to read", panel.checkbox_ids(), [])
+            settled_requests = len(panel.sent("GET_OVERVIEW"))
+            panel.push({"type": "JOB_UPDATED", "tabId": 1,
+                        "job": dict(finished, updatedAt=6)})
+            page.wait_for_timeout(1800)
+            panel.check("no recurring terminal refresh", len(panel.sent("GET_OVERVIEW")), settled_requests)
             page.click("#resumeBtn", timeout=5000)
             page.wait_for_timeout(400)
             started = panel.sent("START_DOWNLOAD")
@@ -308,11 +314,15 @@ def run(headed):
             panel.activate(2, "https://other-pacs.test/viewer", settle=80)
             panel.check("previous patient cleared at once", panel.shows(shown_name), False)
             panel.check("studyCard hidden at once", panel.hidden("studyCard"), True)
+            panel.check("previous viewer link cleared", panel.text("viewerUrl"), "https://other-pacs.test/viewer")
+            panel.push({"type": "JOB_UPDATED", "tabId": 2,
+                        "job": job(id="other-job", tabId=2, completed=337, updatedAt=7)})
             page.wait_for_timeout(900)
             panel.delay_overview(0)
             panel.check("previous patient still gone", panel.shows(shown_name), False)
             panel.check("no inherited checkbox", panel.checkbox_ids(), [])
             panel.check("statusTitle", panel.text("statusTitle"), "Downloading")
+            panel.check("late overview did not rewind progress", panel.text("progressText"), "337 / 576")
 
             print("6. Console is clean")
             panel.check("console errors", console_errors, [])
