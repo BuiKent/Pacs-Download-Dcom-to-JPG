@@ -55,7 +55,7 @@ function compactCandidate(row){const ct=String(row.contentType||'').split(';')[0
 function renderLearning(){const active=Boolean(state?.learning?.active),rows=[...(state?.learnCandidates||[])].reverse();show('learnCard',!isActiveDownload(panelJob())&&!inventory&&state?.tracking==='watching');if($('learnCard').classList.contains('hidden'))return;$('learnToggleBtn').textContent=active?'Stop learning':'Start learning';$('learnText').textContent=active?`${rows.length} requests recorded. Interact with viewer, then pick candidate.`:'Enable when site is not yet supported.';const el=$('learnList');el.textContent='';if(!active&&!rows.length){el.innerHTML='<div class="empty">No learning requests captured yet.</div>';return;}for(const row of rows.slice(0,24)){const item=document.createElement('div');item.className='learn-item';const info=document.createElement('div');info.className='learn-info';const name=document.createElement('div');name.className='learn-name';name.textContent=row.display||row.url||'Request';const meta=document.createElement('div');meta.className='learn-meta';meta.textContent=compactCandidate(row);info.append(name,meta);const acts=document.createElement('div');acts.className='learn-actions';const dicom=document.createElement('button');dicom.textContent='DICOM';dicom.title='Mark as DICOM endpoint';dicom.addEventListener('click',()=>learnCandidate(row,'dicom'));const manifest=document.createElement('button');manifest.textContent='Manifest';manifest.title='Mark as JSON containing image list/URLs';manifest.addEventListener('click',()=>learnCandidate(row,'manifest'));acts.append(dicom,manifest);item.append(info,acts);el.append(item);}}
 async function learnCandidate(row,role){try{const r=await send('LEARN_CANDIDATE',{tabId,url:row.url,role});if(role==='dicom')toast('Learned DICOM endpoint.');else toast(r.result?.valid?`Learned manifest · ${r.result.valid} DICOM`:'Saved manifest template.');await refresh();}catch(e){toast(e.message||String(e),true);}}
 function renderStatus(){
-  const conf=Number(summary?.confidence||state?.confidence||0),ready=Boolean(inventory?.series?.length),missing=summary?.missingOrigins||[],trimmed=Boolean(state?.truncated||summary?.storageTruncated||inventory?.context?.storageTruncated),activeJob=panelJob(),phase=panelPhase({job:activeJob,hasInventory:ready,tracking:state?.tracking,confidence:conf});
+  const conf=Number(summary?.confidence||state?.confidence||0),ready=Boolean(inventory?.series?.length),missing=summary?.missingOrigins||[],trimmed=Boolean(state?.truncated||summary?.storageTruncated||inventory?.context?.storageTruncated||state?.dicomwebPayloadsTruncated),activeJob=panelJob(),phase=panelPhase({job:activeJob,hasInventory:ready,tracking:state?.tracking,confidence:conf});
   if(phase==='downloading'){
     const total=Number(activeJob?.total)||0,done=Number(activeJob?.completed||0)+Number(activeJob?.failed||0),pct=total?Math.min(100,Math.round(done*100/total)):0;
     $('scoreText').textContent=total?`${pct}%`:'';
@@ -189,7 +189,20 @@ function renderInventory(){
     main.append(title,meta);
     const count=document.createElement('span');
     count.className='series-count';
-    count.textContent=Number.isFinite(s.capturedImageCount)?`${s.capturedImageCount}/${s.imageCount||'?'} captured`:(s.imageCount?`${s.imageCount} images`:'? images');
+    const isCaptured=Number.isFinite(s.capturedImageCount);
+    count.textContent=isCaptured?`${s.capturedImageCount}/${s.imageCount||'?'} captured`:(s.imageCount?`${s.imageCount} images`:'? images');
+    if(isCaptured){
+      if(s.downloadReady===false){
+        count.classList.add('uncaptured');
+        count.title='No images captured yet. Load series in viewer.';
+      }else if(s.captureComplete===false||(s.imageCount&&s.capturedImageCount<s.imageCount)){
+        count.classList.add('partial');
+        count.title=`Partially captured (${s.capturedImageCount}/${s.imageCount||'?'}). Scroll in viewer to capture remaining images.`;
+      }else{
+        count.classList.add('complete');
+        count.title=`All images captured (${s.capturedImageCount}/${s.imageCount||s.capturedImageCount}).`;
+      }
+    }
     row.append(cb,main,count);
     list.append(row);
   }

@@ -68,6 +68,10 @@ class Element {
       return descendants.filter(child => child.tagName === 'input' && child.type === 'checkbox'
         && (!selector.endsWith(':checked') || child.checked));
     }
+    if (selector.startsWith('.')) {
+      const cls = selector.slice(1);
+      return descendants.filter(child => child.classList.contains(cls));
+    }
     return descendants.filter(child => child.tagName === selector);
   }
   descendants() { return this.children.flatMap(child => [child, ...child.descendants()]); }
@@ -391,3 +395,36 @@ test('Resume cannot reuse checkboxes from another study even when series IDs coi
   panel.evaluate('renderInventory(); renderJob()');
   assert.equal(panel.element('resumeBtn').disabled, true);
 });
+
+test('dicomwebPayloadsTruncated triggers Partial cache warning chip in sidepanel status', () => {
+  const panel = createPanel();
+  const ov = overview(null, fixtureInventory());
+  ov.state.dicomwebPayloadsTruncated = true;
+  panel.seed(ov);
+  panel.evaluate('renderStatus()');
+  assert.equal(panel.element('statusTitle').textContent, 'Ready · rescan recommended');
+  assert.equal(panel.element('siteChip').textContent, 'Partial cache');
+});
+
+test('partially captured series gets partial styling and informative tooltip', () => {
+  const panel = createPanel();
+  const inv = {
+    ...fixtureInventory(),
+    adapter: 'MACH7',
+    series: [
+      { id: 's1', number: '1', description: 'T1', imageCount: 20, capturedImageCount: 5, captureComplete: false, downloadReady: true },
+      { id: 's2', number: '2', description: 'T2', imageCount: 20, capturedImageCount: 20, captureComplete: true, downloadReady: true },
+    ],
+  };
+  panel.seed(overview(null, inv));
+  panel.evaluate('renderInventory()');
+  const counts = panel.element('seriesList').querySelectorAll('.series-count');
+  assert.equal(counts[0].textContent, '5/20 captured');
+  assert.equal(counts[0].classList.contains('partial'), true);
+  assert.ok(counts[0].title.includes('Partially captured (5/20)'));
+
+  assert.equal(counts[1].textContent, '20/20 captured');
+  assert.equal(counts[1].classList.contains('complete'), true);
+  assert.ok(counts[1].title.includes('All images captured (20/20)'));
+});
+

@@ -638,7 +638,7 @@ async function analyzeTab(tabId){
       const imagesTotal = Array.isArray(inv.series) ? inv.series.reduce((s, x) => s + (Number(x.imageCount) || 0), 0) : 0;
       logEvent('INFO','DISCOVERY',`Nhận diện thành công ca chụp tab ${tabId}: ${seriesTotal} series (~${imagesTotal} ảnh, adapter: ${inv.adapter})`,{adapter:inv.adapter,seriesCount:seriesTotal,imageCount:imagesTotal},{tabId,url:currentUrl});
       inv.tabId=tabId;inv.summary=summary;inv.createdAt=Date.now();
-      if(state.truncated){
+      if(state.truncated||state.dicomwebPayloadsTruncated){
         inv.context={...(inv.context||{}),completeKnown:false,storageTruncated:true};
         inv.storageWarning='Chrome đã rút gọn dữ liệu phát hiện vì giới hạn bộ nhớ. Hãy tải lại trang PACS và quét lại để kiểm tra đủ series.';
       }
