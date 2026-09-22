@@ -170,6 +170,36 @@ function createPanel() {
   };
 }
 
+test('Mach7 advertised images are not selectable until captured',async()=>{
+  const panel=createPanel(),inv={...fixtureInventory(),adapter:'MACH7',series:[{
+    id:'series-1',imageCount:20,capturedImageCount:0,downloadReady:false
+  }]};
+  panel.seed(overview(null,inv));
+  panel.evaluate('renderStatus();renderInventory();');
+  assert.equal(panel.element('statusTitle').textContent,'Waiting for images');
+  assert.equal(panel.element('seriesList').querySelector('input').disabled,true);
+  assert.equal(panel.element('downloadBtn').disabled,true);
+  await panel.element('selectAllBtn').click();
+  await panel.element('downloadBtn').click();
+  assert.equal(panel.requests.filter(x=>x.type==='START_DOWNLOAD').length,0);
+  const captured={...inv,series:[{...inv.series[0],capturedImageCount:1,downloadReady:true}]};
+  await panel.emit({type:'INVENTORY_UPDATED',tabId:1,inventory:captured});
+  assert.equal(panel.element('seriesList').querySelector('input').disabled,false);
+  await panel.element('selectAllBtn').click();
+  assert.equal(panel.element('downloadBtn').disabled,false);
+  assert.match(panel.element('stickyTitle').textContent,/1 captured/);
+});
+
+test('Mach7 internal identity matches reanalysis without masquerading as a DICOM UID',()=>{
+  const panel=createPanel();
+  panel.seed(overview(fixtureJob({studyUid:'',studyKey:'mach7:abc',inventoryCreatedAt:10}),{
+    ...fixtureInventory(),studyUid:'',createdAt:20,context:{studyKey:'mach7:abc'}
+  }));
+  assert.equal(panel.evaluate('jobMatchesInventory()'),true);
+  panel.evaluate("inventory.context.studyKey='mach7:other'");
+  assert.equal(panel.evaluate('jobMatchesInventory()'),false);
+});
+
 test('active download owns the status and hides discovery/series controls', () => {
   const panel = createPanel();
   panel.seed(overview(fixtureJob()));

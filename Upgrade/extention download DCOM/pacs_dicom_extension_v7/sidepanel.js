@@ -64,7 +64,12 @@ function renderStatus(){
     chip($('siteChip'),'Downloading','neutral');
   }else{
     $('scoreText').textContent=conf?`${conf}%`:'';
-    if(phase==='ready'&&trimmed){$('statusTitle').textContent='Ready · rescan recommended';$('statusText').textContent=inventory?.storageWarning||'Chrome trimmed captured requests; reload the PACS page and scan again to verify every series.';chip($('siteChip'),'Partial cache','warn');}
+    if(phase==='ready'&&inventory.series.every(s=>s.downloadReady===false)){
+      $('statusTitle').textContent='Waiting for images';
+      $('statusText').textContent='Series detected. Load images in the viewer before downloading.';
+      chip($('siteChip'),'Capture needed','warn');
+    }
+    else if(phase==='ready'&&trimmed){$('statusTitle').textContent='Ready · rescan recommended';$('statusText').textContent=inventory?.storageWarning||'Chrome trimmed captured requests; reload the PACS page and scan again to verify every series.';chip($('siteChip'),'Partial cache','warn');}
     else if(phase==='ready'){$('statusTitle').textContent='Ready';$('statusText').textContent=`${inventory.adapter} · ${inventory.series.length} series`;chip($('siteChip'),'PACS','good');}
     else if(phase==='tracking'){$('statusTitle').textContent='Tracking';$('statusText').textContent='Waiting for manifest or DICOM from viewer';chip($('siteChip'),'Tracking','warn');}
     else if(phase==='candidate'){$('statusTitle').textContent='Possible PACS';$('statusText').textContent=missing.length?'Grant site permission to analyze':'Click Track tab';chip($('siteChip'),'PACS?','warn');}
@@ -92,6 +97,7 @@ function renderLink(){
 function jobMatchesInventory(){
   if(!inventory||!job||Number(job.tabId)!==Number(tabId))return false;
   if(job.studyUid&&inventory.studyUid)return job.studyUid===inventory.studyUid;
+  if(job.studyKey&&inventory.context?.studyKey)return job.studyKey===inventory.context.studyKey;
   // Generic discovery may learn the Study UID only after downloading a file.
   // In that case match the captured inventory, not merely the tab or series IDs.
   return Boolean(job.inventoryCreatedAt&&job.inventoryCreatedAt===inventory.createdAt);
@@ -104,6 +110,31 @@ function previousResult(){
 }
 function fillStudyCard(){$('studySub').textContent=inventory.studyUid||inventory.patient?.description||'—';chip($('adapterChip'),inventory.adapter||'DICOM','good');$('patientName').textContent=fmtName(inventory.patient?.name)||'—';$('patientId').textContent=inventory.patient?.id||'—';$('studyDate').textContent=fmtDate(inventory.patient?.studyDate);$('seriesCount').textContent=String(inventory.series?.length||0);}
 let lastRenderedStudyKey='';
+let mach7Capture=null;
+function mach7CaptureKey(){return `${tabId}:${contextRevision}:${inventory?.context?.studyKey||inventory?.studyUid||activeTabUrl}`;}
+function renderMach7Note(){
+  const key=mach7CaptureKey();
+  if(mach7Capture?.key!==key)mach7Capture={key,busy:false,message:''};
+  const capture=mach7Capture,note=$('adapterNote');
+  note.textContent='Mach7: load series in the viewer to capture their DICOM links. Only captured images can be downloaded. ';
+  const button=document.createElement('button');
+  button.id='btnMach7Autofetch';button.className='btn secondary';
+  button.textContent=capture.busy?'Loading series...':capture.message||'Load all series in viewer';
+  button.disabled=capture.busy;
+  button.addEventListener('click',async()=>{
+    if(capture.busy)return;
+    const requestedTab=tabId;capture.busy=true;renderMach7Note();
+    try{
+      const response=await chrome.tabs.sendMessage(requestedTab,{type:'AUTOFETCH_MACH7_SERIES'});
+      capture.message=`Requested ${Number(response?.count)||0} series. Load again`;
+    }catch{capture.message='Retry loading series';}
+    finally{
+      capture.busy=false;
+      if(inventory?.adapter==='MACH7'&&mach7Capture===capture&&mach7CaptureKey()===key)renderMach7Note();
+    }
+  });
+  note.append(button);
+}
 function renderInventory(){
   if(!shouldShowInventoryEditor(panelJob())){show('doneCard',false);show('studyCard',false);show('seriesCard',false);show('stickyBar',false);show('partialBanner',false);return;}
   if(!inventory){show('doneCard',false);show('studyCard',false);show('seriesCard',false);show('stickyBar',false);show('partialBanner',false);return;}
@@ -122,27 +153,9 @@ function renderInventory(){
   if(prev&&prev.status!=='done'&&prev.lastDownloadAt)$('partialBanner').textContent=`Previous run: ${prev.completed||0}/${prev.total||'?'} images · retry will skip existing files.`;
   show('adapterNote',inventory.adapter==='ZFP'||inventory.adapter==='MACH7');
   if(inventory.adapter==='ZFP')$('adapterNote').textContent='GE viewer does not support on-demand image fetching. The extension captures images loaded by the viewer itself, so this tab will reload automatically — keep tab untouched during download.';
-  else if(inventory.adapter==='MACH7'){
-    const note=$('adapterNote');
-    note.innerHTML='Mach7 Diagnostic Studio: Nhấp hoặc kéo các series từ thanh thumbnail vào màn hình để extension nhận đủ toàn bộ các series. <button id="btnMach7Autofetch" style="margin-top:6px;display:block;width:100%;padding:5px 8px;font-size:12px;font-weight:600;cursor:pointer;background:#2563eb;color:#fff;border:none;border-radius:4px;">⚡ Tự động nạp toàn bộ Series</button>';
-    const btn = note.querySelector('#btnMach7Autofetch');
-    if(btn){
-      btn.onclick = async (e) => {
-        e.preventDefault();
-        btn.textContent = '⏳ Đang nạp các series...';
-        btn.disabled = true;
-        try {
-          const res = await chrome.tabs.sendMessage(tabId, {type: 'AUTOFETCH_MACH7_SERIES'});
-          btn.textContent = `✓ Đã nạp ${res?.count || ''} series`;
-        } catch(_) {
-          btn.textContent = '⚡ Thử lại nạp Series';
-          btn.disabled = false;
-        }
-      };
-    }
-  }
+  else if(inventory.adapter==='MACH7')renderMach7Note();
 
-  const currentStudyKey=inventory.studyUid||`${inventory.patient?.id||''}_${inventory.patient?.studyDate||''}`;
+  const currentStudyKey=inventoryStudyKey();
   const isSameStudy=(currentStudyKey&&currentStudyKey===lastRenderedStudyKey);
   const existingCbs=$('seriesList').querySelectorAll('input[type=checkbox]');
   const hadUserSelection=isSameStudy&&existingCbs.length>0;
@@ -157,7 +170,8 @@ function renderInventory(){
     row.className='series-row';
     const cb=document.createElement('input');
     cb.type='checkbox';
-    cb.checked=hadUserSelection?currentCheckedIds.has(s.id):jobSelected.size?jobSelected.has(s.id):true;
+    cb.disabled=s.downloadReady===false;
+    cb.checked=!cb.disabled&&(hadUserSelection?currentCheckedIds.has(s.id):jobSelected.size?jobSelected.has(s.id):true);
     cb.dataset.id=s.id;
     cb.addEventListener('change',updateSelected);
     const main=document.createElement('div');
@@ -175,24 +189,30 @@ function renderInventory(){
     main.append(title,meta);
     const count=document.createElement('span');
     count.className='series-count';
-    count.textContent=s.imageCount?`${s.imageCount} images`:'? images';
+    count.textContent=Number.isFinite(s.capturedImageCount)?`${s.capturedImageCount}/${s.imageCount||'?'} captured`:(s.imageCount?`${s.imageCount} images`:'? images');
     row.append(cb,main,count);
     list.append(row);
   }
   updateSelected();
 }
-function inventoryStudyKey(){return inventory?.studyUid||`${inventory?.patient?.id||''}_${inventory?.patient?.studyDate||''}`;}
-function jobSelectionIds(){return jobMatchesInventory()&&Array.isArray(job.selectedSeries)?job.selectedSeries.filter(id=>inventory.series?.some(s=>s.id===id)):[];}
+// A study with neither a DICOM UID nor an adapter key is still the SAME
+// study across re-analyses; only a tab bind or TAB_CONTEXT_CHANGED means a
+// different one. Keying on `createdAt` made every INVENTORY_UPDATED look
+// like a new study, so a routine re-analysis re-ticked the series the
+// reader had just excluded, and `stillCurrent()` abandoned a download that
+// was waiting on the folder picker.
+function inventoryStudyKey(){return inventory?.studyUid||inventory?.context?.studyKey||`snapshot:${tabId}:${contextRevision}`;}
+function jobSelectionIds(){return jobMatchesInventory()&&Array.isArray(job.selectedSeries)?job.selectedSeries.filter(id=>inventory.series?.some(s=>s.id===id&&s.downloadReady!==false)):[];}
 function selectedIds(){
   if(!inventory)return [];
   const boxes=[...$('seriesList').querySelectorAll('input[type=checkbox]')];
-  if(boxes.length&&lastRenderedStudyKey===inventoryStudyKey())return boxes.filter(x=>x.checked).map(x=>x.dataset.id);
+  if(boxes.length&&lastRenderedStudyKey===inventoryStudyKey())return boxes.filter(x=>x.checked&&!x.disabled).map(x=>x.dataset.id);
   return jobSelectionIds();
 }
 function updateSelected(){
-  const ids=selectedIds(),sel=(inventory?.series||[]).filter(s=>ids.includes(s.id)),images=sel.reduce((n,s)=>n+(Number(s.imageCount)||0),0);
+  const ids=selectedIds(),sel=(inventory?.series||[]).filter(s=>ids.includes(s.id)),images=sel.reduce((n,s)=>n+(Number(s.capturedImageCount??s.imageCount)||0),0);
   $('selectedSummary').textContent=`${ids.length}/${inventory?.series?.length||0} series${images?` · ~${images} images`:''}`;
-  $('stickyTitle').textContent=`${ids.length} series${images?` · ~${images} images`:''}`;
+  $('stickyTitle').textContent=`${ids.length} series${images?` · ${images} ${inventory?.adapter==='MACH7'?'captured':'images'}`:''}`;
   $('stickySub').textContent='Name - ID - Date / Series';
   const isBusy=isActiveDownload(panelJob());
   if(isBusy){
@@ -420,7 +440,7 @@ $('trackBtn').addEventListener('click',async()=>{if($('trackBtn').disabled)retur
 $('scanBtn').addEventListener('click',async()=>{if($('scanBtn').disabled)return;$('scanBtn').disabled=true;const old=$('scanBtn').textContent;$('scanBtn').innerHTML='<span class="spinner dark"></span> Scanning...';setTopLoader(true);try{await send('ANALYZE_TAB',{tabId});await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('scanBtn').textContent=old;renderStatus();setTopLoader(isActiveDownload(panelJob()));}});
 $('deepScanBtn').addEventListener('click',async()=>{if($('deepScanBtn').disabled)return;$('deepScanBtn').disabled=true;const old=$('deepScanBtn').textContent;$('deepScanBtn').innerHTML='<span class="spinner dark"></span> Deep scanning...';setTopLoader(true);try{const r=await send('DEEP_SCAN',{tabId});toast(r.valid?.length?`Identified ${r.valid.length} DICOM endpoints.`:'No DICOM endpoints verified.',!r.valid?.length);await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('deepScanBtn').disabled=false;$('deepScanBtn').textContent=old;setTopLoader(false);}});
 $('learnToggleBtn').addEventListener('click',async()=>{if($('learnToggleBtn').disabled)return;$('learnToggleBtn').disabled=true;try{if(state?.learning?.active)await send('STOP_LEARNING',{tabId});else{if((summary?.missingOrigins||[]).length)await grantAccess();await send('START_LEARNING',{tabId});}await refresh();}catch(e){toast(e.message||String(e),true);}finally{$('learnToggleBtn').disabled=false;}});
-$('selectAllBtn').addEventListener('click',()=>{$('seriesList').querySelectorAll('input').forEach(x=>x.checked=true);updateSelected();});
+$('selectAllBtn').addEventListener('click',()=>{$('seriesList').querySelectorAll('input').forEach(x=>x.checked=!x.disabled);updateSelected();});
 $('selectNoneBtn').addEventListener('click',()=>{$('seriesList').querySelectorAll('input').forEach(x=>x.checked=false);updateSelected();});
 $('downloadBtn').addEventListener('click',startDownload);
 $('resumeBtn').addEventListener('click',startDownload);

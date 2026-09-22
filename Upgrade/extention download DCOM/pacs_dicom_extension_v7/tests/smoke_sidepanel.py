@@ -202,6 +202,12 @@ class Panel:
             ".map(x => x.dataset.id)"
         )
 
+    def checked_ids(self):
+        return self.page.evaluate(
+            "() => [...document.querySelectorAll('#seriesList input[type=checkbox]')]"
+            ".filter(x => x.checked).map(x => x.dataset.id)"
+        )
+
     def set_overview(self, value):
         self.page.evaluate("value => window.__smoke.setOverview(value)", value)
 
@@ -324,7 +330,71 @@ def run(headed):
             panel.check("statusTitle", panel.text("statusTitle"), "Downloading")
             panel.check("late overview did not rewind progress", panel.text("progressText"), "337 / 576")
 
-            print("6. Console is clean")
+            print("6. Mach7 distinguishes advertised images from captured images")
+            mach7 = inventory("SYNTHETIC^MACH7", "PID-3")
+            mach7.update(adapter="MACH7", studyUid="", createdAt=10, context={"studyKey": "mach7:fixture"})
+            mach7["series"] = [{"id": "mach7-series", "number": 1, "description": "Synthetic series",
+                                "imageCount": 20, "capturedImageCount": 0, "downloadReady": False}]
+            panel.set_overview(overview(None, mach7))
+            panel.activate(3, "https://pacs.test/ClinicalStudio/Procedures/ProcedureComposite?ID=fixture")
+            panel.check("capture status", panel.text("statusTitle"), "Waiting for images")
+            panel.check("uncaptured series disabled", page.locator("#seriesList input").is_disabled(), True)
+            page.click("#selectAllBtn")
+            panel.check("uncaptured download disabled", panel.disabled("downloadBtn"), True)
+            panel.check("capture count", page.locator(".series-count").inner_text(), "0/20 captured")
+
+            page.evaluate("""() => {
+                chrome.tabs.sendMessage = () => new Promise(resolve => { window.finishMach7Capture = resolve; });
+            }""")
+            page.click("#btnMach7Autofetch")
+            panel.check("capture busy", panel.disabled("btnMach7Autofetch"), True)
+            panel.push({"type": "INVENTORY_UPDATED", "tabId": 3, "inventory": mach7})
+            panel.check("inventory update preserves capture busy", panel.disabled("btnMach7Autofetch"), True)
+            page.evaluate("window.finishMach7Capture({count: 1})")
+            page.wait_for_timeout(100)
+            mach7["series"][0].update(capturedImageCount=1, downloadReady=True)
+            panel.set_overview(overview(None, mach7))
+            panel.push({"type": "INVENTORY_UPDATED", "tabId": 3, "inventory": mach7})
+            page.click("#selectAllBtn")
+            panel.check("captured series enabled", page.locator("#seriesList input").is_disabled(), False)
+            panel.check("captured download enabled", panel.disabled("downloadBtn"), False)
+            panel.check("partial captured count", page.locator(".series-count").inner_text(), "1/20 captured")
+            page.click("#downloadBtn")
+            page.wait_for_timeout(200)
+            panel.check("captured series selected", panel.sent("START_DOWNLOAD")[-1].get("selectedSeries"), ["mach7-series"])
+
+            print("7. Re-analysing a study with no UID keeps the reader's series selection")
+            # Generic discovery has no StudyInstanceUID until a DICOM header is
+            # parsed, and no adapter study key either. Every captured image
+            # reschedules an analysis, so the same study arrives again with a
+            # fresh createdAt while the reader is still ticking boxes.
+            anon = inventory("SYNTHETIC^GENERIC", "PID-4")
+            anon.update(adapter="GENERIC", studyUid="", createdAt=20, context={})
+            panel.set_overview(overview(None, anon))
+            panel.activate(4, "https://pacs.test/generic-viewer")
+            panel.check("both series rendered", panel.checkbox_ids(), ["series-1", "series-2"])
+            page.click('#seriesList input[data-id="series-1"]')
+            panel.check("localizer unticked", panel.checked_ids(), ["series-2"])
+            reanalysed = dict(anon, createdAt=21)
+            panel.set_overview(overview(None, reanalysed))
+            panel.push({"type": "INVENTORY_UPDATED", "tabId": 4, "inventory": reanalysed})
+            panel.check("re-analysis keeps the selection", panel.checked_ids(), ["series-2"])
+            page.click("#downloadBtn")
+            page.wait_for_timeout(400)
+            panel.check("download carries the reader's selection",
+                        panel.sent("START_DOWNLOAD")[-1].get("selectedSeries"), ["series-2"])
+
+            # A study change is announced, and it still clears the selection:
+            # one patient's choice may never be applied to another's series.
+            other = inventory("SYNTHETIC^GENERIC^TWO", "PID-5")
+            other.update(adapter="GENERIC", studyUid="", createdAt=22, context={})
+            panel.set_overview(overview(None, other))
+            panel.push({"type": "TAB_CONTEXT_CHANGED", "tabId": 4, "reason": "study"})
+            panel.push({"type": "INVENTORY_UPDATED", "tabId": 4, "inventory": other})
+            panel.check("another study starts fully selected",
+                        panel.checked_ids(), ["series-1", "series-2"])
+
+            print("8. Console is clean")
             panel.check("console errors", console_errors, [])
             panel.check("uncaught exceptions", page_errors, [])
 

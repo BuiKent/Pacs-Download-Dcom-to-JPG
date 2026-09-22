@@ -8,6 +8,7 @@ import {resolveBulkDicomSaveMode} from './lib/save_policy.js';
 import {appendLog,getLogsFromStorage,clearAllLogs,extractPacsSite} from './lib/logger.js';
 import {TRACKED_TABS_KEY,stateIsTracked,shouldInspectRequest,serializeTrackedTabs,deserializeTrackedTabs,mergeRestoredTabs} from './lib/tracked_tabs.js';
 import {persistTabState} from './lib/tab_state_store.js';
+import {cacheDicomwebPayload} from './lib/dicomweb_payloads.js';
 import {isActiveDownload,progressStatus,FINISHING_STATUS} from './lib/download_ui_state.js';
 
 const TAB_PREFIX='pacs6_tab_',INV_PREFIX='pacs6_inv_',JOB_PREFIX='pacs6_job_',HISTORY_KEY='pacs6_history',RECIPES_KEY='pacs6_site_recipes';
@@ -91,10 +92,27 @@ async function loadRecipes(){
   learnedRecipes=RecipeStoreV2.purgeExpired(learnedRecipes);
   learnedRecipes=RecipeStoreV2.pruneCapacity(learnedRecipes, 200);
 }
+let recipesLoadPromise=null,recipeWriteQueue=Promise.resolve();
+function ensureRecipesLoaded(){
+  if(!recipesLoadPromise)recipesLoadPromise=loadRecipes().catch(error=>{
+    recipesLoadPromise=null;
+    throw error;
+  });
+  return recipesLoadPromise;
+}
+// Normal MV3 event wake-ups do not run onStartup/onInstalled. Never write an
+// empty map over storage if this initial read is slow or fails.
+ensureRecipesLoaded().catch(()=>{});
+function persistRecipes(){
+  const write=recipeWriteQueue.catch(()=>{}).then(()=>chrome.storage.local.set({[RECIPES_KEY]:learnedRecipes}));
+  recipeWriteQueue=write;
+  return write;
+}
 function learnedRole(raw,role){const sig=pathSignature(raw);if(!sig)return false;try{return recipeForOrigin(new URL(raw).origin)[role]?.includes(sig)||false;}catch{return false;}}
 function isLearnedUrl(raw){return learnedRole(raw,'dicom');}
 function isLearnedManifestUrl(raw){return learnedRole(raw,'manifest');}
 async function learnUrl(raw,role='dicom'){
+  await ensureRecipesLoaded();
   const sig=pathSignature(raw);
   if(!sig||!['dicom','manifest'].includes(role))return;
   let origin='';
@@ -106,12 +124,14 @@ async function learnUrl(raw,role='dicom'){
   learnedRecipes[origin]=recipe;
   learnedRecipes=RecipeStoreV2.purgeExpired(learnedRecipes);
   learnedRecipes=RecipeStoreV2.pruneCapacity(learnedRecipes, 200);
-  await chrome.storage.local.set({[RECIPES_KEY]:learnedRecipes});
+  await persistRecipes();
 }
 async function recordCapabilities(rawUrl,patch={}){
-  if(!rawUrl)return;try{const origin=new URL(rawUrl).origin,recipe=recipeForOrigin(origin),old=recipe.capabilities||{},next={...old};for(const[k,v]of Object.entries(patch)){if(Array.isArray(v))next[k]=[...new Set([...(Array.isArray(old[k])?old[k]:[]),...v])].slice(-20);else next[k]=v;}next.updatedAt=Date.now();recipe.capabilities=next;recipe.updatedAt=Date.now();learnedRecipes[origin]=recipe;await chrome.storage.local.set({[RECIPES_KEY]:learnedRecipes});}catch{}
+  await ensureRecipesLoaded();
+  if(!rawUrl)return;try{const origin=new URL(rawUrl).origin,recipe=recipeForOrigin(origin),old=recipe.capabilities||{},next={...old};for(const[k,v]of Object.entries(patch)){if(Array.isArray(v))next[k]=[...new Set([...(Array.isArray(old[k])?old[k]:[]),...v])].slice(-20);else next[k]=v;}next.updatedAt=Date.now();recipe.capabilities=next;recipe.updatedAt=Date.now();learnedRecipes[origin]=recipe;await persistRecipes();}catch{}
 }
 async function recordAdapterOutcome(urlOrOrigin,adapterId,outcome={}){
+  await ensureRecipesLoaded();
   if(!urlOrOrigin||!adapterId)return;
   const now=Date.now();
   let origin='';
@@ -145,7 +165,7 @@ async function recordAdapterOutcome(urlOrOrigin,adapterId,outcome={}){
 
   learnedRecipes=RecipeStoreV2.purgeExpired(learnedRecipes, now);
   learnedRecipes=RecipeStoreV2.pruneCapacity(learnedRecipes, 200);
-  await chrome.storage.local.set({[RECIPES_KEY]:learnedRecipes});
+  await persistRecipes();
 }
 /** Adapter ranking score for this link pattern based on previous downloads. */
 function adapterScore(ad){
@@ -194,11 +214,26 @@ function defaultState(tabId){return{tabId,navUrls:[],pendingNavUrls:[],frameUrls
 async function getTabState(tabId){return getSession(tabKey(tabId),defaultState(tabId));}
 async function saveTabState(tabId,s){s.updatedAt=Date.now();await setSession(tabKey(tabId),s);}
 function pushUnique(list,value,max=MAX_NAV){if(!value)return;const i=list.indexOf(value);if(i>=0)list.splice(i,1);list.push(value);if(list.length>max)list.splice(0,list.length-max);}
+const directUrlIndexes=new WeakMap();
+function rememberDirectUrl(state,url){
+  const urls=state.genericDirectUrls||(state.genericDirectUrls=[]);
+  let index=directUrlIndexes.get(state);
+  // Manifest and deep-probe discovery replace the array. Its old membership
+  // cache must not suppress a URL that was evicted from the replacement.
+  if(!index||index.urls!==urls){index={urls,values:new Set(urls)};directUrlIndexes.set(state,index);}
+  if(!url||index.values.has(url))return;
+  urls.push(url);index.values.add(url);
+  while(urls.length>6000)index.values.delete(urls.shift());
+}
 
 async function getHistory(){const o=await chrome.storage.local.get(HISTORY_KEY);return Array.isArray(o[HISTORY_KEY])?o[HISTORY_KEY]:[];}
-function historyKey(inv){if(inv?.studyUid)return`study|${inv.studyUid}`;const p=inv?.patient||{};return p.id&&p.studyDate?`patient|${p.id}|${p.studyDate}|${p.description||''}`:'';}
-async function findHistory(inv){const h=await getHistory();if(inv?.studyUid){const x=h.find(v=>v.studyUid===inv.studyUid);if(x)return x;}const p=inv?.patient||{};if(p.id&&p.studyDate){let c=h.filter(v=>v.patientId===p.id&&v.studyDate===p.studyDate);if(p.accession)c=c.filter(v=>!v.accession||v.accession===p.accession);if(p.description)c=c.filter(v=>!v.description||v.description===p.description);return c.length===1?c[0]:null;}return null;}
-async function upsertHistory(inv,patch={}){if(!inv)return null;const key=historyKey(inv);if(!key)return null;const list=await getHistory();let i=list.findIndex(x=>x.key===key||(inv.studyUid&&x.studyUid===inv.studyUid));const old=i>=0?list[i]:{};const next={...old,key,adapter:inv.adapter||old.adapter||'',studyUid:inv.studyUid||old.studyUid||'',patientName:inv.patient?.name||old.patientName||'',patientId:inv.patient?.id||old.patientId||'',studyDate:inv.patient?.studyDate||old.studyDate||'',description:inv.patient?.description||old.description||'',accession:inv.patient?.accession||old.accession||'',seriesCount:inv.series?.length||old.seriesCount||0,studyFolder:patch.studyFolder||old.studyFolder||(inv?safeFolderName(inv):'')||'',...patch,updatedAt:Date.now()};if(old.status==='done'&&patch.status&&patch.status!=='done')next.status='done';if(i>=0)list.splice(i,1);list.unshift(next);list.length=Math.min(list.length,MAX_HISTORY);await chrome.storage.local.set({[HISTORY_KEY]:list});chrome.runtime.sendMessage({type:'HISTORY_UPDATED',history:list}).catch(()=>{});return next;}
+function historyKey(inv){if(inv?.studyUid)return`study|${inv.studyUid}`;if(inv?.context?.studyKey)return`context|${inv.context.studyKey}`;if(inv?.adapter==='MACH7')return '';const p=inv?.patient||{};return p.id&&p.studyDate?`patient|${p.id}|${p.studyDate}|${p.description||''}`:'';}
+function sameHistoryStudy(row,inv){
+  if(row.studyUid&&inv.studyUid)return row.studyUid===inv.studyUid;
+  return Boolean(inv.context?.studyKey&&row.studyKey===inv.context.studyKey);
+}
+async function findHistory(inv){const h=await getHistory();if(inv?.studyUid){const x=h.find(v=>v.studyUid===inv.studyUid);if(x)return x;}const byKey=h.find(row=>sameHistoryStudy(row,inv));if(byKey)return byKey;if(inv?.adapter==='MACH7')return null;const p=inv?.patient||{};if(p.id&&p.studyDate){let c=h.filter(v=>v.patientId===p.id&&v.studyDate===p.studyDate);if(p.accession)c=c.filter(v=>!v.accession||v.accession===p.accession);if(p.description)c=c.filter(v=>!v.description||v.description===p.description);return c.length===1?c[0]:null;}return null;}
+async function upsertHistory(inv,patch={}){if(!inv)return null;const key=historyKey(inv);if(!key)return null;const list=await getHistory();let i=list.findIndex(x=>x.key===key||sameHistoryStudy(x,inv));const old=i>=0?list[i]:{};const next={...old,key,adapter:inv.adapter||old.adapter||'',studyUid:inv.studyUid||old.studyUid||'',studyKey:inv.context?.studyKey||old.studyKey||'',patientName:inv.patient?.name||old.patientName||'',patientId:inv.patient?.id||old.patientId||'',studyDate:inv.patient?.studyDate||old.studyDate||'',description:inv.patient?.description||old.description||'',accession:inv.patient?.accession||old.accession||'',seriesCount:inv.series?.length||old.seriesCount||0,studyFolder:patch.studyFolder||old.studyFolder||(inv?safeFolderName(inv):'')||'',...patch,updatedAt:Date.now()};if(old.status==='done'&&patch.status&&patch.status!=='done')next.status='done';if(i>=0)list.splice(i,1);list.unshift(next);list.length=Math.min(list.length,MAX_HISTORY);await chrome.storage.local.set({[HISTORY_KEY]:list});chrome.runtime.sendMessage({type:'HISTORY_UPDATED',history:list}).catch(()=>{});return next;}
 
 function urlConfidence(raw){const shell=classifyViewerShell(raw);return Math.max(0,Number(viewerUrlScore(raw))||0,Number(shell?.score)||0);}
 async function hasOrigin(url){const p=originPattern(url);if(!p)return false;return chrome.permissions.contains({origins:[p]});}
@@ -381,10 +416,12 @@ function mergeGenericEntry(list,entry){
   return arr;
 }
 async function saveManifestDiscoveryRecipe(manifestUrl,requestMeta,winningRows){
+  await ensureRecipesLoaded();
   const learned=manifestRecipeFromDiscovery(manifestUrl,requestMeta,winningRows);if(!learned)return;
-  try{const origin=new URL(manifestUrl).origin,recipe=recipeForOrigin(origin),rows=[...(recipe.manifestRecipes||[])].filter(x=>x.manifestShape!==learned.manifestShape);rows.push(learned);recipe.manifestRecipes=rows.slice(-30);recipe.updatedAt=Date.now();learnedRecipes[origin]=recipe;await chrome.storage.local.set({[RECIPES_KEY]:learnedRecipes});}catch{}
+  try{const origin=new URL(manifestUrl).origin,recipe=recipeForOrigin(origin),rows=[...(recipe.manifestRecipes||[])].filter(x=>x.manifestShape!==learned.manifestShape);rows.push(learned);recipe.manifestRecipes=rows.slice(-30);recipe.updatedAt=Date.now();learnedRecipes[origin]=recipe;await persistRecipes();}catch{}
 }
 async function processGenericManifestPayload(tabId,url,requestMeta,payload,source='replay'){
+  await ensureRecipesLoaded();
   const state=await getTabState(tabId),originRecipe=(()=>{try{return recipeForOrigin(new URL(url).origin);}catch{return recipeForOrigin('');}})();
   const learned=(originRecipe.manifestRecipes||[]).find(x=>x.manifestShape===urlShape(url))||null;
   const candidates=extractManifestCandidates(payload,url);if(!candidates.length)return{valid:[],discovered:0,dicomJson:looksLikeDicomJson(payload)};
@@ -402,7 +439,7 @@ async function processGenericManifestPayload(tabId,url,requestMeta,payload,sourc
 async function materializeLearnedManifest(tabId,url,requestMeta){const s=await getTabState(tabId);let payload;try{payload=await fetchJsonFor(s,url,'application/json, application/dicom+json, text/json, */*',requestMeta);}catch{return{valid:[],discovered:0};}return processGenericManifestPayload(tabId,url,requestMeta,payload,'replay');}
 async function startLearning(tabId){const s=await startTracking(tabId,true);s.learning={active:true,startedAt:Date.now()};s.learnCandidates=[];await saveTabState(tabId,s);chrome.runtime.sendMessage({type:'LEARN_UPDATED',tabId}).catch(()=>{});return s;}
 async function stopLearning(tabId){const s=await getTabState(tabId);s.learning={active:false,startedAt:s.learning?.startedAt||0};await saveTabState(tabId,s);chrome.runtime.sendMessage({type:'LEARN_UPDATED',tabId}).catch(()=>{});return s;}
-async function markLearnCandidate(tabId,url,role){const s=await getTabState(tabId),row=[...(s.learnCandidates||[])].reverse().find(x=>x.url===cleanUrl(url));if(!row)throw new Error('Request is no longer in learning session.');if(role==='dicom'){await ensureOffscreen();const task=probeTaskFromRow(s,row);const r=await chrome.runtime.sendMessage({target:'offscreen',type:'PROBE_DICOM_URLS',probes:[task]});if(!r?.valid?.includes(row.url))throw new Error('This request does not return DICOM Part-10.');const inspected=await chrome.runtime.sendMessage({target:'offscreen',type:'INSPECT_DICOM_URLS',probes:[task]}).catch(()=>null),detail=inspected?.details?.find(x=>x.ok)||null;await learnUrl(row.url,'dicom');s.genericEntries=mergeGenericEntry(s.genericEntries,{url:row.url,method:row.method||'GET',requestBody:row.requestBody||null,contentType:row.contentType||detail?.contentType||'',declared:{},meta:detail?.meta||null,shape:pathSignature(row.url),source:'manual-learn'});pushUnique(s.genericDirectUrls,row.url,6000);s.genericDirectMeta[row.url]={contentType:row.contentType||'application/octet-stream',learned:true};if(detail?.meta)s.genericProfile={...(s.genericProfile||{}),...studyProfileFromProbeDetails([detail])};await saveTabState(tabId,s);scheduleAnalyze(tabId,80);return{role,valid:1};}if(role==='manifest'){await learnUrl(row.url,'manifest');const r=await materializeLearnedManifest(tabId,row.url,row);return{role,...r};}throw new Error('Invalid learning role.');}
+async function markLearnCandidate(tabId,url,role){const s=await getTabState(tabId),row=[...(s.learnCandidates||[])].reverse().find(x=>x.url===cleanUrl(url));if(!row)throw new Error('Request is no longer in learning session.');if(role==='dicom'){await ensureOffscreen();const task=probeTaskFromRow(s,row);const r=await chrome.runtime.sendMessage({target:'offscreen',type:'PROBE_DICOM_URLS',probes:[task]});if(!r?.valid?.includes(row.url))throw new Error('This request does not return DICOM Part-10.');const inspected=await chrome.runtime.sendMessage({target:'offscreen',type:'INSPECT_DICOM_URLS',probes:[task]}).catch(()=>null),detail=inspected?.details?.find(x=>x.ok)||null;await learnUrl(row.url,'dicom');s.genericEntries=mergeGenericEntry(s.genericEntries,{url:row.url,method:row.method||'GET',requestBody:row.requestBody||null,contentType:row.contentType||detail?.contentType||'',declared:{},meta:detail?.meta||null,shape:pathSignature(row.url),source:'manual-learn'});rememberDirectUrl(s,row.url);s.genericDirectMeta[row.url]={contentType:row.contentType||'application/octet-stream',learned:true};if(detail?.meta)s.genericProfile={...(s.genericProfile||{}),...studyProfileFromProbeDetails([detail])};await saveTabState(tabId,s);scheduleAnalyze(tabId,80);return{role,valid:1};}if(role==='manifest'){await learnUrl(row.url,'manifest');const r=await materializeLearnedManifest(tabId,row.url,row);return{role,...r};}throw new Error('Invalid learning role.');}
 function encodePageBody(body){if(typeof body!=='string'||!body)return null;const bytes=new TextEncoder().encode(body),chunks=[];let bin='';for(let i=0;i<bytes.length;i+=0x8000){bin='';for(const b of bytes.subarray(i,i+0x8000))bin+=String.fromCharCode(b);chunks.push(btoa(bin));}return{kind:'raw',chunks};}
 async function handleGenericJsonCapture(tabId,row){
   if(tabId<0||!row?.url)return;
@@ -413,9 +450,9 @@ async function handleGenericJsonCapture(tabId,row){
   let payload;
   try{payload=JSON.parse(String(row.text||''));}catch{return;}
   if(Array.isArray(payload)||looksLikeDicomJson(payload)||/\/studies\/[^/]+\/(?:series|metadata)/i.test(row.url)){
-    s.dicomwebPayloads=s.dicomwebPayloads||{};
-    s.dicomwebPayloads[cleanUrl(row.url)]=payload;
-    try{s.dicomwebPayloads[new URL(row.url).pathname]=payload;}catch{}
+    const cached=cacheDicomwebPayload(s.dicomwebPayloads,row.url,payload);
+    s.dicomwebPayloads=cached.payloads;
+    s.dicomwebPayloadsTruncated=Boolean(s.dicomwebPayloadsTruncated||cached.truncated);
     await saveTabState(tabId,s);
     scheduleAnalyze(tabId,100);
   }
@@ -429,12 +466,13 @@ function emitPacsSignal(tabId,signal){
   signalTimers.set(tabId,setTimeout(()=>signalTimers.delete(tabId),600));
   chrome.runtime.sendMessage({type:'PACS_SIGNAL',tabId,signal}).catch(()=>{});
 }
-async function rememberRequest(tabId,raw,extra={}){if(tabId<0)return;const hit=classifyPacsUrl(raw);const learnedManifest=isLearnedManifestUrl(raw);const s=await getTabState(tabId);if(!hit&&s.tracking!=='watching'&&!learnedManifest)return;const generic=hit||(/\/(?:api|rest|services?)\//i.test(raw)&&/(study|series|instance|image|dicom|exam|patient)/i.test(raw)?{type:'PACS_GENERIC_API',url:cleanUrl(raw),score:35}:null)||(learnedManifest?{type:'LEARNED_MANIFEST',url:cleanUrl(raw),score:72}:null)||(s.tracking==='watching'&&learnCandidateAllowed(raw,extra.resourceType||extra.type)?{type:'PACS_OBSERVED_API',url:cleanUrl(raw),score:12}:null);if(!generic)return;const method=String(extra.method||'GET').toUpperCase(),bodySig=storedBodySignature(extra.requestBody),id=extra.requestId?`${generic.type}|req:${extra.requestId}`:`${generic.type}|${generic.url}|${method}|${bodySig}`;const i=s.pacsRequests.findIndex(x=>x._id===id);if(i>=0)s.pacsRequests.splice(i,1);s.pacsRequests.push({...generic,...extra,_id:id,time:Date.now()});if(s.pacsRequests.length>MAX_REQUESTS)s.pacsRequests.splice(0,s.pacsRequests.length-MAX_REQUESTS);s.confidence=Math.max(Number(s.confidence)||0,Math.min(100,Number(generic.score)||0));if(s.tracking!=='stopped')s.tracking='watching';await saveTabState(tabId,s);await setBadge(tabId);if(Number(generic.score||0)>=80||['PACS_GENERIC_API','DICOM_IMAGE_API'].includes(generic.type))scheduleAnalyze(tabId,450);if(learnedManifest)scheduleLearnedManifest(tabId,generic.url,extra,450);emitPacsSignal(tabId,generic.type);}
+async function rememberRequest(tabId,raw,extra={}){if(tabId<0)return;await ensureRecipesLoaded();const hit=classifyPacsUrl(raw);const learnedManifest=isLearnedManifestUrl(raw);const s=await getTabState(tabId);if(!hit&&s.tracking!=='watching'&&!learnedManifest)return;const generic=hit||(/\/(?:api|rest|services?)\//i.test(raw)&&/(study|series|instance|image|dicom|exam|patient)/i.test(raw)?{type:'PACS_GENERIC_API',url:cleanUrl(raw),score:35}:null)||(learnedManifest?{type:'LEARNED_MANIFEST',url:cleanUrl(raw),score:72}:null)||(s.tracking==='watching'&&learnCandidateAllowed(raw,extra.resourceType||extra.type)?{type:'PACS_OBSERVED_API',url:cleanUrl(raw),score:12}:null);if(!generic)return;const method=String(extra.method||'GET').toUpperCase(),bodySig=storedBodySignature(extra.requestBody),id=extra.requestId?`${generic.type}|req:${extra.requestId}`:`${generic.type}|${generic.url}|${method}|${bodySig}`;const i=s.pacsRequests.findIndex(x=>x._id===id);if(i>=0)s.pacsRequests.splice(i,1);s.pacsRequests.push({...generic,...extra,_id:id,time:Date.now()});if(s.pacsRequests.length>MAX_REQUESTS)s.pacsRequests.splice(0,s.pacsRequests.length-MAX_REQUESTS);s.confidence=Math.max(Number(s.confidence)||0,Math.min(100,Number(generic.score)||0));if(s.tracking!=='stopped')s.tracking='watching';await saveTabState(tabId,s);await setBadge(tabId);if(Number(generic.score||0)>=80||['PACS_GENERIC_API','DICOM_IMAGE_API'].includes(generic.type))scheduleAnalyze(tabId,450);if(learnedManifest)scheduleLearnedManifest(tabId,generic.url,extra,450);emitPacsSignal(tabId,generic.type);}
 async function rememberHeaders(tabId,url,rawHeaders,requestId=''){if(/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(url))return;const s=await getTabState(tabId);if(!['watching','candidate'].includes(s.tracking))return;const h={};for(const x of(rawHeaders||[]))if(x.name&&x.value!=null)h[x.name]=x.value;const safe=safeHeaders(h);if(!Object.keys(safe).length)return;let ct='';for(const[k,v]of Object.entries(safe))if(k.toLowerCase()==='content-type'&&v){ct=String(v);break;}
 if(ct){const u=cleanUrl(url);for(const r of(s.pacsRequests||[]))if(((requestId&&String(r.requestId||'')===String(requestId))||(!requestId&&r.url===u))&&!r.contentType)r.contentType=ct;}
 try{const origin=new URL(url).origin;s.headersByOrigin[origin]={...(s.headersByOrigin[origin]||{}),...safe};await saveTabState(tabId,s);}catch{}}
 async function rememberDicomResponse(tabId,url,contentType,status,method='GET',contentLength=0,requestId=''){
   if(tabId<0||Number(status)>=400)return;
+  await ensureRecipesLoaded();
   const m=String(method||'GET').toUpperCase(),ct=String(contentType||'').toLowerCase(),hit=classifyPacsUrl(url),learned=isLearnedUrl(url),u=cleanUrl(url);if(!u)return;
   const s=await getTabState(tabId);if(s.tracking==='stopped')return;const req=requestMetaForObserved(s,u,m,requestId);
   const strong=ct.includes('application/dicom')||/\.dcm(?:\?|$)/i.test(url)||(hit&&['WADO','DICOM_INSTANCE','DICOM_IMAGE_API','VRPACS_DICOM','VIETMY_DICOM'].includes(hit.type))||(learned&&ct.includes('application/octet-stream'));
@@ -442,18 +480,7 @@ async function rememberDicomResponse(tabId,url,contentType,status,method='GET',c
   if(strong){
     const entry={url:u,method:m,requestBody:req?.requestBody||null,contentType:req?.contentType||ct,requestId:req?.requestId||requestId||'',requestKey:`${m}|${u}|${storedBodySignature(req?.requestBody)}`,declared:{},meta:null,shape:pathSignature(u),source:'observed-dicom'};
     s.genericEntries=mergeGenericEntry(s.genericEntries,entry);
-    if(m==='GET'){
-      if(!s.genericDirectUrls)s.genericDirectUrls=[];
-      if(!s._directUrlSet)s._directUrlSet=new Set(s.genericDirectUrls);
-      if(!s._directUrlSet.has(u)){
-        s._directUrlSet.add(u);
-        s.genericDirectUrls.push(u);
-        if(s.genericDirectUrls.length>6000){
-          const removed=s.genericDirectUrls.shift();
-          s._directUrlSet.delete(removed);
-        }
-      }
-    }
+    if(m==='GET')rememberDirectUrl(s,u);
     s.genericDirectMeta[u]={contentType:ct,learned};s.confidence=Math.max(Number(s.confidence)||0,learned?95:90);await saveTabState(tabId,s);recordCapabilities(u,{directDicom:true,retrieveMethods:[m]}).catch(()=>{});scheduleAnalyze(tabId,500);return;
   }
   const binary=(ct.includes('application/octet-stream')||ct.includes('application/binary')||ct.includes('binary/octet-stream'))&&!/\.(?:js|css|woff2?|ttf|png|jpe?g|gif|svg|ico|mp4|webm)(?:\?|$)/i.test(u)&&!/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(u);
@@ -464,15 +491,16 @@ async function rememberDicomResponse(tabId,url,contentType,status,method='GET',c
 chrome.webRequest.onBeforeRequest.addListener(d=>{
   if(d.tabId<0)return;
   if(!shouldInspectRequest({restored:trackedTabsRestored,tracked:trackedTabIds,tabId:d.tabId}))return;
-  const hit=classifyPacsUrl(d.url),learnedManifest=isLearnedManifestUrl(d.url);
-  getTabState(d.tabId).then(s=>{
+  const hit=classifyPacsUrl(d.url);
+  Promise.all([getTabState(d.tabId),ensureRecipesLoaded()]).then(([s])=>{
+    const learnedManifest=isLearnedManifestUrl(d.url);
     if(s.learning?.active)rememberLearningRequest(d.tabId,d,s).catch(()=>{});
     if(s.tracking==='stopped')return;
     if(!hit&&!learnedManifest&&!['watching','candidate'].includes(s.tracking))return;
     const sensitive=/\/(?:auth|login|signin|password|otp)(?:\/|\?|$)/i.test(d.url);
     const body=!sensitive&&!['GET','HEAD'].includes(String(d.method||'GET').toUpperCase())?serializeRequestBody(d.requestBody):null;
     rememberRequest(d.tabId,d.url,{method:d.method,requestBody:body,requestId:d.requestId,resourceType:d.type,source:'webRequest'}).catch(()=>{});
-  });
+  }).catch(()=>{});
 },{urls:['<all_urls>']},['requestBody']);
 chrome.webRequest.onBeforeSendHeaders.addListener(d=>{
   if(d.tabId<0)return;
@@ -573,6 +601,7 @@ async function analysisIsCurrent(tabId,contextKey,epoch){
 }
 async function analyzeTab(tabId){
   if(isActiveDownload(await getJob(tabId))||startingJobs.has(tabId))return getSession(invKey(tabId));
+  await ensureRecipesLoaded();
   if(activeAnalysis.has(tabId))return activeAnalysis.get(tabId);
   const p=(async()=>{
     try{
@@ -631,7 +660,7 @@ function scheduleAnalyze(tabId,delay=500){clearTimeout(analyzeTimers.get(tabId))
 
 async function ensureOffscreen(){const url=chrome.runtime.getURL('offscreen.html');const c=await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT'],documentUrls:[url]});if(c.length)return;await chrome.offscreen.createDocument({url:'offscreen.html',reasons:['BLOBS'],justification:'Download and write DICOM directly to user selected directory.'});}
 function safeFolderName(inv){const p=inv?.patient||{};return buildStudyStoragePath({patientName:p.name,patientId:p.id,birthDate:p.birthDate,age:p.age,studyDate:p.studyDate,modality:inv?.modality||inv?.series?.[0]?.modality||p.modality,description:p.description});}
-async function buildTasksForAdapter(inv,selected,adapterId){const id=adapterId||inv.adapter,state=await getTabState(inv.tabId),adapter=adapterById(id);if(!adapter)throw new Error(`Adapter ${id} not found.`);const sourceInv=id===inv.adapter?inv:inv.adapterInventories?.[id];if(!sourceInv)throw new Error(`Adapter ${id} has not successfully analyzed this study.`);const mappedSelected=id===inv.adapter?selected:mapSeriesSelection(inv,sourceInv,selected);if(!mappedSelected.length)throw new Error(`Unable to map selected series to adapter ${id}.`);const ctx=adapterContext(sourceInv.summary||inv.summary||await scanTab(inv.tabId),state);const tasks=dedupeTasksBySop(await adapter.enumerate(sourceInv,mappedSelected,ctx));if(!tasksBelongToStudy(tasks,inv.studyUid))throw new Error(`Adapter ${id} returned tasks with mismatched StudyInstanceUID.`);const learnedRoutes=RecipeStoreV2.getPreferredRoutes(recipeForUrl(inv.summary?.currentUrl||inv.context?.url||'').adapters?.[id]);return tasks.map(t=>learnedRoutes.length?{...t,tabId:inv.tabId,preferredRoutes:learnedRoutes}:{...t,tabId:inv.tabId});}
+async function buildTasksForAdapter(inv,selected,adapterId){await ensureRecipesLoaded();const id=adapterId||inv.adapter,state=await getTabState(inv.tabId),adapter=adapterById(id);if(!adapter)throw new Error(`Adapter ${id} not found.`);const sourceInv=id===inv.adapter?inv:inv.adapterInventories?.[id];if(!sourceInv)throw new Error(`Adapter ${id} has not successfully analyzed this study.`);const mappedSelected=id===inv.adapter?selected:mapSeriesSelection(inv,sourceInv,selected);if(!mappedSelected.length)throw new Error(`Unable to map selected series to adapter ${id}.`);const ctx=adapterContext(sourceInv.summary||inv.summary||await scanTab(inv.tabId),state);const tasks=dedupeTasksBySop(await adapter.enumerate(sourceInv,mappedSelected,ctx));if(!tasksBelongToStudy(tasks,inv.studyUid))throw new Error(`Adapter ${id} returned tasks with mismatched StudyInstanceUID.`);const learnedRoutes=RecipeStoreV2.getPreferredRoutes(recipeForUrl(inv.summary?.currentUrl||inv.context?.url||'').adapters?.[id]);return tasks.map(t=>learnedRoutes.length?{...t,tabId:inv.tabId,preferredRoutes:learnedRoutes}:{...t,tabId:inv.tabId});}
 async function buildTasks(inv,selected){return buildTasksForAdapter(inv,selected,inv.adapter);}
 
 function scheduleJobFlush(tabId,force=false){if(force){clearTimeout(jobFlushTimers.get(tabId));jobFlushTimers.delete(tabId);const j=jobMemory.get(tabId);if(j)setSession(jobKey(tabId),j).catch(()=>{});return;}if(jobFlushTimers.has(tabId))return;jobFlushTimers.set(tabId,setTimeout(()=>{jobFlushTimers.delete(tabId);const j=jobMemory.get(tabId);if(j)setSession(jobKey(tabId),j).catch(()=>{});},600));}
@@ -639,12 +668,13 @@ async function getJob(tabId){return jobMemory.get(tabId)||await getSession(jobKe
 function jobMatchesInventory(job,inventory){
   if(!job||!inventory||Number(job.tabId)!==Number(inventory.tabId))return false;
   if(job.studyUid&&inventory.studyUid)return job.studyUid===inventory.studyUid;
+  if(job.studyKey&&inventory.context?.studyKey)return job.studyKey===inventory.context.studyKey;
   return Boolean(job.inventoryCreatedAt&&job.inventoryCreatedAt===inventory.createdAt);
 }
 function snapshotStudy(inv){
   return{tabId:inv.tabId,createdAt:inv.createdAt||0,studyUid:inv.studyUid||'',adapter:inv.adapter,modality:inv.modality||'',
     patient:{...inv.patient},series:(inv.series||[]).map(({id,number,description,modality,imageCount})=>({id,number,description,modality,imageCount})),
-    context:{completeKnown:Boolean(inv.context?.completeKnown)},summary:{currentUrl:inv.summary?.currentUrl||inv.context?.url||inv.context?.viewerUrl||''}};
+    context:{completeKnown:Boolean(inv.context?.completeKnown),studyKey:inv.context?.studyKey||''},summary:{currentUrl:inv.summary?.currentUrl||inv.context?.url||inv.context?.viewerUrl||''}};
 }
 async function hasOffscreenDocument(){return(await chrome.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT'],documentUrls:[chrome.runtime.getURL('offscreen.html')]})).length>0;}
 async function engineIsRunning(tabId){
@@ -761,13 +791,14 @@ async function startJob(tabId,selected,options={}){
   clearTimeout(analyzeTimers.get(tabId));analyzeTimers.delete(tabId);
   const inv=await getSession(invKey(tabId));
   if(!inv)throw new Error('Study not yet recognized.');
+  if(inv.series?.some(s=>selected.includes(s.id)&&s.downloadReady===false))throw new Error('Selected series have not been captured. Load those series in the viewer first.');
   const sourceContext=analysisContextKey(await getTabState(tabId)),sourceEpoch=analysisEpochs.get(tabId)||0;
   const tasks=await buildTasks(inv,selected);
   if(!tasks.length)throw new Error('No DICOM images in selected series.');
   logEvent('INFO','DOWNLOAD',`Bắt đầu tải DICOM tab ${tabId}: ${selected.length} series (${tasks.length} ảnh, adapter: ${inv.adapter})`,{tabId,selected:selected.length,total:tasks.length,adapter:inv.adapter},{tabId,url:inv?.summary?.currentUrl||''});
   await ensureOffscreen();
   const currentInventory=await getSession(invKey(tabId)),currentState=await getTabState(tabId);
-  if(sourceContext!==analysisContextKey(currentState)||sourceEpoch!==(analysisEpochs.get(tabId)||0)||!jobMatchesInventory({tabId,studyUid:inv.studyUid,inventoryCreatedAt:inv.createdAt},currentInventory))throw new Error('Study changed while preparing the download. Rescan the current page and try again.');
+  if(sourceContext!==analysisContextKey(currentState)||sourceEpoch!==(analysisEpochs.get(tabId)||0)||!jobMatchesInventory({tabId,studyUid:inv.studyUid,studyKey:inv.context?.studyKey,inventoryCreatedAt:inv.createdAt},currentInventory))throw new Error('Study changed while preparing the download. Rescan the current page and try again.');
   const attemptId=crypto.randomUUID();
   const expectedSopUids=[...new Set(tasks.map(t=>String(t.sopInstanceUid||'').trim()).filter(Boolean))];
   const prevCompletedSopUids = (inv.previousDownload && Array.isArray(inv.previousDownload.completedSopUids))
@@ -784,6 +815,7 @@ async function startJob(tabId,selected,options={}){
     attemptIndex:0,
     options,
     studyUid:inv.studyUid||'',
+    studyKey:inv.context?.studyKey||'',
     inventoryCreatedAt:inv.createdAt||0,
     studySnapshot:snapshotStudy(inv),
     selectedSeries:selected,
@@ -1084,5 +1116,5 @@ chrome.tabs.onCreated.addListener(tab=>{if(tab.id&&tab.url&&/^https?:/i.test(tab
 chrome.tabs.onActivated.addListener(activeInfo=>{const tabId=activeInfo.tabId;if(!tabId)return;(async()=>{const tab=await chrome.tabs.get(tabId).catch(()=>null);if(!tab?.url||!/^https?:/i.test(tab.url))return;await ensurePanel(tabId);const clean=cleanUrl(tab.url),score=urlConfidence(clean),shell=classifyViewerShell(clean);if(score>=AUTO_ARM_SCORE||Boolean(shell)){const s=await getTabState(tabId);if(!['watching','stopped','completed'].includes(s.tracking))await startTracking(tabId,false);}})().catch(()=>{});});
 chrome.tabs.onUpdated.addListener((tabId,change,tab)=>{if(!change.url&&!change.status&&!change.title)return;const u=change.url||tab?.url||'';if(!u||!/^https?:/i.test(u))return;ensurePanel(tabId).catch(()=>{});(async()=>{if(change.url&&await shouldHandleNavigation(tabId,u))await markCandidate(tabId,u);if(change.status==='complete'&&await shouldHandleNavigation(tabId,u)&&await hasOrigin(u))setTimeout(()=>{injectContent(tabId);getTabState(tabId).then(x=>{if(x.tracking==='watching')injectGenericHook(tabId);});},150);})().catch(()=>{});});
 chrome.tabs.onRemoved.addListener(tabId=>{(async()=>{clearTabInstrumentationTimers(tabId);const j=jobMemory.get(tabId)||await getSession(jobKey(tabId));if(isActiveDownload(j)){chrome.storage.session.remove(tabKey(tabId)).catch(()=>{});return;}jobMemory.delete(tabId);tabMemory.delete(tabId);invMemory.delete(tabId);perfScanCache.delete(tabId);markTracked(tabId,false);badgeCache.delete(tabId);activeAnalysis.delete(tabId);chrome.storage.session.remove([tabKey(tabId),invKey(tabId),jobKey(tabId)]).catch(()=>{});})().catch(()=>{});});
-async function boot(){await trackedTabsReady;await setDownloadUi(true);await loadRecipes();await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});await chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true}).catch(()=>{});appendLog({level:'info',category:'system',message:`PACS DICOM Extension v${chrome.runtime.getManifest().version} khởi động hoàn tất.`}).catch(()=>{});const tabs=await chrome.tabs.query({});await Promise.allSettled(tabs.map(async tab=>{if(!tab?.id||!tab?.url||!/^https?:/i.test(tab.url))return;await ensurePanel(tab.id);if(!(await shouldHandleNavigation(tab.id,tab.url)))return;await markCandidate(tab.id,tab.url);if(await hasOrigin(tab.url))await injectContent(tab.id);}));}
+async function boot(){await trackedTabsReady;await setDownloadUi(true);await ensureRecipesLoaded();await chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});await chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true}).catch(()=>{});appendLog({level:'info',category:'system',message:`PACS DICOM Extension v${chrome.runtime.getManifest().version} khởi động hoàn tất.`}).catch(()=>{});const tabs=await chrome.tabs.query({});await Promise.allSettled(tabs.map(async tab=>{if(!tab?.id||!tab?.url||!/^https?:/i.test(tab.url))return;await ensurePanel(tab.id);if(!(await shouldHandleNavigation(tab.id,tab.url)))return;await markCandidate(tab.id,tab.url);if(await hasOrigin(tab.url))await injectContent(tab.id);}));}
 chrome.runtime.onInstalled.addListener(details=>{boot().catch(()=>{});if(details?.reason==='install')chrome.tabs.create({url:chrome.runtime.getURL('onboarding.html')}).catch(()=>{});});chrome.runtime.onStartup.addListener(()=>boot().catch(()=>{}));chrome.sidePanel.setPanelBehavior({openPanelOnActionClick:true}).catch(()=>{});chrome.sidePanel.setOptions({path:'sidepanel.html',enabled:true}).catch(()=>{});

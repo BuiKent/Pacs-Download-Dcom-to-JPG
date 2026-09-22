@@ -1,4 +1,5 @@
 'use strict';
+import {getDicomwebPayload} from '../dicomweb_payloads.js';
 import { bestDetectedRequest, deriveDicomweb, parseDicomwebSeries, normalizeSeries, dicomJsonValue, seriesFolderName, sanitizeSegment, fetchQidoPaged } from '../pacs.js';
 const JSON_ACCEPT='application/dicom+json, application/json';
 const sopKey=x=>String(dicomJsonValue(x,'00080018')||'').trim();
@@ -35,7 +36,7 @@ export const DicomwebAdapter={
     const d=deriveDicomweb(seed);
     if(!d)throw new Error('Unable to extract StudyInstanceUID from DICOMweb.');
     const seriesUrl=qido?.url||ctx.inheritQuery(`${d.rsBase}/studies/${encodeURIComponent(d.studyUid)}/series`,seed);
-    let raw=ctx.state?.dicomwebPayloads?.[seriesUrl]||ctx.state?.dicomwebPayloads?.[new URL(seriesUrl).pathname]||null;
+    let raw=getDicomwebPayload(ctx.state?.dicomwebPayloads,seriesUrl);
     if(!raw){
       try{
         if(meddream)raw=await ctx.fetchJson(meddream.url,'application/json, application/dicom+json');
@@ -58,7 +59,7 @@ export const DicomwebAdapter={
           if(!groups.has(su)){
             const sn=String(dicomJsonValue(inst,'00200011')||inst?.SeriesNumber||'');
             const sd=String(dicomJsonValue(inst,'0008103E')||inst?.SeriesDescription||`Series ${sn||groups.size+1}`);
-            const mod=String(dicomJsonValue(inst,'00080060')||inst?.Modality||'CT');
+            const mod=String(dicomJsonValue(inst,'00080060')||inst?.Modality||'');
             groups.set(su,{SeriesInstanceUID:su,SeriesNumber:sn,SeriesDescription:sd,Modality:mod,ImageCount:0});
           }
           groups.get(su).ImageCount++;
@@ -78,7 +79,7 @@ export const DicomwebAdapter={
               SeriesInstanceUID: su,
               SeriesNumber: ms.number||ms.SeriesNumber||String(i+1),
               SeriesDescription: ms.description||ms.SeriesDescription||`Series ${i+1}`,
-              Modality: ms.modality||ms.Modality||'CT',
+              Modality: ms.modality||ms.Modality||'',
               ImageCount: count
             },'dicomweb',i));
           }

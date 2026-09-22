@@ -9,7 +9,7 @@ import {webcrypto} from 'node:crypto';
 const source=readFileSync(new URL('../background.js',import.meta.url),'utf8').replace(/^import .+;\r?$/gm,'');
 const imports=Object.assign({},...await Promise.all([
   'pacs','orchestrator','generic_discovery','tracking_state','save_policy',
-  'tracked_tabs','tab_state_store','download_ui_state',
+  'tracked_tabs','tab_state_store','download_ui_state','dicomweb_payloads',
 ].map(name=>import(`../lib/${name}.js`))));
 const url='https://pacs.test/viewer?study=1.2.3';
 const inventory=()=>({tabId:1,createdAt:12345,studyUid:'1.2.3',adapter:'TEST',patient:{id:'fixture'},
@@ -54,6 +54,52 @@ function worker({job=null,inv=inventory(),contexts=[{contextType:'OFFSCREEN_DOCU
     async fireTimer(ms){const entry=[...timers].find(([,timer])=>timer.ms===ms);assert.ok(entry,`expected ${ms}ms timer`);timers.delete(entry[0]);await entry[1].callback();},
   };
 }
+
+test('uncaptured selected series are rejected before any task enumeration',async()=>{
+  const inv=inventory();inv.series[0].downloadReady=false;
+  const w=worker({inv});w.evaluate('buildTasks=async()=>{throw new Error("must not enumerate")}');
+  await assert.rejects(w.evaluate("startJob(1,['series-1'])"),/not been captured/);
+});
+
+test('network JSON capture bounds live metadata without losing discovered URLs',async()=>{
+  const w=worker();
+  w.evaluate("processGenericManifestPayload=async()=>({valid:[]});tabMemory.get(1).genericDirectUrls=['https://pacs.test/keep.dcm']");
+  for(let i=0;i<40;i++){
+    w.context.capture={url:`https://pacs.test/series/${i}/metadata`,text:JSON.stringify([{value:'x'.repeat(100000)}])};
+    await w.evaluate('handleGenericJsonCapture(1,capture)');
+  }
+  assert.ok(w.evaluate('Object.keys(tabMemory.get(1).dicomwebPayloads).length')<=32);
+  assert.ok(w.evaluate('JSON.stringify(tabMemory.get(1).dicomwebPayloads).length')<=2*1024*1024);
+  assert.equal(w.evaluate('tabMemory.get(1).genericDirectUrls.length'),1);
+  assert.equal(w.evaluate('tabMemory.get(1).dicomwebPayloadsTruncated'),true);
+});
+
+test('a URL evicted by a rebuilt discovery list can be captured again',async()=>{
+  const w=worker();
+  await w.evaluate("rememberDicomResponse(1,'https://pacs.test/first.dcm','application/dicom',200)");
+  w.evaluate("tabMemory.get(1).genericDirectUrls=['https://pacs.test/second.dcm']");
+  await w.evaluate("rememberDicomResponse(1,'https://pacs.test/first.dcm','application/dicom',200)");
+  assert.equal(w.evaluate("tabMemory.get(1).genericDirectUrls.includes('https://pacs.test/first.dcm')"),true);
+});
+
+test('internal study keys survive reanalysis but never match another procedure',()=>{
+  const w=worker();
+  assert.equal(w.evaluate("jobMatchesInventory({tabId:1,studyKey:'mach7:a',inventoryCreatedAt:1},{tabId:1,context:{studyKey:'mach7:a'},createdAt:2})"),true);
+  assert.equal(w.evaluate("jobMatchesInventory({tabId:1,studyKey:'mach7:a',inventoryCreatedAt:1},{tabId:1,context:{studyKey:'mach7:b'},createdAt:1})"),false);
+  assert.equal(w.evaluate("historyKey({adapter:'MACH7',patient:{id:'p',studyDate:'20260101'},context:{}})"),'');
+});
+
+test('Mach7 history tracks a procedure across learning its real Study UID',async()=>{
+  const inv={...inventory(),adapter:'MACH7',studyUid:'',context:{studyKey:'mach7:a'}};
+  const w=worker({inv});
+  await w.evaluate('upsertHistory(seedInventory,{status:"partial",completed:1})');
+  w.evaluate('seedInventory.studyUid="1.2.3"');
+  assert.equal((await w.evaluate('findHistory(seedInventory)')).completed,1);
+  await w.evaluate('upsertHistory(seedInventory,{status:"done",completed:2})');
+  assert.equal(w.storage.pacs6_history.length,1);
+  w.evaluate('seedInventory.studyUid="";seedInventory.context.studyKey="mach7:b"');
+  assert.equal(await w.evaluate('findHistory(seedInventory)'),null);
+});
 
 test('active overview with missing inventory never scans the viewer',async()=>{
   const w=worker({job:activeJob(),inv:null});

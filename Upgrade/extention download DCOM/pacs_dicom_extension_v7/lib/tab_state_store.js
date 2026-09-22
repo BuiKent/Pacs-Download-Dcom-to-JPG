@@ -1,4 +1,5 @@
 'use strict';
+import {boundDicomwebPayloads, DICOMWEB_PAYLOAD_MAX_BYTES} from './dicomweb_payloads.js';
 
 /**
  * Trimming a tab's tracking state down to what session storage will hold.
@@ -41,7 +42,7 @@ function slimEntry(entry, keepMeta) {
   };
 }
 
-export function pruneStateForStorage(state, urlCap = URL_CAP_LADDER[0]) {
+export function pruneStateForStorage(state, urlCap = URL_CAP_LADDER[0], metadataBudget = DICOMWEB_PAYLOAD_MAX_BYTES) {
   if (!state || typeof state !== 'object') return state;
   // Entries are capped WITH the urls, never below them: the two lists describe
   // the same images and the adapters read whichever is longer as the truth.
@@ -59,6 +60,7 @@ export function pruneStateForStorage(state, urlCap = URL_CAP_LADDER[0]) {
   const genericDirectMeta = Object.fromEntries(
     Object.entries(state.genericDirectMeta || {}).filter(([url]) => retainedUrls.has(url)),
   );
+  const cached = boundDicomwebPayloads(state.dicomwebPayloads, {maxBytes: metadataBudget});
   const truncated = Boolean(
     state.truncated
     || (state.pacsRequests || []).length > pacsRequests.length
@@ -87,6 +89,8 @@ export function pruneStateForStorage(state, urlCap = URL_CAP_LADDER[0]) {
     binaryCandidates,
     genericDirectUrls,
     genericDirectMeta,
+    dicomwebPayloads: cached.payloads,
+    dicomwebPayloadsTruncated: Boolean(state.dicomwebPayloadsTruncated || cached.truncated) || undefined,
     genericEntries: genericEntries.map(e => {
       const keepMeta = Boolean(e.meta) && metaKept < metaBudget;
       if (keepMeta) metaKept += 1;
@@ -131,12 +135,23 @@ export function minimalTabState(state) {
  * fallback, or `-1` when even that failed.
  */
 export async function persistTabState(write, key, state, ladder = URL_CAP_LADDER) {
+  let metadataBudget = DICOMWEB_PAYLOAD_MAX_BYTES;
   for (const cap of ladder) {
+    const candidate = pruneStateForStorage(state, cap, metadataBudget);
     try {
-      await write({[key]: pruneStateForStorage(state, cap)});
+      await write({[key]: candidate});
       return cap;
     } catch {
       // Out of room, or the value is otherwise unwritable: try a smaller one.
+    }
+    // Replay metadata can dominate the state. Shed it before lowering the URL
+    // cap, otherwise every rung can fail while discarding useful discoveries.
+    if (Object.keys(candidate?.dicomwebPayloads || {}).length) {
+      metadataBudget = 0;
+      try {
+        await write({[key]: pruneStateForStorage(state, cap, metadataBudget)});
+        return cap;
+      } catch { /* Continue with a smaller discovery list. */ }
     }
   }
   try {

@@ -6,6 +6,7 @@ chrome.* APIs. All study/job metadata below is synthetic, and no download runs.
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import monotonic
 
 from playwright.sync_api import sync_playwright
 
@@ -76,6 +77,38 @@ def run():
                 type: 'START_DOWNLOAD', tabId, selectedSeries: ['fixture-series'], options: {}
             })""", tab_id)
             assert not blocked["ok"] and "Study not yet recognized" in blocked["error"]
+
+            # Stop the real MV3 worker, not the browser or extension. A normal
+            # runtime event must load recipes even though onStartup never runs.
+            panel.evaluate("""async () => {
+                await chrome.storage.local.set({pacs6_site_recipes: {
+                    'https://pacs-a.invalid': {dicom: ['https://pacs-a.invalid/image?'], updatedAt: Date.now()},
+                    'https://pacs-b.invalid': {dicom: ['https://pacs-b.invalid/image?'], updatedAt: Date.now()}
+                }});
+            }""")
+            cdp = context.new_cdp_session(panel)
+            versions = []
+            cdp.on("ServiceWorker.workerVersionUpdated", lambda event: versions.extend(event.get("versions", [])))
+            cdp.send("ServiceWorker.enable")
+            cdp.send("ServiceWorker.stopAllWorkers")
+            deadline = monotonic() + 10
+            while not any(v.get("runningStatus") == "stopped" and v.get("scriptURL") == worker.url for v in versions):
+                assert monotonic() < deadline, "MV3 worker did not stop"
+                panel.wait_for_timeout(50)
+            # Chromium can reuse the DevTools target ID after a worker stop;
+            # Playwright's serviceworker event is not a lifecycle-restart event.
+            panel.evaluate("""() => chrome.runtime.sendMessage({
+                type: 'ENGINE_LEARNED_URL', url: 'https://pacs-c.invalid/image.dcm'
+            }).catch(() => {})""")
+            panel.wait_for_function("""async () => {
+                const data = await chrome.storage.local.get('pacs6_site_recipes');
+                return Boolean(data.pacs6_site_recipes?.['https://pacs-c.invalid']);
+            }""")
+            origins = panel.evaluate("""async () => Object.keys(
+                (await chrome.storage.local.get('pacs6_site_recipes')).pacs6_site_recipes
+            ).sort()""")
+            assert origins == ['https://pacs-a.invalid', 'https://pacs-b.invalid', 'https://pacs-c.invalid'], origins
+            print("Verified actual worker stop/revival preserves learned sites A+B when learning C", flush=True)
             assert not errors, errors
             print("Real extension lifecycle smoke OK: active overview 0 script injections; idle engine verified; no page errors")
         finally:
