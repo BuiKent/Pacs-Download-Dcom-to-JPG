@@ -482,6 +482,50 @@ button, input, select, textarea { font: inherit; }
   font-weight: 600;
   box-shadow: 0 1px 3px rgba(0,0,0,0.2);
 }
+.winbar-tab[draggable="true"] {
+  cursor: grab;
+}
+.winbar-tab[draggable="true"]:active {
+  cursor: grabbing;
+}
+.winbar-tab.tab-dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+  border-style: dashed;
+  border-color: var(--control-border, #304a60);
+}
+.winbar-tab.drag-over-left,
+.winbar-tab.drag-over-right,
+.winbar-add-btn.drag-over-left {
+  position: relative;
+}
+.winbar-tab.drag-over-left::before,
+.winbar-add-btn.drag-over-left::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: 2px;
+  bottom: 2px;
+  width: 3px;
+  background: var(--accent, #2383e2);
+  border-radius: 2px;
+  box-shadow: 0 0 5px var(--accent, #2383e2);
+  z-index: 10;
+  pointer-events: none;
+}
+.winbar-tab.drag-over-right::after {
+  content: "";
+  position: absolute;
+  right: -3px;
+  top: 2px;
+  bottom: 2px;
+  width: 3px;
+  background: var(--accent, #2383e2);
+  border-radius: 2px;
+  box-shadow: 0 0 5px var(--accent, #2383e2);
+  z-index: 10;
+  pointer-events: none;
+}
 .winbar-tab-icon {
   display: inline-flex;
   align-items: center;

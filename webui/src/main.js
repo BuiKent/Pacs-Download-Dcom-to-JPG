@@ -739,9 +739,9 @@ function renderWinbar() {
     const isActive = tab.id === state.activeTabId;
     const title = `${tab.patientId ? tab.patientId + " - " : ""}${tab.patientName || "Bệnh nhân"}`;
     if (tab.loading) {
-      return `<div class="winbar-tab loading${isActive ? " active" : ""}" data-tab-id="${tab.id}">
+      return `<div class="winbar-tab loading${isActive ? " active" : ""}" data-tab-id="${tab.id}" draggable="true">
       <span class="winbar-tab-title" title="${escapeHtml(title)}">${escapeHtml(title)} <span class="tab-fmt-badge pending">${escapeHtml(t("Đang mở…"))}</span></span>
-      <button class="winbar-tab-close" data-action="close-tab" data-tab-id="${tab.id}" title="${escapeHtml(t("Đóng tab"))}">×</button>
+      <button class="winbar-tab-close" data-action="close-tab" data-tab-id="${tab.id}" draggable="false" title="${escapeHtml(t("Đóng tab"))}">×</button>
     </div>`;
     }
     const seriesList = tab.archive?.series || [];
@@ -754,9 +754,9 @@ function renderWinbar() {
     const badgeText = seriesList.length === 0
       ? "—"
       : (modality ? `${modality} · ${format}` : format);
-    return `<div class="winbar-tab${isActive ? " active" : ""}" data-tab-id="${tab.id}">
+    return `<div class="winbar-tab${isActive ? " active" : ""}" data-tab-id="${tab.id}" draggable="true">
       <span class="winbar-tab-title" title="${escapeHtml(title)}">${escapeHtml(title)} <span class="tab-fmt-badge ${seriesList.length === 0 ? "pending" : (isDicom ? "dicom" : "jpg")}">${escapeHtml(badgeText)}</span></span>
-      <button class="winbar-tab-close" data-action="close-tab" data-tab-id="${tab.id}" title="${escapeHtml(t("Đóng tab"))}">×</button>
+      <button class="winbar-tab-close" data-action="close-tab" data-tab-id="${tab.id}" draggable="false" title="${escapeHtml(t("Đóng tab"))}">×</button>
     </div>`;
   }).join("");
 
@@ -5264,6 +5264,231 @@ function bindActionsIn(container) {
   }
 }
 
+let isTabDragging = false;
+let draggedTabId = null;
+let tabDragEndTimer = null;
+
+function getAppRoot(root) {
+  if (root) return root;
+  if (typeof app !== "undefined" && app) return app;
+  if (typeof document !== "undefined") return document.getElementById("app") || document.body;
+  return null;
+}
+
+function moveTab(sourceTabId, targetIndex) {
+  if (!sourceTabId || sourceTabId === "worklist") return false;
+  const fromIndex = state.tabs.findIndex((t) => t.id === sourceTabId);
+  if (fromIndex === -1) return false;
+
+  let clampedTarget = Number.isInteger(targetIndex) ? targetIndex : state.tabs.length;
+  if (clampedTarget < 0) clampedTarget = 0;
+  if (clampedTarget > state.tabs.length) clampedTarget = state.tabs.length;
+
+  if (clampedTarget === fromIndex || clampedTarget === fromIndex + 1) {
+    return false;
+  }
+
+  const [movedTab] = state.tabs.splice(fromIndex, 1);
+  const finalIndex = fromIndex < clampedTarget ? clampedTarget - 1 : clampedTarget;
+  state.tabs.splice(finalIndex, 0, movedTab);
+  return true;
+}
+
+function moveActiveTabRelatively(direction) {
+  if (state.activeTabId === "worklist") return false;
+  const currentIndex = state.tabs.findIndex((t) => t.id === state.activeTabId);
+  if (currentIndex === -1) return false;
+  const targetIndex = direction < 0 ? currentIndex - 1 : currentIndex + 2;
+  const moved = moveTab(state.activeTabId, targetIndex);
+  if (moved) refreshWinbar();
+  return moved;
+}
+
+function refreshWinbar(root = app) {
+  const targetApp = getAppRoot(root);
+  const winbar = targetApp?.querySelector?.(".winbar");
+  if (!winbar) return;
+  winbar.outerHTML = renderWinbar();
+  const newWinbar = targetApp.querySelector(".winbar");
+  if (newWinbar) {
+    bindActionsIn(newWinbar);
+    bindWinbarTabs(targetApp);
+  }
+}
+
+function clearTabDragIndicators(winbar) {
+  if (!winbar) return;
+  winbar.querySelectorAll(".drag-over-left, .drag-over-right, .tab-dragging").forEach((el) => {
+    el.classList.remove("drag-over-left", "drag-over-right", "tab-dragging");
+  });
+}
+
+function bindWinbarTabs(root = app) {
+  const targetApp = getAppRoot(root);
+  const winbar = targetApp?.querySelector?.(".winbar");
+  if (!winbar) return;
+
+  winbar.querySelectorAll(".winbar-tab").forEach((tabEl) => {
+    tabEl.addEventListener("click", (event) => {
+      if (isTabDragging) return;
+      if (event.target.closest(".winbar-tab-close")) return;
+      const tabId = tabEl.dataset.tabId;
+      if (tabId) switchTab(tabId);
+    });
+  });
+
+  winbar.querySelectorAll(".winbar-tab-close").forEach((closeBtn) => {
+    closeBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const tabId = closeBtn.dataset.tabId;
+      if (tabId) closeTab(tabId);
+    });
+  });
+
+  winbar.querySelectorAll(".winbar-tab[draggable='true']").forEach((tabEl) => {
+    tabEl.addEventListener("dragstart", (event) => {
+      if (event.target.closest(".winbar-tab-close")) {
+        event.preventDefault();
+        return;
+      }
+      draggedTabId = tabEl.dataset.tabId;
+      isTabDragging = true;
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", draggedTabId);
+      }
+      setTimeout(() => {
+        if (isTabDragging) tabEl.classList.add("tab-dragging");
+      }, 0);
+    });
+
+    tabEl.addEventListener("dragend", () => {
+      draggedTabId = null;
+      clearTabDragIndicators(winbar);
+      if (tabDragEndTimer) clearTimeout(tabDragEndTimer);
+      tabDragEndTimer = setTimeout(() => {
+        isTabDragging = false;
+        tabDragEndTimer = null;
+      }, 80);
+    });
+  });
+
+  winbar.querySelectorAll(".winbar-tab").forEach((targetTabEl) => {
+    targetTabEl.addEventListener("dragover", (event) => {
+      if (!draggedTabId) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+
+      const targetId = targetTabEl.dataset.tabId;
+      if (targetId === draggedTabId) {
+        targetTabEl.classList.remove("drag-over-left", "drag-over-right");
+        return;
+      }
+
+      if (targetId === "worklist") {
+        winbar.querySelectorAll(".drag-over-left, .drag-over-right").forEach((el) => {
+          if (el !== targetTabEl) el.classList.remove("drag-over-left", "drag-over-right");
+        });
+        targetTabEl.classList.add("drag-over-right");
+        return;
+      }
+
+      const rect = targetTabEl.getBoundingClientRect();
+      const midX = rect.left + rect.width / 2;
+      const isLeft = event.clientX < midX;
+
+      winbar.querySelectorAll(".drag-over-left, .drag-over-right").forEach((el) => {
+        if (el !== targetTabEl) el.classList.remove("drag-over-left", "drag-over-right");
+      });
+
+      if (isLeft) {
+        targetTabEl.classList.add("drag-over-left");
+        targetTabEl.classList.remove("drag-over-right");
+      } else {
+        targetTabEl.classList.add("drag-over-right");
+        targetTabEl.classList.remove("drag-over-left");
+      }
+    });
+
+    targetTabEl.addEventListener("dragleave", (event) => {
+      if (!targetTabEl.contains(event.relatedTarget)) {
+        targetTabEl.classList.remove("drag-over-left", "drag-over-right");
+      }
+    });
+
+    targetTabEl.addEventListener("drop", (event) => {
+      if (!draggedTabId) return;
+      event.preventDefault();
+      const sourceId = event.dataTransfer?.getData("text/plain") || draggedTabId;
+      const targetId = targetTabEl.dataset.tabId;
+      clearTabDragIndicators(winbar);
+
+      if (!sourceId || sourceId === targetId) return;
+
+      let targetIndex;
+      if (targetId === "worklist") {
+        targetIndex = 0;
+      } else {
+        const idx = state.tabs.findIndex((t) => t.id === targetId);
+        if (idx === -1) return;
+        const rect = targetTabEl.getBoundingClientRect();
+        const midX = rect.left + rect.width / 2;
+        const isLeft = event.clientX < midX;
+        targetIndex = isLeft ? idx : idx + 1;
+      }
+
+      const moved = moveTab(sourceId, targetIndex);
+      if (moved) refreshWinbar(targetApp);
+    });
+  });
+
+  const addBtn = winbar.querySelector(".winbar-add-btn");
+  if (addBtn) {
+    addBtn.addEventListener("dragover", (event) => {
+      if (!draggedTabId) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      winbar.querySelectorAll(".drag-over-left, .drag-over-right").forEach((el) => {
+        if (el !== addBtn) el.classList.remove("drag-over-left", "drag-over-right");
+      });
+      addBtn.classList.add("drag-over-left");
+    });
+    addBtn.addEventListener("dragleave", (event) => {
+      if (!addBtn.contains(event.relatedTarget)) {
+        addBtn.classList.remove("drag-over-left");
+      }
+    });
+    addBtn.addEventListener("drop", (event) => {
+      if (!draggedTabId) return;
+      event.preventDefault();
+      const sourceId = event.dataTransfer?.getData("text/plain") || draggedTabId;
+      clearTabDragIndicators(winbar);
+      if (!sourceId) return;
+      const moved = moveTab(sourceId, state.tabs.length);
+      if (moved) refreshWinbar(targetApp);
+    });
+  }
+
+  winbar.addEventListener("dragover", (event) => {
+    if (!draggedTabId) return;
+    if (event.target === winbar) {
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    }
+  });
+  winbar.addEventListener("drop", (event) => {
+    if (!draggedTabId) return;
+    if (event.target === winbar) {
+      event.preventDefault();
+      const sourceId = event.dataTransfer?.getData("text/plain") || draggedTabId;
+      clearTabDragIndicators(winbar);
+      if (!sourceId) return;
+      const moved = moveTab(sourceId, state.tabs.length);
+      if (moved) refreshWinbar(targetApp);
+    }
+  });
+}
+
 function bindEvents() {
   if (!syncAppRoot()) return;
   bindActionsIn(app);
@@ -5335,20 +5560,7 @@ function bindEvents() {
     window.__viewerDiagnostics = viewerDiagnostics();
   });
   installClipboardFields();
-  app.querySelectorAll(".winbar-tab").forEach((tabEl) => {
-    tabEl.addEventListener("click", (event) => {
-      if (event.target.closest(".winbar-tab-close")) return;
-      const tabId = tabEl.dataset.tabId;
-      if (tabId) switchTab(tabId);
-    });
-  });
-  app.querySelectorAll(".winbar-tab-close").forEach((closeBtn) => {
-    closeBtn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      const tabId = closeBtn.dataset.tabId;
-      if (tabId) closeTab(tabId);
-    });
-  });
+  bindWinbarTabs(app);
   bindWorklistOpenButtons(app);
   bindTextViewerButtons(app);
   bindWorklistFilters(app);
@@ -8567,6 +8779,21 @@ function installKeyboardShortcuts() {
     }
     if (isTypingTarget(event.target)) return;
 
+    if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey) {
+      if (event.key === "PageUp" || event.key === "ArrowLeft") {
+        if (moveActiveTabRelatively(-1)) {
+          event.preventDefault();
+          return;
+        }
+      }
+      if (event.key === "PageDown" || event.key === "ArrowRight") {
+        if (moveActiveTabRelatively(1)) {
+          event.preventDefault();
+          return;
+        }
+      }
+    }
+
     if (event.key === "[" && !event.ctrlKey && !event.altKey && !event.metaKey && state.activeTabId !== "worklist") {
       event.preventDefault();
       action("toggle-patient-rail");
@@ -9017,6 +9244,10 @@ export {
   openHistoryEntry,
   bindWorklistOpenButtons,
   renderWinbar,
+  moveTab,
+  moveActiveTabRelatively,
+  refreshWinbar,
+  bindWinbarTabs,
   bindEvents,
   renderLogModal,
   render,
