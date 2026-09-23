@@ -300,3 +300,21 @@ test('late progress cannot reopen a finalized job',async()=>{
   await w.evaluate("handleEngineProgress({tabId:1,jobId:'job-1',attemptId:'attempt-1',status:'done',completed:2})");
   assert.equal(w.evaluate('jobMemory.get(1).status'),'done');
 });
+
+test('a download is refused before the engine starts when a task host lacks site permission',async()=>{
+  const w=worker();
+  const asked=[];
+  w.context.chrome.permissions={contains:async({origins})=>{asked.push(...origins);return !origins[0].includes('pacs.blocked');}};
+  w.evaluate("buildTasks=async()=>[{sopInstanceUid:'1.2.3.4',url:'',instanceBase:'http://pacs.blocked:8081/ws/rest/v1/studies/1/series/2/instances/3'}];ensureOffscreen=async()=>{}");
+  await assert.rejects(w.evaluate("startJob(1,['series-1'])"),/Site permission required for http:\/\/pacs\.blocked:8081\/\*/);
+  assert.ok(asked.includes('http://pacs.blocked:8081/*'));
+  assert.equal(w.messages.filter(m=>m.type==='START_ENGINE').length,0,'no request may reach the engine');
+});
+
+test('a download whose task hosts are all granted reaches the engine',async()=>{
+  const w=worker();
+  w.context.chrome.permissions={contains:async()=>true};
+  w.evaluate("buildTasks=async()=>[{sopInstanceUid:'1.2.3.4',url:'https://pacs.test/wado?objectUID=1',instanceBase:'https://pacs.test/rs/studies/1/series/2/instances/3'}];ensureOffscreen=async()=>{}");
+  await w.evaluate("startJob(1,['series-1'])");
+  assert.equal(w.messages.filter(m=>m.type==='START_ENGINE').length,1);
+});

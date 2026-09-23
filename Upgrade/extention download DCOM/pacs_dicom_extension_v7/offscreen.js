@@ -1,6 +1,6 @@
 'use strict';
 import { buildPart10FromFrames, isPart10, parseMultipart, numberOfFrames, validatePart10, parseDicomMeta } from './lib/dicom.js';
-import { zfpMetaToDicomJson, buildStudyStoragePath, buildStudySidecar, sidecarStudyPath, buildStudyLock, claimBlocksUs, studyLockFilename, studyLockWinner, STUDY_LOCK_NAME, STUDY_LOCK_CLAIM_PREFIX, STUDY_LOCK_SETTLE_MS, STUDY_LOCK_RENEW_MS } from './lib/pacs.js';
+import { resourceUrl, zfpMetaToDicomJson, buildStudyStoragePath, buildStudySidecar, sidecarStudyPath, buildStudyLock, claimBlocksUs, studyLockFilename, studyLockWinner, STUDY_LOCK_NAME, STUDY_LOCK_CLAIM_PREFIX, STUDY_LOCK_SETTLE_MS, STUDY_LOCK_RENEW_MS } from './lib/pacs.js';
 import { AsyncSemaphore, sleepAbortable, fetchStreamWithTimeout } from './lib/semaphore.js';
 import { dicomTaskIdentityError, orderRoutes } from './lib/orchestrator.js';
 
@@ -58,10 +58,10 @@ async function prepareDicomweb(task,signal,frameConcurrency){
     try{const got=await fetchRaw(c.url,task,'multipart/related; type="application/dicom", application/dicom, */*',signal);const d=dicomFromResponse(got.bytes,got.contentType);if(d)return{bytes:d,provenance:'original',route:c.route};first=responseProblem(got.bytes,got.contentType);}catch(e){first=String(e?.message||e);}
   }
   let meta=task.meta||null;if(Array.isArray(meta))meta=meta[0]||{};
-  const enough=meta&&meta['00080016']&&meta['00080018']&&meta['00280010']&&meta['00280011']&&meta['00280100'];if(!enough){const mj=await fetchJson(`${task.instanceBase}/metadata`,task,signal);meta=Array.isArray(mj)?(mj[0]||{}):mj;}
+  const enough=meta&&meta['00080016']&&meta['00080018']&&meta['00280010']&&meta['00280011']&&meta['00280100'];if(!enough){const mj=await fetchJson(resourceUrl(task.instanceBase,'/metadata'),task,signal);meta=Array.isArray(mj)?(mj[0]||{}):mj;}
   if(!meta||!Object.keys(meta).length)throw new Error(first||'No instance metadata available.');
   const nf=Math.max(Number(task.numberOfFrames)||1,numberOfFrames(meta));
-  const frameResults=await parallelOrdered(nf,frameConcurrency,async i=>{const got=await fetchRaw(`${task.instanceBase}/frames/${i+1}`,task,'multipart/related; type="application/octet-stream"; transfer-syntax=1.2.840.10008.1.2.1, multipart/related; type="application/octet-stream", */*',signal);const parts=parseMultipart(got.bytes,got.contentType);return{frames:parts.length?parts.map(p=>p.data):[got.bytes],ct:(parts[0]?.contentType||got.contentType)};});
+  const frameResults=await parallelOrdered(nf,frameConcurrency,async i=>{const got=await fetchRaw(resourceUrl(task.instanceBase,`/frames/${i+1}`),task,'multipart/related; type="application/octet-stream"; transfer-syntax=1.2.840.10008.1.2.1, multipart/related; type="application/octet-stream", */*',signal);const parts=parseMultipart(got.bytes,got.contentType);return{frames:parts.length?parts.map(p=>p.data):[got.bytes],ct:(parts[0]?.contentType||got.contentType)};});
   const frames=[];let ct='';for(const r of frameResults){ct=ct||r.ct;frames.push(...r.frames);}if(!frames.length)throw new Error(first||'Failed to retrieve image frames.');return{bytes:buildPart10FromFrames(meta,frames,ct),provenance:'reconstructed',route:'frames'};
 }
 
@@ -121,7 +121,7 @@ async function commit(job,task,got){
   if(sopUid&&job.completedSopUids?.has(sopUid)){job.skipped++;return false;}
   if(job.saveMode==='filesystem')await writeFile(job.studyRoot,task.relativePath,got.bytes);
   else await writeViaDownloads(job.subfolder,job.studyFolder,task.relativePath,got.bytes,job);
-  job.completed++;job.bytesWritten+=got.bytes.byteLength;
+  job.completed++;job.bytesWritten+=got.bytes.byteLength;job.networkStreak=0;
   if(got.provenance==='reconstructed')job.reconstructed++;else job.original++;
   if(sopUid&&job.completedSopUids)job.completedSopUids.add(sopUid);
   if(job.completed>0&&(job.completed%50===0||job.completed===job.total)){
@@ -165,6 +165,20 @@ function failTask(job,relativePath,message){
   emit(job,true);
 }
 
+// `fetch` rejects with a bare "Failed to fetch" for every transport-level
+// refusal: server down, connection reset, or a CORS reply the extension may not
+// read. Retrying hundreds of images that all fail this way only hammers the
+// PACS, so the job stops once this many fail in a row with nothing saved between.
+const NETWORK_FAILURE_LIMIT=24;
+function isNetworkFailure(message){return /^Failed to fetch$|NetworkError|net::ERR_/i.test(String(message||''));}
+function noteNetworkFailure(job){
+  job.networkStreak=(job.networkStreak||0)+1;
+  if(job.networkStreak<NETWORK_FAILURE_LIMIT||job.halted)return;
+  job.halted=true;
+  job.errors.push(`Stopped after ${NETWORK_FAILURE_LIMIT} images in a row failed with a network error; the remaining images were not requested. Check site permission and the PACS connection, then retry.`);
+  emit(job,true);
+}
+
 async function runTask(job,task,index){
   if(job.cancelled)throw new DOMException('Cancelled','AbortError');
   const declaredSop=String(task.sopInstanceUid||'').trim();
@@ -202,6 +216,11 @@ async function runTask(job,task,index){
         await sleep((attempt===1?350:700)+jitter,job.controller.signal);
       }
     }
+  }
+  if(isNetworkFailure(last)){
+    failTask(job,task.relativePath,'Failed to fetch (server unreachable, or the extension lacks site permission)');
+    noteNetworkFailure(job);
+    return;
   }
   failTask(job,task.relativePath,last);
 }
@@ -446,6 +465,8 @@ async function runJob(spec){
     lockWritten:false,
     lockRenewalQueued:false,
     lockLost:false,
+    halted:false,
+    networkStreak:0,
     lockHeartbeat:null,
     claimId:`${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`,
     metaQueue:Promise.resolve(),
@@ -471,7 +492,7 @@ async function runJob(spec){
   emit(job,true);
   chrome.runtime.sendMessage({type:'LOG_EVENT',entry:{level:'INFO',category:'ENGINE',message:`Offscreen bắt đầu lưu ${spec.tasks.length} file DICOM (${job.saveMode})`,details:{jobId:spec.jobId,tasksCount:spec.tasks.length,saveMode:job.saveMode}}}).catch(()=>{});
   let next=0;
-  async function worker(){while(true){if(job.cancelled)return;const i=next++;if(i>=spec.tasks.length)return;try{await runTask(job,spec.tasks[i],i);}catch(e){if(job.cancelled||e?.name==='AbortError'||String(e?.message||e).toLowerCase().includes('abort')||String(e?.message||e).toLowerCase().includes('user_canceled'))return;job.failed++;job.errors.push(`${spec.tasks[i]?.relativePath||i}: ${e?.message||e}`);emit(job,true);}}}
+  async function worker(){while(true){if(job.cancelled||job.halted)return;const i=next++;if(i>=spec.tasks.length)return;try{await runTask(job,spec.tasks[i],i);}catch(e){if(job.cancelled||e?.name==='AbortError'||String(e?.message||e).toLowerCase().includes('abort')||String(e?.message||e).toLowerCase().includes('user_canceled'))return;job.failed++;job.errors.push(`${spec.tasks[i]?.relativePath||i}: ${e?.message||e}`);emit(job,true);}}}
   if(isZfp){const m=await runZfpJob(job,spec.tasks);if(m&&!Object.keys(resolvedMeta).length)resolvedMeta=m;}
   else await Promise.all(Array.from({length:Math.min(job.concurrency,Math.max(1,spec.tasks.length))},worker));
   job.status=job.cancelled?'cancelled':job.failed?(job.completed?'done_with_errors':'error'):'done';

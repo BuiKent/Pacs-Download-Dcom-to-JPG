@@ -1,5 +1,5 @@
 'use strict';
-import {cleanUrl,classifyPacsUrl,viewerUrlScore,originPattern,originPatterns,bestDetectedRequest,safeHeaders,replayContentType,viewerStudyHint,classifyViewerShell,sanitizeSegment,computeUrlFingerprint,RecipeStoreV2,buildStudyStoragePath} from './lib/pacs.js';
+import {cleanUrl,classifyPacsUrl,viewerUrlScore,originPattern,originPatterns,bestDetectedRequest,safeHeaders,replayContentType,viewerStudyHint,classifyViewerShell,sanitizeSegment,computeUrlFingerprint,RecipeStoreV2,buildStudyStoragePath,inheritQuery} from './lib/pacs.js';
 import {matchingAdapters,adapterById} from './lib/adapters/registry.js';
 import {compatibleAdapterIds,mapSeriesSelection,tasksBelongToStudy,cumulativeAttemptCounters,inventoryIsCovered,dedupeTasksBySop} from './lib/orchestrator.js';
 import {extractManifestCandidates,candidateProbePlan,recordsForSuccessfulShapes,manifestRecipeFromDiscovery,studyProfileFromProbeDetails,looksLikeDicomJson,urlShape} from './lib/generic_discovery.js';
@@ -238,6 +238,12 @@ async function upsertHistory(inv,patch={}){if(!inv)return null;const key=history
 function urlConfidence(raw){const shell=classifyViewerShell(raw);return Math.max(0,Number(viewerUrlScore(raw))||0,Number(shell?.score)||0);}
 async function hasOrigin(url){const p=originPattern(url);if(!p)return false;return chrome.permissions.contains({origins:[p]});}
 async function missingPatterns(urls){const out=[],allPatterns=(urls||[]).flatMap(originPatterns);for(const p of [...new Set(allPatterns.filter(Boolean))])if(!(await chrome.permissions.contains({origins:[p]})))out.push(p);return out;}
+// The engine fetches from the extension origin, so without host access every
+// request depends on the PACS server's CORS reply, and a server that sends
+// Access-Control-Allow-Origin twice rejects all of them. Discovery can still
+// succeed from payloads captured in the page, so a missing grant would only
+// surface later as every image failing with a bare "Failed to fetch".
+async function missingTaskOrigins(tasks){const urls=new Set();for(const t of tasks||[])for(const u of[t?.url,t?.instanceBase])if(u)urls.add(u);return urls.size?missingPatterns([...urls]):[];}
 async function injectContent(tabId, frameId = null){
   const s=await getTabState(tabId);
   if(!stateIsTracked(s))return false;
@@ -591,7 +597,6 @@ async function fetchJsonFor(state,url,accept='application/json, application/dico
     try{return JSON.parse(text);}catch(e){throw new Error(`Corrupted manifest, failed to parse JSON (${new URL(url).pathname}).`);}
   }finally{clearTimeout(timer);}
 }
-function inheritQuery(target,source){const t=new URL(target),s=new URL(source);for(const[k,v]of s.searchParams)if(!t.searchParams.has(k))t.searchParams.append(k,v);return t.href;}
 function normalizeStudy(inv){const p=inv.patient||{};return{adapter:inv.adapter||'',studyUid:String(inv.studyUid||''),patient:{name:String(p.name||''),id:String(p.id||''),birthDate:String(p.birthDate||''),studyDate:String(p.studyDate||''),description:String(p.description||''),accession:String(p.accession||'')},series:Array.isArray(inv.series)?inv.series:[],context:inv.context||{}};}
 function adapterContext(summary,state){return{summary,state,fetchJson:(url,accept,req,timeoutMs)=>fetchJsonFor(state,url,accept,req,timeoutMs),headersForUrl:url=>headersForUrl(state,url),inheritQuery,normalizeStudy,zfpInfo:()=>zfpInfo(state.tabId)};}
 function analysisContextKey(state){return JSON.stringify([state.mainDocumentId||'',state.currentUrl||'',state.studyHint||'']);}
@@ -795,6 +800,8 @@ async function startJob(tabId,selected,options={}){
   const sourceContext=analysisContextKey(await getTabState(tabId)),sourceEpoch=analysisEpochs.get(tabId)||0;
   const tasks=await buildTasks(inv,selected);
   if(!tasks.length)throw new Error('No DICOM images in selected series.');
+  const missingAccess=await missingTaskOrigins(tasks);
+  if(missingAccess.length)throw new Error(`Site permission required for ${missingAccess.join(', ')}. Click "Grant", then download again.`);
   logEvent('INFO','DOWNLOAD',`Bắt đầu tải DICOM tab ${tabId}: ${selected.length} series (${tasks.length} ảnh, adapter: ${inv.adapter})`,{tabId,selected:selected.length,total:tasks.length,adapter:inv.adapter},{tabId,url:inv?.summary?.currentUrl||''});
   await ensureOffscreen();
   const currentInventory=await getSession(invKey(tabId)),currentState=await getTabState(tabId);

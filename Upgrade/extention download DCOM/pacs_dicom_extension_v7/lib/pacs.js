@@ -20,6 +20,35 @@ export function originPattern(raw) {
   } catch { return null; }
 }
 
+/**
+ * Append a path to a resource URL that may already carry a query.
+ *
+ * Concatenating strings put the suffix inside the query
+ * (`…/instances/X?SeriesInstanceUID=undefined/frames/1`), so every metadata and
+ * frame request of a DICOMweb study with an inherited query went nowhere.
+ */
+export function resourceUrl(base, suffix) {
+  try {
+    const u = new URL(base);
+    u.pathname = u.pathname.replace(/\/+$/, '') + suffix;
+    return u.href;
+  } catch { return `${base}${suffix}`; }
+}
+
+// QIDO matching and paging keys describe one query, not the resource. Carried
+// onto another URL they narrow or break it, and viewers send them unfilled.
+const QIDO_QUERY_KEY = /^(studyinstanceuid|seriesinstanceuid|sopinstanceuid|includefield|limit|offset|fuzzymatching|[0-9a-f]{8})$/i;
+
+/** Copy the source URL's access parameters (session, token…) onto the target. */
+export function inheritQuery(target, source) {
+  const t = new URL(target), s = new URL(source);
+  for (const [k, v] of s.searchParams) {
+    if (QIDO_QUERY_KEY.test(k) || ['', 'undefined', 'null'].includes(String(v).trim().toLowerCase())) continue;
+    if (!t.searchParams.has(k)) t.searchParams.append(k, v);
+  }
+  return t.href;
+}
+
 export function originPatterns(raw) {
   try {
     const u = new URL(raw);

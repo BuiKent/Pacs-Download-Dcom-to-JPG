@@ -47,3 +47,20 @@ if (meditecWorklist?.type !== 'MEDITEC_WORKLIST') {
 }
 console.log('Meditec ULite URL tests OK');
 
+
+import {resourceUrl, inheritQuery} from '../lib/pacs.js';
+{
+  // A viewer's QIDO call (`series?SeriesInstanceUID=undefined`) seeds the study.
+  const seed='http://pacs.test:8081/ws/rest/v1/session/abc/wado-rs/studies/1.2/series?SeriesInstanceUID=undefined&token=t1';
+  const base=inheritQuery('http://pacs.test:8081/ws/rest/v1/session/abc/wado-rs/studies/1.2/series/3.4/instances/5.6',seed);
+  if(base!=='http://pacs.test:8081/ws/rest/v1/session/abc/wado-rs/studies/1.2/series/3.4/instances/5.6?token=t1')
+    throw new Error(`inheritQuery kept a QIDO filter: ${base}`);
+  const frame=resourceUrl(base,'/frames/1');
+  if(frame!=='http://pacs.test:8081/ws/rest/v1/session/abc/wado-rs/studies/1.2/series/3.4/instances/5.6/frames/1?token=t1')
+    throw new Error(`resourceUrl put the path inside the query: ${frame}`);
+  if(resourceUrl('https://x.test/rs/instances/9/','/metadata')!=='https://x.test/rs/instances/9/metadata')
+    throw new Error('resourceUrl doubled a slash');
+  const paged=inheritQuery('https://x.test/rs/studies/1/series/2/instances','https://x.test/rs/studies/1/series?limit=100&offset=200&00200013=1');
+  if(paged!=='https://x.test/rs/studies/1/series/2/instances')throw new Error(`inheritQuery carried paging: ${paged}`);
+  console.log('DICOMweb resource URL tests OK');
+}

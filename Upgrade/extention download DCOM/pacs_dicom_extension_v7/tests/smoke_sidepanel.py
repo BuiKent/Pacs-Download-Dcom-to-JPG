@@ -111,7 +111,7 @@ STUB = """
         },
       },
     },
-    permissions: {request: async () => true},
+    permissions: {contains: async () => true, request: async () => true},
   };
 })();
 """

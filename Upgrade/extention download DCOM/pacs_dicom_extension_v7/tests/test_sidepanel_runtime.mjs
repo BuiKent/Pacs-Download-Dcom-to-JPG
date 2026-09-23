@@ -130,6 +130,7 @@ function createPanel() {
         onUpdated: {addListener() {}},
       },
       storage: {local: {get: async () => ({}), set: async () => {}}},
+      permissions: {contains: async () => true, request: async () => true},
     },
     resolveBulkDicomSaveMode: () => 'filesystem',
   });

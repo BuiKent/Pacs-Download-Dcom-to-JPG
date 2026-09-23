@@ -49,7 +49,47 @@ async function renderFolder(){
   }
 }
 
-async function grantAccess(){let pats=[...(summary?.missingOrigins||[])];if(!pats.length){pats=patternsFor(activeTabUrl);}else{const extra=[];for(const p of pats){try{const u=new URL(p.replace(/\/\*$/,'/'));for(const ep of patternsFor(u.href))extra.push(ep);}catch{}}pats=[...new Set([...pats,...extra])];}if(!pats.length)return;const ok=await chrome.permissions.request({origins:pats});if(!ok)return toast('Site permission not granted.',true);await send('SITE_ACCESS_CHANGED',{tabId});toast('Permission granted.');await refresh();}
+async function grantAccess(){
+  let pats=[...(summary?.missingOrigins||[])];
+  if(!pats.length){
+    pats=patternsFor(activeTabUrl);
+  }else{
+    const extra=[];
+    for(const p of pats){
+      try{
+        const u=new URL(p.replace(/\/\*$/,'/'));
+        for(const ep of patternsFor(u.href))extra.push(ep);
+      }catch{}
+    }
+    pats=[...new Set([...pats,...extra])];
+  }
+  if(!pats.length)return true;
+  const needed=[];
+  for(const p of pats){
+    try{
+      const has=await chrome.permissions?.contains?.({origins:[p]});
+      if(!has)needed.push(p);
+    }catch{
+      needed.push(p);
+    }
+  }
+  if(!needed.length)return true;
+  let ok=false;
+  try{
+    ok=await (chrome.permissions?.request ? chrome.permissions.request({origins:needed}) : true);
+  }catch(e){
+    toast(e?.message||String(e),true);
+    return false;
+  }
+  if(!ok){
+    toast('Site permission not granted.',true);
+    return false;
+  }
+  await send('SITE_ACCESS_CHANGED',{tabId});
+  toast('Permission granted.');
+  await refresh();
+  return true;
+}
 
 function compactCandidate(row){const ct=String(row.contentType||'').split(';')[0],bits=[row.method||'GET'];if(row.status)bits.push(String(row.status));if(ct)bits.push(ct.replace('application/',''));return bits.join(' · ');}
 function renderLearning(){const active=Boolean(state?.learning?.active),rows=[...(state?.learnCandidates||[])].reverse();show('learnCard',!isActiveDownload(panelJob())&&!inventory&&state?.tracking==='watching');if($('learnCard').classList.contains('hidden'))return;$('learnToggleBtn').textContent=active?'Stop learning':'Start learning';$('learnText').textContent=active?`${rows.length} requests recorded. Interact with viewer, then pick candidate.`:'Enable when site is not yet supported.';const el=$('learnList');el.textContent='';if(!active&&!rows.length){el.innerHTML='<div class="empty">No learning requests captured yet.</div>';return;}for(const row of rows.slice(0,24)){const item=document.createElement('div');item.className='learn-item';const info=document.createElement('div');info.className='learn-info';const name=document.createElement('div');name.className='learn-name';name.textContent=row.display||row.url||'Request';const meta=document.createElement('div');meta.className='learn-meta';meta.textContent=compactCandidate(row);info.append(name,meta);const acts=document.createElement('div');acts.className='learn-actions';const dicom=document.createElement('button');dicom.textContent='DICOM';dicom.title='Mark as DICOM endpoint';dicom.addEventListener('click',()=>learnCandidate(row,'dicom'));const manifest=document.createElement('button');manifest.textContent='Manifest';manifest.title='Mark as JSON containing image list/URLs';manifest.addEventListener('click',()=>learnCandidate(row,'manifest'));acts.append(dicom,manifest);item.append(info,acts);el.append(item);}}
@@ -240,7 +280,9 @@ function updateSelected(){
   }
   $('downloadBtn').classList.remove('btn-loading');
   $('downloadBtn').disabled=!ids.length;
-  $('downloadBtn').textContent=inventory?.previousDownload&&inventory.previousDownload.status!=='done'?'Download missing':'Download DICOM';
+  const prev=inventory?.previousDownload;
+  const hasPartial=Boolean(prev&&prev.status!=='done'&&Number(prev.completed||0)>0);
+  $('downloadBtn').textContent=hasPartial?'Download missing':'Download DICOM';
   $('resumeBtn').classList.remove('btn-loading');
   $('resumeBtn').disabled=!ids.length||!jobMatchesInventory();
 }
@@ -294,7 +336,10 @@ function renderJob(){
       show('jobNote',true);
       const remaining=Math.max(0,total-Number(job.completed||0));
       const isPartial=job.status==='partial'||Boolean(inventory?.series?.length>1&&!job.allSeriesSelected);
-      $('resumeBtn').innerHTML=remaining?`🔄 Resume missing (${remaining})`:(isPartial?'🔄 Resume remaining':'🔄 Retry');
+      const hasProgress=Number(job.completed||0)>0;
+      $('resumeBtn').innerHTML=hasProgress
+        ?(remaining?`🔄 Resume missing (${remaining})`:(isPartial?'🔄 Resume remaining':'🔄 Retry'))
+        :'🔄 Retry';
       $('jobNote').textContent=job.status==='cancelled'
         ?`Download stopped. Safely saved ${job.completed||0}/${total||'?'} images. Click 'Resume' to download remaining files.`
         :job.status==='done_with_errors'
@@ -374,6 +419,21 @@ async function startDownload(){
   const selectedSeries=selectedIds(),requestedTabId=tabId,revision=contextRevision,studyKey=inventoryStudyKey();
   if(!selectedSeries.length)return;
   const stillCurrent=()=>revision===contextRevision&&requestedTabId===tabId&&studyKey===inventoryStudyKey();
+  let needAccess=(summary?.missingOrigins||[]).length>0;
+  if(!needAccess&&activeTabUrl){
+    for(const pat of patternsFor(activeTabUrl)){
+      try{
+        if(chrome.permissions?.contains&&!(await chrome.permissions.contains({origins:[pat]}))){
+          needAccess=true;
+          break;
+        }
+      }catch{}
+    }
+  }
+  if(needAccess){
+    const granted=await grantAccess();
+    if(!granted||!stillCurrent())return;
+  }
   isStartingDownload=true;
   renderStatus();renderInventory();renderLearning();
   $('downloadBtn').disabled=true;
