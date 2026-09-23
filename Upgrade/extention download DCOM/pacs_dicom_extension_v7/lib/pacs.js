@@ -290,6 +290,33 @@ export function parseVrpacsManifest(payload) {
   };
 }
 
+/**
+ * VRPACS lists `/assets/NoImage.dcm` for an entry that has no DICOM at all,
+ * such as a HIS record. The file does not exist; the server answers with the
+ * viewer's own HTML page, which the engine then counts as a failed image.
+ */
+export function isVrpacsPlaceholderImageId(id) {
+  const raw = String(id || '').trim().replace(/^(?:wadouri|wadors|dicomweb|dicomfile):/i, '');
+  if (!raw) return false;
+  let path = raw;
+  try { path = new URL(raw, 'http://placeholder.invalid/').pathname; } catch { /* keep the raw path */ }
+  return /\/noimage\.dcm$/i.test(path);
+}
+
+/**
+ * Why a VRPACS series should not be offered for download, or '' when it holds
+ * images. The same rule DICOMweb discovery and the desktop pipeline already
+ * apply: objects without pixels never convert to JPG, and counting them left a
+ * fully downloaded study permanently short by that many "images".
+ */
+export function vrpacsSeriesSkipReason(raw, series) {
+  const modality = String(series?.modality || raw?.modality || raw?.Modality || '').trim().toUpperCase();
+  if (NON_IMAGE_MODALITIES.has(modality)) return 'non-image';
+  const ids = (Array.isArray(raw?.imageIds) ? raw.imageIds : []).filter(Boolean);
+  if (ids.length && ids.every(isVrpacsPlaceholderImageId)) return 'placeholder';
+  return '';
+}
+
 export function parseDicomwebSeries(payload) {
   const list = Array.isArray(payload) ? payload : (Array.isArray(payload?.data) ? payload.data : (Array.isArray(payload?.seriesList) ? payload.seriesList : []));
   if (!list.length) return [];

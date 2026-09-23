@@ -2,7 +2,7 @@
  * VRPACS share-link testing (/viewershare?params=<base64 JSON>).
  */
 import { VrpacsAdapter } from '../lib/adapters/vrpacs.js';
-import { parseVrpacsManifest, replayContentType } from '../lib/pacs.js';
+import { parseVrpacsManifest, replayContentType, isVrpacsPlaceholderImageId } from '../lib/pacs.js';
 
 const SHARE = {link: 'a1b2c3d4', pName: 'DAO THI HOA', pCode: '2600093794'};
 const PARAMS = Buffer.from(JSON.stringify(SHARE), 'utf8').toString('base64');
@@ -103,5 +103,57 @@ if (probedPorts[0] !== 'http://113.160.182.21:82/vrpacs-file/get-share-patient-i
 const healedTasks = await VrpacsAdapter.enumerate(multiPortInv, [multiPortInv.series[0].id], multiPortCtx);
 if (!healedTasks[0].url.startsWith('http://113.160.182.21:740/vrpacs-file/image/'))
   throw new Error('Image URL did not follow the healed port: ' + healedTasks[0].url);
+
+// 9. Entries that hold no image are left out without renumbering the rest.
+// Real VRPACS series carry no UID, so ids and folders come from the manifest
+// position (a live study listed a PhoenixZIPReport SR and a HIS placeholder,
+// which failed 7 of 262 "images" that were never images).
+const scu = (f) => `wadouri:/vrpacs-scu/study-get-public?link=L&file=${f}`;
+const mixed = {data: {pName: 'X', pCode: '1', studyList: [{studyUID: '1.2.3', seriesList: [
+  {seriesDescription: 'Scout', modality: 'MR', dcmFileCount: 2, imageIds: [scu('1.dcm'), scu('2.dcm')]},
+  {seriesDescription: 'PhoenixZIPReport', modality: 'SR', dcmFileCount: 1, imageIds: [scu('3.dcm')]},
+  {seriesDescription: 't2_tse_sag', modality: 'MR', dcmFileCount: 2, imageIds: ['wadouri:/assets/NoImage.dcm', scu('4.dcm'), scu('5.dcm')]},
+  {seriesDescription: 'HIS', modality: '', dcmFileCount: 0, imageIds: ['wadouri:/assets/NoImage.dcm']},
+]}]}};
+const mixedCtx = {...ctx, fetchJson: async () => mixed};
+const mixedInv = await VrpacsAdapter.analyze(mixedCtx);
+if (JSON.stringify(mixedInv.series.map(s => s.id)) !== JSON.stringify(['vrpacs:0', 'vrpacs:2']))
+  throw new Error('Image series must keep their manifest-position ids: ' + mixedInv.series.map(s => s.id));
+if (mixedInv.series[1].imageCount !== 2) throw new Error('A placeholder was counted as an image: ' + mixedInv.series[1].imageCount);
+const skipped = mixedInv.context.skippedSeries.map(s => `${s.id}:${s.reason}`).join(',');
+if (skipped !== 'vrpacs:1:non-image,vrpacs:3:placeholder') throw new Error('Wrong skipped series: ' + skipped);
+const mixedTasks = await VrpacsAdapter.enumerate(mixedInv, mixedInv.series.map(s => s.id), mixedCtx);
+if (mixedTasks.length !== 4) throw new Error('Wrong task count with non-image entries: ' + mixedTasks.length);
+if (mixedTasks.some(t => /noimage/i.test(t.url))) throw new Error('A placeholder became a download task');
+// Folder "03" and file "00002" are what a download made before this filter
+// wrote; resuming must find them where they are.
+if (!mixedTasks[2].relativePath.startsWith('03 - t2_tse_sag/IM_00002_'))
+  throw new Error('Folder or file numbering shifted: ' + mixedTasks[2].relativePath);
+const staleTasks = await VrpacsAdapter.enumerate(mixedInv, ['vrpacs:0', 'vrpacs:1', 'vrpacs:2', 'vrpacs:3'], mixedCtx);
+if (staleTasks.length !== 4) throw new Error('A stale selection revived a non-image series: ' + staleTasks.length);
+for (const [id, expected] of [
+  ['wadouri:/assets/NoImage.dcm', true], ['http://h:82/assets/NoImage.dcm?v=2', true],
+  [scu('NoImage.dcm'), false], [scu('1.dcm'), false], ['', false],
+]) {
+  if (isVrpacsPlaceholderImageId(id) !== expected) throw new Error(`Placeholder check wrong for ${id}`);
+}
+
+// 10. The viewer's own origin waits longer than guessed ports, and when every
+// probe fails the reported error is the viewer origin's, not the last filtered
+// port's "signal is aborted without reason".
+const calls = [];
+const deadPortsCtx = {...ctx,
+  summary: {currentUrl: `http://10.0.0.5:82/viewershare?params=${PARAMS}`, requests: [], navUrls: [], frameUrls: []},
+  fetchJson: async (url, accept, req, timeoutMs) => {
+    calls.push({url, timeoutMs});
+    if (url.includes(':82/')) throw new Error('HTTP 502: /vrpacs-file/get-share-patient-image');
+    throw new Error('signal is aborted without reason');
+  }};
+let deadPortsError = null;
+try { await VrpacsAdapter.analyze(deadPortsCtx); } catch (e) { deadPortsError = e; }
+if (!/HTTP 502/.test(deadPortsError?.message || '')) throw new Error('Reported the wrong failure: ' + deadPortsError?.message);
+const ownPort = calls.filter(c => c.url.includes(':82/')), guessed = calls.filter(c => !c.url.includes(':82/'));
+if (!ownPort.length || ownPort.some(c => !(c.timeoutMs > 4000))) throw new Error('The viewer origin kept the short timeout');
+if (!guessed.length || guessed.some(c => c.timeoutMs !== 4000)) throw new Error('Guessed ports lost their short timeout');
 
 console.log('VRPACS share-link tests OK');

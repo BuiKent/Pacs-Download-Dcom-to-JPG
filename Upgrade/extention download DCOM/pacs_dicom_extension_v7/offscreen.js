@@ -47,7 +47,20 @@ async function inspectDicomPrefix(task){const got=await readPrefix(task,256*1024
 async function probeUrls(probes){const rows=(probes||[]).slice(0,96),valid=[];let next=0;async function worker(){while(true){const i=next++;if(i>=rows.length)return;const p=rows[i];if(p?.url&&await probeDicomPrefix(p))valid.push(p.url);}}await Promise.all(Array.from({length:Math.min(6,rows.length||1)},worker));return valid;}
 async function inspectUrls(probes){const rows=(probes||[]).slice(0,24),details=[];let next=0;async function worker(){while(true){const i=next++;if(i>=rows.length)return;const p=rows[i];if(!p?.url)continue;details.push(await inspectDicomPrefix(p));}}await Promise.all(Array.from({length:Math.min(4,rows.length||1)},worker));return details;}
 function dicomFromResponse(bytes,contentType){const v=validatePart10(bytes);if(v.ok)return bytes;for(const p of parseMultipart(bytes,contentType)){if(validatePart10(p.data).ok)return p.data;}return null;}
-function responseProblem(bytes,contentType){const ct=String(contentType||'').toLowerCase();if(ct.includes('text/html'))return'Server returned HTML page instead of DICOM.';if(bytes?.length){const head=new TextDecoder('utf-8',{fatal:false}).decode(bytes.slice(0,160)).toLowerCase();if(head.includes('<html')||head.includes('<!doctype'))return'Server returned login/error page instead of DICOM.';}return'Endpoint did not return DICOM Part-10.';}
+// A valid Part-10 object with no pixels (an SR report, a presentation state)
+// is not a transport failure. Reporting it as "did not return DICOM" sent the
+// diagnosis the wrong way, and no retry can turn it into an image.
+const NON_IMAGE_DICOM='DICOM has no Pixel Data';
+function nonImageDicomProblem(bytes,contentType){
+  for(const b of [bytes,...parseMultipart(bytes,contentType).map(p=>p.data)]){
+    const v=validatePart10(b,{requirePixelData:false});
+    if(!v.ok)continue;
+    const modality=v.meta?.modality||'',sop=v.meta?.sopClassUid||'';
+    return `${NON_IMAGE_DICOM} (not an image${modality?`, modality ${modality}`:''}${sop?`, SOP ${sop}`:''}).`;
+  }
+  return '';
+}
+function responseProblem(bytes,contentType){const ct=String(contentType||'').toLowerCase();if(ct.includes('text/html'))return'Server returned HTML page instead of DICOM.';if(bytes?.length){const head=new TextDecoder('utf-8',{fatal:false}).decode(bytes.slice(0,160)).toLowerCase();if(head.includes('<html')||head.includes('<!doctype'))return'Server returned login/error page instead of DICOM.';}const nonImage=bytes?.length?nonImageDicomProblem(bytes,contentType):'';if(nonImage)return nonImage;return'Endpoint did not return DICOM Part-10.';}
 
 async function parallelOrdered(count,limit,fn){const out=new Array(count);let next=0;const n=Math.min(Math.max(1,limit),count);async function worker(){while(true){const i=next++;if(i>=count)return;out[i]=await fn(i);}}await Promise.all(Array.from({length:n},worker));return out;}
 
@@ -210,7 +223,7 @@ async function runTask(job,task,index){
     }catch(e){
       last=String(e?.message||e);
       if(e?.name==='AbortError'||job.cancelled)throw e;
-      if(/HTTP (401|403|404|410)|HTML instead of DICOM|HTML thay vì DICOM/i.test(last))break;
+      if(/HTTP (401|403|404|410)|HTML instead of DICOM|HTML thay vì DICOM|DICOM has no Pixel Data/i.test(last))break;
       if(attempt<3){
         const jitter=Math.floor(Math.random()*100);
         await sleep((attempt===1?350:700)+jitter,job.controller.signal);

@@ -318,3 +318,39 @@ test('a download whose task hosts are all granted reaches the engine',async()=>{
   await w.evaluate("startJob(1,['series-1'])");
   assert.equal(w.messages.filter(m=>m.type==='START_ENGINE').length,1);
 });
+
+// A live VRPACS page flipped from 15 series / 262 images to GENERIC 1 series /
+// 100 entries (thumbnails included) after one slow manifest on a re-scan.
+const siteInventory=()=>({...inventory(),adapter:'VRPACS',series:[{id:'vrpacs:0',imageCount:262}]});
+const genericAnswer={id:'GENERIC',analyze:async()=>({...inventory(),series:[{id:'generic:0',imageCount:100}]})};
+
+test('a re-scan that only GENERIC answers keeps the site adapter inventory',async()=>{
+  const w=worker({inv:siteInventory()});
+  w.context.matchingAdapters=()=>[{id:'VRPACS',analyze:async()=>{throw new Error('slow manifest');}},genericAnswer];
+  const result=await w.evaluate('analyzeTab(1)');
+  assert.equal(result.adapter,'VRPACS');
+  assert.equal((await w.evaluate('getSession(invKey(1))')).series[0].id,'vrpacs:0');
+});
+
+test('GENERIC still replaces the inventory once no site adapter matches the page',async()=>{
+  const w=worker({inv:siteInventory()});
+  w.context.matchingAdapters=()=>[genericAnswer];
+  const result=await w.evaluate('analyzeTab(1)');
+  assert.equal(result.adapter,'GENERIC');
+  assert.equal((await w.evaluate('getSession(invKey(1))')).series[0].id,'generic:0');
+});
+
+test('with no earlier inventory GENERIC fills in for a failing site adapter',async()=>{
+  const w=worker({inv:null});
+  w.context.matchingAdapters=()=>[{id:'VRPACS',analyze:async()=>{throw new Error('slow manifest');}},genericAnswer];
+  const result=await w.evaluate('analyzeTab(1)');
+  assert.equal(result.adapter,'GENERIC');
+});
+
+test('a site adapter that answers again replaces its own earlier inventory',async()=>{
+  const w=worker({inv:siteInventory()});
+  w.context.matchingAdapters=()=>[{id:'VRPACS',analyze:async()=>({...inventory(),series:[{id:'vrpacs:0',imageCount:255}]})},genericAnswer];
+  const result=await w.evaluate('analyzeTab(1)');
+  assert.equal(result.adapter,'VRPACS');
+  assert.equal(result.series[0].imageCount,255);
+});

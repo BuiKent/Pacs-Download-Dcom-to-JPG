@@ -629,6 +629,19 @@ async function analyzeTab(tabId){
         if(!await analysisIsCurrent(tabId,contextKey,epoch))return getSession(invKey(tabId));
       }
       const primaryId=ranked.map(a=>a.id).find(id=>inventories[id]);
+      // The heuristic fallback must not replace what a site adapter already
+      // recognised on this page. When that adapter fails one re-scan (a slow
+      // manifest, say) and only GENERIC answers, the reader was shown another,
+      // partial study: VRPACS 15 series / 262 images became GENERIC 1 series /
+      // 100 entries, thumbnails included. Navigation clears the stored
+      // inventory, so one still stored here belongs to this page.
+      if(primaryId==='GENERIC'){
+        const previous=await getSession(invKey(tabId));
+        if(previous?.adapter&&previous.adapter!=='GENERIC'&&!inventories[previous.adapter]&&ranked.some(a=>a.id===previous.adapter)){
+          logEvent('WARN','DISCOVERY',`Giữ kết quả ${previous.adapter} của tab ${tabId}: lượt quét lại chỉ nhận diện được bằng GENERIC (${lastError?.message||'không rõ lỗi'})`,{adapter:previous.adapter,fallback:'GENERIC',error:lastError?.message||null},{tabId,url:currentUrl});
+          return previous;
+        }
+      }
       if(primaryId){
         inv={...inventories[primaryId]};
         inv.adapterCandidates=compatibleAdapterIds(inv,inventories,ranked.map(a=>a.id));
@@ -641,7 +654,11 @@ async function analyzeTab(tabId){
       }
       const seriesTotal = Array.isArray(inv.series) ? inv.series.length : 0;
       const imagesTotal = Array.isArray(inv.series) ? inv.series.reduce((s, x) => s + (Number(x.imageCount) || 0), 0) : 0;
-      logEvent('INFO','DISCOVERY',`Nhận diện thành công ca chụp tab ${tabId}: ${seriesTotal} series (~${imagesTotal} ảnh, adapter: ${inv.adapter})`,{adapter:inv.adapter,seriesCount:seriesTotal,imageCount:imagesTotal},{tabId,url:currentUrl});
+      // Series an adapter left out because they hold no images (SR reports,
+      // placeholders). Named in the log so a shorter list is not a mystery.
+      const skippedSeries=Array.isArray(inv.context?.skippedSeries)?inv.context.skippedSeries:[];
+      const skippedNote=skippedSeries.length?` — bỏ qua ${skippedSeries.length} series không phải ảnh (${skippedSeries.map(s=>s.description||s.id).join(', ')})`:'';
+      logEvent('INFO','DISCOVERY',`Nhận diện thành công ca chụp tab ${tabId}: ${seriesTotal} series (~${imagesTotal} ảnh, adapter: ${inv.adapter})${skippedNote}`,{adapter:inv.adapter,seriesCount:seriesTotal,imageCount:imagesTotal,...(skippedSeries.length?{skippedSeries}:{})},{tabId,url:currentUrl});
       inv.tabId=tabId;inv.summary=summary;inv.createdAt=Date.now();
       if(state.truncated||state.dicomwebPayloadsTruncated){
         inv.context={...(inv.context||{}),completeKnown:false,storageTruncated:true};

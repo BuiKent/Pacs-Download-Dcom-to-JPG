@@ -47,3 +47,23 @@ test('a run of network refusals stops the job instead of requesting every image'
     assert.ok(requests<60*3,`requests=${requests}`);
   }finally{globalThis.fetch=realFetch;}
 });
+
+test('a valid DICOM without pixels is reported as a non-image, and fetched once',async()=>{
+  const {nonImageDicom,ENHANCED_SR_SOP_CLASS}=await import('./fixtures_non_image_dicom.mjs');
+  const realFetch=globalThis.fetch;let requests=0;
+  globalThis.fetch=async()=>{requests++;return new Response(nonImageDicom(),{status:200,headers:{'content-type':'application/dicom'}});};
+  try{
+    const context=vm.createContext({...imports,AbortController,console,Headers,TextDecoder,TextEncoder,
+      chrome:{runtime:{sendMessage:async()=>({ok:true}),onMessage:{addListener(){}}}},
+    });
+    vm.runInContext(source,context);
+    const result=await vm.runInContext('runJob',context)({jobId:'fixture',tabId:1,
+      tasks:[{strategy:'fetch-dicom',url:'http://pacs.test/report/1',relativePath:'02 - PhoenixZIPReport/IM_00001.dcm'}],
+      saveMode:'downloads',studyFolder:'fixture',studyUid:'1.2.3',
+      folderInfo:{patientName:'fixture',patientId:'fixture',studyDate:'20260101'}});
+    assert.equal(result.failed,1);
+    assert.ok(result.errors[0].includes(`DICOM has no Pixel Data (not an image, modality SR, SOP ${ENHANCED_SR_SOP_CLASS})`),result.errors[0]);
+    assert.ok(!result.errors[0].includes('did not return DICOM'),'a valid DICOM must not be reported as missing');
+    assert.equal(requests,1,'retrying cannot turn a report into an image');
+  }finally{globalThis.fetch=realFetch;}
+});
