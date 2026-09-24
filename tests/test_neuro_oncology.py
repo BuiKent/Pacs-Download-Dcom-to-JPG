@@ -520,6 +520,47 @@ class ProtocolTests(unittest.TestCase):
         for wording in ("U nguyên bào mạch máu", "Nang keo", "U sọ hầu"):
             self.assertEqual(neuro_oncology.route_key(_tumor(histology=wording)), "", wording)
 
+        # Listed names that carry a loose needle inside them. Each would have
+        # been read as the free text it contains: a MALT lymphoma given the
+        # high-dose methotrexate of a diffuse large B-cell one, meningeal
+        # spread given radiosurgery.
+        for wording in (
+            "U lympho MALT màng cứng",
+            "U lympho tế bào T và NK/T",
+            "U lympho TKTW liên quan suy giảm miễn dịch",
+            "Di căn màng não - tuỷ",
+        ):
+            self.assertIn(wording, clinical_record.HISTOLOGIES, wording)
+            self.assertEqual(neuro_oncology.route_key(_tumor(histology=wording)), "", wording)
+
+        # The same words typed off a report are still free text, and still read.
+        self.assertEqual(neuro_oncology.route_key(_tumor(histology="U lympho lan toả tế bào B lớn")), "pcnsl")
+
+    def test_the_named_types_under_a_routed_family_keep_its_route(self):
+        """Picking the more exact WHO CNS5 name must not cost the protocol the
+        family-level name already had."""
+        expected = {
+            "U nguyên bào tuỷ, hoạt hoá WNT": "medulloblastoma",
+            "U nguyên bào tuỷ, hoạt hoá SHH và TP53 tự nhiên": "medulloblastoma",
+            "U nguyên bào tuỷ, hoạt hoá SHH và TP53 đột biến": "medulloblastoma",
+            "U nguyên bào tuỷ, không WNT/không SHH": "medulloblastoma",
+            "U nguyên bào tuỷ, xác định theo mô học": "medulloblastoma",
+            "U mầm": "germinoma",
+            "Di căn nhu mô não và tuỷ sống": "metastasis",
+        }
+        for wording, route in expected.items():
+            self.assertIn(wording, clinical_record.HISTOLOGIES, wording)
+            self.assertEqual(neuro_oncology.route_key(_tumor(histology=wording)), route, wording)
+
+        # A teratoma is a germ cell tumour but not a germinoma: surgery, not
+        # the platinum regimen.
+        self.assertEqual(neuro_oncology.route_key(_tumor(histology="U quái trưởng thành")), "")
+
+    def test_every_exact_route_and_workup_names_a_listed_entity(self):
+        """A key spelled differently from the list is a rule nothing reaches."""
+        for name in list(neuro_oncology._EXACT_ROUTES) + list(neuro_oncology.WORKUP):
+            self.assertIn(name, clinical_record.HISTOLOGIES, name)
+
     def test_every_route_names_protocols_that_exist(self):
         """Guards the table against a renamed protocol leaving a dangling id."""
         for key, route in neuro_oncology._ROUTES.items():

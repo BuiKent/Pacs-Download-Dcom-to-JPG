@@ -514,8 +514,9 @@ function datalist(id, options, hintFor = null) {
  *
  * A glioblastoma is grade 4 and an oligodendroglioma is 2 or 3, so offering
  * all four against either of them is offering a combination that does not
- * exist. A diagnosis the table says nothing about — a metastasis, a colloid
- * cyst, anything typed off a report — keeps the whole range.
+ * exist. A metastasis or a lymphoma has no CNS WHO grade at all, and gets an
+ * empty list. A diagnosis the table says nothing about — anything typed off a
+ * report — keeps the whole range.
  *
  * `current` is always kept, even when it falls outside the range. Somebody
  * wrote it down, and a grade that quietly disappears because the diagnosis
@@ -529,14 +530,10 @@ function gradesFor(histology, current) {
   return kept && !allowed.includes(kept) ? [...allowed, kept] : allowed;
 }
 
-/** "độ 4", or "độ 2-4" — the grades a listed diagnosis can carry. */
-function gradeRangeHint(histology) {
-  const allowed = vocab().gradesByHistology[histology];
-  if (!allowed || !allowed.length) return "";
-  const span = allowed.length > 1
-    ? `${allowed[0]}-${allowed[allowed.length - 1]}`
-    : allowed[0];
-  return tf("độ {}", span);
+/** True when WHO CNS5 gives the listed diagnosis no grade at all. */
+function isUngraded(histology) {
+  const allowed = vocab().gradesByHistology[String(histology || "").trim()];
+  return Array.isArray(allowed) && allowed.length === 0;
 }
 
 /** The standard English name of a term, or nothing when it is already one. */
@@ -670,8 +667,7 @@ function histologyKey(tumorIndex) {
  * would not: a datalist filters itself against the value in the box, so
  * picking a diagnosis was a one-way door until the field was emptied again.
  *
- * The grade range rides on each entry, because the grade field below reads
- * off this one. A diagnosis the table does not list keeps the whole range,
+ * A diagnosis the table does not list keeps the whole range of WHO grades,
  * and "Khác…" is how it gets typed: the vocabulary cannot cover a pathology
  * report, and a form that will not take the real answer gets a wrong one.
  */
@@ -704,9 +700,8 @@ function histologyField(tumor, index) {
     byFamily.get(family).push(name);
   }
   const entry = (name) => {
-    const range = gradeRangeHint(name);
     return `<option value="${escapeHtml(name)}"${name === current ? " selected" : ""}
-      >${escapeHtml(tcPicker(name))}${range ? ` · ${escapeHtml(range)}` : ""}</option>`;
+      >${escapeHtml(tcPicker(name))}</option>`;
   };
   return `<select class="dxf-input" data-clinical-field="histology">
     <option value=""${current ? "" : " selected"}>${escapeHtml(t("Chưa chọn"))}</option>
@@ -909,7 +904,8 @@ function renderTumorForm(tumor, index) {
       <div class="dxf-row">
         <label class="dxf-field">
           <span>${escapeHtml(t("Độ WHO"))}</span>
-          ${select("grade", tumor.grade, gradesFor(tumor.histology, tumor.grade), "—")}
+          ${select("grade", tumor.grade, gradesFor(tumor.histology, tumor.grade),
+            isUngraded(tumor.histology) ? t("Không xếp độ") : "—")}
         </label>
         <label class="dxf-field">
           <span>${escapeHtml(t("Ngày có kết quả"))}</span>
@@ -1411,6 +1407,21 @@ function readNumber(raw) {
 }
 
 /**
+ * The grades the form filled in by itself, keyed by the draft tumour.
+ *
+ * A grade filled in from the diagnosis is the form's inference, not anybody's
+ * reading of a report, so it goes when the diagnosis it came from goes. A grade
+ * the person picked, or one already on the record, is never in here.
+ */
+const filledGrades = new WeakMap();
+
+/** Take back a grade the form filled in, unless the person has since set it. */
+function dropFilledGrade(tumor) {
+  if (filledGrades.has(tumor) && filledGrades.get(tumor) === tumor.grade) tumor.grade = "";
+  filledGrades.delete(tumor);
+}
+
+/**
  * Take one edited control into the draft.
  *
  * Returns true when the change alters which fields the form should be showing —
@@ -1494,15 +1505,32 @@ export function applyFieldEdit(input, eventType = "change") {
       // "Khác…" is a request for somewhere to write, not a diagnosis.
       clinicalState.freeFields.add(histologyKey(at));
       tumor.histology = "";
+      dropFilledGrade(tumor);
       return true;
     }
     tumor[field] = input.value;
+    // A grade the person picks is theirs from then on, even when it is the
+    // same number the form had filled in.
+    if (field === "grade") filledGrades.delete(tumor);
     // Only on `change`. Typed in a box, the diagnosis would otherwise redraw
     // on every keystroke and take the cursor out from under the person
     // writing it; `change` arrives when they pick from the list or leave the
     // field, which is when the grade and the marker panel below need to be
     // rebuilt around a different entity.
-    if (field === "histology") return eventType === "change";
+    if (field === "histology") {
+      // An entity WHO CNS5 fixes at one grade fills an empty grade field,
+      // because there is no other answer to wait for. It never replaces a
+      // grade somebody wrote: that came off a report, and a diagnosis
+      // corrected beside it — or mis-picked — must leave it standing where
+      // the mismatch can be seen, not quietly make the two agree.
+      dropFilledGrade(tumor);
+      const allowed = vocab().gradesByHistology[String(tumor.histology || "").trim()];
+      if (!String(tumor.grade || "").trim() && allowed?.length === 1) {
+        tumor.grade = allowed[0];
+        filledGrades.set(tumor, tumor.grade);
+      }
+      return eventType === "change";
+    }
     if (field === "compartment") {
       // The location and axis lists belong to a compartment. Anything typed
       // under the old one is kept — it may still be right, and silently
@@ -1590,7 +1618,10 @@ export function removeMarker(tumorIndex, name) {
 export function useHistologyList(tumorIndex) {
   clinicalState.freeFields.delete(histologyKey(tumorIndex));
   const tumor = clinicalState.draft?.tumors?.[tumorIndex];
-  if (tumor) tumor.histology = "";
+  if (tumor) {
+    tumor.histology = "";
+    dropFilledGrade(tumor);
+  }
 }
 
 export function useMarkerList(tumorIndex, name) {

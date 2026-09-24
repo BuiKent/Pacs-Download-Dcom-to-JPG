@@ -99,69 +99,198 @@ AXES = {
 
 SIDES = ("P", "T", "Giữa", "Hai bên")
 
-# The entities a neuro-oncology list is mostly made of, grouped by WHO CNS5
-# family and ordered the way a brain list then a spine list runs.
+# Every tumour type in the WHO Classification of Tumours, Central Nervous System
+# Tumours, 5th edition (IARC 2021), grouped by the book's chapters and
+# sub-families and in the book's order. The English each name stands for is in
+# `CLINICAL_EN` (webui/src/i18n.js), spelled as the book spells it.
 #
-# Grouped rather than flat because thirty-odd names in one dropdown are read by
-# scrolling, while eight families are read by recognising one. The group is a
-# *display* axis only: it decides what the list looks like and nothing else. It
-# is deliberately never stored against a tumour, because a group recorded
-# beside an entity is a second opinion about the same fact — file a
-# haemangioblastoma under "U thần kinh đệm" and every later reader has to
+# Types, not subtypes: the book lists only types in its Classification and
+# describes subtypes inside them (meningioma is one type with fifteen subtypes).
+#
+# A few entries are one level above a WHO type — "U màng não thất", "U đám rối
+# mạch mạc", "U nguyên bào tuỷ", "U nhu mô tuyến tùng", "U sọ hầu", "U tế bào
+# mầm nội sọ", "U di căn". Each heads its family. They stay because the form
+# also records a diagnosis made on imaging, where the family is all anyone
+# knows yet, and because records already written with them must still read.
+#
+# The last family is outside the classification altogether: cysts and
+# tumour-like lesions a neurosurgical list still needs.
+#
+# The group is a *display* axis only: it decides what the list looks like and
+# nothing else. It is deliberately never stored against a tumour, because a
+# group recorded beside an entity is a second opinion about the same fact —
+# file a haemangioblastoma under a glioma family and every later reader has to
 # decide which of the two to believe.
 #
-# None of this is a closed set. The field accepts typed text, because a list of
-# thirty cannot cover a pathology report.
+# None of this is a closed set. The field accepts typed text, because no list
+# covers every pathology report.
 HISTOLOGY_GROUPS = {
-    "U thần kinh đệm": (
+    "U thần kinh đệm lan toả kiểu người lớn": (
         "U sao bào, IDH đột biến",
         "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q",
         "U nguyên bào thần kinh đệm, IDH tự nhiên",
+    ),
+    "U thần kinh đệm lan toả độ thấp kiểu trẻ em": (
+        "U sao bào lan toả, biến đổi MYB hoặc MYBL1",
+        "U thần kinh đệm quanh mạch",
+        "U biểu mô thần kinh độ thấp đa hình ở người trẻ",
+        "U thần kinh đệm lan toả độ thấp, biến đổi đường MAPK",
+    ),
+    "U thần kinh đệm lan toả độ cao kiểu trẻ em": (
         "U thần kinh đệm lan toả đường giữa, H3 K27 thay đổi",
         "U thần kinh đệm lan toả bán cầu, H3 G34 đột biến",
+        "U thần kinh đệm lan toả độ cao kiểu trẻ em, H3 tự nhiên và IDH tự nhiên",
+        "U thần kinh đệm bán cầu kiểu nhũ nhi",
+    ),
+    "U thần kinh đệm dạng sao khu trú": (
         "U sao bào lông",
+        "U sao bào độ cao có đặc điểm dạng lông",
         "U sao bào vàng đa hình",
         "U sao bào dưới màng não thất tế bào khổng lồ",
+        "U thần kinh đệm dạng dây sống",
+        "U nguyên bào sao, biến đổi MN1",
     ),
-    "U màng não thất và đám rối mạch mạc": (
-        "U màng não thất",
-        "U dưới màng não thất",
-        "U đám rối mạch mạc",
-    ),
-    "U thần kinh đệm - thần kinh và u phôi": (
+    "U thần kinh đệm - thần kinh và u thần kinh": (
         "U hạch thần kinh đệm",
+        "U tế bào hạch",
+        "U hạch thần kinh đệm/u sao bào xơ hoá ở nhũ nhi",
         "U biểu mô thần kinh loạn sản phôi",
+        "U thần kinh đệm - thần kinh lan toả giống u ít nhánh, có cụm nhân",
+        "U thần kinh đệm - thần kinh dạng nhú",
+        "U thần kinh đệm - thần kinh tạo hoa hồng",
+        "U thần kinh đệm - thần kinh dạng nhầy",
+        "U thần kinh đệm - thần kinh lan toả màng mềm",
+        "U tế bào thần kinh đa nốt và không bào",
+        "U tế bào hạch loạn sản tiểu não (bệnh Lhermitte-Duclos)",
+        "U tế bào thần kinh trung ương",
+        "U tế bào thần kinh ngoài não thất",
+        "U tế bào thần kinh mỡ tiểu não",
+    ),
+    "Các u màng não thất": (
+        "U màng não thất",
+        "U màng não thất trên lều",
+        "U màng não thất trên lều, dung hợp ZFTA",
+        "U màng não thất trên lều, dung hợp YAP1",
+        "U màng não thất hố sau",
+        "U màng não thất hố sau nhóm A (PFA)",
+        "U màng não thất hố sau nhóm B (PFB)",
+        "U màng não thất tuỷ sống",
+        "U màng não thất tuỷ sống, khuếch đại MYCN",
+        "U màng não thất nhú nhầy",
+        "U dưới màng não thất",
+    ),
+    "Các u đám rối mạch mạc": (
+        "U đám rối mạch mạc",
+        "U nhú đám rối mạch mạc",
+        "U nhú đám rối mạch mạc không điển hình",
+        "Ung thư biểu mô đám rối mạch mạc",
+    ),
+    "Các u nguyên bào tuỷ": (
         "U nguyên bào tuỷ",
+        "U nguyên bào tuỷ, hoạt hoá WNT",
+        "U nguyên bào tuỷ, hoạt hoá SHH và TP53 tự nhiên",
+        "U nguyên bào tuỷ, hoạt hoá SHH và TP53 đột biến",
+        "U nguyên bào tuỷ, không WNT/không SHH",
+        "U nguyên bào tuỷ, xác định theo mô học",
+    ),
+    "Các u phôi khác": (
         "U quái không điển hình/dạng cơ vân",
+        "U biểu mô thần kinh dạng sàng",
+        "U phôi có hoa hồng nhiều lớp",
+        "U nguyên bào thần kinh TKTW, hoạt hoá FOXR2",
+        "U TKTW có lặp đoạn nội tại BCOR",
+        "U phôi TKTW, NEC/NOS",
     ),
-    "U màng não và u trung mô": (
-        "U màng não",
-        "U xơ đơn độc",
-        "U nguyên bào mạch máu",
-        "U dây sống",
+    "U vùng tuyến tùng": (
+        "U nhu mô tuyến tùng",
+        "U tế bào tuyến tùng",
+        "U nhu mô tuyến tùng biệt hoá trung gian",
+        "U nguyên bào tuyến tùng",
+        "U nhú vùng tuyến tùng",
+        "U nhầy xơ hoá vùng tuyến tùng, đột biến SMARCB1",
     ),
-    "U vỏ bao thần kinh": (
+    "U thần kinh sọ và cạnh sống": (
         "U bao sợi thần kinh",
         "U sợi thần kinh",
+        "U tế bào quanh bó thần kinh",
+        "U bao dây thần kinh lai",
+        "U bao dây thần kinh hắc tố ác tính",
+        "U bao dây thần kinh ngoại biên ác tính",
+        "U thần kinh nội tiết đuôi ngựa",
     ),
-    "U vùng yên và tuyến tùng": (
-        "U tuyến yên",
-        "U sọ hầu",
-        "U tế bào mầm nội sọ",
-        "U nhu mô tuyến tùng",
+    "Các u màng não": (
+        "U màng não",
     ),
-    "U lympho và di căn": (
+    "U trung mô không phải màng não": (
+        "U xơ đơn độc",
+        "U mạch máu mao mạch",
+        "U mạch thể hang",
+        "Dị dạng thông động tĩnh mạch",
+        "U nguyên bào mạch máu",
+        "Sarcôm cơ vân",
+        "U trung mô nội sọ, dung hợp FET::CREB",
+        "Sarcôm tái sắp xếp CIC",
+        "Sarcôm nội sọ nguyên phát, đột biến DICER1",
+        "Sarcôm Ewing",
+        "Sarcôm sụn trung mô",
+        "Sarcôm sụn",
+        "U dây sống",
+    ),
+    "U tế bào hắc tố": (
+        "Bệnh tế bào hắc tố màng não",
+        "Bệnh hắc tố ác tính lan toả màng não",
+        "U tế bào hắc tố màng não",
+        "U hắc tố ác tính màng não",
+    ),
+    "Các u lympho": (
         "U lympho thần kinh trung ương nguyên phát",
-        "U di căn",
+        "U lympho TKTW liên quan suy giảm miễn dịch",
+        "U hạt dạng lympho",
+        "U lympho tế bào B lớn nội mạch",
+        "U lympho MALT màng cứng",
+        "U lympho tế bào B độ thấp khác của TKTW",
+        "U lympho tế bào lớn kém biệt hoá (ALK+/ALK-)",
+        "U lympho tế bào T và NK/T",
     ),
-    "Nang, tổn thương dạng u và mạch máu": (
+    "U mô bào": (
+        "Bệnh Erdheim-Chester",
+        "Bệnh Rosai-Dorfman",
+        "U hạt vàng thiếu niên",
+        "Bệnh mô bào Langerhans",
+        "Sarcôm mô bào",
+    ),
+    "Các u tế bào mầm": (
+        "U tế bào mầm nội sọ",
+        "U mầm",
+        "U quái trưởng thành",
+        "U quái chưa trưởng thành",
+        "U quái có ác tính hoá kiểu thân thể",
+        "Ung thư biểu mô phôi",
+        "U túi noãn hoàng",
+        "Ung thư biểu mô màng đệm",
+        "U tế bào mầm hỗn hợp",
+    ),
+    "U vùng hố yên": (
+        "U sọ hầu",
+        "U sọ hầu thể men răng",
+        "U sọ hầu thể nhú",
+        "U tế bào tuyến yên thần kinh",
+        "U tế bào hạt vùng hố yên",
+        "U tế bào ưa toan hình thoi",
+        "U tuyến yên",
+        "U nguyên bào tuyến yên",
+    ),
+    "Di căn thần kinh trung ương": (
+        "U di căn",
+        "Di căn nhu mô não và tuỷ sống",
+        "Di căn màng não - tuỷ",
+    ),
+    "Nang và tổn thương dạng u (ngoài phân loại WHO)": (
         "Nang keo",
         "Nang màng nhện",
         "U bì",
         "U thượng bì",
         "U mỡ",
-        "U mạch thể hang",
-        "Dị dạng thông động tĩnh mạch",
     ),
 }
 
@@ -171,7 +300,8 @@ HISTOLOGIES = tuple(
     name for entities in HISTOLOGY_GROUPS.values() for name in entities
 )
 
-# Which grades an entity can actually carry, per WHO CNS5 2021.
+# Which CNS WHO grades each listed entity can carry, read off the Grading
+# section (or the Definition) of its own chapter in the WHO CNS5 book.
 #
 # A grade in this classification belongs to the entity, not to the tumour on
 # its own: a glioblastoma, IDH-wildtype is grade 4 by definition, an
@@ -179,34 +309,169 @@ HISTOLOGIES = tuple(
 # The form used to offer all four against every diagnosis, which let "u nguyên
 # bào thần kinh đệm độ 2" be recorded — a combination that does not exist.
 #
-# An entity absent from this table is one the classification does not grade
-# (metastasis, lymphoma, a colloid cyst) or one somebody typed in full, and
-# those keep the whole range. This is deliberately fail-open: the form's job is
-# to make the right answer easy, not to refuse a pathology report it has never
-# seen.
+# An empty tuple is the book saying there is no CNS WHO grade: for types it
+# never grades (lymphoma, germ cell tumours, PitNET, metastasis, a colloid
+# cyst) and for types whose grade "has yet to be assigned" (MAPK-altered
+# low-grade glioma, infant-type hemispheric glioma, MYCN-amplified spinal
+# ependymoma). The form then offers no grade rather than four wrong ones.
+#
+# Two readings worth knowing. "CNS embryonal tumour, NEC/NOS" keeps 3 and 4,
+# because the book says only that the two cannot readily be told apart. And
+# germ cell tumours carry no grade although the book's introduction names
+# germinoma as grade 4 in passing: the germ cell chapter itself assigns none,
+# and the chapter is the entry for the type.
+#
+# An entity absent from this table is one somebody typed in full, and it keeps
+# the whole range. That is deliberately fail-open: the form's job is to make
+# the right answer easy, not to refuse a pathology report it has never seen.
 GRADES_BY_HISTOLOGY = {
+    # Adult-type diffuse gliomas
     "U sao bào, IDH đột biến": ("2", "3", "4"),
     "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q": ("2", "3"),
     "U nguyên bào thần kinh đệm, IDH tự nhiên": ("4",),
+    # Paediatric-type diffuse low-grade gliomas
+    "U sao bào lan toả, biến đổi MYB hoặc MYBL1": ("1",),
+    "U thần kinh đệm quanh mạch": ("1",),
+    "U biểu mô thần kinh độ thấp đa hình ở người trẻ": ("1",),
+    "U thần kinh đệm lan toả độ thấp, biến đổi đường MAPK": (),
+    # Paediatric-type diffuse high-grade gliomas
     "U thần kinh đệm lan toả đường giữa, H3 K27 thay đổi": ("4",),
     "U thần kinh đệm lan toả bán cầu, H3 G34 đột biến": ("4",),
+    "U thần kinh đệm lan toả độ cao kiểu trẻ em, H3 tự nhiên và IDH tự nhiên": ("4",),
+    "U thần kinh đệm bán cầu kiểu nhũ nhi": (),
+    # Circumscribed astrocytic gliomas
     "U sao bào lông": ("1",),
+    "U sao bào độ cao có đặc điểm dạng lông": (),
     "U sao bào vàng đa hình": ("2", "3"),
     "U sao bào dưới màng não thất tế bào khổng lồ": ("1",),
-    "U màng não thất": ("2", "3"),
-    "U dưới màng não thất": ("1",),
-    "U đám rối mạch mạc": ("1", "2", "3"),
+    "U thần kinh đệm dạng dây sống": ("2",),
+    "U nguyên bào sao, biến đổi MN1": (),
+    # Glioneuronal and neuronal tumours
     "U hạch thần kinh đệm": ("1",),
+    "U tế bào hạch": ("1",),
+    "U hạch thần kinh đệm/u sao bào xơ hoá ở nhũ nhi": ("1",),
     "U biểu mô thần kinh loạn sản phôi": ("1",),
+    "U thần kinh đệm - thần kinh lan toả giống u ít nhánh, có cụm nhân": (),
+    "U thần kinh đệm - thần kinh dạng nhú": ("1",),
+    "U thần kinh đệm - thần kinh tạo hoa hồng": ("1",),
+    "U thần kinh đệm - thần kinh dạng nhầy": ("1",),
+    "U thần kinh đệm - thần kinh lan toả màng mềm": (),
+    "U tế bào thần kinh đa nốt và không bào": ("1",),
+    "U tế bào hạch loạn sản tiểu não (bệnh Lhermitte-Duclos)": ("1",),
+    "U tế bào thần kinh trung ương": ("2",),
+    "U tế bào thần kinh ngoài não thất": ("2",),
+    "U tế bào thần kinh mỡ tiểu não": ("2",),
+    # Ependymal tumours
+    "U màng não thất": ("2", "3"),
+    "U màng não thất trên lều": ("2", "3"),
+    "U màng não thất trên lều, dung hợp ZFTA": ("2", "3"),
+    "U màng não thất trên lều, dung hợp YAP1": ("2", "3"),
+    "U màng não thất hố sau": ("2", "3"),
+    "U màng não thất hố sau nhóm A (PFA)": ("2", "3"),
+    "U màng não thất hố sau nhóm B (PFB)": ("2", "3"),
+    "U màng não thất tuỷ sống": ("2", "3"),
+    "U màng não thất tuỷ sống, khuếch đại MYCN": (),
+    "U màng não thất nhú nhầy": ("2",),
+    "U dưới màng não thất": ("1",),
+    # Choroid plexus tumours
+    "U đám rối mạch mạc": ("1", "2", "3"),
+    "U nhú đám rối mạch mạc": ("1",),
+    "U nhú đám rối mạch mạc không điển hình": ("2",),
+    "Ung thư biểu mô đám rối mạch mạc": ("3",),
+    # Medulloblastomas
     "U nguyên bào tuỷ": ("4",),
+    "U nguyên bào tuỷ, hoạt hoá WNT": ("4",),
+    "U nguyên bào tuỷ, hoạt hoá SHH và TP53 tự nhiên": ("4",),
+    "U nguyên bào tuỷ, hoạt hoá SHH và TP53 đột biến": ("4",),
+    "U nguyên bào tuỷ, không WNT/không SHH": ("4",),
+    "U nguyên bào tuỷ, xác định theo mô học": ("4",),
+    # Other CNS embryonal tumours
     "U quái không điển hình/dạng cơ vân": ("4",),
-    "U màng não": ("1", "2", "3"),
-    "U xơ đơn độc": ("1", "2", "3"),
-    "U nguyên bào mạch máu": ("1",),
+    "U biểu mô thần kinh dạng sàng": (),
+    "U phôi có hoa hồng nhiều lớp": ("4",),
+    "U nguyên bào thần kinh TKTW, hoạt hoá FOXR2": ("4",),
+    "U TKTW có lặp đoạn nội tại BCOR": (),
+    "U phôi TKTW, NEC/NOS": ("3", "4"),
+    # Pineal tumours
+    "U nhu mô tuyến tùng": ("1", "2", "3", "4"),
+    "U tế bào tuyến tùng": ("1",),
+    "U nhu mô tuyến tùng biệt hoá trung gian": ("2", "3"),
+    "U nguyên bào tuyến tùng": ("4",),
+    "U nhú vùng tuyến tùng": ("2", "3"),
+    "U nhầy xơ hoá vùng tuyến tùng, đột biến SMARCB1": (),
+    # Cranial and paraspinal nerve tumours
     "U bao sợi thần kinh": ("1",),
     "U sợi thần kinh": ("1",),
+    "U tế bào quanh bó thần kinh": ("1",),
+    "U bao dây thần kinh lai": (),
+    "U bao dây thần kinh hắc tố ác tính": (),
+    "U bao dây thần kinh ngoại biên ác tính": (),
+    "U thần kinh nội tiết đuôi ngựa": ("1",),
+    # Meningiomas
+    "U màng não": ("1", "2", "3"),
+    # Mesenchymal, non-meningothelial tumours
+    "U xơ đơn độc": ("1", "2", "3"),
+    "U mạch máu mao mạch": (),
+    "U mạch thể hang": (),
+    "Dị dạng thông động tĩnh mạch": (),
+    "U nguyên bào mạch máu": ("1",),
+    "Sarcôm cơ vân": (),
+    "U trung mô nội sọ, dung hợp FET::CREB": (),
+    "Sarcôm tái sắp xếp CIC": ("4",),
+    "Sarcôm nội sọ nguyên phát, đột biến DICER1": (),
+    "Sarcôm Ewing": ("4",),
+    "Sarcôm sụn trung mô": (),
+    "Sarcôm sụn": ("1", "2", "3"),
+    "U dây sống": (),
+    # Melanocytic tumours
+    "Bệnh tế bào hắc tố màng não": (),
+    "Bệnh hắc tố ác tính lan toả màng não": (),
+    "U tế bào hắc tố màng não": (),
+    "U hắc tố ác tính màng não": (),
+    # Lymphomas
+    "U lympho thần kinh trung ương nguyên phát": (),
+    "U lympho TKTW liên quan suy giảm miễn dịch": (),
+    "U hạt dạng lympho": (),
+    "U lympho tế bào B lớn nội mạch": (),
+    "U lympho MALT màng cứng": (),
+    "U lympho tế bào B độ thấp khác của TKTW": (),
+    "U lympho tế bào lớn kém biệt hoá (ALK+/ALK-)": (),
+    "U lympho tế bào T và NK/T": (),
+    # Histiocytic tumours
+    "Bệnh Erdheim-Chester": (),
+    "Bệnh Rosai-Dorfman": (),
+    "U hạt vàng thiếu niên": (),
+    "Bệnh mô bào Langerhans": (),
+    "Sarcôm mô bào": (),
+    # Germ cell tumours
+    "U tế bào mầm nội sọ": (),
+    "U mầm": (),
+    "U quái trưởng thành": (),
+    "U quái chưa trưởng thành": (),
+    "U quái có ác tính hoá kiểu thân thể": (),
+    "Ung thư biểu mô phôi": (),
+    "U túi noãn hoàng": (),
+    "Ung thư biểu mô màng đệm": (),
+    "U tế bào mầm hỗn hợp": (),
+    # Tumours of the sellar region
     "U sọ hầu": ("1",),
-    "U nhu mô tuyến tùng": ("1", "2", "3", "4"),
+    "U sọ hầu thể men răng": ("1",),
+    "U sọ hầu thể nhú": ("1",),
+    "U tế bào tuyến yên thần kinh": (),
+    "U tế bào hạt vùng hố yên": (),
+    "U tế bào ưa toan hình thoi": (),
+    "U tuyến yên": (),
+    "U nguyên bào tuyến yên": (),
+    # Metastases to the CNS
+    "U di căn": (),
+    "Di căn nhu mô não và tuỷ sống": (),
+    "Di căn màng não - tuỷ": (),
+    # Cysts & tumour-like lesions (outside the WHO classification)
+    "Nang keo": (),
+    "Nang màng nhện": (),
+    "U bì": (),
+    "U thượng bì": (),
+    "U mỡ": (),
 }
 
 # WHO grades are 1 to 4. An empty grade is a grade nobody has assigned yet, and
@@ -284,7 +549,8 @@ def vocabulary() -> dict:
         },
         "grades": list(GRADES),
         # The grades each entity can carry, so the form stops offering four
-        # against a diagnosis that only has one.
+        # against a diagnosis that only has one. An empty list is an entity
+        # WHO CNS5 does not grade at all.
         "gradesByHistology": {
             name: list(grades) for name, grades in GRADES_BY_HISTOLOGY.items()
         },

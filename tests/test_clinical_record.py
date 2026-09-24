@@ -66,8 +66,38 @@ class VocabularyTests(unittest.TestCase):
 
         index = clinical_record.vocabulary()["histologyGroups"]
         self.assertEqual(sorted(index), sorted(flat))
-        self.assertEqual(index["U màng não"], "U màng não và u trung mô")
-        self.assertEqual(index["U nguyên bào thần kinh đệm, IDH tự nhiên"], "U thần kinh đệm")
+        self.assertEqual(index["U màng não"], "Các u màng não")
+        self.assertEqual(
+            index["U nguyên bào thần kinh đệm, IDH tự nhiên"],
+            "U thần kinh đệm lan toả kiểu người lớn",
+        )
+        self.assertEqual(index["U tế bào thần kinh trung ương"], "U thần kinh đệm - thần kinh và u thần kinh")
+
+    def test_every_name_already_on_a_record_is_still_offered(self):
+        """A record stores the diagnosis as the string it was picked as.
+
+        Rebuilding the list to follow the WHO CNS5 book added types and moved
+        families, but a name that fell off the list would turn every record
+        already carrying it into free text: no grade range, no English, no
+        protocol. So the names the list offered before stay, spelled the same.
+        """
+        before = (
+            "U sao bào, IDH đột biến", "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q",
+            "U nguyên bào thần kinh đệm, IDH tự nhiên",
+            "U thần kinh đệm lan toả đường giữa, H3 K27 thay đổi",
+            "U thần kinh đệm lan toả bán cầu, H3 G34 đột biến", "U sao bào lông",
+            "U sao bào vàng đa hình", "U sao bào dưới màng não thất tế bào khổng lồ",
+            "U màng não thất", "U dưới màng não thất", "U đám rối mạch mạc",
+            "U hạch thần kinh đệm", "U biểu mô thần kinh loạn sản phôi", "U nguyên bào tuỷ",
+            "U quái không điển hình/dạng cơ vân", "U màng não", "U xơ đơn độc",
+            "U nguyên bào mạch máu", "U dây sống", "U bao sợi thần kinh", "U sợi thần kinh",
+            "U tuyến yên", "U sọ hầu", "U tế bào mầm nội sọ", "U nhu mô tuyến tùng",
+            "U lympho thần kinh trung ương nguyên phát", "U di căn", "Nang keo",
+            "Nang màng nhện", "U bì", "U thượng bì", "U mỡ", "U mạch thể hang",
+            "Dị dạng thông động tĩnh mạch",
+        )
+        for name in before:
+            self.assertIn(name, clinical_record.HISTOLOGIES, name)
 
     def test_a_grade_is_offered_only_where_the_entity_can_carry_it(self):
         """WHO CNS5 grades the entity, not the tumour on its own.
@@ -92,15 +122,51 @@ class VocabularyTests(unittest.TestCase):
             self.assertTrue(set(grades) <= set(clinical_record.GRADES), name)
             self.assertEqual(list(grades), sorted(grades), name)
 
-        # And the entities WHO CNS5 does not grade stay out of it, so the form
-        # keeps the full range for them rather than inventing a constraint.
-        for name in ("U di căn", "U lympho thần kinh trung ương nguyên phát", "Nang keo"):
-            self.assertNotIn(name, table)
+        # Every listed entity has an answer, even when the answer is "none":
+        # a listed name missing from the table would silently get all four.
+        self.assertEqual(sorted(table), sorted(clinical_record.HISTOLOGIES))
+
+        # The entities WHO CNS5 does not grade are listed with no grade, so the
+        # form offers none rather than four the classification never gives.
+        for name in ("U di căn", "U lympho thần kinh trung ương nguyên phát", "Nang keo",
+                     "U tuyến yên", "U mầm", "U màng não thất tuỷ sống, khuếch đại MYCN"):
+            self.assertEqual(table[name], (), name)
 
         self.assertEqual(
             clinical_record.vocabulary()["gradesByHistology"]["U nguyên bào thần kinh đệm, IDH tự nhiên"],
             ["4"],
         )
+        self.assertEqual(clinical_record.vocabulary()["gradesByHistology"]["U di căn"], [])
+
+    def test_the_grades_are_the_ones_the_who_book_gives(self):
+        """Spot checks against WHO CNS5 (IARC 2021), page numbers the book's.
+
+        One per kind of answer the book gives: a single grade, a range, a
+        range split across sibling types, and a grade still to be assigned.
+        """
+        table = clinical_record.GRADES_BY_HISTOLOGY
+        book = {
+            "U tế bào thần kinh trung ương": ("2",),  # central neurocytoma, p.149
+            "U màng não thất nhú nhầy": ("2",),  # myxopapillary ependymoma, p.183
+            "U màng não thất hố sau nhóm A (PFA)": ("2", "3"),  # p.172
+            "U nhú đám rối mạch mạc": ("1",),  # p.190
+            "U nhú đám rối mạch mạc không điển hình": ("2",),  # p.193
+            "Ung thư biểu mô đám rối mạch mạc": ("3",),  # p.195
+            "U tế bào tuyến tùng": ("1",),  # pineocytoma, p.243
+            "U nhu mô tuyến tùng biệt hoá trung gian": ("2", "3"),  # PPTID, p.246
+            "U nguyên bào tuyến tùng": ("4",),  # pineoblastoma, p.249
+            "U nguyên bào tuỷ, hoạt hoá WNT": ("4",),  # p.203
+            "U thần kinh đệm dạng dây sống": ("2",),  # chordoid glioma, p.104
+            "U thần kinh nội tiết đuôi ngựa": ("1",),  # p.279
+            "Sarcôm tái sắp xếp CIC": ("4",),  # p.320
+            "Sarcôm sụn": ("1", "2", "3"),  # p.332
+            "U xơ đơn độc": ("1", "2", "3"),  # p.301
+            "U thần kinh đệm bán cầu kiểu nhũ nhi": (),  # "not currently graded", p.81
+            "U sao bào độ cao có đặc điểm dạng lông": (),  # no definitive grade, p.90
+            "U dây sống": (),  # chordoma, p.335
+        }
+        for name, grades in book.items():
+            self.assertEqual(table[name], grades, name)
 
     def test_the_astrocytic_entities_use_the_wording_a_report_uses(self):
         """"U sao bào" is the stem the Ministry of Health's own WHO table uses

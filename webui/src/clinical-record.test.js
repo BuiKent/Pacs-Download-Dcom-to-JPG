@@ -92,6 +92,9 @@ const VOCABULARY = {
     "U màng não",
     "U nguyên bào thần kinh đệm, IDH tự nhiên",
     "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q",
+    "U sao bào, IDH đột biến",
+    "U sao bào lông",
+    "U di căn",
   ],
   grades: ["1", "2", "3", "4"],
   molecularMarkers: ["IDH1/2", "MGMT"],
@@ -104,11 +107,17 @@ const VOCABULARY = {
     "U màng não": ["1", "2", "3"],
     "U nguyên bào thần kinh đệm, IDH tự nhiên": ["4"],
     "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q": ["2", "3"],
+    "U sao bào, IDH đột biến": ["2", "3", "4"],
+    "U sao bào lông": ["1"],
+    "U di căn": [],
   },
   histologyGroups: {
-    "U màng não": "U màng não và u trung mô",
-    "U nguyên bào thần kinh đệm, IDH tự nhiên": "U thần kinh đệm",
-    "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q": "U thần kinh đệm",
+    "U màng não": "Các u màng não",
+    "U nguyên bào thần kinh đệm, IDH tự nhiên": "U thần kinh đệm lan toả kiểu người lớn",
+    "U thần kinh đệm ít nhánh, IDH đột biến, đồng mất 1p/19q": "U thần kinh đệm lan toả kiểu người lớn",
+    "U sao bào, IDH đột biến": "U thần kinh đệm lan toả kiểu người lớn",
+    "U sao bào lông": "U thần kinh đệm dạng sao khu trú",
+    "U di căn": "Di căn thần kinh trung ương",
   },
 };
 
@@ -877,6 +886,24 @@ describe("Clinical terms in two languages", () => {
     expect(gradesOffered()).toEqual(["1", "2", "3", "4"]);
   });
 
+  it("keeps an unusual grade loaded from disk even when out of range", async () => {
+    // If a record on disk already had an unusual grade, opening the form keeps it
+    // visible rather than dropping it silently.
+    clinicalState.record = {
+      tumors: [{
+        id: "t1",
+        histology: "U nguyên bào thần kinh đệm, IDH tự nhiên",
+        grade: "2",
+        molecular: {},
+      }],
+      events: [],
+    };
+    mountApp();
+    await press("#app .rec-info-card [data-action='edit-record']");
+    expect(gradesOffered()).toEqual(["4", "2"]);
+    expect(clinicalState.draft.tumors[0].grade).toBe("2");
+  });
+
   it("does not drop a grade already recorded that the new diagnosis rules out", async () => {
     // Somebody wrote 2 down. Editing the diagnosis beside it must not make it
     // vanish without anyone seeing — it stays on the list, visibly wrong.
@@ -895,7 +922,64 @@ describe("Clinical terms in two languages", () => {
     expect(clinicalState.draft.tumors[0].grade).toBe("2");
   });
 
-  it("groups the diagnoses by family and says the grade each can carry", async () => {
+  it("fills the one grade a diagnosis can carry, and takes back only its own", async () => {
+    await openFormWithATumour();
+    const histology = () => form().querySelector("[data-clinical-field='histology']");
+    const grade = () => form().querySelector("select[data-clinical-field='grade']");
+
+    // Glioblastoma, IDH-wildtype is grade 4 by definition: nothing to wait for.
+    type(histology(), "U nguyên bào thần kinh đệm, IDH tự nhiên");
+    await settle();
+    expect(clinicalState.draft.tumors[0].grade).toBe("4");
+    expect(grade().value).toBe("4");
+
+    // Corrected to an astrocytoma. That 4 was the form's inference from the
+    // glioblastoma, not anybody's reading, so it goes with it and the grade
+    // waits for the report.
+    type(histology(), "U sao bào, IDH đột biến");
+    await settle();
+    expect(clinicalState.draft.tumors[0].grade).toBe("");
+    expect(gradesOffered()).toEqual(["2", "3", "4"]);
+
+    // The person reads 3 off the report.
+    grade().value = "3";
+    grade().dispatchEvent(new window.Event("change", { bubbles: true }));
+    await settle();
+
+    // A pilocytic astrocytoma is grade 1 — but the 3 is theirs, and it stays
+    // beside the new diagnosis where the mismatch can be seen.
+    type(histology(), "U sao bào lông");
+    await settle();
+    expect(clinicalState.draft.tumors[0].grade).toBe("3");
+    expect(gradesOffered()).toEqual(["1", "3"]);
+  });
+
+  it("keeps a filled-in grade once the person has picked it themselves", async () => {
+    await openFormWithATumour();
+    type(form().querySelector("[data-clinical-field='histology']"),
+      "U nguyên bào thần kinh đệm, IDH tự nhiên");
+    await settle();
+    const grade = form().querySelector("select[data-clinical-field='grade']");
+    grade.value = "4";
+    grade.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await settle();
+
+    type(form().querySelector("[data-clinical-field='histology']"), "U sao bào, IDH đột biến");
+    await settle();
+    expect(clinicalState.draft.tumors[0].grade).toBe("4");
+  });
+
+  it("offers no grade for a diagnosis WHO CNS5 does not grade", async () => {
+    await openFormWithATumour();
+    type(form().querySelector("[data-clinical-field='histology']"), "U di căn");
+    await settle();
+    expect(gradesOffered()).toEqual([]);
+    const blank = form().querySelector("select[data-clinical-field='grade'] option[value='']");
+    expect(blank.textContent.trim()).toBe("Không xếp độ");
+    expect(clinicalState.draft.tumors[0].grade).toBe("");
+  });
+
+  it("groups the diagnoses by family without redundant grade range suffixes", async () => {
     // A `<select>` can hold headings where a datalist could not, so the
     // families are real `<optgroup>`s and the list reads down the
     // classification rather than alphabetically across it.
@@ -905,13 +989,14 @@ describe("Clinical terms in two languages", () => {
 
     const family = (value) => [...list.options]
       .find((o) => o.value === value).closest("optgroup").label;
-    expect(family("U nguyên bào thần kinh đệm, IDH tự nhiên")).toBe("U thần kinh đệm");
-    expect(family("U màng não")).toBe("U màng não và u trung mô");
+    expect(family("U nguyên bào thần kinh đệm, IDH tự nhiên"))
+      .toBe("U thần kinh đệm lan toả kiểu người lớn");
+    expect(family("U màng não")).toBe("Các u màng não");
 
     const text = (value) => [...list.options].find((o) => o.value === value).textContent.trim();
     expect(text("U nguyên bào thần kinh đệm, IDH tự nhiên"))
-      .toBe("U nguyên bào thần kinh đệm, IDH tự nhiên (Glioblastoma, IDH-wildtype) · độ 4");
-    expect(text("U màng não")).toBe("U màng não (Meningioma) · độ 1-3");
+      .toBe("U nguyên bào thần kinh đệm, IDH tự nhiên (Glioblastoma, IDH-wildtype)");
+    expect(text("U màng não")).toBe("U màng não (Meningioma)");
   });
 
   it("leaves a diagnosis typed off a report exactly as it was written", async () => {

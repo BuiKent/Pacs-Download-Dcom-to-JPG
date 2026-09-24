@@ -93,7 +93,7 @@ const VOCABULARY = {
   histologies: ["U màng não"],
   grades: ["1", "2", "3", "4"],
   gradesByHistology: { "U màng não": ["1", "2", "3"] },
-  histologyGroups: { "U màng não": "U màng não và u trung mô" },
+  histologyGroups: { "U màng não": "Các u màng não" },
   molecularMarkers: ["IDH1/2"],
   markerGroups: {}, markerResults: {}, markerNotes: {}, markerUnits: {}, workup: {},
   diagnosisBases: ["Hình ảnh", "Mô bệnh học"],

@@ -273,6 +273,12 @@ WORKUP = {
         "essential": ("Nhóm u nguyên bào tuỷ",),
         "useful": ("MYC/MYCN", "TP53"),
     },
+    # WHO CNS5's name for a medulloblastoma whose molecular group is not known
+    # yet, so it is missing exactly what the family-level entry above is.
+    "U nguyên bào tuỷ, xác định theo mô học": {
+        "essential": ("Nhóm u nguyên bào tuỷ",),
+        "useful": ("MYC/MYCN", "TP53"),
+    },
     "U quái không điển hình/dạng cơ vân": {"essential": ("SMARCB1/INI1",), "useful": ()},
 }
 
@@ -538,9 +544,20 @@ _EXACT_ROUTES = {
     "U thần kinh đệm lan toả bán cầu, H3 G34 đột biến": "h3_altered",
     "U sao bào lông": "pilocytic",
     "U nguyên bào tuỷ": "medulloblastoma",
+    # Every medulloblastoma type is CNS WHO grade 4 and starts on the same
+    # craniospinal route; the molecular group changes the dose, not the route.
+    "U nguyên bào tuỷ, hoạt hoá WNT": "medulloblastoma",
+    "U nguyên bào tuỷ, hoạt hoá SHH và TP53 tự nhiên": "medulloblastoma",
+    "U nguyên bào tuỷ, hoạt hoá SHH và TP53 đột biến": "medulloblastoma",
+    "U nguyên bào tuỷ, không WNT/không SHH": "medulloblastoma",
+    "U nguyên bào tuỷ, xác định theo mô học": "medulloblastoma",
     "U lympho thần kinh trung ương nguyên phát": "pcnsl",
     "U di căn": "metastasis",
+    # Parenchymal only: radiosurgery is the answer for a countable number of
+    # lesions in the brain, not for disease spread along the meninges.
+    "Di căn nhu mô não và tuỷ sống": "metastasis",
     "U tế bào mầm nội sọ": "germinoma",
+    "U mầm": "germinoma",
     "U bao sợi thần kinh": "schwannoma",
 }
 
@@ -577,6 +594,15 @@ def route_key(tumor: Any) -> str:
         return "astro_idh_g4" if effective_grade(tumor)["grade"] == "4" else "astro_idh_low"
     if entity == "U màng não":
         return _meningioma_route(tumor)
+
+    # Anything else picked from the list is a finished diagnosis this file has
+    # no rule for. The loose match below is for typed text only: the list holds
+    # "U lympho MALT màng cứng" and "Di căn màng não - tuỷ", and matched as
+    # free text they would be handed the diffuse large B-cell regimen and
+    # radiosurgery. Imported here because `clinical_record` imports this module.
+    from clinical_record import HISTOLOGIES
+    if entity in HISTOLOGIES:
+        return ""
 
     folded = _fold(entity)
     for needle, key, veto in _LOOSE:
